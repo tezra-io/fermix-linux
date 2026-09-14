@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo for the Fermix desktop application (M38 sections 2.2, 5.3).
+
+  Mandatory rather than cosmetic: without it the application does not appear in
+  GNOME Software or KDE Discover at all, and the software centre is where a
+  desktop user sees that a package update exists. AppStream composition needs
+  the metainfo, the desktop entry and the icon together, so all three carry the
+  same identity and the package installs all three.
+
+  No version number appears in any sentence here. The release entry below is
+  the one place a version is written, and tests/packaging.rs holds it equal to
+  the crate's own.
+-->
+<component type="desktop-application">
+  <id>io.tezra.Fermix</id>
+  <name>Fermix</name>
+  <summary>Set up and keep an eye on the Fermix assistant</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="ai.fermix">
+    <name>Tezra</name>
+  </developer>
+
+  <description>
+    <p>
+      Fermix runs a personal assistant as a background service on this computer.
+      This application is the window you set it up and watch it from. It speaks to
+      the service over the service's own socket, shows what the service reports,
+      and changes what the service allows to be changed.
+    </p>
+    <p>
+      It carries no assistant of its own. The fermix package installs the service,
+      and your own systemd user manager runs it.
+    </p>
+    <p>From this window you can:</p>
+    <ul>
+      <li>Finish setup, connect a provider, and answer the questions the service asks before it is ready</li>
+      <li>See whether the service is running, switch it on in the background, and open the window at login</li>
+      <li>Change every setting the service publishes, including channels, integrations, capabilities and permissions</li>
+      <li>Run the doctor checks, read the log, and export a diagnostics bundle</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.tezra.Fermix.desktop</launchable>
+
+  <url type="homepage">https://fermix.ai</url>
+  <url type="bugtracker">https://github.com/tezra-io/fermix-linux/issues</url>
+
+  <provides>
+    <dbus type="user">io.tezra.Fermix</dbus>
+    <binary>fermix-desktop</binary>
+  </provides>
+
+  <!--
+    The narrowest window this application draws is 460 by 440 logical pixels
+    (the redlines, section 5), so a display narrower than that cannot show it.
+  -->
+  <requires>
+    <display_length compare="ge">460</display_length>
+  </requires>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <!--
+    Screenshots are deliberately absent until the reference captures in
+    docs/design/captures/ carry a reviewer's decision. A capture that exists is
+    not a capture that was accepted, and a software centre is the last place to
+    publish an unreviewed picture. appstreamcli reports the absence; the release
+    rail treats that one report as acceptable and says so in docs/RELEASING.md.
+  -->
+
+  <releases>
+    <release version="0.10.4" date="2026-09-14">
+      <description>
+        <p>The first release of the Fermix window for Linux.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,75 @@
+# The build container.
+#
+# The same image builds the crate locally and in CI, because GitHub's runners
+# carry a GTK below this application's floor and a green build against a newer
+# toolkit proves nothing about the one a user has. Debian trixie carries GTK and
+# libadwaita above the 4.16 / 1.6 floor, and the crate enables only the floor's
+# features, so a symbol above it is a compile error here rather than a missing
+# symbol on somebody's machine.
+FROM debian:trixie-slim
+
+ARG RUST_VERSION=1.97.1
+ARG NFPM_VERSION=2.47.0
+ARG NFPM_SHA256_AMD64=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+ARG NFPM_SHA256_ARM64=1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# The toolkit and its development headers, the packaging tools the release rail
+# needs, a display for the widget tests, and the small utilities the gates use.
+# Nothing here is a convenience: every line is a gate's dependency. `rpm` is here
+# for one job, reading the built rpm's own requirements back
+# (`rpm -qp --requires`), because nFPM writes no dependency it was not told to
+# write and the declaration is only worth what a machine can check it against.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      build-essential \
+      pkg-config \
+      libgtk-4-dev \
+      libadwaita-1-dev \
+      gettext \
+      appstream \
+      desktop-file-utils \
+      rpm \
+      xvfb \
+      xauth \
+      librsvg2-bin \
+      librsvg2-common \
+      webp-pixbuf-loader \
+      python3 \
+      git \
+      curl \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The toolchain is pinned rather than tracking stable, so the container and the
+# development machine compile the same language.
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+      -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --no-modify-path --profile minimal \
+         --default-toolchain "${RUST_VERSION}" \
+         --component rustfmt --component clippy \
+    && rm /tmp/rustup.sh \
+    && chmod -R a+w "$CARGO_HOME" "$RUSTUP_HOME"
+
+# nFPM builds the deb and the rpm in the packaging slice. Pinned by version and
+# checked by digest: a build tool fetched over the network and not verified is a
+# build tool somebody else can change.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) asset="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"; sum="${NFPM_SHA256_AMD64}" ;; \
+      arm64) asset="nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz"; sum="${NFPM_SHA256_ARM64}" ;; \
+      *) echo "no pinned nfpm for $arch" >&2; exit 1 ;; \
+    esac; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${asset}" \
+      -o /tmp/nfpm.tar.gz; \
+    echo "${sum}  /tmp/nfpm.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm; \
+    rm /tmp/nfpm.tar.gz; \
+    nfpm --version
+
+WORKDIR /workspace

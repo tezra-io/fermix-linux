@@ -1,0 +1,56 @@
+# The install smoke container.
+#
+# Not a build image: this one exists to be a machine a person could have. It runs
+# systemd as process one so there is a real user manager to install a user unit
+# into, a session bus so D-Bus activation means something, a display so the
+# window can actually be drawn, and one ordinary account that owns none of it.
+#
+# What it can prove: that both packages install through the host package manager
+# with their declared relations satisfied, that `fermix service install` brings
+# the engine up under this account's own systemd, that the window starts against
+# the real daemon rather than a fixture, and that the window the compositor sees
+# carries the application identity. What it cannot prove is anything that needs a
+# desktop: a portal backend, a notification daemon, a shell that owns a tray
+# watcher, or a person (M38 section 13.2).
+FROM debian:trixie
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    container=docker
+
+# systemd and a session bus, because a user unit with no user manager is a file
+# nobody reads. polkit, because `loginctl enable-linger` for another account goes
+# through it. Xvfb and the two small X utilities, because the evidence this
+# produces is a picture of a window and the class that window carries.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      systemd \
+      systemd-sysv \
+      dbus \
+      dbus-user-session \
+      polkitd \
+      xvfb \
+      xauth \
+      x11-utils \
+      xdotool \
+      imagemagick \
+      procps \
+      ca-certificates \
+      sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Everything a container does not need, switched off: a smoke run that waits on
+# a timesync unit is a smoke run that looks broken.
+RUN systemctl mask \
+      systemd-udevd.service \
+      systemd-udev-trigger.service \
+      systemd-timesyncd.service \
+      systemd-networkd.service \
+      systemd-resolved.service \
+      e2scrub_reap.service
+
+# One ordinary account. It installs nothing as root, owns no unit file, and is
+# the account whose own systemd runs the engine, which is the arrangement the
+# product actually ships.
+RUN useradd --create-home --shell /bin/bash test
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

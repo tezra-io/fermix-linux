@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# The fake `fermix`, standing in for the packaged command line.
+#
+# It answers each of the five typed operations from a JSON file chosen by
+# FERMIX_FAKE_CLI_STATE, which names a directory under states/. A state may
+# also carry <verb>.exit to answer with a non-zero status, and the state
+# named "hang" answers nothing at all so a caller's deadline and its
+# cancellation can be proven.
+#
+# Every <verb>.json under states/ is a byte-for-byte copy of a golden the
+# engine publishes under contracts/cli/fixtures/, and tests/contract.rs holds
+# it to that in both directions: no state may answer a shape the engine never
+# prints, and no golden may go unanswered. A refusal exits 1, which is the
+# status CONTRACT.md fixes for one.
+#
+# It parses no arguments beyond the verb it has to recognise, and it never
+# touches anything outside the state directory it was given.
+
+set -eu
+
+fail() {
+  echo "fake fermix: $*" >&2
+  exit 64
+}
+
+[ -n "${FERMIX_FAKE_CLI_STATE:-}" ] || fail "FERMIX_FAKE_CLI_STATE is not set"
+[ -d "$FERMIX_FAKE_CLI_STATE" ] || fail "no state directory at $FERMIX_FAKE_CLI_STATE"
+
+# The verb is the first one or two arguments; --json and the rest are ignored,
+# because this stands in for a command line whose argv the caller builds from a
+# typed struct rather than from a string.
+case "${1:-}" in
+  service)
+    case "${2:-}" in
+      status) verb=status ;;
+      install) verb=install ;;
+      uninstall) verb=uninstall ;;
+      *) fail "unknown service verb: ${2:-}" ;;
+    esac
+    ;;
+  restart) verb=restart ;;
+  diagnostics)
+    case "${2:-}" in
+      export) verb=export ;;
+      *) fail "unknown diagnostics verb: ${2:-}" ;;
+    esac
+    ;;
+  *) fail "unknown verb: ${1:-}" ;;
+esac
+
+state_name="$(basename "$FERMIX_FAKE_CLI_STATE")"
+
+if [ "$state_name" = "hang" ]; then
+  # Answers nothing, for as long as anyone is willing to wait. `exec` so the
+  # process a caller force-exits is the one actually sleeping, rather than a
+  # shell that leaves an orphan behind it.
+  exec sleep 600
+fi
+
+if [ "$state_name" = "oversize" ]; then
+  # More than the output ceiling, generated rather than checked in.
+  printf '{"schema_version":1,"ok":true,"result":{"alignment":"aligned","noise":"'
+  written=0
+  while [ "$written" -lt 1600 ]; do
+    printf '%01024d' 0
+    written=$((written + 1))
+  done
+  printf '"}}'
+  exit 0
+fi
+
+body="$FERMIX_FAKE_CLI_STATE/$verb.json"
+[ -f "$body" ] || fail "no $verb.json in $FERMIX_FAKE_CLI_STATE"
+
+cat "$body"
+
+status_file="$FERMIX_FAKE_CLI_STATE/$verb.exit"
+if [ -f "$status_file" ]; then
+  exit "$(cat "$status_file")"
+fi
+
+exit 0

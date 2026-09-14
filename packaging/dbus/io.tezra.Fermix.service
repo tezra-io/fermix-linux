@@ -1,0 +1,13 @@
+# The session D-Bus activation file (M38 section 5.3).
+#
+# A launch from a cold session goes through the bus rather than through the
+# launcher's Exec line, and SystemdService= is what makes the user manager start
+# it as the unit beside this file. That is the whole reason the unit exists: the
+# process then carries the app-prefixed unit name that portal identity derives
+# from, without depending on the optional host Registry interface.
+#
+# Name, Exec and the unit's BusName all carry the one application identity.
+[D-BUS Service]
+Name=io.tezra.Fermix
+Exec=/usr/bin/fermix-desktop --gapplication-service
+SystemdService=app-io.tezra.Fermix.service

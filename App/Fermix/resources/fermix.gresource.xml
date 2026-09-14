@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  One bundle. The icon entries follow the icon theme's own directory shape, so
+  gtk::IconTheme::add_resource_path("/io/tezra/Fermix/icons") finds the
+  application icon and its symbolic pair by name.
+-->
+<gresources>
+  <gresource prefix="/io/tezra/Fermix">
+    <file compressed="true" alias="style.css">style.css</file>
+  </gresource>
+  <gresource prefix="/io/tezra/Fermix/icons/scalable/apps">
+    <file compressed="true" alias="io.tezra.Fermix.svg">icons/io.tezra.Fermix.svg</file>
+  </gresource>
+  <gresource prefix="/io/tezra/Fermix/icons/symbolic/apps">
+    <file compressed="true" alias="io.tezra.Fermix-symbolic.svg">icons/io.tezra.Fermix-symbolic.svg</file>
+    <file compressed="true" alias="fermix-progress-symbolic.svg">icons/fermix-progress-symbolic.svg</file>
+  </gresource>
+  <gresource prefix="/io/tezra/Fermix/brand">
+    <file alias="fermix-mascot.png">brand/fermix-mascot.png</file>
+    <file compressed="true" alias="fermix-wordmark.svg">brand/fermix-wordmark.svg</file>
+  </gresource>
+  <!--
+    The vendor marks, byte for byte as the vendors publish them and as
+    PROVENANCE.json records them. A mark is drawn from this bundle and never
+    recoloured, so the bytes a reviewer hashes are the bytes a person sees.
+  -->
+  <gresource prefix="/io/tezra/Fermix/marks">
+    <file compressed="true" alias="channels/discord-black.svg">VendorMarks/channels/discord-black.svg</file>
+    <file compressed="true" alias="channels/discord-blurple.svg">VendorMarks/channels/discord-blurple.svg</file>
+    <file compressed="true" alias="channels/discord-white.svg">VendorMarks/channels/discord-white.svg</file>
+    <file compressed="true" alias="channels/signal-black.svg">VendorMarks/channels/signal-black.svg</file>
+    <file compressed="true" alias="channels/signal-ultramarine.svg">VendorMarks/channels/signal-ultramarine.svg</file>
+    <file compressed="true" alias="channels/signal-white.svg">VendorMarks/channels/signal-white.svg</file>
+    <file alias="channels/slack-color.png">VendorMarks/channels/slack-color.png</file>
+    <file compressed="true" alias="channels/telegram-color.svg">VendorMarks/channels/telegram-color.svg</file>
+    <file alias="channels/whatsapp-color.webp">VendorMarks/channels/whatsapp-color.webp</file>
+    <file compressed="true" alias="features/computer-history-color.svg">VendorMarks/features/computer-history-color.svg</file>
+    <file compressed="true" alias="features/computer-use-color.svg">VendorMarks/features/computer-use-color.svg</file>
+    <file compressed="true" alias="features/meetings-color.svg">VendorMarks/features/meetings-color.svg</file>
+    <file alias="meeting_platforms/google-meet-color.png">VendorMarks/meeting_platforms/google-meet-color.png</file>
+    <file alias="meeting_platforms/zoom-color.png">VendorMarks/meeting_platforms/zoom-color.png</file>
+    <file alias="oauth_clients/google-dark.png">VendorMarks/oauth_clients/google-dark.png</file>
+    <file alias="oauth_clients/google-light.png">VendorMarks/oauth_clients/google-light.png</file>
+    <file alias="plugins/agentmail-color.png">VendorMarks/plugins/agentmail-color.png</file>
+    <file compressed="true" alias="plugins/discord-color.svg">VendorMarks/plugins/discord-color.svg</file>
+    <file compressed="true" alias="plugins/eden-color.svg">VendorMarks/plugins/eden-color.svg</file>
+    <file compressed="true" alias="plugins/github-black.svg">VendorMarks/plugins/github-black.svg</file>
+    <file compressed="true" alias="plugins/github-white.svg">VendorMarks/plugins/github-white.svg</file>
+    <file alias="plugins/gmail-color.png">VendorMarks/plugins/gmail-color.png</file>
+    <file alias="plugins/google-calendar-color.png">VendorMarks/plugins/google-calendar-color.png</file>
+    <file alias="plugins/google-drive-color.png">VendorMarks/plugins/google-drive-color.png</file>
+    <file compressed="true" alias="plugins/notion-color.svg">VendorMarks/plugins/notion-color.svg</file>
+    <file alias="plugins/obsidian-color.png">VendorMarks/plugins/obsidian-color.png</file>
+    <file compressed="true" alias="plugins/slack-color.svg">VendorMarks/plugins/slack-color.svg</file>
+    <file compressed="true" alias="plugins/x-color.svg">VendorMarks/plugins/x-color.svg</file>
+    <file alias="providers/anthropic-color.png">VendorMarks/providers/anthropic-color.png</file>
+    <file compressed="true" alias="providers/mistral-color.svg">VendorMarks/providers/mistral-color.svg</file>
+    <file compressed="true" alias="providers/ollama-mono.svg">VendorMarks/providers/ollama-mono.svg</file>
+    <file compressed="true" alias="providers/openai-color.svg">VendorMarks/providers/openai-color.svg</file>
+    <file compressed="true" alias="providers/openrouter-grape.svg">VendorMarks/providers/openrouter-grape.svg</file>
+    <file compressed="true" alias="providers/openrouter-volt.svg">VendorMarks/providers/openrouter-volt.svg</file>
+    <file alias="providers/xai-mono.png">VendorMarks/providers/xai-mono.png</file>
+  </gresource>
+</gresources>

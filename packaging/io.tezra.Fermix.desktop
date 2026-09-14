@@ -1,0 +1,23 @@
+[Desktop Entry]
+# The launcher (M38 section 5.3). Its basename is the application identity, and
+# so are StartupWMClass, the D-Bus name beside it, the AppStream id and the icon
+# name: every one of the six places carries io.tezra.Fermix, and
+# scripts/check_app_identity.sh asserts it, because each way they can drift is a
+# silent misassociation rather than an error.
+#
+# Comment is the metainfo summary, word for word. A launcher tooltip and a
+# software centre subtitle that say different things are two spellings of one
+# fact, and tests/packaging.rs holds them equal.
+Type=Application
+Name=Fermix
+Comment=Set up and keep an eye on the Fermix assistant
+Exec=/usr/bin/fermix-desktop %u
+Icon=io.tezra.Fermix
+Terminal=false
+Categories=Utility;GTK;
+Keywords=assistant;agent;fermix;
+StartupWMClass=io.tezra.Fermix
+StartupNotify=true
+DBusActivatable=true
+SingleMainWindow=true
+MimeType=x-scheme-handler/fermix;

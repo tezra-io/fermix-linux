@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Step">
+  <title>Step</title>
+  <!--
+    One progress dot, and the one glyph this application ships that the platform
+    theme has no name for: the Setup assistant's four steps. It is drawn on the
+    16 px symbolic grid with one flat fill, which the icon theme recolours for
+    the current foreground exactly as it recolours the application's own
+    symbolic pair, so a lit dot is the toolkit's text colour and a dimmed one is
+    the toolkit's dim.
+  -->
+  <circle cx="8" cy="8" r="4" fill="#241f31"/>
+</svg>

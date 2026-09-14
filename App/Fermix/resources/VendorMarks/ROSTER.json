@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "recorded_on": "2026-09-10",
+  "note": "The vendored roster snapshot. PROVENANCE.json must carry one record per key here, and roster_source.roster_sha256 pins these bytes, so a vendor cannot be dropped from either file alone. The upstream cross-check (vendor_marks.py check --fermix-repo <checkout>) is what re-vendors it when fermix moves.",
+  "source": {
+    "repository": "https://github.com/tezra-io/fermix",
+    "providers": {
+      "path": "apps/fermix_core/lib/fermix_core/providers/descriptor.ex",
+      "symbol": "Providers.Descriptor.all/0",
+      "sha256": "e5b70c75fa66d1e5471838ecc760e506554c1b5acbfc23d1ff143cdce4a91288"
+    },
+    "channels": {
+      "path": "apps/fermix_web/lib/fermix_web_web/live/setup_live.ex",
+      "symbol": "the channels form map",
+      "sha256": "10e3eec064933e5e7d95724708207ba2c7f0709eda6cc162d60602ea511051a7"
+    },
+    "plugins": {
+      "path": "apps/fermix_core/priv/plugins/index.json",
+      "symbol": "the static plugin catalog",
+      "sha256": "4dfda7e0ee51873e5d8b5a2ad11227decbcc8ee76c14b85e87e307fba0cd3ed1",
+      "generated_at": "2026-08-04T02:49:35Z",
+      "bundled": {
+        "path": "apps/fermix_core/priv/plugins/catalog.json",
+        "symbol": "the plugins the engine ships inside itself, which Registry.list unions into every install",
+        "sha256": "68dca1ec7bbb610fae6b9fcfe765ae188358c1e92279f05e4c99072383f8dd85",
+        "manifests": {
+          "gmail/plugin.json": "473377b2b69742b2de31d1072d601006899318ac24fa311ebb7b5fd30a1777b9",
+          "google_calendar/plugin.json": "639e9296235118d23c06a96831daacbd47389aa1e12fb261bc31a3da8ef65e94",
+          "google_drive/plugin.json": "abe80cc7626ff675de41cd02f8f301c128bf1dfb7db7aff7de12911da13db8ae"
+        }
+      }
+    },
+    "features": {
+      "path": "apps/fermix_web/lib/fermix_web_web/live/setup_live",
+      "symbol": "the three native driver logos",
+      "files": {
+        "computer_use_logo.svg": "50de395cd3f1af1d637c2d2f4c54a331ca304c355d76ffb88c0773b92323b841",
+        "computer_history_logo.svg": "d6a69ec34b054ec8bb5d4420dd2eeb51697d9810af362cece165051e2a2a0f62",
+        "meetings_logo.svg": "53157efacc86ab24e13290e63051302fb0b9f127e9515cc373de85dc95b0e00e"
+      }
+    }
+  },
+  "providers": [
+    "anthropic",
+    "mistral",
+    "ollama",
+    "openai",
+    "openai_codex",
+    "openrouter",
+    "xai"
+  ],
+  "channels": [
+    "discord",
+    "signal",
+    "slack",
+    "telegram",
+    "whatsapp"
+  ],
+  "plugins": [
+    "agentmail",
+    "computer_use_sidecar",
+    "discord",
+    "eden",
+    "github",
+    "gmail",
+    "google_calendar",
+    "google_drive",
+    "notion",
+    "obsidian",
+    "slack",
+    "x"
+  ],
+  "features": [
+    "computer_history",
+    "computer_use",
+    "meetings"
+  ],
+  "channel_exclusions": {
+    "editing": "The form map's own cursor, not a channel.",
+    "acp": "The ACP agent surface from milestone 29. It is a local agent protocol endpoint, not a messaging vendor, so it has no vendor mark to record."
+  },
+  "feature_note": "The three native drivers are this build's, not the registry's: they are daemon settings the Integrations page counts under its Features pill. Their keys are the app's own, and only their marks come from the engine, which is why source.features pins files rather than a symbol.",
+  "plugin_note": "The plugin roster is the union of two upstream sets, and reading only the first is how the three plugins every install already has came to draw the generic tile. index.json is the static catalog a machine installs FROM; catalog.json names the plugins the engine ships INSIDE itself, which Registry.list unions into every plugins.list answer. Both are pinned, and the drift check compares the roster against their union.",
+  "meeting_platforms": [
+    "google_meet",
+    "zoom"
+  ],
+  "meeting_platform_note": "The two platforms the Meetings pane is sectioned by. Like the features, these keys are the app's own: the daemon publishes meetings_zoom_ settings and a Google sign-in job rather than a platform list, so there is no upstream set to compare them against and source carries no entry for them. Unlike the features, their marks are the vendors' own, retrieved from Google and Zoom and pinned in PROVENANCE.json, so a refresh re-downloads them rather than re-vendoring them from fermix.",
+  "oauth_clients": [
+    "google"
+  ],
+  "oauth_client_note": "Additional sign-in client marks whose provider ID does not name a plugin. GitHub, Notion, X and Slack reuse their existing plugin marks through the explicit client lookup."
+}

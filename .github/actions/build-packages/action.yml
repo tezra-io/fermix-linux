@@ -1,0 +1,58 @@
+name: Build the desktop packages
+description: >
+  Build fermix-desktop's deb and rpm for one architecture inside the build
+  container, and upload them as an artifact. One definition, used by the release
+  rail and by the packaging workflow, so the packages a pull request produces
+  are built by the steps that build the released ones rather than by a copy of
+  them that drifts.
+
+inputs:
+  version:
+    description: The version both packages carry. It is the crate's own.
+    required: true
+  arch:
+    description: amd64 or arm64, matching the runner this is on.
+    required: true
+  build-id:
+    description: >
+      The generation compiled into the binary and written into the manifest the
+      package installs. The window compares the two, so they are one value.
+    required: true
+  source-commit:
+    description: The commit the packages were built from.
+    required: true
+  artifact-name:
+    description: What to call the uploaded artifact.
+    required: true
+  retention-days:
+    description: How long the artifact is kept.
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    # Everything is built inside packaging/docker/Dockerfile.build, because the
+    # runner images carry a GTK below this application's floor and a green build
+    # against a newer toolkit proves nothing about the one a user has.
+    - name: Build both packages in the container
+      shell: bash
+      env:
+        FERMIX_DESKTOP_BUILD_ID: ${{ inputs.build-id }}
+        FERMIX_DESKTOP_SOURCE_COMMIT: ${{ inputs.source-commit }}
+        VERSION: ${{ inputs.version }}
+        ARCH: ${{ inputs.arch }}
+      run: scripts/build_packages.sh "$VERSION" "$ARCH" --container
+
+    - name: Upload the packages
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        # The packages only. `build.json` is inside each of them, and two
+        # architectures uploading one path under one merged artifact would have
+        # them overwrite each other for no gain.
+        path: |
+          packaging/out/fermix-desktop_*.deb
+          packaging/out/fermix-desktop-*.rpm
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

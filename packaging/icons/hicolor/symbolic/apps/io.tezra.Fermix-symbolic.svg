@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Fermix">
+  <title>Fermix</title>
+  <!--
+    The symbolic pair of the application icon: one path set on the 16 px grid,
+    one flat fill that the icon theme recolours for the current foreground.
+    Same letterform as the full-colour icon, no ground and no brand colour.
+  -->
+  <g transform="translate(4.08 1) scale(0.14)" fill="#241f31" fill-rule="evenodd">
+    <path d="M9,0 H17 V100 H0 V9 Z"/>
+    <path d="M17,0 H56 V9 L48,17 H17 Z"/>
+    <path d="M17,41 H48 V50 L40,58 H17 Z"/>
+  </g>
+</svg>

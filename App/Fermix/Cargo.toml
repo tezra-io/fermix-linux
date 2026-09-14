@@ -1,0 +1,43 @@
+[package]
+name = "fermix-desktop"
+version = "0.10.4"
+edition = "2021"
+rust-version = "1.97"
+description = "Fermix for Linux, a GTK4 and libadwaita client for the Fermix engine"
+license = "MIT"
+publish = false
+
+# The application binary and the fixture daemon share one library target, so the
+# framing, the client and the vendored contract are compiled once and the
+# fixture peer cannot drift from the client it answers.
+[lib]
+name = "fermix_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fermix-desktop"
+path = "src/main.rs"
+
+[[bin]]
+name = "fixture-daemon"
+path = "src/bin/fixture_daemon.rs"
+
+# The toolkit floor is GTK 4.16 and libadwaita 1.6 (M38 section 5.1). Only the
+# floor features are enabled, so a symbol above the floor is a compile error
+# here rather than a missing symbol on a user's machine.
+[dependencies]
+gtk4 = { version = "0.11.4", features = ["v4_16"] }
+libadwaita = { version = "0.9.2", features = ["v1_6"] }
+gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+futures-util = { version = "0.3.34", default-features = false, features = [
+    "std",
+    "async-await",
+] }
+
+[build-dependencies]
+glib-build-tools = "0.21.0"
+
+[profile.release]
+strip = "debuginfo"

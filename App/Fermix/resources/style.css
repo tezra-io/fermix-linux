@@ -1,0 +1,43 @@
+/*
+ * Fermix for Linux, application stylesheet.
+ *
+ * libadwaita draws every box, hairline and separator in this product, so this
+ * file carries no background, no border, no radius, no shadow and no outline.
+ * It carries no colour either: every colour in the interface is a libadwaita
+ * variable resolved by the platform. It carries no font size, family or
+ * weight: type is the system font through the toolkit's own style classes.
+ *
+ * What is left is the handful of measurements that cannot be expressed as a
+ * widget property. Every number below is owned by src/metrics.rs and asserted
+ * against it by tests/structure.rs, so the two can never drift.
+ */
+
+/* The shared leading artwork slot: every list that draws a mark aligns on it. */
+.fermix-artwork-slot {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+/* Rows the application arranges itself, rather than a preferences row whose
+   padding belongs to the toolkit and is never overridden. */
+.fermix-arranged-row {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* The content gutter: 24 with the sidebar shown, 18 while navigation is
+   collapsed. The window toggles the class on its own toolbar view. */
+.fermix-gutter {
+  margin: 24px;
+}
+
+.fermix-collapsed .fermix-gutter {
+  margin: 18px;
+}
+
+/* The text pill beside a status word. The card style draws it; this is the
+   room the letter needs inside it. */
+.fermix-pill {
+  padding-left: 6px;
+  padding-right: 6px;
+}

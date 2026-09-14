@@ -1,0 +1,32 @@
+# Keys whose surface has not been built yet.
+#
+# Every key the product needs is named in src/copy.rs now, so the words can be
+# reviewed and translated as one deck rather than arriving surface by surface.
+# A key nothing renders is listed here until its slice lands; tests/copy.rs
+# fails both when a listed key starts rendering and when an unlisted key stops,
+# so the list shrinks deliberately and never drifts. It is empty when the
+# product is whole.
+#
+# LA4 rendered the Setup assistant, its preflight and activation refusals, the
+# skew rows and the Linux-only moments those carry. What is left belongs to
+# surfaces nobody has built or to a fact no method publishes yet: the secret
+# store row (M38 section 6.5) needs a published probe outcome, the system-scope
+# refusal (M38 section 6.5, four keys below) needs a scope the typed CLI does
+# not publish in its service result, and the rest are rows their own slices
+# never drew.
+AboutWebsite
+DoctorBusy
+DoctorDesktopSession
+DoctorNeedsNewerEngine
+LogsCursorExpired
+LogsExportDiagnostics
+RecoveryPackageRepair
+SecretStoreDesktopKeyring
+SecretStoreNone
+SecretStorePasswordStore
+SecretStoreRowLabel
+SystemScopeRefusalBody
+SystemScopeRefusalCommandValue
+SystemScopeRefusalNextAction
+SystemScopeRefusalTitle
+ToggleSidebarAccessible

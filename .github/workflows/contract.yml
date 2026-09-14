@@ -1,0 +1,28 @@
+name: contract
+
+# The contract pins alone, split out for the same reason the macOS repository
+# splits it: it needs no toolkit, no container and no cross-repository
+# credentials, so it answers in seconds and it answers even when the build is
+# broken. A re-vendor that forgot to regenerate a record fails here first.
+#
+# Actions are pinned to immutable commit SHAs (M38 section 12.2).
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Vendored wire contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verify the pin
+        run: scripts/verify_contract.sh
+
+      - name: Verify the gate itself
+        run: scripts/verify_contract_test.sh

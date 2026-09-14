@@ -1,0 +1,152 @@
+# nFPM configuration for the `fermix-desktop` package (M38 sections 2.2, 12.1).
+#
+# Rendered by scripts/build_packages.sh, which fills every placeholder below and
+# refuses to leave one behind. One rendered file produces both the deb and the
+# rpm, so the two families cannot drift into two file lists.
+#
+# The version is the tag's, exactly: `version_schema: none` keeps nFPM from
+# reshaping it, and `release` is left empty so the Debian version carries no
+# revision. nFPM's rpm packager defaults an empty release to "1", so the rpm is
+# fermix-desktop-<version>-1.<arch>.rpm while the deb is
+# fermix-desktop_<version>_<arch>.deb with no revision. That asymmetry is
+# harmless, because an rpm `=` relation on a version matches any release, and it
+# is the same shape the engine package ships. A packaging-only fix is published
+# as the next version, never as a revision of this one, which is what keeps
+# `Depends: fermix (= <version>)` and `Requires: fermix = <version>` meaning the
+# same thing in both families.
+#
+# **nFPM generates no dependencies**, so everything this binary needs at run
+# time is written below by hand and proved afterwards: build_packages.sh derives
+# the binary's own requirements from the built ELF and refuses a package whose
+# declared relations do not cover them. The floor is GTK 4.16 and libadwaita
+# 1.6; the two image loaders are there because the application's own wordmark,
+# progress glyph and vendor marks are SVG and WebP, and a gdk-pixbuf with no
+# loader for them draws nothing at all rather than failing.
+name: fermix-desktop
+arch: {{ARCH}}
+platform: linux
+version: "{{VERSION}}"
+version_schema: none
+release: ""
+maintainer: Tezra <hello@fermix.ai>
+description: |
+  The Fermix window for Linux.
+  A native GTK4 and libadwaita client for the Fermix assistant: set it up, see
+  whether it is running, change what it does, run its checks and read its log.
+  It carries no engine of its own and depends on exactly the fermix version it
+  was released beside.
+homepage: https://fermix.ai
+license: MIT
+section: utils
+priority: optional
+
+overrides:
+  deb:
+    depends:
+      - fermix (= {{VERSION}})
+      - libgtk-4-1 (>= 4.16)
+      - libadwaita-1-0 (>= 1.6)
+      - librsvg2-common
+      - webp-pixbuf-loader
+  rpm:
+    depends:
+      - fermix = {{VERSION}}
+      - gtk4 >= 4.16
+      - libadwaita >= 1.6
+      - librsvg2
+      - webp-pixbuf-loader
+
+contents:
+  - src: {{STAGE}}/usr/bin/fermix-desktop
+    dst: /usr/bin/fermix-desktop
+    file_info:
+      mode: 0755
+
+  - src: {{STAGE}}/usr/share/applications/io.tezra.Fermix.desktop
+    dst: /usr/share/applications/io.tezra.Fermix.desktop
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/metainfo/io.tezra.Fermix.metainfo.xml
+    dst: /usr/share/metainfo/io.tezra.Fermix.metainfo.xml
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/dbus-1/services/io.tezra.Fermix.service
+    dst: /usr/share/dbus-1/services/io.tezra.Fermix.service
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/lib/systemd/user/app-io.tezra.Fermix.service
+    dst: /usr/lib/systemd/user/app-io.tezra.Fermix.service
+    file_info:
+      mode: 0644
+
+  # Eight rasters, because SVG support is explicitly optional in the icon theme
+  # specification, plus the scalable icon and its symbolic pair.
+  - src: {{STAGE}}/usr/share/icons/hicolor/16x16/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/16x16/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/22x22/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/22x22/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/24x24/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/24x24/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/32x32/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/32x32/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/48x48/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/48x48/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/64x64/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/64x64/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/128x128/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/128x128/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/256x256/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/256x256/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/icons/hicolor/symbolic/apps/io.tezra.Fermix-symbolic.svg
+    dst: /usr/share/icons/hicolor/symbolic/apps/io.tezra.Fermix-symbolic.svg
+    file_info:
+      mode: 0644
+
+  # The installed build identity. The application compares the id here with the
+  # one compiled into it and says nothing at all when either is absent, so the
+  # two are written from one value at build time rather than by hand.
+  - src: {{STAGE}}/usr/share/fermix-desktop/build.json
+    dst: /usr/share/fermix-desktop/build.json
+    file_info:
+      mode: 0644
+
+  - src: {{STAGE}}/usr/share/doc/fermix-desktop/copyright
+    dst: /usr/share/doc/fermix-desktop/copyright
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: {{POSTINSTALL}}
+  postremove: {{POSTREMOVE}}
