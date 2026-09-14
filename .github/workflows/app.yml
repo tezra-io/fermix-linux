@@ -83,7 +83,8 @@ jobs:
               cargo clippy --all-targets -- -D warnings
               # One link at a time past two: each test binary statically
               # links the whole toolkit, and eight at once exhausts the
-              # runner's memory.
+              # memory of the runner. No apostrophe may appear in this
+              # single-quoted script: one did, and cargo test ran on the host.
               cargo test --jobs 2
             '
 
