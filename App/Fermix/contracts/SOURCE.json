@@ -3,10 +3,10 @@
   "description": "Provenance of the vendored Fermix wire contracts. The canonical files live in the fermix repository under apps/fermix_core/priv/; this tree is a byte-identical copy pinned by CHECKSUMS.txt. scripts/verify_contract.sh asserts the two agree, and --source <fermix-checkout> byte-compares every contract against upstream.",
   "upstream": {
     "repository": "tezra-io/fermix",
-    "commit": "fd0798e45e97f8b8d5cdf2cfe673dd05fb590bae",
+    "commit": "3058bf88f058d10157c99b24637bf2cef83f7035",
     "branch": "dev",
-    "working_tree": "dirty; apps/fermix_core/priv/cli is untracked in that checkout, so the cli contract below records committed_upstream false",
-    "retrieved_at": "2026-09-13"
+    "working_tree": "clean",
+    "retrieved_at": "2026-09-14"
   },
   "contracts": [
     {
@@ -20,7 +20,7 @@
         "maximum": 2
       },
       "committed_upstream": true,
-      "provenance_note": "Taken from the fermix repository on dev at fd0798e45e97, the catalogue pin that follows the Live voice engine. Every file under apps/fermix_core/priv/management is committed and unmodified in that checkout, which is why committed_upstream is true; the working tree carries unrelated edits under apps/fermix_core/lib and test, none of them in the vendored directory. These bytes are identical to the ones fermix-macos pins at 880f14925b48: the management export did not move between the two commits. The realtime contract is deliberately not vendored, because the Linux application ships no voice client and no pet in v1 (M38 section 12.3).",
+      "provenance_note": "Taken from the fermix repository on dev; re-pinned to 3058bf88f058 without a byte changing: the management export did not move between fd0798e45e97 and this commit. Every file under apps/fermix_core/priv/management is committed and unmodified there, which is why committed_upstream is true. The realtime contract is deliberately not vendored, because the Linux application ships no voice client and no pet in v1 (M38 section 12.3).",
       "files": [
         {
           "path": "management/PROTOCOL.md",
@@ -60,8 +60,8 @@
       "vendored_directory": "cli",
       "source_of_truth_module": "Fermix.CLI.MachineOutput",
       "envelope_schema_version": 1,
-      "committed_upstream": false,
-      "provenance_note": "The typed --json verbs of the packaged fermix, which is the second wire this application reads and the only one that answers while the daemon is stopped. Taken from the fermix checkout at fd0798e45e97 on dev, where apps/fermix_core/priv/cli is UNCOMMITTED in the working tree: the engine's own review pass wrote the export and its contract test (apps/fermix_core/test/fermix/cli/contract_test.exs) and neither is committed yet. committed_upstream is therefore false, which is not a formality: a vendored copy of an uncommitted tree pins bytes nobody else can retrieve, so verify_contract.sh reports it and the release audience refuses it. Re-take this pin from the engine commit that publishes the directory before any release, and regenerate CHECKSUMS.txt in the same change. Thirty-five goldens: nine service status states, the packaged and unit-writing installs, the uninstall, two restarts, the whole and degraded offline exports, and one per published error code.",
+      "committed_upstream": true,
+      "provenance_note": "The typed --json verbs of the packaged fermix, which is the second wire this application reads and the only one that answers while the daemon is stopped. Re-pinned to fermix dev at 3058bf88f058, the commit that publishes apps/fermix_core/priv/cli, so committed_upstream is true and the release audience of verify_contract.sh accepts this pin. The bytes did not move between the uncommitted tree the first vendoring read and this commit.",
       "files": [
         {
           "path": "cli/CONTRACT.md",
