@@ -4,7 +4,8 @@ Native GTK4 + libadwaita client, written in Rust, for the Fermix engine that the
 and systemd runs. The app contains no engine, writes no unit, reads no config file and holds no secret
 code: everything it shows and changes goes over `daemon.sock` through the management protocol, and
 everything that must work while the daemon is stopped goes through five typed operations of the packaged
-`/usr/bin/fermix` CLI.
+`/usr/bin/fermix` CLI. This is the repo's only agent-instruction file; never add a `CLAUDE.md`,
+`.claude/CLAUDE.md` or `CLAUDE.local.md` (Claude Code would read that instead).
 
 The design is `fermix/docs/design/MILESTONE_38_LINUX_COMPANION_APP.md` (M38). The rules for this
 application are `docs/design/LINUX_DESIGN_SYSTEM_REDLINES.md`; the build order and slice acceptance are
