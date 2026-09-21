@@ -17,6 +17,7 @@ use libadwaita as adw;
 use crate::copy;
 use crate::metrics;
 use crate::models::activation::StepState;
+use crate::ui::plain;
 
 /// A step nobody has started: the same dot the assistant's progress marks are
 /// drawn with, dimmed. It is the application's own glyph because the platform
@@ -50,10 +51,12 @@ impl ChecklistRow {
         prefix.add_named(&glyph(FAILED_ICON), Some(FAILED));
         prefix.set_valign(gtk::Align::Center);
 
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .activatable(false)
-            .build();
+        let row = plain(
+            adw::ActionRow::builder()
+                .title(title)
+                .activatable(false)
+                .build(),
+        );
         row.add_prefix(&prefix);
         // The title is the step; rows wrap rather than clip when the text grows.
         row.set_title_lines(0);

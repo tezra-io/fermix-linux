@@ -30,6 +30,7 @@ use crate::models::{spawn, SettingsModel};
 use crate::ui::CaptionRow;
 
 use super::dialogs::secret::SecretDialog;
+use crate::ui::plain;
 
 /// Above this many suggestions the list is searched rather than scrolled.
 const SEARCHABLE_ABOVE: usize = 12;
@@ -514,7 +515,7 @@ impl DescriptorRow {
         item: &str,
         focus: bool,
     ) {
-        let entry = adw::EntryRow::builder().title("").text(item).build();
+        let entry = plain(adw::EntryRow::builder().title("").text(item).build());
 
         let remove = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
@@ -746,13 +747,13 @@ fn suggestion_list(options: &[SettingsOption]) -> gtk::ListBox {
     list.add_css_class("navigation-sidebar");
 
     for option in options {
-        list.append(
-            &adw::ActionRow::builder()
+        list.append(&plain(
+            adw::ActionRow::builder()
                 .title(option.label.as_str())
                 .subtitle(option.hint.clone().unwrap_or_default())
                 .activatable(true)
                 .build(),
-        );
+        ));
     }
 
     list
@@ -816,12 +817,12 @@ fn build_control(row: &SettingsRow, picker: Option<&OpenChoice>) -> Control {
     }
 
     match row.kind {
-        SettingsRowKind::Toggle => Control::Toggle(
+        SettingsRowKind::Toggle => Control::Toggle(plain(
             adw::SwitchRow::builder()
                 .title(row.label.as_str())
                 .subtitle(row.footer.clone().unwrap_or_default())
                 .build(),
-        ),
+        )),
         // An open choice takes an off-list value, so it is an entry with the
         // daemon's suggestions beside it rather than a list that refuses.
         SettingsRowKind::Choice if row.suggestions => entry_control(row),
@@ -837,11 +838,13 @@ fn build_control(row: &SettingsRow, picker: Option<&OpenChoice>) -> Control {
                 .map(|option| option.value.clone())
                 .collect();
 
-            let combo = adw::ComboRow::builder()
-                .title(row.label.as_str())
-                .subtitle(row.footer.clone().unwrap_or_default())
-                .model(&gtk::StringList::new(&words))
-                .build();
+            let combo = plain(
+                adw::ComboRow::builder()
+                    .title(row.label.as_str())
+                    .subtitle(row.footer.clone().unwrap_or_default())
+                    .model(&gtk::StringList::new(&words))
+                    .build(),
+            );
             Control::Choice(combo, values)
         }
         SettingsRowKind::Text => entry_control(row),
@@ -856,10 +859,12 @@ fn build_control(row: &SettingsRow, picker: Option<&OpenChoice>) -> Control {
 
 /// A listing too large to inline: the value in force, and the pane's own way in.
 fn open_choice(row: &SettingsRow, label: Key) -> Control {
-    let widget = adw::ActionRow::builder()
-        .title(row.label.as_str())
-        .activatable(false)
-        .build();
+    let widget = plain(
+        adw::ActionRow::builder()
+            .title(row.label.as_str())
+            .activatable(false)
+            .build(),
+    );
 
     let button = gtk::Button::builder()
         .label(copy::text(label))
@@ -873,10 +878,12 @@ fn open_choice(row: &SettingsRow, label: Key) -> Control {
 /// A secret is a row that says whether one is stored, and two verbs. The value
 /// itself never appears here, and never leaves the one dialog that takes it.
 fn secret_row(row: &SettingsRow) -> Control {
-    let widget = adw::ActionRow::builder()
-        .title(row.label.as_str())
-        .activatable(false)
-        .build();
+    let widget = plain(
+        adw::ActionRow::builder()
+            .title(row.label.as_str())
+            .activatable(false)
+            .build(),
+    );
 
     let remove = gtk::Button::builder()
         .label(copy::text(Key::SecretRemove))
@@ -899,28 +906,32 @@ fn list_group(row: &SettingsRow) -> Control {
         .title(row.label.as_str())
         .description(row.footer.clone().unwrap_or_default())
         .build();
-    let add = adw::ButtonRow::builder()
-        .title(copy::text(Key::ListAdd))
-        .start_icon_name("list-add-symbolic")
-        .build();
+    let add = plain(
+        adw::ButtonRow::builder()
+            .title(copy::text(Key::ListAdd))
+            .start_icon_name("list-add-symbolic")
+            .build(),
+    );
 
     Control::List(group, RefCell::new(Vec::new()), add)
 }
 
 /// A fact, with the value beside it and nothing to press.
 fn read_only(row: &SettingsRow) -> Control {
-    let widget = adw::ActionRow::builder()
-        .title(row.label.as_str())
-        .subtitle(row.footer.clone().unwrap_or_default())
-        .activatable(false)
-        .build();
+    let widget = plain(
+        adw::ActionRow::builder()
+            .title(row.label.as_str())
+            .subtitle(row.footer.clone().unwrap_or_default())
+            .activatable(false)
+            .build(),
+    );
     let value = crate::ui::value_label("");
     widget.add_suffix(&value);
     Control::ReadOnly(widget, value)
 }
 
 fn entry_control(row: &SettingsRow) -> Control {
-    let entry = adw::EntryRow::builder().title(row.label.as_str()).build();
+    let entry = plain(adw::EntryRow::builder().title(row.label.as_str()).build());
 
     // Where a value would sit, for the one case where the entry is empty and
     // the daemon has published a word for what empty means. Built with the row
@@ -944,12 +955,14 @@ fn number_row(row: &SettingsRow) -> adw::SpinRow {
         0.0,
     );
 
-    let spin = adw::SpinRow::builder()
-        .title(row.label.as_str())
-        .subtitle(row.footer.clone().unwrap_or_default())
-        .adjustment(&adjustment)
-        .digits(digits(step))
-        .build();
+    let spin = plain(
+        adw::SpinRow::builder()
+            .title(row.label.as_str())
+            .subtitle(row.footer.clone().unwrap_or_default())
+            .adjustment(&adjustment)
+            .digits(digits(step))
+            .build(),
+    );
 
     if row.format == Some(SettingsNumberFormat::Percent) {
         show_as_percent(&spin);

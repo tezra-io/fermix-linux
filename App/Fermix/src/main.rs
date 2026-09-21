@@ -10,9 +10,17 @@
 use fermix_desktop::app::FermixApplication;
 use fermix_desktop::cli;
 use fermix_desktop::paths::Paths;
+use fermix_desktop::runtime::RuntimeEnv;
 use gtk4::prelude::*;
 
 fn main() -> gtk4::glib::ExitCode {
+    // First, before anything else in this process. It writes the environment
+    // this build's private GTK needs, which is sound only while this process
+    // has one thread, and it records what each variable held so that every
+    // child this application spawns gets the environment it was started with.
+    // `src/runtime.rs` says why both halves are requirements.
+    let runtime = RuntimeEnv::capture();
+
     let arguments: Vec<String> = std::env::args().collect();
 
     if cli::wants_version(&arguments) {
@@ -20,7 +28,7 @@ fn main() -> gtk4::glib::ExitCode {
         return gtk4::glib::ExitCode::SUCCESS;
     }
 
-    let application = FermixApplication::new(Paths::resolve());
+    let application = FermixApplication::new(Paths::resolve(), runtime);
 
     #[cfg(debug_assertions)]
     if let Some(directory) = fermix_desktop::capture::directory_from(&arguments) {

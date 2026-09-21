@@ -1,0 +1,279 @@
+name: engine-release
+
+# The desktop half of an engine release, from the dispatch to the tag.
+#
+# `tezra-io/fermix` publishes an engine release, and its `dispatch-linux-desktop`
+# job sends a `repository_dispatch` of type `engine-released` here carrying the
+# tag, the version, the source commit, the certificate identity that tag signs
+# as, and each app-engine archive with the digest the release's own `.sha256`
+# sidecar records. This workflow writes that into `engine/PIN.json`, the crate's
+# version and the metainfo's release entry, proves the pin it just wrote by
+# downloading and verifying the archives it names, and opens an auto-merging
+# pull request. When that pull request lands on `main`, the second job here
+# pushes `fermix-desktop-vX.Y.Z` and `release-fermix-desktop.yml` takes over.
+#
+# A person is involved at the engine tag and at the protected `release-linux`
+# environment, and nowhere in between. No human edits a pin.
+#
+# **The payload is untrusted input.** It arrives from another repository over
+# the network, so nothing it carries reaches a `run:` script through `${{ }}`;
+# it is handed to a validator as a file, through the environment, and
+# `scripts/engine_bump.py` derives the certificate identity and both asset names
+# from the repository the checked-in pin already names and then requires the
+# payload to equal them. `scripts/engine_bump_test.sh` drives every one of those
+# refusals offline.
+#
+# **Two jobs, two tokens, and the reason.** Both the pull request and the tag are
+# created with a GitHub App installation token rather than with `GITHUB_TOKEN`.
+# GitHub starts no workflow run from an event the default token produced: a pull
+# request opened with it fires no `pull_request` workflows, so auto-merge would
+# have no checks to wait on, and a tag pushed with it fires no `push` workflows,
+# so the release would never run. Both failures are silent and leave the chain
+# green with nothing published. The App holds Contents write and Pull requests
+# write on this repository and nothing else; branch protection, which it cannot
+# relax, is what stops it merging anything on its own.
+#
+# Actions are pinned to immutable commit SHAs (M38 section 12.2).
+on:
+  repository_dispatch:
+    types: [engine-released]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One bump at a time. Two engine releases in quick succession would otherwise
+# race on the same branch, and the later one has to see the earlier one's tree.
+concurrency:
+  group: engine-release-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Pin the engine this release carries
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      # Read only, for the checkout and for downloading the engine's release
+      # assets. Everything this job writes is written with the App token.
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+
+      # Through the environment, as a file. Never through `${{ }}` into a shell.
+      - name: The dispatch, as it arrived
+        env:
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PAYLOAD" > payload.json
+          echo "the dispatch carries $(wc -c < payload.json) bytes"
+
+      - name: Write the pin, the crate version and the metainfo release
+        id: bump
+        run: |
+          set -euo pipefail
+          answer="$(python3 scripts/engine_bump.py --payload payload.json)"
+          echo "$answer"
+          python3 - "$answer" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          answer = json.loads(sys.argv[1])
+          for key in ("tag", "version", "branch", "subject"):
+              print(f"{key}={answer[key]}")
+          PY
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # The pin is proven before it becomes a commit. A pin this job could not
+      # verify would otherwise reach `main` and fail in the release run, where
+      # the failure names a download rather than a dispatch.
+      - name: Download the engine archives the pin names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch_engine.sh engine/PIN.json engine-download
+
+      - name: Verify them against the pin, and unpack them
+        run: |
+          set -euo pipefail
+          scripts/verify_engine.sh engine/PIN.json engine-download \
+            --staging engine-staging
+          rm -rf engine-download engine-staging payload.json
+
+      # Contents write and Pull requests write on this repository only. The
+      # token expires in an hour and the App cannot relax branch protection.
+      # The SHA below was resolved from the tag through the GitHub API on
+      # 2026-09-19, not copied from documentation and not recalled:
+      # `gh api repos/actions/create-github-app-token/git/ref/tags/v3.2.0`
+      # answered bcd2ba49218906704ab6c1aa796996da409d3eb1. A gate can prove this
+      # reference is an immutable commit claiming to be v3.2.0; nothing in the
+      # repository can prove that commit is what the tag pointed at, so it was
+      # confirmed by a second independent resolution rather than by review: the
+      # coordinating session resolved the same tag separately on 2026-09-19 and
+      # got the same commit, and the moving v3 tag resolved to it as well.
+      # Re-confirm at the first real release, because this action is the one on
+      # the credential path, and record that here.
+      - name: Mint an installation token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.FERMIX_RELEASE_APP_ID }}
+          private-key: ${{ secrets.FERMIX_RELEASE_APP_PRIVATE_KEY }}
+
+      # Idempotent per tag: the branch name is derived from the tag, so a
+      # re-dispatch of the same engine release updates the same branch and the
+      # same pull request rather than opening a second one.
+      - name: Push the bump branch
+        env:
+          GIT_TOKEN: ${{ steps.token.outputs.token }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+          SUBJECT: ${{ steps.bump.outputs.subject }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "Fermix Release Bot"
+          git config user.email "fermix-release-bot@users.noreply.github.com"
+          git config --local "http.https://github.com/.extraheader" \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 -w0)"
+
+          git checkout -B "$BRANCH"
+          git add engine/PIN.json App/Fermix/Cargo.toml App/Fermix/Cargo.lock \
+            packaging/io.tezra.Fermix.metainfo.xml
+          if git diff --cached --quiet; then
+            echo "::notice::main already carries engine $TAG, so there is nothing to bump"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            printf '%s\n\n' "$SUBJECT"
+            printf 'Engine %s, verified against its cosign signature before this commit\n' "$TAG"
+            printf 'was made. fermix-desktop %s carries it.\n' "$VERSION"
+          } > commit-message.txt
+          git commit --file commit-message.txt
+          rm -f commit-message.txt
+          git push --force-with-lease origin "$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+        id: push
+
+      - name: Open the pull request, and let it merge itself
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+          SUBJECT: ${{ steps.bump.outputs.subject }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'Engine release %s is published, so fermix-desktop %s carries it.\n\n' \
+              "$TAG" "$VERSION"
+            printf 'Written by the release bot from the engine release own sidecars:\n'
+            printf -- '- engine/PIN.json, verified with cosign before this commit was made\n'
+            printf -- '- App/Fermix/Cargo.toml and App/Fermix/Cargo.lock\n'
+            printf -- '- packaging/io.tezra.Fermix.metainfo.xml\n\n'
+            printf 'The checks on this pull request are the review. When they pass it\n'
+            printf 'merges itself and fermix-desktop-v%s is tagged.\n' "$VERSION"
+          } > pull-request-body.md
+
+          number="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            gh pr create --repo "$REPO" --base main --head "$BRANCH" \
+              --title "$SUBJECT" --body-file pull-request-body.md
+            number="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+              --json number --jq '.[0].number // empty')"
+          else
+            gh pr edit "$number" --repo "$REPO" --title "$SUBJECT" \
+              --body-file pull-request-body.md
+          fi
+          rm -f pull-request-body.md
+          [ -n "$number" ] || { echo "::error::no pull request for $BRANCH"; exit 1; }
+
+          gh pr merge "$number" --repo "$REPO" --auto --squash
+          echo "::notice::pull request #$number carries engine $TAG"
+
+  tag:
+    name: Tag the desktop release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Three guards, and every one of them is a reason not to tag. A push that
+      # is not the bot's bump is an ordinary change to main; a version already
+      # tagged has a release run of its own; a version already published cannot
+      # be re-cut, which is the rule `refuse_published_release.sh` carries in the
+      # engine repository.
+      - name: Is this a bump that should be tagged
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --format=%s)"
+          version="${subject#engine: pin v}"
+          if [ "$version" = "$subject" ] ||
+            ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::notice::$subject is not a release bot bump, so nothing is tagged"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          crate="$(awk -F'"' '/^version = "/ { print $2; exit }' App/Fermix/Cargo.toml)"
+          if [ "$crate" != "$version" ]; then
+            echo "::error::the bump names $version and the crate is $crate"
+            exit 1
+          fi
+
+          tag="fermix-desktop-v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::notice::$tag already exists, so its release run is the one to look at"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::$tag is already published, and a published release is never re-cut. Publish the fix as the next version."
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tagging $tag"
+
+      # With the App token, because a tag pushed with GITHUB_TOKEN starts no
+      # workflow run and `release-fermix-desktop.yml` would never fire.
+      - name: Mint an installation token
+        id: token
+        if: steps.guard.outputs.tag != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.FERMIX_RELEASE_APP_ID }}
+          private-key: ${{ secrets.FERMIX_RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Push it
+        if: steps.guard.outputs.tag != ''
+        env:
+          GIT_TOKEN: ${{ steps.token.outputs.token }}
+          TAG: ${{ steps.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "Fermix Release Bot"
+          git config user.email "fermix-release-bot@users.noreply.github.com"
+          git config --local "http.https://github.com/.extraheader" \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 -w0)"
+          git tag -a "$TAG" -m "fermix-desktop $TAG"
+          git push origin "refs/tags/$TAG"
+          echo "::notice::$TAG pushed, and release-fermix-desktop.yml has it"

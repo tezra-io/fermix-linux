@@ -11,11 +11,13 @@ use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use fermix_desktop::copy::{self, Key};
+use fermix_desktop::management::errors::{ManagementError, WireError};
 use fermix_desktop::management::types::{
     CheckStatus, DoctorScope, JobKind, ModelSource, PluginAction, RemediationKind, SettingValue,
     SettingsPane,
 };
 use fermix_desktop::models::activation::{Action, Activation, Step, StepState};
+use fermix_desktop::models::api::{UNLOCK_DEADLINE, WRITE_DEADLINE};
 use fermix_desktop::models::computer::{ComputerModel, Standing};
 use fermix_desktop::models::doctor::{CheckName, DoctorModel};
 use fermix_desktop::models::home::{
@@ -35,6 +37,8 @@ use fermix_desktop::models::providers::{
     probe_sentence, ProviderRow, ProviderStanding, ProviderVerb, ProvidersModel,
 };
 use fermix_desktop::models::recovery::{Cause, RecoveryModel};
+use fermix_desktop::models::secret_store::{Availability, StoreKind, StoreRefusal};
+use fermix_desktop::models::settings_model::Sentence;
 use fermix_desktop::models::{Change, SettingsModel};
 use fermix_desktop::service::runner::ServiceRunner;
 use fermix_desktop::session::build::GuiAlignment;
@@ -1007,6 +1011,59 @@ fn provider_row(rows: &[ProviderRow], id: &str) -> ProviderRow {
         .clone()
 }
 
+/// What an OAuth provider offers once the daemon reports it working.
+///
+/// The owner signed in to Codex, the engine reported it configured with a
+/// valid token, and the row went on offering Sign In — because the guard also
+/// demanded the provider be primary or hold a key, and an OAuth provider that
+/// was not signed in first is neither. A row that offers to sign you in to
+/// something you are already signed in to is wrong whoever is primary, so the
+/// matrix below pins every combination rather than the one case reported.
+#[test]
+fn a_signed_in_provider_offers_nothing_whoever_is_primary() {
+    for (configured, primary, present_key, token_state, expected) in [
+        // Signed in and working: nothing for the list to do, primary or not.
+        (true, true, false, "valid", None),
+        (true, false, false, "valid", None),
+        (true, false, true, "valid", None),
+        (true, true, true, "valid", None),
+        // Not signed in: the door is offered.
+        (false, false, false, "", Some(ProviderVerb::SignIn)),
+        (false, true, false, "", Some(ProviderVerb::SignIn)),
+        // Signed in but the token has gone stale: the door is offered again,
+        // because a stale token is not a working provider.
+        (true, true, false, "expired", Some(ProviderVerb::SignIn)),
+        (true, false, false, "expired", Some(ProviderVerb::SignIn)),
+    ] {
+        let (model, peer) = model("default", "active_aligned");
+        let mut state = peer.result("setup.state.get", None);
+        for provider in state["providers"]
+            .as_array_mut()
+            .expect("the snapshot publishes providers")
+        {
+            if provider["id"] == "openai_codex" {
+                provider["configured"] = serde_json::json!(configured);
+                provider["primary"] = serde_json::json!(primary);
+                provider["present_key"] = serde_json::json!(present_key);
+                provider["token_state"] = if token_state.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(token_state)
+                };
+            }
+        }
+        peer.set_result("setup.state.get", None, state);
+
+        let providers = ProvidersModel::new(Rc::clone(&model));
+        run(providers.refresh());
+        assert_eq!(
+            provider_row(&providers.rows(), "openai_codex").verb,
+            expected,
+            "configured={configured} primary={primary} key={present_key} token={token_state}"
+        );
+    }
+}
+
 #[test]
 fn a_provider_row_leads_with_a_verb_the_daemon_answers() {
     let rows = provider_rows("default");
@@ -1222,9 +1279,9 @@ fn the_four_filters_count_what_the_daemon_published() {
 #[test]
 fn a_button_is_painted_with_the_word_beside_the_id_it_runs() {
     let (plugins, _, _) = plugins("default");
-    let eden = plugins.row("eden").expect("eden is published");
+    let acme = plugins.row("acme").expect("acme is published");
 
-    let buttons = eden.buttons();
+    let buttons = acme.buttons();
     assert_eq!(
         buttons
             .first()
@@ -1250,9 +1307,9 @@ fn the_sign_in_client_is_the_daemons_own_tie_rather_than_a_guess_from_the_name()
         Some("google".to_string())
     );
 
-    let eden = plugins.row("eden").expect("published");
+    let acme = plugins.row("acme").expect("published");
     assert!(
-        plugins.client_for(&eden).is_none(),
+        plugins.client_for(&acme).is_none(),
         "a plugin with no sign-in family has no client row"
     );
 }
@@ -2228,4 +2285,453 @@ fn health_door() -> HealthDoor {
         origin: format!("http://127.0.0.1:{port}"),
         asked,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The secret store, and which of three situations the owner is in
+// ---------------------------------------------------------------------------
+
+/// The reason survives the trip from the wire to the surface that routes on it.
+///
+/// `Sentence` carried only a code and its words, so the one field that
+/// separates a locked keyring from an absent one was dropped before any
+/// dialog could read it. That is why the old surface could not tell them
+/// apart, whatever its wording said.
+#[test]
+fn a_store_refusal_carries_the_reason_the_engine_gave() {
+    let wire = ManagementError::Wire(store_failure(serde_json::json!({ "reason": "locked" })));
+
+    let sentence = Sentence::of(&wire);
+
+    assert_eq!(sentence.code.as_deref(), Some("secret_store_failed"));
+    assert_eq!(sentence.reason.as_deref(), Some("locked"));
+}
+
+/// A refusal with no reason is not invented into one.
+#[test]
+fn a_store_refusal_without_a_reason_claims_none() {
+    let wire = ManagementError::Wire(store_failure(serde_json::json!({})));
+
+    assert_eq!(Sentence::of(&wire).reason, None);
+}
+
+/// Each published reason routes to its own surface.
+///
+/// The three are the engine's closed set. `timeout` is deliberately not the
+/// locked dialog: a helper that hung while the collection was unlocked has
+/// nothing to unlock, so offering an unlock would be a button that cannot
+/// work.
+#[test]
+fn each_published_reason_routes_to_its_own_surface() {
+    let cases = [
+        ("locked", Some(StoreRefusal::KeyringLocked)),
+        ("unavailable", Some(StoreRefusal::NoKeyring)),
+        ("timeout", Some(StoreRefusal::HelperDidNotAnswer)),
+    ];
+
+    for (reason, expected) in cases {
+        let sentence = store_sentence(reason);
+        assert_eq!(
+            StoreRefusal::of(&sentence),
+            expected,
+            "{reason} routed somewhere unexpected"
+        );
+    }
+}
+
+/// A reason this build does not know is not guessed at.
+///
+/// A future engine may publish a fourth word. Routing it to the locked dialog
+/// would offer an unlock for a state we know nothing about, so an unknown
+/// reason falls through to the generic refusal the row already shows.
+#[test]
+fn an_unknown_reason_is_not_guessed_into_a_dialog() {
+    assert_eq!(StoreRefusal::of(&store_sentence("moon_phase")), None);
+    assert_eq!(
+        StoreRefusal::of(&Sentence {
+            code: Some("secret_store_failed".into()),
+            text: "The key was not saved.".into(),
+            reason: None,
+        }),
+        None
+    );
+}
+
+/// Only the store refusal routes here.
+#[test]
+fn another_refusal_carrying_a_reason_is_not_a_store_refusal() {
+    let sentence = Sentence {
+        code: Some("invalid_params".into()),
+        text: "A secret cannot be empty.".into(),
+        reason: Some("locked".into()),
+    };
+
+    assert_eq!(StoreRefusal::of(&sentence), None);
+}
+
+/// Only the locked keyring can be unlocked.
+///
+/// This is the property the dialogs are built on: the unlock action exists on
+/// exactly one of the three surfaces.
+#[test]
+fn the_unlock_is_offered_only_where_there_is_something_to_unlock() {
+    assert!(StoreRefusal::KeyringLocked.offers_unlock());
+    assert!(!StoreRefusal::NoKeyring.offers_unlock());
+    assert!(!StoreRefusal::HelperDidNotAnswer.offers_unlock());
+}
+
+/// Where values live, as the engine now names it.
+///
+/// This is the first store kind the engine has ever published, so there is no
+/// earlier spelling to accept and `pass` was never one of them.
+#[test]
+fn the_store_kind_reads_the_three_words_the_engine_publishes() {
+    assert_eq!(StoreKind::of("keyring"), Some(StoreKind::Keyring));
+    assert_eq!(StoreKind::of("file"), Some(StoreKind::File));
+    // Two values, not three. No response can carry "none": a refused save
+    // answers an error and has no result to put a store in, and a home that
+    // can store nothing still SAVES TO the keyring, the save simply refuses.
+    // "Cannot store now" is the availability question, not this one.
+    assert_eq!(StoreKind::of("none"), None);
+    assert_eq!(StoreKind::of("pass"), None);
+}
+
+/// Whether a secret can be stored right now, which is a different question.
+///
+/// Answering both with one enum is the conflation this work removes: a locked
+/// keyring reported as `none` is exactly the untrue message the owner met.
+#[test]
+fn availability_is_a_separate_question_from_where_values_live() {
+    assert_eq!(Availability::of("ready"), Some(Availability::Ready));
+    assert_eq!(Availability::of("locked"), Some(Availability::Locked));
+    assert_eq!(
+        Availability::of("unavailable"),
+        Some(Availability::Unavailable)
+    );
+    assert_eq!(Availability::of("none"), None);
+
+    // A locked keyring is not an absent one, on either field.
+    assert_ne!(
+        Availability::Locked.to_string(),
+        Availability::Unavailable.to_string()
+    );
+}
+
+fn store_sentence(reason: &str) -> Sentence {
+    Sentence {
+        code: Some("secret_store_failed".into()),
+        text: "The key was not saved.".into(),
+        reason: Some(reason.into()),
+    }
+}
+
+/// The engine's own refusal shape, with whatever details the case carries.
+fn store_failure(details: serde_json::Value) -> WireError {
+    WireError {
+        code: "secret_store_failed".into(),
+        message: "The key was not saved.".into(),
+        sentence: None,
+        details: details.as_object().cloned().unwrap_or_default(),
+    }
+}
+
+/// The ordinary save is unchanged on the wire.
+///
+/// Both new parameters are optional, so an engine that predates them sees
+/// exactly what it saw before. The existing test that pins the default shape
+/// is what guards this; this one says why it matters.
+#[test]
+fn an_ordinary_save_sends_neither_new_parameter() {
+    let (model, peer) = model("default", "active_aligned");
+    run(model.refresh_section("realtime"));
+
+    run(model.set_secret("realtime", "openai_api_key", "sk-not-a-real-key".into())).unwrap();
+
+    let sent = peer.last("secret.set").expect("the save was sent");
+    assert!(
+        sent.get("store").is_none() && sent.get("unlock").is_none(),
+        "an ordinary save carries a choice nobody made: {sent}"
+    );
+}
+
+/// Choosing the file store is carried in the request, per call.
+///
+/// The consent IS the parameter: there is no persisted flag the app sets and
+/// no automatic fallback, so a save that reaches the file store can only have
+/// come from an owner who pressed the button that says so.
+#[test]
+fn storing_on_this_computer_carries_the_consent_in_the_request() {
+    let (model, peer) = model("default", "active_aligned");
+    run(model.refresh_section("realtime"));
+
+    run(model.store_secret_on_this_computer(
+        "realtime",
+        "openai_api_key",
+        "sk-not-a-real-key".into(),
+    ))
+    .unwrap();
+
+    let sent = peer.last("secret.set").expect("the save was sent");
+    assert_eq!(sent.get("store").and_then(|v| v.as_str()), Some("file"));
+    assert!(
+        sent.get("unlock").is_none_or(|v| v == false),
+        "the file store does not wait on a keyring: {sent}"
+    );
+}
+
+/// Retrying asks the engine to wait for the owner to unlock.
+#[test]
+fn retrying_after_the_unlock_asks_the_engine_to_wait() {
+    let (model, peer) = model("default", "active_aligned");
+    run(model.refresh_section("realtime"));
+
+    run(model.retry_secret_after_unlock("realtime", "openai_api_key", "sk-not-a-real-key".into()))
+        .unwrap();
+
+    let sent = peer.last("secret.set").expect("the retry was sent");
+    assert_eq!(sent.get("unlock").and_then(|v| v.as_bool()), Some(true));
+    assert!(
+        sent.get("store").is_none_or(|v| v == "keyring"),
+        "the retry is for the keyring, not the file: {sent}"
+    );
+}
+
+/// The unlock deadline outlives the engine's cap, with room to spare.
+///
+/// This is the whole of the agreement with the engine: its cap must expire
+/// first, so the owner reads the engine's typed reason rather than this
+/// application's timeout. A 20-second write deadline would cut the owner off
+/// mid-password, which is worse than the bug being fixed, because they would
+/// be doing exactly what they were asked.
+#[test]
+fn the_unlock_deadline_outlives_the_engines_cap() {
+    let cap = Duration::from_secs(90);
+
+    assert!(
+        UNLOCK_DEADLINE > cap,
+        "the engine's cap would outlive this deadline and the owner would see our timeout"
+    );
+    assert!(
+        UNLOCK_DEADLINE - cap >= Duration::from_secs(10),
+        "there is no room between the cap and the deadline for the answer to arrive"
+    );
+    assert!(
+        WRITE_DEADLINE < cap,
+        "the ordinary write deadline should stay short; only the unlock waits"
+    );
+}
+
+/// The way home moves what the engine already holds.
+///
+/// The owner cannot retype a value the application cannot read, so the verb
+/// takes no value at all.
+#[test]
+fn the_way_back_to_the_keyring_needs_no_secret_from_the_owner() {
+    let (model, peer) = model("default", "active_aligned");
+
+    let _ = run(model.migrate_to_keyring(true));
+
+    let sent = peer
+        .last("secret.migrate_to_keyring")
+        .expect("the verb was sent");
+    assert_eq!(sent.get("unlock").and_then(|v| v.as_bool()), Some(true));
+    assert!(
+        sent.get("value").is_none() && sent.get("id").is_none(),
+        "the migration asked for a secret it cannot have: {sent}"
+    );
+}
+
+/// Consenting to the file store leaves the row telling the truth.
+///
+/// The owner's one deliberate choice about where their key lives is the worst
+/// possible moment for the row to keep its previous answer. The write succeeds
+/// and the engine's next snapshot says `file`, so the model has to go and read
+/// it: a notify alone redraws the pane from the cached snapshot, which is the
+/// old store, and the row then states the opposite of what just happened.
+#[test]
+fn storing_on_this_computer_leaves_the_row_saying_so() {
+    let (model, peer) = model("default", "active_aligned");
+
+    run(model.refresh_setup());
+    assert_eq!(model.secret_store_kind(), Some(StoreKind::Keyring));
+
+    // What the engine will say once the value is in the file store.
+    let mut state = peer.result("setup.state.get", None);
+    state["secrets"] = serde_json::json!({"store": "file", "availability": "ready"});
+    peer.set_result("setup.state.get", None, state);
+
+    run(model.store_secret_on_this_computer("providers", "openai_api_key", "sk-x".into()))
+        .expect("the file store took it");
+
+    assert_eq!(
+        model.secret_store_kind(),
+        Some(StoreKind::File),
+        "the row kept the old store after the owner chose a new one"
+    );
+}
+
+/// Taking the way back leaves the row saying the keyring, and drops the offer.
+///
+/// A successful migration moves every value, so the row that offered the way
+/// back has nothing left to offer. Reading the snapshot again is what retires
+/// the button; without it the owner is invited to do a thing already done.
+#[test]
+fn migrating_back_leaves_the_row_saying_the_keyring() {
+    let (model, peer) = model("default", "active_aligned");
+
+    let mut state = peer.result("setup.state.get", None);
+    state["secrets"] = serde_json::json!({"store": "file", "availability": "ready"});
+    peer.set_result("setup.state.get", None, state.clone());
+    run(model.refresh_setup());
+    assert_eq!(model.secret_store_kind(), Some(StoreKind::File));
+
+    // What the engine will say once the values are back.
+    state["secrets"] = serde_json::json!({"store": "keyring", "availability": "ready"});
+    peer.set_result("setup.state.get", None, state);
+
+    run(model.migrate_to_keyring(false)).expect("the migration was taken");
+
+    assert_eq!(
+        model.secret_store_kind(),
+        Some(StoreKind::Keyring),
+        "the row still offers a way back that has already been taken"
+    );
+}
+
+/// The row still ends up correct when the ceiling is already reached.
+///
+/// The re-read after a write goes through the same gate as every other read,
+/// and that gate refuses a fifth concurrent read by returning nothing, which
+/// `read_setup` answers with `Ok(())`. A fix that inherits that would be no
+/// fix at all: the owner consents to the file store, four reads happen to be
+/// in flight, and the row keeps the old answer exactly as before. Worse, a
+/// read issued before the write can land after it carrying the old store.
+#[test]
+fn the_row_is_corrected_even_with_the_read_ceiling_reached() {
+    let context = MainContext::new();
+    let _guard = context.acquire().expect("the context is free");
+    let (model, peer) = model("default", "active_aligned");
+
+    context.block_on(model.refresh_setup());
+    assert_eq!(model.secret_store_kind(), Some(StoreKind::Keyring));
+
+    // Four reads that have started and cannot finish: the ceiling, held there
+    // for as long as this test needs it.
+    peer.hold("setup.state.get");
+    let mut in_flight = Vec::new();
+    for _ in 0..fermix_desktop::models::api::MAX_CONCURRENT_READS {
+        let model = Rc::clone(&model);
+        in_flight.push(context.spawn_local(async move { model.refresh_setup().await }));
+    }
+    // Let each one take its permit and stop at the peer.
+    for _ in 0..50 {
+        context.iteration(false);
+    }
+    // The premise of this test, checked rather than assumed: four reads have
+    // actually started and are sitting at the peer. Without this the test can
+    // pass by never reaching the ceiling it exists to test.
+    assert_eq!(
+        peer.count("setup.state.get"),
+        1 + fermix_desktop::models::api::MAX_CONCURRENT_READS,
+        "the reads never started, so the ceiling was never reached"
+    );
+
+    // What the engine will say once the value is in the file store.
+    let mut state = peer.result("setup.state.get", None);
+    state["secrets"] = serde_json::json!({"store": "file", "availability": "ready"});
+    peer.set_result("setup.state.get", None, state);
+
+    let write = {
+        let model = Rc::clone(&model);
+        context.spawn_local(async move {
+            model
+                .store_secret_on_this_computer("providers", "openai_api_key", "sk-x".into())
+                .await
+        })
+    };
+
+    // The write lands while the four reads are still stuck, so its correcting
+    // read meets the ceiling exactly as it would in the application.
+    let before = peer.count("setup.state.get");
+    for _ in 0..50 {
+        context.iteration(false);
+    }
+    assert_eq!(
+        peer.count("setup.state.get"),
+        before,
+        "a read got through while the ceiling was full, so this proves nothing"
+    );
+
+    // Then the ceiling clears, as it always eventually does, and the re-read
+    // has to still happen. Giving up at the moment it was refused is the
+    // defect; waiting for a slot is the fix.
+    peer.release();
+    context
+        .block_on(write)
+        .expect("the spawned write ran")
+        .expect("the file store took it");
+    for handle in in_flight {
+        let _ = context.block_on(handle);
+    }
+    let after = peer.count("setup.state.get");
+
+    // The call count, not the final row, is what settles this. Reads already
+    // in flight answer from the peer's state at the moment they are let go, so
+    // they can correct the row by accident here in a way a real read issued
+    // before the write never would. What has to be true is that the write
+    // ISSUED a read of its own.
+    assert_eq!(
+        after - before,
+        1,
+        "the correcting read was never issued: the gate refused it and the \
+         refusal was swallowed, so in the application the row keeps the old store"
+    );
+}
+
+/// Where values live, as the model reads it off the setup snapshot.
+#[test]
+fn the_model_reads_where_secrets_live_from_the_setup_snapshot() {
+    let (model, peer) = model("default", "active_aligned");
+
+    // An engine that predates the row says nothing, and nothing is claimed on
+    // its behalf: a missing row is not "no store". The golden now carries the
+    // row, so the silence has to be built by taking it away rather than by
+    // leaning on a fixture that happened not to have it yet.
+    let mut silent = peer.result("setup.state.get", None);
+    silent
+        .as_object_mut()
+        .expect("the setup state is an object")
+        .remove("secrets");
+    peer.set_result("setup.state.get", None, silent);
+    run(model.refresh_setup());
+    assert_eq!(model.secret_store_kind(), None);
+
+    for (published, expected) in [("keyring", StoreKind::Keyring), ("file", StoreKind::File)] {
+        let mut state = peer.result("setup.state.get", None);
+        // Two facts in one row, because one field could not carry both: a
+        // locked keyring is store "keyring" with availability "locked", and a
+        // home on the file store reports ready whatever the keyring is doing.
+        state["secrets"] = serde_json::json!({
+            "store": published,
+            "availability": "ready",
+        });
+        peer.set_result("setup.state.get", None, state);
+        run(model.refresh_setup());
+
+        assert_eq!(
+            model.secret_store_kind(),
+            Some(expected),
+            "the snapshot published {published}"
+        );
+    }
+}
+
+/// The way home is offered only from the place it leads away from.
+///
+/// Nothing to migrate means no button: an owner already on the keyring would
+/// otherwise be offered a move to where they are.
+#[test]
+fn the_way_back_is_offered_only_from_the_file_store() {
+    assert!(StoreKind::File.offers_return_to_keyring());
+    assert!(!StoreKind::Keyring.offers_return_to_keyring());
 }

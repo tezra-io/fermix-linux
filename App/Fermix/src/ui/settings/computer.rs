@@ -23,14 +23,27 @@ use crate::models::computer::{verdict, ComputerModel, Standing, ENABLED_KEY, SEC
 use crate::models::jobs::{phase_word, JobRunner};
 use crate::models::ledger::{PermissionLedger, Right};
 use crate::models::{spawn, Change, SettingsModel};
+use crate::ui::plain;
 use crate::ui::CaptionRow;
+use crate::ui::FoldedStatement;
 
 /// A statement with nothing in it yet: what it says is the standing the probe
 /// answered with, which is read after the pane is built.
-fn hidden_statement() -> adw::ActionRow {
+///
+/// Folded unconditionally. Every standing this can carry runs past two lines,
+/// and which one it will be is not known until the probe answers, so a rule
+/// applied to the text that happened to come back would not be a rule at all.
+fn hidden_row() -> adw::ActionRow {
     let row = crate::ui::statement_row("");
     row.set_visible(false);
     row
+}
+
+/// The standing statement, folded, with nothing in it yet.
+fn hidden_statement() -> FoldedStatement {
+    let folded = crate::ui::pending_statement(&copy::text(Key::ComputerStandingLead));
+    folded.row.set_visible(false);
+    folded
 }
 
 /// The Computer pane.
@@ -40,7 +53,7 @@ pub struct ComputerPane {
     model: Rc<ComputerModel>,
     enable: adw::SwitchRow,
     statements: adw::PreferencesGroup,
-    statement: adw::ActionRow,
+    statement: FoldedStatement,
     session: adw::ActionRow,
     install: adw::ActionRow,
     install_button: gtk::Button,
@@ -61,9 +74,11 @@ impl ComputerPane {
     pub fn new(settings: Rc<SettingsModel>, ledger: Rc<PermissionLedger>) -> Rc<Self> {
         let model = ComputerModel::new(Rc::clone(&settings), ledger);
 
-        let enable = adw::SwitchRow::builder()
-            .title(copy::text(Key::ComputerEnable))
-            .build();
+        let enable = plain(
+            adw::SwitchRow::builder()
+                .title(copy::text(Key::ComputerEnable))
+                .build(),
+        );
         let head = adw::PreferencesGroup::new();
         head.add(&enable);
 
@@ -72,9 +87,9 @@ impl ComputerPane {
         // machine the helper cannot run on, and the smallest, dimmest text on
         // the pane is the wrong place for the one thing there is to read.
         let statement = hidden_statement();
-        let session = hidden_statement();
+        let session = hidden_row();
         let statements = adw::PreferencesGroup::new();
-        statements.add(&statement);
+        statements.add(&statement.row);
         statements.add(&session);
         statements.set_visible(false);
 
@@ -88,11 +103,13 @@ impl ComputerPane {
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
-        let install = adw::ActionRow::builder()
-            .title(copy::text(Key::ComputerInstall))
-            .activatable(false)
-            .visible(false)
-            .build();
+        let install = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::ComputerInstall))
+                .activatable(false)
+                .visible(false)
+                .build(),
+        );
         install.add_suffix(&phase);
         install.add_suffix(&cancel);
         install.add_suffix(&install_button);
@@ -109,14 +126,18 @@ impl ComputerPane {
             .header_suffix(&refresh)
             .visible(false)
             .build();
-        let capture = adw::ActionRow::builder()
-            .title(copy::text(Key::ComputerScreenCapture))
-            .activatable(false)
-            .build();
-        let input = adw::ActionRow::builder()
-            .title(copy::text(Key::ComputerInputControl))
-            .activatable(false)
-            .build();
+        let capture = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::ComputerScreenCapture))
+                .activatable(false)
+                .build(),
+        );
+        let input = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::ComputerInputControl))
+                .activatable(false)
+                .build(),
+        );
         rights.add(&capture);
         rights.add(&input);
 
@@ -252,9 +273,9 @@ impl ComputerPane {
 
         let statement = standing.statement();
         if let Some(key) = statement {
-            self.statement.set_title(&copy::text(key));
+            self.statement.body.set_label(&copy::text(key));
         }
-        self.statement.set_visible(statement.is_some());
+        self.statement.row.set_visible(statement.is_some());
 
         // The session is named so the sentence about it can be checked.
         let session = match &standing {

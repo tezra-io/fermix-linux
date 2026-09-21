@@ -22,11 +22,28 @@ const APP_ID: &str = "io.tezra.Fermix";
 /// below holds the checked-in set equal to it.
 const ICON_SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256];
 
-/// Every file the package installs, as the path it is installed at. The nFPM
-/// configuration is held to exactly this list, so a file added to one and not
-/// the other fails here rather than shipping a package that quietly lacks it.
-const INSTALLED_PATHS: &[&str] = &[
+/// Every file the package installs that this crate can name exactly, in two
+/// halves.
+///
+/// Every file this repository authors and the package installs, as the path it
+/// is installed at.
+///
+/// The window's half only. The package carries the engine too, but not one line
+/// of the engine's file list is written here or in the nFPM template: it is
+/// authored by the verified engine archive's own `nfpm-contents.yaml` and
+/// spliced into the rendered configuration by `scripts/build_packages.sh`. That
+/// is what makes "the engine layout is identical in both packages" true by
+/// construction, and it is why an engine release that adds a packaged file
+/// needs no edit in this repository at all.
+///
+/// Not quite everything the window installs, either: the private toolkit
+/// runtime is a tree of some hundreds of shared objects the build copies
+/// wholesale, so it is asserted below by the shape of its paths rather than
+/// file by file.
+const DESKTOP_PATHS: &[&str] = &[
     "/usr/bin/fermix-desktop",
+    "/usr/lib/fermix-desktop/bin/fermix-desktop",
+    "/usr/share/doc/fermix-desktop/runtime-manifest.json",
     "/usr/share/applications/io.tezra.Fermix.desktop",
     "/usr/share/metainfo/io.tezra.Fermix.metainfo.xml",
     "/usr/share/dbus-1/services/io.tezra.Fermix.service",
@@ -353,51 +370,267 @@ fn the_packaged_icons_are_the_applications_own() {
 // The nFPM configuration
 // ---------------------------------------------------------------------------
 
-#[test]
-fn the_template_installs_exactly_the_files_the_package_claims() {
-    let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
-
-    let destinations: BTreeSet<String> = template
+/// Every `dst:` the configuration names.
+fn template_destinations(template: &str) -> BTreeSet<String> {
+    template
         .lines()
         .filter_map(|line| line.trim().strip_prefix("dst: ").map(str::to_string))
-        .collect();
+        .map(|value| value.trim_matches('"').to_string())
+        .collect()
+}
 
-    let claimed: BTreeSet<String> = INSTALLED_PATHS
+#[test]
+fn the_template_installs_every_file_the_package_claims() {
+    let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
+    let destinations = template_destinations(&template);
+
+    for claimed in DESKTOP_PATHS {
+        assert!(
+            destinations.contains(*claimed),
+            "the nFPM configuration installs nothing at {claimed}"
+        );
+    }
+}
+
+/// The files and directories the engine authors, which this repository must not
+/// author a second time.
+///
+/// A path ending in `/` is a whole directory and everything under it; anything
+/// else is one exact file. The distinction matters more than it looks: every
+/// engine-owned root here has a desktop-owned near-namesake one character
+/// longer, `/usr/lib/fermix` against `/usr/lib/fermix-desktop` and
+/// `/usr/share/doc/fermix` against `/usr/share/doc/fermix-desktop`, and a
+/// prefix test written without the separator would forbid the window's own
+/// files.
+const ENGINE_OWNED: &[&str] = &[
+    "/usr/bin/fermix",
+    "/usr/lib/fermix/",
+    "/usr/lib/systemd/user/fermix.service",
+    "/usr/share/fermix/",
+    "/usr/share/doc/fermix/",
+    "/usr/share/bash-completion/completions/fermix",
+    "/usr/share/zsh/site-functions/_fermix",
+    "/usr/share/fish/vendor_completions.d/fermix.fish",
+    "/usr/share/man/man1/fermix.1.gz",
+];
+
+/// Whether one installed path belongs to the engine rather than to the window.
+fn engine_owned(path: &str) -> bool {
+    ENGINE_OWNED
         .iter()
-        .map(|path| path.to_string())
+        .any(|owned| match owned.strip_suffix('/') {
+            Some(root) => path.starts_with(&format!("{root}/")),
+            None => path == *owned,
+        })
+}
+
+#[test]
+fn the_template_leaves_every_engine_owned_path_to_the_engine() {
+    // Two authors, one package, and this is the line between them. The engine's
+    // file list comes from the verified archive's own `nfpm-contents.yaml` and
+    // is spliced into the rendered configuration by the build; the template
+    // states the window's files and nothing else. A `dst:` here under an
+    // engine-owned root is the two authors colliding, and nFPM would either
+    // carry the file twice or take whichever entry it read last.
+    let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
+
+    let trespassing: Vec<String> = template_destinations(&template)
+        .into_iter()
+        .filter(|path| engine_owned(path))
         .collect();
 
+    assert!(
+        trespassing.is_empty(),
+        "the nFPM template declares engine-owned paths, which the engine archive \
+         already authors: {trespassing:?}"
+    );
+}
+
+/// The comment line the build replaces with the engine's own contents.
+///
+/// Agreed with slice 4 and duplicated on purpose: `scripts/splice_engine_contents.py`
+/// holds the same string in its `MARKER` constant and refuses the build if the
+/// rendered configuration carries it any number of times other than once. Two
+/// ends asserting the same literal is what makes a silent drift in either one a
+/// red build rather than a package with no engine in it.
+const ENGINE_SPLICE_MARKER: &str = "# >>> engine contents, spliced from the verified archive";
+
+#[test]
+fn the_template_marks_the_one_place_the_engine_contents_are_spliced_in() {
+    let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
+
+    // Twice would splice the engine's whole file list in twice; not at all
+    // would build a `fermix-desktop` carrying no engine, and neither is a
+    // shape the rest of these gates would notice.
     assert_eq!(
-        destinations, claimed,
-        "the nFPM configuration and this gate disagree about what the package installs"
+        template.matches(ENGINE_SPLICE_MARKER).count(),
+        1,
+        "the template carries the engine splice marker {} times, and the build \
+         refuses anything but once",
+        template.matches(ENGINE_SPLICE_MARKER).count()
+    );
+
+    // On a line of its own, because the splice replaces the whole line. A
+    // marker with anything after it would take that text out of the file along
+    // with the marker.
+    assert!(
+        template
+            .lines()
+            .any(|line| line.trim() == ENGINE_SPLICE_MARKER),
+        "the engine splice marker is not a line of its own"
     );
 }
 
 #[test]
-fn the_template_declares_the_toolkit_floor_and_the_exact_engine_relation() {
+fn the_line_between_the_two_authors_falls_where_the_names_nearly_collide() {
+    // The rule above is a prefix test over paths that differ by one word, so it
+    // is worth proving in both directions rather than trusting the reading.
+    for engine in [
+        "/usr/bin/fermix",
+        "/usr/lib/fermix/cosign",
+        "/usr/lib/fermix/runtime-payload/libc-musl-abc123.so",
+        "/usr/lib/systemd/user/fermix.service",
+        "/usr/share/fermix/engine.json",
+        "/usr/share/doc/fermix/copyright",
+        "/usr/share/man/man1/fermix.1.gz",
+    ] {
+        assert!(engine_owned(engine), "{engine} is the engine's");
+    }
+
+    for desktop in [
+        "/usr/bin/fermix-desktop",
+        "/usr/lib/fermix-desktop/bin/fermix-desktop",
+        "/usr/lib/fermix-desktop/lib/libgtk-4.so.1",
+        "/usr/lib/systemd/user/app-io.tezra.Fermix.service",
+        "/usr/share/fermix-desktop/build.json",
+        "/usr/share/doc/fermix-desktop/copyright",
+        "/usr/share/doc/fermix-desktop/runtime-manifest.json",
+    ] {
+        assert!(!engine_owned(desktop), "{desktop} is the window's");
+    }
+
+    // Every path the window claims passes the same test, so the two lists
+    // cannot drift into each other without this failing.
+    for claimed in DESKTOP_PATHS {
+        assert!(
+            !engine_owned(claimed),
+            "{claimed} is claimed by the window and forbidden to it"
+        );
+    }
+}
+
+#[test]
+fn the_template_installs_the_private_toolkit_runtime() {
+    // It cannot be named file by file: it is a tree of some hundreds of shared
+    // objects the build copies out of the runtime image, so what is asserted is
+    // that the tree is shipped at all.
+    //
+    // The engine's musl loader payload is deliberately not asserted here any
+    // more. It lives under `/usr/lib/fermix/runtime-payload/`, which is an
+    // engine-owned root, so it arrives with the rest of the engine's contents
+    // and a `dst:` for it in this template would be the collision the gate
+    // above forbids.
     let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
 
-    for declaration in [
-        "fermix (= {{VERSION}})",
-        "libgtk-4-1 (>= 4.16)",
-        "libadwaita-1-0 (>= 1.6)",
-        "fermix = {{VERSION}}",
-        "gtk4 >= 4.16",
-        "libadwaita >= 1.6",
-    ] {
+    assert!(
+        template_destinations(&template)
+            .iter()
+            .any(|path| path.starts_with("/usr/lib/fermix-desktop/lib")),
+        "the nFPM configuration ships no private toolkit runtime, and the window links one"
+    );
+}
+
+#[test]
+fn the_installed_binary_is_reached_through_a_link_into_the_private_prefix() {
+    // `/usr/bin/fermix-desktop` is a symbolic link, never a wrapper script: the
+    // real ELF resolves its libraries through `$ORIGIN/../lib`, and a wrapper
+    // would mean the process the desktop sees is not the one the launcher,
+    // `StartupWMClass` and the activation unit all name.
+    let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
+
+    let link = template
+        .split("dst: ")
+        .find(|block| block.starts_with("/usr/bin/fermix-desktop"))
+        .expect("the configuration installs /usr/bin/fermix-desktop");
+
+    assert!(
+        link.contains("type: symlink"),
+        "/usr/bin/fermix-desktop is not a symbolic link, and the design has no launcher script"
+    );
+    assert!(
+        link.contains("lib/fermix-desktop/bin/fermix-desktop"),
+        "/usr/bin/fermix-desktop points somewhere other than the private prefix"
+    );
+}
+
+#[test]
+fn the_template_declares_the_glibc_floor_and_the_engine_alternative() {
+    // The directives, with the comment lines taken out. Several assertions
+    // below are that a relation is *absent*, and a comment explaining why the
+    // package no longer requires a host libgtk is not the package requiring
+    // one. Reading the raw file would turn every such explanation into a
+    // failure and teach whoever hits it to delete the explanation.
+    let template = directives(&packaging("nfpm-fermix-desktop.yaml.tmpl"));
+
+    // One package per family now, and it is the alternative to the engine-only
+    // `fermix` rather than a layer on top of it. `Provides` keeps anything that
+    // depends on the engine by name satisfied; `Conflicts` makes the two
+    // mutually exclusive; `Replaces` is what lets dpkg hand `/usr/bin/fermix`
+    // from one package to the other in a single transaction. There is
+    // deliberately no `Obsoletes`, which would convert a headless install into
+    // a desktop one on the next upgrade.
+    for declaration in ["fermix (= {{VERSION}})", "fermix = {{VERSION}}"] {
         assert!(
             template.contains(declaration),
-            "the nFPM configuration does not declare {declaration}"
+            "the nFPM configuration does not provide {declaration}"
+        );
+    }
+    for relation in ["conflicts:", "replaces:"] {
+        assert!(
+            template.contains(relation),
+            "the nFPM configuration declares no {relation}, so the two packages are not exclusive"
+        );
+    }
+    assert!(
+        !template.contains("obsoletes"),
+        "the nFPM configuration obsoletes the engine-only package, which would pull a \
+         private toolkit onto a headless host on the next upgrade"
+    );
+
+    // The floor is glibc, and it is a declared relation so that apt and dnf
+    // refuse before anything unpacks rather than failing at exec.
+    for floor in ["libc6 (>= 2.34)", "libc.so.6(GLIBC_2.34)"] {
+        assert!(
+            template.contains(floor),
+            "the nFPM configuration does not declare the glibc floor {floor}"
         );
     }
 
-    // The two image loaders. Without them the application's own wordmark, its
-    // progress glyph and most of its vendor marks draw nothing at all, which is
-    // a blank row rather than an error.
-    for loader in ["librsvg2-common", "webp-pixbuf-loader", "librsvg2"] {
+    // The toolkit is carried, not required. A host relation on it would refuse
+    // to install on the oldest supported target, which is the one target the
+    // private runtime exists for.
+    for host_toolkit in [
+        "libgtk-4-1",
+        "libadwaita-1-0",
+        "gtk4 >=",
+        "libadwaita >=",
+        "librsvg2-common",
+        "webp-pixbuf-loader",
+    ] {
         assert!(
-            template.contains(loader),
-            "the nFPM configuration does not declare {loader}"
+            !template.contains(host_toolkit),
+            "the nFPM configuration still requires {host_toolkit} from the host, and the \
+             package carries its own"
+        );
+    }
+
+    // Section 2.1: the bundled GSettings backend is a client of the host's
+    // dconf service and of the host's schemas, and on a session with no
+    // Settings portal it is the only path the window has to the theme.
+    for host_relation in ["dconf", "gsettings-desktop-schemas"] {
+        assert!(
+            template.contains(host_relation),
+            "the nFPM configuration does not declare {host_relation}"
         );
     }
 
@@ -414,6 +647,11 @@ fn the_template_declares_the_toolkit_floor_and_the_exact_engine_relation() {
 #[test]
 fn every_placeholder_in_the_template_is_one_the_build_fills() {
     let template = packaging("nfpm-fermix-desktop.yaml.tmpl");
+    // No `ENGINE_CONTENTS` here, deliberately. The engine's contents are
+    // spliced in after the render, against the verified staging directory, at
+    // the comment marker asserted above; the render step has no value it could
+    // substitute for a placeholder. A placeholder in this set that nothing
+    // fills is exactly what this gate exists to catch.
     let filled: BTreeSet<&str> = ["ARCH", "VERSION", "STAGE", "POSTINSTALL", "POSTREMOVE"]
         .into_iter()
         .collect();
@@ -514,6 +752,18 @@ const WORKFLOWS: &[(&str, &str)] = &[
     (
         "release-fermix-desktop.yml",
         "one tag, two architectures, one release page",
+    ),
+    (
+        "runtime.yml",
+        "the private toolkit runtime image, built and published when its lock file changes",
+    ),
+    (
+        "engine-release.yml",
+        "an engine release, taken as a pin bump, and the tag that follows it onto main",
+    ),
+    (
+        "runtime-watch.yml",
+        "the bundled runtime's upstream releases and advisories, weekly",
     ),
 ];
 
@@ -691,12 +941,21 @@ fn the_packaging_workflow_covers_every_file_that_can_change_a_package() {
 
     // A change to any of these changes what the packages contain or what they
     // declare, and none of them is covered by a gate that builds no package.
+    // A minimum, not the whole list: the gate asserts each of these is watched
+    // and says nothing about a workflow watching more. The last four arrived
+    // with the single package and each one can now change what the package
+    // contains where none of them could before -- a pin bump that did not
+    // rebuild the package would be exactly the wrong thing to be quiet about.
     for path in [
         "packaging/**",
         "scripts/build_packages.sh",
         "App/Fermix/Cargo.toml",
         ".github/workflows/packages.yml",
         ".github/actions/build-packages/action.yml",
+        "scripts/package_dependencies.py",
+        "scripts/check_private_runtime.sh",
+        "scripts/check_copyright.sh",
+        "engine/PIN.json",
     ] {
         assert!(
             body.contains(&format!("\"{path}\"")),
@@ -720,12 +979,29 @@ fn the_packaging_workflow_covers_every_file_that_can_change_a_package() {
         "a package built for review must say which run built it"
     );
 
-    // It publishes nothing, and a release rail that grew into this one would be
-    // a second way to publish.
-    for forbidden in ["cosign", "gh release", "environment:"] {
+    // It signs nothing and publishes nothing, because a release rail that grew
+    // into this one would be a second way to publish.
+    //
+    // The test is on what cosign is asked to DO, not on whether it is present.
+    // Installing cosign is now a requirement rather than a smell: the build
+    // needs a pinned engine, and `scripts/verify_engine.sh` verifies that
+    // artifact's cosign identity before anything is unpacked. Forbidding the
+    // tool outright would forbid the verification and leave a workflow that
+    // builds from an unverified engine looking cleaner than one that does not.
+    for forbidden in ["cosign sign", "cosign attest", "gh release", "environment:"] {
         assert!(
             !body.contains(forbidden),
             "packages.yml carries {forbidden}, and it signs and publishes nothing"
+        );
+    }
+
+    // And the other half of that: if it carries cosign at all, it is there to
+    // verify. A workflow that installed it and never used it would be a signing
+    // step half-written.
+    if body.contains("cosign") {
+        assert!(
+            body.contains("verify_engine.sh") || body.contains("cosign verify"),
+            "packages.yml installs cosign and verifies nothing with it"
         );
     }
 }

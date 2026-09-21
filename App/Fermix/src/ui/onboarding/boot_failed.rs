@@ -21,6 +21,7 @@ use crate::models::activation::{linger_command_row, Action, Refusal};
 use crate::models::onboarding::{OnboardingModel, Snapshot};
 
 use super::Screen;
+use crate::ui::plain;
 
 /// The Boot failed screen.
 pub struct BootFailedScreen {
@@ -133,7 +134,7 @@ impl BootFailedScreen {
 
         let mut drawn = Vec::with_capacity(refusal.evidence.len());
         for line in &refusal.evidence {
-            let row = adw::ActionRow::builder().activatable(false).build();
+            let row = plain(adw::ActionRow::builder().activatable(false).build());
             row.add_prefix(&crate::ui::identifier_label(line));
             self.evidence_row.add_row(&row);
             drawn.push(row);
@@ -227,7 +228,7 @@ fn paragraph() -> gtk::Label {
 /// a person can select.
 fn command_group() -> (adw::PreferencesGroup, adw::ActionRow, gtk::Label) {
     let group = adw::PreferencesGroup::builder().visible(false).build();
-    let row = adw::ActionRow::builder().activatable(false).build();
+    let row = plain(adw::ActionRow::builder().activatable(false).build());
     row.set_title_lines(0);
 
     let command = gtk::Label::builder()
@@ -248,10 +249,12 @@ fn command_group() -> (adw::PreferencesGroup, adw::ActionRow, gtk::Label) {
 /// wanted and it is not what the card is about.
 fn evidence_group() -> (adw::PreferencesGroup, adw::ExpanderRow) {
     let group = adw::PreferencesGroup::builder().visible(false).build();
-    let row = adw::ExpanderRow::builder()
-        .title(copy::text(Key::ActivationLastLogLines))
-        .expanded(false)
-        .build();
+    let row = plain(
+        adw::ExpanderRow::builder()
+            .title(copy::text(Key::ActivationLastLogLines))
+            .expanded(false)
+            .build(),
+    );
 
     group.add(&row);
     (group, row)

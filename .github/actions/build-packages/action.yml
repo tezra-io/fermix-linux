@@ -6,6 +6,14 @@ description: >
   are built by the steps that build the released ones rather than by a copy of
   them that drifts.
 
+  The package contains the engine and the private GTK4 runtime, so this action
+  takes both: a staging directory holding an engine archive that
+  scripts/verify_engine.sh has already verified, and the reference of the
+  runtime image published for the current RUNTIME.lock.json key. Neither is
+  fetched here. Verifying the engine needs cosign and a token, and doing it once
+  in a job of its own is what keeps the rule that a file has no standing until
+  it is verified in one place.
+
 inputs:
   version:
     description: The version both packages carry. It is the crate's own.
@@ -20,6 +28,19 @@ inputs:
     required: true
   source-commit:
     description: The commit the packages were built from.
+    required: true
+  engine-download:
+    description: >
+      A directory holding the engine archives and their sidecars as
+      scripts/fetch_engine.sh downloaded them. It is placed at
+      packaging/out/engine, where build_packages.sh looks for it and verifies it
+      again before unpacking. Required, because an unpinned tree is not
+      buildable from this amendment on.
+    required: true
+  runtime-image:
+    description: >
+      ghcr.io/tezra-io/fermix-desktop-runtime:<key>-<arch>, the image whose
+      entire content is /usr/lib/fermix-desktop for the current lock file.
     required: true
   artifact-name:
     description: What to call the uploaded artifact.
@@ -40,9 +61,27 @@ runs:
       env:
         FERMIX_DESKTOP_BUILD_ID: ${{ inputs.build-id }}
         FERMIX_DESKTOP_SOURCE_COMMIT: ${{ inputs.source-commit }}
+        FERMIX_RUNTIME_IMAGE: ${{ inputs.runtime-image }}
+        FERMIX_ENGINE_DOWNLOAD_DIR: packaging/out/engine
+        # `--engine` is a refusal under CI, so a release can only ever be built
+        # from a pinned, verified engine. Set here rather than relied on,
+        # because a composite action runs wherever it is called from.
+        CI: "true"
         VERSION: ${{ inputs.version }}
         ARCH: ${{ inputs.arch }}
-      run: scripts/build_packages.sh "$VERSION" "$ARCH" --container
+        ENGINE_DOWNLOAD: ${{ inputs.engine-download }}
+      run: |
+        set -euo pipefail
+        [ -d "$ENGINE_DOWNLOAD" ] || {
+          echo "::error::no downloaded engine at $ENGINE_DOWNLOAD"
+          exit 1
+        }
+        if [ "$ENGINE_DOWNLOAD" != "packaging/out/engine" ]; then
+          mkdir -p packaging/out
+          rm -rf packaging/out/engine
+          cp -R "$ENGINE_DOWNLOAD" packaging/out/engine
+        fi
+        scripts/build_packages.sh "$VERSION" "$ARCH" --container
 
     - name: Upload the packages
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -52,7 +91,7 @@ runs:
         # architectures uploading one path under one merged artifact would have
         # them overwrite each other for no gain.
         path: |
-          packaging/out/fermix-desktop_*.deb
-          packaging/out/fermix-desktop-*.rpm
+          packaging/out/packages/fermix-desktop_*.deb
+          packaging/out/packages/fermix-desktop-*.rpm
         if-no-files-found: error
         retention-days: ${{ inputs.retention-days }}

@@ -1,0 +1,181 @@
+name: runtime
+
+# The private GTK4 runtime, built once per lock file and published as an image.
+#
+# Amendment section 4.2: the runtime is not rebuilt per run. The cache key is the
+# sha256 of RUNTIME.lock.json, the patch files and Dockerfile.runtime, and the
+# result is published as ghcr.io/tezra-io/fermix-desktop-runtime:<key>-<arch>
+# whose entire content is /usr/lib/fermix-desktop. Every application build pulls
+# that image and copies that directory out of it, so the ordinary release run
+# pays a pull and not a compile.
+#
+# The compile takes about an hour per architecture, which is why this is its own
+# workflow with its own trigger rather than a job inside packages.yml.
+#
+# A pull request builds and smokes the runtime and publishes nothing. Publishing
+# happens on main and on demand, which is the only place a tag other builds will
+# pull should be able to come from.
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and republish even when the key already has an image"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "packaging/runtime/**"
+      - "packaging/docker/Dockerfile.runtime"
+      - ".github/workflows/runtime.yml"
+  pull_request:
+    paths:
+      - "packaging/runtime/**"
+      - "packaging/docker/Dockerfile.runtime"
+      - ".github/workflows/runtime.yml"
+
+# Read the repository, write the package. Nothing else: this workflow signs
+# nothing, tags nothing and opens nothing.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/tezra-io/fermix-desktop-runtime
+
+jobs:
+  # Seconds, and it fails a lock file that no longer holds before an hour of
+  # compiling proves the same thing more slowly.
+  gate:
+    name: Lock file and refusals
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: The gate's own refusals
+        run: packaging/runtime/build_runtime_test.sh
+
+  runtime:
+    name: Runtime (${{ matrix.arch }})
+    needs: gate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            smoke: true
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            smoke: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Asked of the script rather than recomputed here. This file used to carry
+      # its own copy of the key expression, which is a copy that can disagree
+      # with the one the build uses — and a tag that disagrees is an image
+      # nobody can find. --print-key needs no daemon, so it costs nothing.
+      - name: The cache key this lock file names
+        id: key
+        run: |
+          set -euo pipefail
+          key="$(packaging/runtime/build_runtime.sh --print-key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "tag=${IMAGE}:${key}-${ARCH}" >> "$GITHUB_OUTPUT"
+          echo "runtime key $key for $ARCH"
+        env:
+          ARCH: ${{ matrix.arch }}
+
+      # Not on a pull request: a fork's token cannot read or write this package,
+      # and the only steps that need the registry are skipped there anyway.
+      - name: Sign in to the registry
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+
+      # A key that already has an image was built from exactly these inputs, so
+      # rebuilding it would produce the same tree an hour later. A pull request
+      # always builds, because what it is checking is the build.
+      - name: Is this key already published
+        id: published
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ] || [ "$FORCE" = "true" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "building: this is a pull request, or a forced run"
+          elif docker buildx imagetools inspect "$TAG" >/dev/null 2>&1; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already published"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is not published yet"
+          fi
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ github.event.inputs.force }}
+          TAG: ${{ steps.key.outputs.tag }}
+
+      # The tarballs, keyed by the lock file's digest. A miss costs a download of
+      # every source and nothing else; a hit saves about ten minutes.
+      - name: Cache the locked sources
+        if: steps.published.outputs.needed == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/fermix-desktop-runtime/sources
+          key: runtime-sources-${{ hashFiles('packaging/runtime/RUNTIME.lock.json') }}
+
+      - name: Build the runtime
+        if: steps.published.outputs.needed == 'true'
+        env:
+          FERMIX_RUNTIME_JOBS: "4"
+        run: packaging/runtime/build_runtime.sh --container
+
+      # The claim the whole amendment rests on, checked on the oldest deb
+      # target: a window built against GTK 4.16 draws on a machine whose own GTK
+      # is 4.6, using nothing from the host but the declared libraries. amd64
+      # only, because what an arm64 run would add over the arm64 build having
+      # linked and passed its own host-boundary check is nothing.
+      - name: A libadwaita window on ubuntu:22.04
+        if: matrix.smoke && steps.published.outputs.needed == 'true'
+        run: packaging/runtime/smoke_runtime.sh
+
+      # The shipped tree is already rooted at usr/lib/fermix-desktop, so the
+      # published image is that tarball imported and nothing else: no base layer,
+      # no shell, no package manager. `docker import` is what the amendment's
+      # "an OCI image whose entire content is /usr/lib/fermix-desktop" means in
+      # one command.
+      - name: Publish the image
+        if: github.event_name != 'pull_request' && steps.published.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          out=packaging/out/runtime
+          docker import "$out/runtime-$ARCH.tar" "$TAG"
+          docker import "$out/runtime-dev-$ARCH.tar" "$TAG-dev"
+          docker push "$TAG"
+          docker push "$TAG-dev"
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ steps.key.outputs.tag }}
+
+      # The evidence a reviewer reads: every shipped file's digest, and the key
+      # it was built under. The trees themselves are in the registry and are too
+      # large to keep twice.
+      - name: Keep the manifest
+        if: steps.published.outputs.needed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-manifest-${{ matrix.arch }}
+          path: |
+            packaging/out/runtime/runtime-manifest.json
+            packaging/out/runtime/cache-key
+          retention-days: 30

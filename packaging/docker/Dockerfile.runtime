@@ -1,0 +1,136 @@
+# The runtime build container.
+#
+# This image is the toolchain that compiles the private GTK4 runtime; it is not
+# the runtime. `packaging/runtime/build_runtime.sh --container` builds this
+# image, then runs `build_runtime.sh --build` inside it with the repository, a
+# source cache and an output directory bind-mounted. The compile is therefore a
+# `docker run` rather than a `docker build` layer, which is what lets a second
+# iteration reuse the downloaded tarballs instead of re-fetching the world.
+#
+# AlmaLinux 9 is the base because glibc 2.34 is the lowest floor that covers
+# both RHEL 9 and Ubuntu 22.04 in one build, and because compiling against the
+# oldest host headers in the support matrix is what makes the host-provided half
+# of the boundary forward compatible. It is pinned by digest: a base image that
+# can move is a compiler that can move.
+FROM almalinux@sha256:3a3fa7f043b142bc8008c8b308d39b47d2c84008addcd52f9f9a7a82d2a90474
+
+ARG RUST_VERSION=1.97.1
+ARG MESON_VERSION=1.12.0
+ARG NINJA_VERSION=1.13.2
+ARG PATCHELF_VERSION=0.18.0
+ARG PATCHELF_SHA256=1952b2a782ba576279c211ee942e341748fdb44997f704dd53def46cd055470b
+# cargo-c is pinned to the release built against this toolchain's own cargo:
+# the `+cargo-0.97.1` half of the version is not decoration.
+ARG CARGO_C_VERSION=0.10.23+cargo-0.97.1
+ARG LIBSASS_VERSION=3.6.6
+ARG LIBSASS_SHA256=11f0bb3709a4f20285507419d7618f3877a425c0131ea8df40fe6196129df15d
+ARG SASSC_VERSION=3.6.2
+ARG SASSC_SHA256=608dc9002b45a91d11ed59e352469ecc05e4f58fc1259fc9a9f5b8f0f8348a03
+
+ENV CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# Three groups, and nothing else.
+#
+# The compiler and the build tools; the development headers of every library
+# section 4.1 of the amendment puts on the HOST side, because those are the only
+# ones this build may link against without carrying a copy; and the small
+# utilities the script itself uses. No GTK, no GLib, no pango, no cairo: every
+# one of those is built here from source, and a devel package for one of them on
+# this image would be a way for the build to silently link the host's.
+#
+# `--allowerasing` is needed for exactly one swap: the base image carries
+# curl-minimal, and libcurl-devel requires the full libcurl, so dnf replaces the
+# minimal pair with the full one. Nothing else in this list erases anything.
+#
+# Python 3.12 is installed beside the base image's 3.9 because the pinned Meson
+# needs it; the repository's own scripts still run on `python3`.
+RUN dnf -y install dnf-plugins-core \
+    && dnf config-manager --set-enabled crb \
+    && dnf -y install --allowerasing \
+      gcc gcc-c++ make cmake patch perl-interpreter \
+      python3 python3-pip python3-setuptools \
+      python3.12 python3.12-pip python3.12-setuptools \
+      pkgconf-pkg-config gettext gperf nasm jq \
+      itstool libxslt docbook-style-xsl \
+      autoconf automake libtool \
+      git curl tar xz bzip2 findutils diffutils file which binutils elfutils \
+      zlib-devel libcurl-devel libyaml-devel libzstd-devel xz-devel openssl-devel \
+      mesa-libGL-devel mesa-libEGL-devel mesa-libgbm-devel libdrm-devel \
+      libX11-devel libxcb-devel libXext-devel libXi-devel libXcursor-devel \
+      libXdamage-devel libXfixes-devel libXrandr-devel libXinerama-devel \
+      libXrender-devel libxkbcommon-devel dbus-devel \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Meson and Ninja are pinned rather than taken from the distribution, because
+# several components in the lock file need a meson newer than AlmaLinux 9 ships
+# and a build tool that moves with the base image is a build that moves.
+RUN python3.12 -m pip install --no-cache-dir \
+      "meson==${MESON_VERSION}" "ninja==${NINJA_VERSION}" \
+    && meson --version && ninja --version
+
+# patchelf sets the final RUNPATH of every installed object. It is built from a
+# pinned, digest-checked tarball rather than taken from EPEL: EPEL is a moving
+# repository, and this tool decides how every shipped library resolves its
+# dependencies on a user's machine.
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+      "https://github.com/NixOS/patchelf/releases/download/${PATCHELF_VERSION}/patchelf-${PATCHELF_VERSION}.tar.bz2" \
+      -o /tmp/patchelf.tar.bz2; \
+    echo "${PATCHELF_SHA256}  /tmp/patchelf.tar.bz2" | sha256sum -c -; \
+    mkdir -p /tmp/patchelf; \
+    tar -xjf /tmp/patchelf.tar.bz2 -C /tmp/patchelf --strip-components=1; \
+    cd /tmp/patchelf; \
+    ./configure --prefix=/usr/local; \
+    make -j"$(nproc)"; \
+    make install; \
+    cd /; \
+    rm -rf /tmp/patchelf /tmp/patchelf.tar.bz2; \
+    patchelf --version
+
+# libadwaita compiles its stylesheet from SCSS on every build, and if sassc is
+# missing it falls back to downloading its own sassc subproject, which would be
+# an unpinned dependency fetched mid-build. AlmaLinux 9 packages neither sassc
+# nor libsass, so both are built here from digest-checked tarballs. They are
+# build tools of this image, like patchelf and cargo-c: nothing they produce is
+# linked into the runtime, they only turn .scss into .css.
+RUN set -eux; \
+    for pair in "libsass ${LIBSASS_VERSION} ${LIBSASS_SHA256}" \
+                "sassc ${SASSC_VERSION} ${SASSC_SHA256}"; do \
+      set -- $pair; name="$1"; version="$2"; sum="$3"; \
+      curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/sass/${name}/archive/refs/tags/${version}.tar.gz" \
+        -o "/tmp/${name}.tar.gz"; \
+      echo "${sum}  /tmp/${name}.tar.gz" | sha256sum -c -; \
+      mkdir -p "/tmp/${name}"; \
+      tar -xzf "/tmp/${name}.tar.gz" -C "/tmp/${name}" --strip-components=1; \
+      ( cd "/tmp/${name}" && autoreconf -fi \
+        && ./configure --prefix=/usr/local --disable-static \
+        && make -j"$(nproc)" && make install ); \
+    done; \
+    echo /usr/local/lib > /etc/ld.so.conf.d/usr-local.conf; \
+    ldconfig; \
+    rm -rf /tmp/libsass /tmp/sassc /tmp/libsass.tar.gz /tmp/sassc.tar.gz; \
+    sassc --version
+
+# librsvg is Rust. The toolchain is pinned to the same version the application's
+# build image pins, so one language compiles the whole product.
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --no-modify-path --profile minimal \
+         --default-toolchain "${RUST_VERSION}" \
+    && rm /tmp/rustup.sh \
+    && chmod -R a+w "$CARGO_HOME" "$RUSTUP_HOME" \
+    && rustc --version && cargo --version
+
+# librsvg is a meson project that builds its Rust half through `cargo cbuild`,
+# so cargo-c is a build tool of this image rather than a component of the
+# runtime: nothing it produces is linked, it only drives cargo and emits the
+# shared library and the .pc file meson then installs.
+RUN cargo install cargo-c --version "${CARGO_C_VERSION}" --locked \
+    && rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" \
+    && chmod -R a+w "$CARGO_HOME" \
+    && cargo cbuild --version
+
+WORKDIR /workspace

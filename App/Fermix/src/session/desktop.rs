@@ -12,6 +12,9 @@ use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 
+use crate::app::FermixApplication;
+use crate::runtime::RuntimeEnv;
+
 /// What the environment says about this session.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DesktopFacts {
@@ -48,17 +51,35 @@ impl DesktopSession {
     /// The caller shows the address as copyable text when this answers with a
     /// failure, because a sign-in whose browser never opened is a dead end
     /// otherwise.
+    ///
+    /// Launched through `gio::AppInfo` with an explicit launch context rather
+    /// than through `gtk::UriLauncher`, and the reason is the environment.
+    /// Outside a sandbox `UriLauncher` calls `g_app_info_launch_default_for_uri`
+    /// with no context at all, which forks the person's browser as a child of
+    /// this process and hands it this process's environment. A Firefox that
+    /// starts with the private toolkit's `GSETTINGS_SCHEMA_DIR` prepended is a
+    /// real failure, so the context [`RuntimeEnv`] builds is what the child
+    /// gets: the environment this window was started with.
+    ///
+    /// `parent` is what this reaches the entry environment through: a window
+    /// belongs to the application object `main` handed the captured value to.
+    /// It is not passed as an argument because the three call sites are dialog
+    /// responses that hold a window and nothing else, and threading a value
+    /// through every one of them would put the same lookup in three places.
     pub async fn open_url(
         parent: Option<&impl IsA<gtk::Window>>,
         url: &str,
     ) -> Result<(), glib::Error> {
-        let launcher = gtk::UriLauncher::new(url);
-        launcher
-            .launch_future(parent.map(|window| window.as_ref()))
-            .await
+        let runtime = entry_environment(parent.map(|window| window.as_ref()));
+        gio::AppInfo::launch_default_for_uri_future(url, Some(&runtime.launch_context())).await
     }
 
     /// Show one path in the person's file manager.
+    ///
+    /// No launch context and no [`RuntimeEnv`]: this goes to
+    /// `org.freedesktop.FileManager1` over D-Bus, so the file manager is
+    /// activated by the bus rather than forked from here and inherits nothing
+    /// from this process at all.
     pub async fn show_folder(
         parent: Option<&impl IsA<gtk::Window>>,
         path: &Path,
@@ -94,6 +115,32 @@ impl DesktopSession {
     /// Withdraw a notification this application raised.
     pub fn withdraw(application: &impl IsA<gio::Application>, id: &str) {
         application.as_ref().withdraw_notification(id);
+    }
+}
+
+/// The environment this process was started with, as the application recorded
+/// it before it had a second thread.
+///
+/// A window belongs to the one application object, which is where the captured
+/// value lives, so there is one instance of it in the process and this reads it
+/// rather than keeping a second copy. A window with no application is a
+/// development harness rather than the product, and it says so in the journal
+/// instead of quietly handing a child this process's own environment.
+fn entry_environment(parent: Option<&gtk::Window>) -> RuntimeEnv {
+    let application = parent
+        .and_then(|window| window.application())
+        .and_then(|application| application.downcast::<FermixApplication>().ok());
+
+    match application {
+        Some(application) => application.runtime_env(),
+        None => {
+            glib::g_warning!(
+                crate::app::TEXT_DOMAIN,
+                "a launch was made from a window with no application, so the child \
+                 gets this process's own environment"
+            );
+            RuntimeEnv::unchanged()
+        }
     }
 }
 

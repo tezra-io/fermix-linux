@@ -1,19 +1,14 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "tezra-io/fermix",
   "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
   "tag": null,
+  "engine_version": null,
   "source_commit": null,
   "certificate_identity": null,
-  "packages": {
-    "linux_x86_64": {
-      "deb": { "asset": null, "sha256": null },
-      "rpm": { "asset": null, "sha256": null }
-    },
-    "linux_aarch64": {
-      "deb": { "asset": null, "sha256": null },
-      "rpm": { "asset": null, "sha256": null }
-    }
+  "artifacts": {
+    "linux_x86_64": { "asset": null, "sha256": null },
+    "linux_aarch64": { "asset": null, "sha256": null }
   },
-  "note": "The engine release this desktop version is paired with. It is unpinned: no engine release carrying Linux packages exists yet, so nothing is claimed. To pin it, take the engine tag whose release publishes fermix_<version>_<amd64|arm64>.deb and fermix-<version>-1.<x86_64|aarch64>.rpm and change, all together: tag (vX.Y.Z), source_commit (the 40-character commit that tag was built from), certificate_identity (https://github.com/tezra-io/fermix/.github/workflows/release.yml@refs/tags/ plus the tag), and each package's asset and sha256 (the digest in the asset's .sha256 sidecar). Either every one of those is null or every one is filled: scripts/engine_pin.sh refuses a half-filled pin, which is the dangerous state because it reads as a pin to a glance and names an engine nothing can verify. The pinned version is also this desktop package's own version, because fermix-desktop declares Depends: fermix (= <version>) and Requires: fermix = <version>, and both packages of a version become visible together."
+  "note": "The engine release this desktop package carries. It is unpinned: no engine release publishes fermix_app_engine_linux_<arch>.tar.gz yet, so nothing is claimed. An unpinned pin is not buildable, which is the change schema 2 brings: one package carries the engine, so no pin means no engine and scripts/build_packages.sh refuses rather than producing a package with a hole in it. To pin it, take the engine tag whose release publishes fermix_app_engine_linux_x86_64.tar.gz and fermix_app_engine_linux_aarch64.tar.gz and change, all together: tag (vX.Y.Z), engine_version (the tag without its v), source_commit (the 40-character commit that tag was built from), certificate_identity (https://github.com/tezra-io/fermix/.github/workflows/release.yml@refs/tags/ plus the tag), and each artifact's asset and sha256 (the digest in the asset's .sha256 sidecar). Either every one of those is null or every one is filled: scripts/engine_pin.sh refuses a half-filled pin, which is the dangerous state because it reads as a pin to a glance and names an engine nothing can verify. The pinned engine version is also this desktop package's own version, because one package carries both halves and they are one build."
 }

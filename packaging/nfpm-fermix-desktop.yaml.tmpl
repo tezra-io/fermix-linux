@@ -1,4 +1,8 @@
-# nFPM configuration for the `fermix-desktop` package (M38 sections 2.2, 12.1).
+# nFPM configuration for the `fermix-desktop` package.
+#
+# One download installs Fermix on a Linux desktop: the window, the engine, and
+# the toolkit the window links. The design is
+# docs/design/SINGLE_PACKAGE_AMENDMENT.md, sections 3 and 4.
 #
 # Rendered by scripts/build_packages.sh, which fills every placeholder below and
 # refuses to leave one behind. One rendered file produces both the deb and the
@@ -8,20 +12,16 @@
 # reshaping it, and `release` is left empty so the Debian version carries no
 # revision. nFPM's rpm packager defaults an empty release to "1", so the rpm is
 # fermix-desktop-<version>-1.<arch>.rpm while the deb is
-# fermix-desktop_<version>_<arch>.deb with no revision. That asymmetry is
-# harmless, because an rpm `=` relation on a version matches any release, and it
-# is the same shape the engine package ships. A packaging-only fix is published
-# as the next version, never as a revision of this one, which is what keeps
-# `Depends: fermix (= <version>)` and `Requires: fermix = <version>` meaning the
-# same thing in both families.
+# fermix-desktop_<version>_<arch>.deb with no revision. A desktop-only fix is
+# published as <engine version>+<n>, which both dpkg and rpm order after the
+# plain version, so the asymmetry costs nothing.
 #
-# **nFPM generates no dependencies**, so everything this binary needs at run
-# time is written below by hand and proved afterwards: build_packages.sh derives
-# the binary's own requirements from the built ELF and refuses a package whose
-# declared relations do not cover them. The floor is GTK 4.16 and libadwaita
-# 1.6; the two image loaders are there because the application's own wordmark,
-# progress glyph and vendor marks are SVG and WebP, and a gdk-pixbuf with no
-# loader for them draws nothing at all rather than failing.
+# **nFPM generates no dependencies.** Everything below is written by hand and
+# proved afterwards: scripts/package_dependencies.py reads the NEEDED entries of
+# every ELF in the staged tree and refuses a package that names a library
+# neither carried in the private prefix nor covered by a declared relation, and
+# refuses a declared relation no ELF in the package needs. The declaration and
+# the machine's own answer are held equal in both directions.
 name: fermix-desktop
 arch: {{ARCH}}
 platform: linux
@@ -30,38 +30,260 @@ version_schema: none
 release: ""
 maintainer: Tezra <hello@fermix.ai>
 description: |
-  The Fermix window for Linux.
+  Fermix for Linux, the window and the engine.
   A native GTK4 and libadwaita client for the Fermix assistant: set it up, see
   whether it is running, change what it does, run its checks and read its log.
-  It carries no engine of its own and depends on exactly the fermix version it
-  was released beside.
+  It carries the engine your systemd runs and the toolkit the window draws
+  with, so one install is the whole product.
 homepage: https://fermix.ai
 license: MIT
 section: utils
 priority: optional
 
+# The relations, section 3.1.
+#
+# This package is the alternative to the engine-only `fermix`, not a layer on
+# top of it, so the exact-version relation between the two is gone and three
+# relations take its place. It **provides** the engine, so anything that names
+# the engine by name is satisfied and both `dpkg -S /usr/bin/fermix` and
+# `rpm -qf /usr/bin/fermix` answer with a package. It **conflicts** with it, so
+# the two are mutually exclusive. On the deb side it also **replaces** it, which
+# is what lets dpkg hand `/usr/bin/fermix` from one package to the other inside
+# one transaction; `Replaces` alone forces nothing.
+#
+# The rpm side deliberately carries no such takeover relation. Converting a
+# server's engine-only install into the desktop package on the next upgrade
+# would pull a private toolkit onto a headless host, which is the opposite of
+# what the split exists for.
+#
+# The floor is glibc, declared rather than discovered, so apt and dnf refuse on
+# a host below it before anything unpacks and say what is missing. The toolkit
+# is not declared at all in either family: the package carries its own, and a
+# host relation on it would refuse to install on the oldest supported target,
+# which is the one target the private runtime exists for.
+#
+# Everything else is section 4.1's host column, narrowed to what the toolkit
+# that actually ships reaches for: the driver, the X11 wire-protocol clients,
+# and the two frozen-SONAME libraries its own objects link.
+#
+# Six relations the amendment lists are deliberately absent, because the built
+# toolkit needs none of them and scripts/package_dependencies.py refuses a
+# relation no ELF justifies as firmly as it refuses a missing one. libdbus-1-3
+# is not there because GLib speaks the D-Bus protocol itself rather than through
+# libdbus; libdrm2, libgbm1 and libx11-xcb1 are the host driver's own
+# dependencies and arrive with it; libzstd1 and liblzma5 are linked by nothing
+# in the tree. A declaration nobody can justify is a promise about a user's
+# machine that nothing checked.
+#
+# The three OpenGL rows are declared although no ELF in the package names
+# them. GTK reaches OpenGL through libepoxy, which dlopens libGL.so.1,
+# libEGL.so.1 and libGLESv2.so.2 rather than linking them, so a boundary read
+# out of NEEDED entries misses all three and the first symptom on a host
+# without one is a window that aborts. scripts/build_packages.sh carries them
+# on its named exemption list for the same reason.
+#
+# The last rows of each list are not libraries the window links. Each is there
+# because something the package carries reads a file the host owns, so
+# scripts/package_dependencies.py is told by name that they have no NEEDED entry
+# to justify them. The bundled GSettings backend is a client of the host's dconf
+# service and of the host's schemas, and on a session with no Settings portal it
+# is the only path the window has to the theme (amendment section 2.1). The
+# private fontconfig is built with -Dbaseconfig-dir=/etc/fonts, so it reads the
+# host's configuration and the host's fonts: the package owning that directory
+# is a hard requirement, because without it the toolkit has no configuration at
+# all.
+#
+# One relation on each list is not a library at all but a **program**, and it is
+# the only one of its kind here. The engine stores a channel bot key through the
+# host's secret service, and it does so by shelling out to `secret-tool` rather
+# than by linking libsecret: the call is System.find_executable("secret-tool"),
+# so the thing that must be present is an executable on PATH. A desktop with
+# gnome-keyring running and org.freedesktop.secrets on the bus still refuses to
+# save a key when that program is not installed, which is exactly what a Pop!_OS
+# install reported, and no ELF in this package names it, so nothing derived from
+# NEEDED entries would ever have caught it.
+#
+# The two families disagree about where it lives, so this relation is the first
+# that is not the same shape on both sides. On deb the executables are split out
+# of the library into libsecret-tools. On rpm there is no such split: the file
+# belongs to libsecret itself, measured in almalinux:9 (libsecret-0.20.4-4.el9)
+# and fedora:44 (libsecret-0.21.8.2-2.fc44). Naming the file capability rather
+# than the package is what keeps that difference from becoming a guess, and it
+# is also arch-clean, where a bare `libsecret` could be satisfied by the i686
+# build both repositories carry.
+#
+# A font is a **recommendation** rather than a requirement, and the difference
+# is deliberate. A host with no font installed draws no text, which is a bad
+# window but a working install, and naming one family as a hard dependency would
+# pull DejaVu onto a machine that has already made a different and perfectly
+# good choice. Both apt and dnf install recommendations by default, so the
+# ordinary install gets a font; the administrator who has arranged their own
+# keeps it.
+#
+# A **keyring** is recommended for the same reason and with a sharper edge.
+# secret-tool is only a client: it talks to whatever owns org.freedesktop.secrets
+# on the session bus, and a desktop carrying neither a keyring nor any other
+# secret service has nowhere to put a key however many programs are installed.
+# So gnome-keyring is recommended in both families, and the ordinary install of
+# a bare desktop gets one.
+#
+# It is deliberately NOT a dependency, and this is the case where the difference
+# does real harm rather than merely being tidy. A KDE user's kwallet and a
+# KeePassXC user's own daemon already provide org.freedesktop.secrets, and both
+# satisfy the engine completely. A hard relation would install a second secret
+# daemon beside a working one, on a machine that asked for neither, and two
+# services racing for the same bus name is a worse outcome than the problem it
+# would be solving. A recommendation reaches the person who has nothing and
+# steps aside for the person who has already chosen.
 overrides:
   deb:
-    depends:
+    provides:
       - fermix (= {{VERSION}})
-      - libgtk-4-1 (>= 4.16)
-      - libadwaita-1-0 (>= 1.6)
-      - librsvg2-common
-      - webp-pixbuf-loader
-  rpm:
+    conflicts:
+      - fermix
+    replaces:
+      - fermix
     depends:
+      - libc6 (>= 2.34)
+      - libgcc-s1
+      - libgl1
+      - libegl1
+      - libgles2
+      - libx11-6
+      - libxcb1
+      - libxcb-render0
+      - libxcb-shm0
+      - libxext6
+      - libxi6
+      - libxcursor1
+      - libxdamage1
+      - libxfixes3
+      - libxrandr2
+      - libxinerama1
+      - libxrender1
+      - libxkbcommon0
+      - zlib1g
+      - libyaml-0-2
+      - libcurl4
+      - dconf-service
+      - gsettings-desktop-schemas
+      - fontconfig-config
+      - libsecret-tools
+    recommends:
+      - fonts-dejavu-core
+      - gnome-keyring
+  rpm:
+    provides:
       - fermix = {{VERSION}}
-      - gtk4 >= 4.16
-      - libadwaita >= 1.6
-      - librsvg2
-      - webp-pixbuf-loader
+    conflicts:
+      - fermix
+    depends:
+      - libc.so.6(GLIBC_2.34)(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libGL.so.1()(64bit)
+      - libEGL.so.1()(64bit)
+      - libGLESv2.so.2()(64bit)
+      - libX11.so.6()(64bit)
+      - libxcb.so.1()(64bit)
+      - libxcb-render.so.0()(64bit)
+      - libxcb-shm.so.0()(64bit)
+      - libXext.so.6()(64bit)
+      - libXi.so.6()(64bit)
+      - libXcursor.so.1()(64bit)
+      - libXdamage.so.1()(64bit)
+      - libXfixes.so.3()(64bit)
+      - libXrandr.so.2()(64bit)
+      - libXinerama.so.1()(64bit)
+      - libXrender.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libz.so.1()(64bit)
+      - libyaml-0.so.2()(64bit)
+      - libcurl.so.4()(64bit)
+      - dconf
+      - gsettings-desktop-schemas
+      - fontconfig
+      - /usr/bin/secret-tool
+    recommends:
+      - dejavu-sans-fonts
+      - gnome-keyring
 
 contents:
-  - src: {{STAGE}}/usr/bin/fermix-desktop
-    dst: /usr/bin/fermix-desktop
+  # ---------------------------------------------------------------------------
+  # The engine's files are not listed here, and that is the point.
+  #
+  # The engine artifact carries its own `contents:` block as
+  # `nfpm-contents.yaml`, already resolved, and that block is the single author
+  # of where the engine's files go and what mode they carry.
+  # scripts/build_packages.sh splices it in below the marker on the next line,
+  # rewriting each `src:` to the verified staging directory and refusing any
+  # entry whose destination is not under a path the engine owns or collides with
+  # one of this repository's own.
+  #
+  # Restating those paths here was the alternative and is refused: an engine
+  # release that adds a packaged file, one more shell completion say, would then
+  # turn the automated version bump red until a person hand-edited this file,
+  # which is exactly the manual stitching one package exists to remove.
+  #
+  # The marker below appears exactly once and the build refuses otherwise.
+  # >>> engine contents, spliced from the verified archive
+
+  # ---------------------------------------------------------------------------
+  # The window, and the private toolkit runtime it links.
+  #
+  # The application ELF lives inside the private prefix and resolves its
+  # libraries through the RUNPATH $ORIGIN/../lib, which is the directory below
+  # it. /usr/bin/fermix-desktop is a symbolic link to it and never a wrapper
+  # script: a wrapper would mean the process the desktop sees is not the one the
+  # launcher, StartupWMClass and the activation unit all name, and it would put
+  # a library directory into an environment every child inherits.
+  #
+  # The three trees are copied wholesale because none can be named file by
+  # file: the runtime is some hundreds of shared objects, and its caches and
+  # compiled schemas are generated at build time against this exact absolute
+  # prefix. scripts/check_private_runtime.sh reads the staged tree back and
+  # holds every one of them to that.
+  #
+  # The runtime installs exactly three directories under the prefix -- lib,
+  # libexec and share -- and every one of them has to be named here. libexec was
+  # missing until 2026-09-20, and with it went two programs that are started by
+  # absolute path rather than linked: gio-launch-desktop, which GLib spawns for
+  # every g_app_info_launch_default_for_uri, and dconf-service. Nothing noticed,
+  # because a program spawned by path is not a NEEDED entry and so appears in no
+  # relation and no link check; the only symptom was that opening a URL from the
+  # window silently did nothing on an installed machine, which the owner
+  # reported as the browser never opening. scripts/check_runtime_complete.sh now
+  # holds the built package to the runtime's own file list so that a directory
+  # added to the runtime and forgotten here is a refusal rather than a feature
+  # that quietly stops working.
+  # ---------------------------------------------------------------------------
+  - src: {{STAGE}}/usr/lib/fermix-desktop/bin/fermix-desktop
+    dst: /usr/lib/fermix-desktop/bin/fermix-desktop
     file_info:
       mode: 0755
 
+  - src: {{STAGE}}/usr/lib/fermix-desktop/lib
+    dst: /usr/lib/fermix-desktop/lib
+    type: tree
+
+  - src: {{STAGE}}/usr/lib/fermix-desktop/libexec
+    dst: /usr/lib/fermix-desktop/libexec
+    type: tree
+
+  - src: {{STAGE}}/usr/lib/fermix-desktop/share
+    dst: /usr/lib/fermix-desktop/share
+    type: tree
+
+  # For a symbolic link nFPM reads `src` as the target and `dst` as the link,
+  # which is the one entry in this file where the two read backwards, so the
+  # link is named first and the target second.
+  -
+    dst: /usr/bin/fermix-desktop
+    src: ../lib/fermix-desktop/bin/fermix-desktop
+    type: symlink
+
+  # ---------------------------------------------------------------------------
+  # What the desktop reads.
+  # ---------------------------------------------------------------------------
   - src: {{STAGE}}/usr/share/applications/io.tezra.Fermix.desktop
     dst: /usr/share/applications/io.tezra.Fermix.desktop
     file_info:
@@ -82,8 +304,15 @@ contents:
     file_info:
       mode: 0644
 
-  # Eight rasters, because SVG support is explicitly optional in the icon theme
+  # Nine rasters, because SVG support is explicitly optional in the icon theme
   # specification, plus the scalable icon and its symbolic pair.
+  #
+  # This list names one file at a time, so a size added to ICON_SIZES in
+  # build_packages.sh is STAGED but not PACKAGED until it is also named here.
+  # That is the shape of the libexec defect: the staging tree was right, the
+  # package was short, and nothing failed. scripts/check_runtime_complete.sh is
+  # what catches it, by holding the built package against the tree it was built
+  # from rather than against this list.
   - src: {{STAGE}}/usr/share/icons/hicolor/16x16/apps/io.tezra.Fermix.png
     dst: /usr/share/icons/hicolor/16x16/apps/io.tezra.Fermix.png
     file_info:
@@ -124,6 +353,11 @@ contents:
     file_info:
       mode: 0644
 
+  - src: {{STAGE}}/usr/share/icons/hicolor/512x512/apps/io.tezra.Fermix.png
+    dst: /usr/share/icons/hicolor/512x512/apps/io.tezra.Fermix.png
+    file_info:
+      mode: 0644
+
   - src: {{STAGE}}/usr/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
     dst: /usr/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
     file_info:
@@ -134,6 +368,9 @@ contents:
     file_info:
       mode: 0644
 
+  # ---------------------------------------------------------------------------
+  # What this build was.
+  # ---------------------------------------------------------------------------
   # The installed build identity. The application compares the id here with the
   # one compiled into it and says nothing at all when either is absent, so the
   # two are written from one value at build time rather than by hand.
@@ -142,11 +379,25 @@ contents:
     file_info:
       mode: 0644
 
+  # Generated from packaging/runtime/RUNTIME.lock.json, one stanza per bundled
+  # component with its version, its source and its licence in full.
   - src: {{STAGE}}/usr/share/doc/fermix-desktop/copyright
     dst: /usr/share/doc/fermix-desktop/copyright
     file_info:
       mode: 0644
 
+  # The lock file plus the sha256 of every file the private runtime installed,
+  # which is what makes the licensing obligation answerable from an installed
+  # machine rather than only from this repository.
+  - src: {{STAGE}}/usr/share/doc/fermix-desktop/runtime-manifest.json
+    dst: /usr/share/doc/fermix-desktop/runtime-manifest.json
+    file_info:
+      mode: 0644
+
+# Each of these is assembled at build time from two fragments, the engine's
+# taken byte for byte out of the engine artifact and the desktop's from
+# packaging/scripts/. scripts/assemble_maintainer.sh does the assembly and
+# proves the engine half is unchanged.
 scripts:
   postinstall: {{POSTINSTALL}}
   postremove: {{POSTREMOVE}}

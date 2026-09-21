@@ -17,6 +17,7 @@ use crate::copy::{self, Key};
 use crate::management::types::SettingsPane;
 use crate::models::pane::{self, PaneRow};
 use crate::models::{Change, SettingsModel};
+use crate::ui::plain;
 
 /// The pane list, as the sidebar shows it.
 pub struct PaneList {
@@ -210,10 +211,12 @@ impl PaneList {
 
 /// One pane's row, with the chevron that says it opens something.
 fn pane_row(row: &PaneRow) -> adw::ActionRow {
-    let widget = adw::ActionRow::builder()
-        .title(copy::text(row.title))
-        .activatable(true)
-        .build();
+    let widget = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(row.title))
+            .activatable(true)
+            .build(),
+    );
     widget.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     widget
 }

@@ -1,48 +1,198 @@
 # The build container.
 #
-# The same image builds the crate locally and in CI, because GitHub's runners
-# carry a GTK below this application's floor and a green build against a newer
-# toolkit proves nothing about the one a user has. Debian trixie carries GTK and
-# libadwaita above the 4.16 / 1.6 floor, and the crate enables only the floor's
-# features, so a symbol above it is a compile error here rather than a missing
-# symbol on somebody's machine.
-FROM debian:trixie-slim
+# The same image builds the crate locally and in CI. It is AlmaLinux 9 and not
+# Debian for one reason: glibc 2.34 is the lowest floor that covers both the
+# oldest deb target and the oldest rpm target in one build, and building against
+# the oldest headers in the support matrix is what makes the host half of the
+# boundary forward compatible (amendment sections 2 and 4.2). It is the same
+# base the private toolkit is compiled on, by digest, so the two agree about
+# every header they share.
+#
+# The toolkit itself is not compiled here. It takes about an hour and is rebuilt
+# only when packaging/runtime/RUNTIME.lock.json changes, so it arrives as an
+# image: in CI the one packaging/runtime published, on a developer's machine the
+# one scripts/runtime_image.sh imports from the local build. Either way the
+# argument below names it and the copy lands at the same absolute path it will
+# occupy on a user's machine, which is what lets the crate compile against it
+# with no relocation and no special case.
+#
+# There is deliberately no host GTK and no host libadwaita development package
+# here. The crate builds against the private prefix through PKG_CONFIG_PATH, and
+# a host toolkit on this image would be a second answer to the same question.
+
+ARG RUNTIME_IMAGE=fermix-desktop-runtime-dev:local-amd64
+FROM ${RUNTIME_IMAGE} AS runtime
+
+FROM almalinux@sha256:3a3fa7f043b142bc8008c8b308d39b47d2c84008addcd52f9f9a7a82d2a90474
 
 ARG RUST_VERSION=1.97.1
 ARG NFPM_VERSION=2.47.0
 ARG NFPM_SHA256_AMD64=0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
 ARG NFPM_SHA256_ARM64=1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    CARGO_HOME=/usr/local/cargo \
+ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/lib/fermix-desktop/bin:/usr/local/cargo/bin:$PATH \
+    PKG_CONFIG_PATH=/usr/lib/fermix-desktop/lib/pkgconfig:/usr/lib/fermix-desktop/share/pkgconfig
 
-# The toolkit and its development headers, the packaging tools the release rail
-# needs, a display for the widget tests, and the small utilities the gates use.
-# Nothing here is a convenience: every line is a gate's dependency. `rpm` is here
-# for one job, reading the built rpm's own requirements back
-# (`rpm -qp --requires`), because nFPM writes no dependency it was not told to
-# write and the declaration is only worth what a machine can check it against.
-RUN apt-get update && apt-get install --no-install-recommends -y \
-      build-essential \
-      pkg-config \
-      libgtk-4-dev \
-      libadwaita-1-dev \
-      gettext \
-      appstream \
-      desktop-file-utils \
-      rpm \
-      xvfb \
-      xauth \
-      librsvg2-bin \
-      librsvg2-common \
-      webp-pixbuf-loader \
-      python3 \
-      git \
-      curl \
-      ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Both pkgconfig directories, because the toolkit uses both: 63 of its 64 .pc
+# files are in lib/pkgconfig and wayland-protocols.pc is in share/pkgconfig
+# (measured by slice 1 against the live prefix). A crate binding libgtk-4 very
+# probably never asks for wayland-protocols, which installs protocol XML and no
+# library at all, but a build image that omits the path fails with a message
+# reading like a missing dependency, and the second entry costs nothing.
+# wayland-protocols.pc exists only in the dev tree, which is one more reason the
+# RUNTIME_IMAGE above has to be the -dev tag.
+
+# `dbus-daemon` and `dbus-x11` below are for the widget test. The window reads
+# its remembered geometry through GSettings, whose dconf backend is a client of
+# a session bus, and with no bus to reach GLib falls back to a memory backend
+# that remembers nothing. The test then opens a window at GTK's own default size
+# and fails an assertion about geometry, which reads as an application bug and is
+# really a missing bus. dbus-x11 carries dbus-launch, which is the one GTK spawns.
+#
+# The toolchain the crate needs, the packaging tools the release rail needs, a
+# display for the widget tests, and the small utilities the gates use. Nothing
+# here is a convenience: every line is a gate's dependency.
+#
+# `rpm-build` is here because nFPM's rpm packager is pure Go and needs none of
+# it, but reading the built rpm's own requirements back does: `rpm -qp
+# --requires` is how the declaration is checked against a machine's answer, and
+# nFPM writes no dependency it was not told to write. There is no dpkg on this
+# image and none is wanted: scripts/package_dependencies.py answers the same
+# question by reading the ELFs, which is the only way to ask it about an rpm at
+# all, and dpkg-deb for reading the built deb back comes from the `dpkg` package
+# in EPEL rather than from a second base image.
+RUN dnf install -y --setopt=install_weak_deps=False epel-release \
+    && dnf install -y --setopt=install_weak_deps=False \
+         gcc \
+         gcc-c++ \
+         make \
+         pkgconf-pkg-config \
+         gettext \
+         desktop-file-utils \
+         appstream \
+         rpm-build \
+         dpkg \
+         xorg-x11-server-Xvfb \
+         xorg-x11-xauth \
+         dbus-daemon \
+         dbus-x11 \
+         python3 \
+         git \
+         ca-certificates \
+         tar \
+         which \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# The host half of the boundary, installed for one reason: to run the tests.
+#
+# The toolkit the image carries is only the private half. Every library in
+# section 4.1's host column is deliberately NOT in it, because the host owns
+# those, and a test binary that links the toolkit therefore cannot load on an
+# image with none of them; the first symptom is a test dying at startup with
+# "libXi.so.6: cannot open shared object file", which reads like a broken build
+# and is a missing host.
+#
+# The list is NOT written here. It is the rpm capability column of
+# scripts/host_relations.map, passed in as a build argument by the scripts that
+# build this image, and each capability is resolved to whatever package provides
+# it on this base. So the image installs exactly what the package declares a
+# user's machine will have, and the two cannot drift: there is one list, and it
+# is the one the dependency gate checks the ELFs against.
+#
+# A capability the base image already satisfies is skipped rather than named,
+# which is what keeps the curl trap from coming back: libcurl.so.4 is provided
+# by the base's libcurl-minimal, and asking for `libcurl` by name would fail the
+# build with a solver error while changing nothing.
+ARG HOST_CAPABILITIES=""
+RUN set -eux; \
+    [ -n "$HOST_CAPABILITIES" ] || { \
+      echo "HOST_CAPABILITIES is empty; this image is built by scripts/container_build.sh or scripts/build_packages.sh, which pass it from scripts/host_relations.map" >&2; \
+      exit 1; \
+    }; \
+    wanted=""; \
+    for capability in $HOST_CAPABILITIES; do \
+      if rpm -q --whatprovides "$capability" >/dev/null 2>&1; then continue; fi; \
+      package="$(dnf -q repoquery --whatprovides "$capability" --qf '%{name}' | sort -u | head -1)"; \
+      [ -n "$package" ] || { echo "nothing on this base provides $capability" >&2; exit 1; }; \
+      wanted="$wanted $package"; \
+    done; \
+    echo "host half: $wanted"; \
+    dnf install -y --setopt=install_weak_deps=False $wanted; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf
+
+# The four relations the package declares for a reason that is not a NEEDED
+# entry, so they are not in the map above: a fontconfig configuration and a
+# font, without which the toolkit starts and draws no text, and the dconf
+# service and schemas the bundled GSettings backend is a client of. The image
+# carries them for the same reason it carries the rest — to be the machine the
+# package describes.
+RUN dnf install -y --setopt=install_weak_deps=False \
+         fontconfig \
+         dejavu-sans-fonts \
+         dconf \
+         gsettings-desktop-schemas \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# The .pc files for the host half, which is a build-time need and not a runtime
+# one. The toolkit's own pkg-config files name the host's libraries in their
+# Requires and Requires.private lines — gio-2.0.pc requires zlib, gdk names gl,
+# egl and the X11 wire-protocol packages — and pkg-config resolves those before
+# it answers, so a missing host .pc makes the crate fail to configure with
+# "Package 'zlib', required by 'gio-2.0', not found". That reads like a broken
+# toolkit and is a missing header package.
+#
+# This is the exact set the toolkit's 70 .pc files name and that the private
+# prefix does not provide itself, computed rather than guessed. They are -devel
+# packages and belong only in the build image: nothing in the shipped package
+# reads a .pc file.
+RUN dnf install -y --setopt=install_weak_deps=False \
+         zlib-devel \
+         libglvnd-devel \
+         libX11-devel \
+         libxcb-devel \
+         libXext-devel \
+         libXrender-devel \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# `curl` is deliberately not on that list although two steps below need it. The
+# base image carries curl-minimal, which provides /usr/bin/curl and conflicts
+# with the full curl package, so asking for `curl` by name fails the image build
+# with a solver error rather than installing anything.
+
+# The private toolkit, at the absolute path it will have on a user's machine.
+# The dev variant: headers, .pc files and the build-time binaries the crate's
+# build.rs runs, none of which the shipped tree carries.
+COPY --from=runtime /usr/lib/fermix-desktop /usr/lib/fermix-desktop
+
+# The toolkit says which lock file it was built from, and it is checked here.
+#
+# A tag is a label somebody can point at anything, and a cache key covers the
+# lock file, the Dockerfile and the patches rather than the export — so two
+# exports of one key can differ, and one did, by a single file. An image built
+# from a stale export then carries a tag that is true about the key and false
+# about the bytes, and the place that surfaced was in front of somebody reading
+# the captures it produced. One file read settles it, here, where the fix is a
+# re-import rather than a retraction.
+ARG RUNTIME_CACHE_KEY=""
+RUN set -eux; \
+    identity=/usr/lib/fermix-desktop/share/fermix-desktop-runtime/identity.json; \
+    [ -f "$identity" ] || { \
+      echo "the toolkit carries no $identity, so it does not say which lock file produced it" >&2; \
+      exit 1; \
+    }; \
+    stamped="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cache_key"])' "$identity")"; \
+    [ -n "$stamped" ] || { echo "the toolkit's identity names no cache_key" >&2; exit 1; }; \
+    if [ -n "$RUNTIME_CACHE_KEY" ] && [ "$stamped" != "$RUNTIME_CACHE_KEY" ]; then \
+      echo "the toolkit says it was built from lock file $stamped and this build expects $RUNTIME_CACHE_KEY" >&2; \
+      exit 1; \
+    fi; \
+    echo "toolkit from lock file $stamped"
 
 # The toolchain is pinned rather than tracking stable, so the container and the
 # development machine compile the same language.
@@ -54,15 +204,14 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
     && rm /tmp/rustup.sh \
     && chmod -R a+w "$CARGO_HOME" "$RUSTUP_HOME"
 
-# nFPM builds the deb and the rpm in the packaging slice. Pinned by version and
-# checked by digest: a build tool fetched over the network and not verified is a
-# build tool somebody else can change.
+# nFPM builds the deb and the rpm. Pinned by version and checked by digest: a
+# build tool fetched over the network and not verified is a build tool somebody
+# else can change.
 RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-      amd64) asset="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"; sum="${NFPM_SHA256_AMD64}" ;; \
-      arm64) asset="nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz"; sum="${NFPM_SHA256_ARM64}" ;; \
-      *) echo "no pinned nfpm for $arch" >&2; exit 1 ;; \
+    case "$(uname -m)" in \
+      x86_64) asset="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"; sum="${NFPM_SHA256_AMD64}" ;; \
+      aarch64) asset="nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz"; sum="${NFPM_SHA256_ARM64}" ;; \
+      *) echo "no pinned nfpm for $(uname -m)" >&2; exit 1 ;; \
     esac; \
     curl --proto '=https' --tlsv1.2 -fsSL \
       "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${asset}" \
@@ -71,5 +220,54 @@ RUN set -eux; \
     tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm; \
     rm /tmp/nfpm.tar.gz; \
     nfpm --version
+
+# Every tool the gates call, by the name they call it, asserted at build time
+# rather than discovered at gate time. A package that exists under a different
+# name on this base, or a toolkit image that turned out to be the shipped tree
+# rather than the dev one, fails here with one legible line instead of failing
+# inside a build an hour later.
+RUN set -eux; \
+    for tool in cargo nfpm rpm dpkg-deb desktop-file-validate appstreamcli \
+                xvfb-run xauth python3 git tar glib-compile-resources; do \
+      command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }; \
+    done; \
+    pkg-config --modversion gtk4 libadwaita-1; \
+    pkg-config --libs --cflags gtk4 libadwaita-1 gio-2.0 >/dev/null
+
+# The two closing checks, and the reason they are two.
+#
+# `pkg-config --modversion` reads one .pc file and stops, so it answers 4.16.7
+# on an image where nothing can be compiled: the version is right there in the
+# file. `--libs --cflags` resolves Requires transitively, which is what a build
+# does, so it is the one that catches a missing host .pc. That is the line
+# above.
+#
+# This one is the other half: every NEEDED entry of the toolkit's own libraries
+# resolves on this image. A missing host library does not fail a compile, it
+# fails at load, hours later, as three test binaries exiting 127 while
+# --no-fail-fast reports nothing but "ok". Failing here costs a minute.
+RUN set -eux; \
+    missing=""; \
+    for library in /usr/lib/fermix-desktop/lib/*.so*; do \
+      [ -f "$library" ] || continue; \
+      if ldd "$library" 2>/dev/null | grep -q "not found"; then \
+        missing="$missing $(basename "$library")"; \
+        ldd "$library" | grep "not found" >&2; \
+      fi; \
+    done; \
+    [ -z "$missing" ] || { \
+      echo "these private libraries have unresolved NEEDED entries on this image:$missing" >&2; \
+      echo "the image is missing part of the host half of the boundary" >&2; \
+      exit 1; \
+    }; \
+    echo "every private library resolves on this image"
+
+# D-Bus refuses to start a bus without a machine id, and the widget test opens a
+# window, which wants a session bus. The id is generated at image build rather
+# than left to the runtime: a container with no /etc/machine-id makes GTK print
+# "Cannot spawn a message bus without a machine-id", which sends whoever reads
+# it looking for a D-Bus problem that is not there. It is a build-container id
+# and has nothing to do with the id on a user's machine.
+RUN python3 -c "import secrets; open('/etc/machine-id','w').write(secrets.token_hex(16) + '\n')"
 
 WORKDIR /workspace

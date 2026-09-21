@@ -35,6 +35,14 @@ pub const CLAMP_MAXIMUM: i32 = 660;
 /// Where the clamp starts tightening its margins.
 pub const CLAMP_TIGHTENING: i32 = 480;
 
+/// The width a dialog carrying a form opens at.
+///
+/// An alert dialog sizes itself around a sentence, which leaves entry rows
+/// squeezed and their titles wrapping against their own fields. A form is
+/// given the tightened clamp instead: the same width a page of rows is read
+/// at, so a field in a dialog is as wide as the same field in a pane.
+pub const DIALOG_FORM_WIDTH: i32 = CLAMP_TIGHTENING;
+
 /// A control row's minimum height, or the toolkit's larger natural minimum.
 /// Text growth is never clipped to it.
 pub const ROW_MINIMUM_HEIGHT: i32 = 48;

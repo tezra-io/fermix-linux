@@ -50,6 +50,13 @@ jobs:
           scripts/build_packages_test.sh
           scripts/install_smoke_test.sh
           scripts/render_install_notes_test.sh
+          scripts/engine_bump_test.sh
+          scripts/asset_name_test.sh
+          scripts/check_no_network_test.sh
+          scripts/check_copyright_test.sh
+          scripts/check_private_runtime_test.sh
+          scripts/runtime_watch_test.sh
+          packaging/runtime/build_runtime_test.sh
 
       - name: Build the container
         run: docker build -f packaging/docker/Dockerfile.build -t fermix-desktop-build packaging/docker
@@ -97,6 +104,26 @@ jobs:
             fermix-desktop-build bash -c '
               set -euo pipefail
               FERMIX_GTK_TESTS=1 xvfb-run -a cargo test --jobs 2 --test widgets -- --nocapture
+            '
+
+      # The claim that this window opens no connection, measured against the
+      # binary that was just built rather than asserted in a comment.
+      #
+      # It runs here and again in `scripts/build_packages.sh` on the release
+      # path, deliberately. The failure it catches is invisible at build time
+      # and at load time: the `g_tls_*` and `g_resolver_*` entry points are
+      # defined by libgio itself, so an application that calls one links, loads
+      # and starts, and only fails in front of a user, where the private GLib
+      # has no glib-networking backend to answer with. A gate against a failure
+      # nothing else notices is worth a second in both places.
+      - name: The application opens no network connection
+        run: |
+          set -euo pipefail
+          docker run --rm --init \
+            -v "$PWD:/workspace" -w /workspace \
+            fermix-desktop-build bash -c '
+              set -euo pipefail
+              scripts/check_no_network.sh
             '
 
       - name: The copy gates

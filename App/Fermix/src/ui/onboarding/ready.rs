@@ -22,6 +22,7 @@ use crate::models::onboarding::{OnboardingModel, Snapshot};
 use crate::models::SettingsModel;
 
 use super::Screen;
+use crate::ui::plain;
 
 /// How tall the mascot draws here. The same artwork as Welcome, at the same
 /// size: this is the other end of the same journey.
@@ -167,10 +168,12 @@ fn next_steps() -> (adw::PreferencesGroup, adw::ActionRow, adw::ActionRow) {
 
 /// A row that opens something says so with the toolkit's own affordance.
 fn opens(title: Key) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(copy::text(title))
-        .activatable(true)
-        .build();
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(title))
+            .activatable(true)
+            .build(),
+    );
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row
 }

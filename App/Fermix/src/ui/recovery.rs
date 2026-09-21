@@ -19,6 +19,7 @@ use crate::models::recovery::RecoveryModel;
 use crate::models::{spawn, Change, SettingsModel};
 
 use super::{caption, identifier_label};
+use crate::ui::plain;
 
 /// The Recovery surface.
 pub struct RecoveryPage {
@@ -37,10 +38,12 @@ pub struct RecoveryPage {
 impl RecoveryPage {
     /// Build Recovery over the one settings model.
     pub fn new(settings: Rc<SettingsModel>, recovery: Rc<RecoveryModel>) -> Rc<Self> {
-        let evidence = adw::ExpanderRow::builder()
-            .title(copy::text(Key::RecoveryEvidence))
-            .expanded(false)
-            .build();
+        let evidence = plain(
+            adw::ExpanderRow::builder()
+                .title(copy::text(Key::RecoveryEvidence))
+                .expanded(false)
+                .build(),
+        );
         let evidence_group = adw::PreferencesGroup::new();
         evidence_group.add(&evidence);
 
@@ -184,7 +187,7 @@ impl RecoveryPage {
         }
         let mut drawn = Vec::with_capacity(lines.len());
         for line in &lines {
-            let row = adw::ActionRow::builder().activatable(false).build();
+            let row = plain(adw::ActionRow::builder().activatable(false).build());
             row.add_prefix(&identifier_label(line));
             self.evidence.add_row(&row);
             drawn.push(row);

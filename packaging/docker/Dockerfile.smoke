@@ -1,44 +1,112 @@
-# The install smoke container.
+# The install smoke container, one definition for every row of the matrix.
 #
-# Not a build image: this one exists to be a machine a person could have. It runs
-# systemd as process one so there is a real user manager to install a user unit
-# into, a session bus so D-Bus activation means something, a display so the
+# Not a build image: this one exists to be a machine a person could have. It
+# runs systemd as process one so there is a real user manager to install a user
+# unit into, a session bus so D-Bus activation means something, a display so the
 # window can actually be drawn, and one ordinary account that owns none of it.
 #
-# What it can prove: that both packages install through the host package manager
-# with their declared relations satisfied, that `fermix service install` brings
-# the engine up under this account's own systemd, that the window starts against
-# the real daemon rather than a fixture, and that the window the compositor sees
-# carries the application identity. What it cannot prove is anything that needs a
-# desktop: a portal backend, a notification daemon, a shell that owns a tray
-# watcher, or a person (M38 section 13.2).
-FROM debian:trixie
+# Parameterised by base image, because the matrix in docs/RELEASING.md is the
+# oldest and the newest supported release of each family and they cannot be one
+# image. The two families install the same set of tools under different names,
+# which is the only thing the conditional below decides. AlmaLinux needs EPEL
+# for xdotool and ImageMagick; Fedora carries both in its own archive.
+#
+# What it can prove: that the one package installs through the host package
+# manager with its declared relations satisfied out of the distribution's own
+# archive, that `fermix service install` brings the engine up under this
+# account's own systemd, that the window starts against the real daemon rather
+# than a fixture, and that the window the display server sees carries the
+# application identity. What it cannot prove is anything that needs a desktop: a
+# portal backend, a notification daemon, a shell that owns a tray watcher, or a
+# person (M38 section 13.2).
+ARG BASE=ubuntu:22.04
+FROM ${BASE}
+
+# Repeated after FROM, because an ARG declared before it is out of scope
+# afterwards. WAYLAND=1 adds weston and its screenshooter, which only the newest
+# image of each family carries at a version that runs headless without a
+# backport.
+ARG WAYLAND=0
+
+# KEYRING=1 adds a Secret Service implementation, the libsecret command line and
+# python3. Only `keyring_smoke.sh` asks for it: the install matrix deliberately
+# runs without a keyring, so its rows exercise the absent-store path, and adding
+# a keyring daemon to every image would quietly change what those rows prove.
+# python3 is here because the management socket speaks 4-byte length-prefixed
+# JSON, which is a client rather than a command.
+ARG KEYRING=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     container=docker
 
+# Make this a machine a person could have, which is the whole premise above.
+#
+# The official images are minimised, and two of those minimisations silently
+# break what this gate exists to check. Ubuntu's images ship
+# /etc/dpkg/dpkg.cfg.d/excludes carrying `path-exclude=/usr/share/doc/*` with an
+# include for copyright alone, and also drop /usr/share/man/*; Fedora's images
+# set `tsflags=nodocs` in dnf.conf. Under either, a package that installs
+# /usr/share/doc/fermix-desktop/runtime-manifest.json has that file thrown away
+# at unpack time while `dpkg -L` and `rpm -ql` still list it, because the file
+# list comes from the package rather than from the disk.
+#
+# That is not hypothetical and it is not uniform: ubuntu and fedora strip,
+# debian and almalinux do not, so the same package would fail this gate on half
+# the matrix and pass on the other half, and the failure would read as a
+# packaging bug. The runtime manifest is what makes the licensing obligation of
+# amendment section 4.6 answerable from an installed machine, so a container
+# that throws it away is testing the image and not the product.
+RUN set -eux; \
+    rm -f /etc/dpkg/dpkg.cfg.d/excludes; \
+    if [ -f /etc/dnf/dnf.conf ]; then sed -i '/^tsflags=nodocs$/d' /etc/dnf/dnf.conf; fi
+
 # systemd and a session bus, because a user unit with no user manager is a file
-# nobody reads. polkit, because `loginctl enable-linger` for another account goes
-# through it. Xvfb and the two small X utilities, because the evidence this
-# produces is a picture of a window and the class that window carries.
-RUN apt-get update && apt-get install --no-install-recommends -y \
-      systemd \
-      systemd-sysv \
-      dbus \
-      dbus-user-session \
-      polkitd \
-      xvfb \
-      xauth \
-      x11-utils \
-      xdotool \
-      imagemagick \
-      procps \
-      ca-certificates \
-      sudo \
-    && rm -rf /var/lib/apt/lists/*
+# nobody reads. polkit, because `loginctl enable-linger` for another account
+# goes through it. Xvfb and the three small X utilities, because the evidence
+# this produces is a picture of a window and the class that window carries.
+#
+# One RUN, because the two families differ only in the names and in EPEL, and a
+# layer per family would make the image's contents depend on which branch ran.
+RUN set -eux; \
+    if command -v apt-get > /dev/null; then \
+      apt-get update; \
+      apt-get install --no-install-recommends -y \
+        systemd systemd-sysv dbus dbus-user-session polkitd \
+        xvfb xauth x11-utils xdotool imagemagick \
+        procps ca-certificates sudo; \
+      if [ "$WAYLAND" = "1" ]; then \
+        apt-get install --no-install-recommends -y weston; \
+      fi; \
+      if [ "$KEYRING" = "1" ]; then \
+        apt-get install --no-install-recommends -y \
+          gnome-keyring libsecret-tools python3; \
+      fi; \
+      rm -rf /var/lib/apt/lists/*; \
+    else \
+      if [ ! -f /etc/fedora-release ]; then dnf install -y epel-release; fi; \
+      dnf install -y \
+        systemd dbus dbus-daemon polkit \
+        xorg-x11-server-Xvfb xorg-x11-xauth xprop xdotool ImageMagick \
+        procps-ng ca-certificates sudo; \
+      if [ "$WAYLAND" = "1" ]; then dnf install -y weston; fi; \
+      if [ "$KEYRING" = "1" ]; then dnf install -y gnome-keyring libsecret python3; fi; \
+      dnf clean all; \
+    fi
+
+# The third minimisation, and the one that is not about documentation: the
+# AlmaLinux image masks systemd-logind.service by symlinking it to /dev/null.
+# Without logind there is no `loginctl enable-linger`, no lingering user
+# manager, and therefore nowhere for `fermix service install` to put a user
+# unit -- the product's whole arrangement. Ubuntu, Debian and Fedora mask
+# nothing, so, exactly as with the stripped documentation, the same package
+# would fail this gate on one row of the matrix for a reason that belongs to
+# the image. Removing the symlink unmasks it; the unit itself is installed.
+RUN rm -f /etc/systemd/system/systemd-logind.service
 
 # Everything a container does not need, switched off: a smoke run that waits on
-# a timesync unit is a smoke run that looks broken.
+# a timesync unit is a smoke run that looks broken. Masking a unit the image
+# does not carry writes the mask anyway and is not an error, so the list is one
+# command rather than one per family.
 RUN systemctl mask \
       systemd-udevd.service \
       systemd-udev-trigger.service \

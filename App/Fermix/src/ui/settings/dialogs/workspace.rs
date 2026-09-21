@@ -17,6 +17,9 @@ use crate::models::plugins::PluginsModel;
 use crate::models::spawn;
 use crate::ui::CaptionRow;
 
+use super::{close_if_open, form_dialog};
+use crate::ui::plain;
+
 /// The dialog one workspace is chosen in.
 pub struct WorkspaceDialog;
 
@@ -34,12 +37,14 @@ impl WorkspaceDialog {
             .iter()
             .map(|profile| profile.label.clone())
             .collect();
-        let profile = adw::ComboRow::builder()
-            .title(copy::text(Key::WorkspaceAccessProfile))
-            .model(&gtk::StringList::new(
-                &profiles.iter().map(String::as_str).collect::<Vec<&str>>(),
-            ))
-            .build();
+        let profile = plain(
+            adw::ComboRow::builder()
+                .title(copy::text(Key::WorkspaceAccessProfile))
+                .model(&gtk::StringList::new(
+                    &profiles.iter().map(String::as_str).collect::<Vec<&str>>(),
+                ))
+                .build(),
+        );
         group.add(&profile);
 
         let list = gtk::ListBox::builder()
@@ -47,12 +52,12 @@ impl WorkspaceDialog {
             .build();
         list.add_css_class("boxed-list");
         for workspace in &row.workspaces {
-            list.append(
-                &adw::ActionRow::builder()
+            list.append(&plain(
+                adw::ActionRow::builder()
                     .title(workspace.label.as_str())
                     .subtitle(workspace.id.as_str())
                     .build(),
-            );
+            ));
         }
         if let Some(first) = list.row_at_index(0) {
             list.select_row(Some(&first));
@@ -66,20 +71,19 @@ impl WorkspaceDialog {
         column.append(&list);
         column.append(&notice_group);
 
-        let dialog = adw::AlertDialog::new(Some(&copy::text(Key::WorkspaceDialogTitle)), None);
-        dialog.set_extra_child(Some(&column));
-        dialog.add_response(CANCEL, &copy::text(Key::ActionCancel));
-        dialog.add_response(CHOOSE, &copy::text(Key::ActionContinue));
-        dialog.set_response_appearance(CHOOSE, adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some(CHOOSE));
-        dialog.set_close_response(CANCEL);
-        dialog.set_response_enabled(CHOOSE, !row.workspaces.is_empty());
+        let form = form_dialog(
+            &copy::text(Key::WorkspaceDialogTitle),
+            &column,
+            &copy::text(Key::ActionContinue),
+        );
+        let dialog = form.dialog.clone();
+        // Nothing to choose from is nothing to confirm.
+        form.confirm.set_sensitive(!row.workspaces.is_empty());
 
         let name = name.to_string();
-        dialog.connect_response(None, move |dialog, response| {
-            if response != CHOOSE {
-                return;
-            }
+        let dialog_for_choose = dialog.clone();
+        form.confirm.connect_clicked(move |_| {
+            let dialog = dialog_for_choose.clone();
 
             let Some(selected) = list.selected_row().map(|row| row.index().max(0) as usize) else {
                 return;
@@ -103,7 +107,8 @@ impl WorkspaceDialog {
             spawn(async move {
                 match plugins.select_workspace(&name, &profile, &workspace).await {
                     None => {
-                        dialog.close();
+                        // Cancel may have got here first; see close_if_open.
+                        close_if_open(&dialog);
                     }
                     Some(sentence) => notice.set(Some(&sentence.text)),
                 }
@@ -113,6 +118,3 @@ impl WorkspaceDialog {
         dialog.present(Some(parent.as_ref()));
     }
 }
-
-const CANCEL: &str = "cancel";
-const CHOOSE: &str = "choose";

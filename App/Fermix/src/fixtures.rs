@@ -143,6 +143,12 @@ pub const SCENARIOS: &[(&str, &str)] = &[
         "onboarding_skew",
         include_str!("../tests/fixtures/scenarios/onboarding_skew/overrides.jsonl"),
     ),
+    // Secrets kept in the private file store, which is the one state that
+    // offers a way back to the keyring.
+    (
+        "secret_store_file",
+        include_str!("../tests/fixtures/scenarios/secret_store_file/overrides.jsonl"),
+    ),
 ];
 
 /// The scenarios that are a property of the socket rather than of a response:

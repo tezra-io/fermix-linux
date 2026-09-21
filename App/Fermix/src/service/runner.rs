@@ -5,6 +5,10 @@
 //! argv, no shell, no profile sourced, stdout and stderr captured separately
 //! and capped, one deadline per operation, and a cancellation that force-exits
 //! and reaps the child it owns and nothing else.
+//!
+//! The child's environment is the one this process was started with, not the
+//! one it currently has: the window sets a schema directory for its own private
+//! GTK and the engine must never see it. `src/runtime.rs` says why.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +21,7 @@ use gtk4::prelude::*;
 use super::types::{
     ActionResult, DiagnosticsExport, Envelope, InstallOutcome, Restart, ServiceStatus,
 };
+use crate::runtime::RuntimeEnv;
 
 /// The most either stream may produce. A child that talks past it is refused
 /// rather than allowed to grow this process without bound.
@@ -65,6 +70,7 @@ pub struct ServiceRunner {
     cli_path: PathBuf,
     read_deadline: Duration,
     mutation_deadline: Duration,
+    runtime: RuntimeEnv,
 }
 
 impl ServiceRunner {
@@ -77,7 +83,20 @@ impl ServiceRunner {
             cli_path: cli_path.into(),
             read_deadline: READ_DEADLINE,
             mutation_deadline: MUTATION_DEADLINE,
+            runtime: RuntimeEnv::unchanged(),
         }
+    }
+
+    /// The same runner, giving its children the environment this process was
+    /// started with.
+    ///
+    /// A runner built without this spawns with the environment this process
+    /// currently has, which is what a test and a development run want, because
+    /// neither sets anything to put back. The application passes the value
+    /// `main` captured, so the packaged `fermix` never inherits the private
+    /// toolkit's `GSETTINGS_SCHEMA_DIR`.
+    pub fn with_runtime_env(self, runtime: RuntimeEnv) -> Self {
+        Self { runtime, ..self }
     }
 
     /// The same runner with different deadlines.
@@ -208,11 +227,14 @@ impl ServiceRunner {
             return Err(ServiceError::Timeout);
         }
 
-        let child = gio::Subprocess::newv(
-            &argv,
-            gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
-        )
-        .map_err(ServiceError::Launch)?;
+        // Through a launcher rather than `Subprocess::newv`, which inherits
+        // this process's environment whole. The engine must see the environment
+        // this window was started with, not the one its private toolkit needs.
+        let child = self
+            .runtime
+            .launcher(gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE)
+            .spawn(&argv)
+            .map_err(ServiceError::Launch)?;
 
         // Cancelling force-exits this child and nothing else, which closes its
         // pipes and ends the reads. The handler is disconnected on every path,

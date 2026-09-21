@@ -40,7 +40,7 @@ contract there is what puts it under the pin.
 
 ## The re-vendor recipe
 
-Four steps and a verification. `<fermix>` is a checkout of the engine at the
+Five steps and a verification. `<fermix>` is a checkout of the engine at the
 commit you are pinning.
 
 ```sh
@@ -69,6 +69,11 @@ $EDITOR "$DST/SOURCE.json"
 # 4. Verify, including against upstream itself.
 scripts/verify_contract.sh --source "$FERMIX"
 cd App/Fermix && cargo test --test contract
+
+# 5. Re-take every capture, because many of them are drawn from the goldens you
+#    just replaced. No arguments: all of them, and each one's INDEX.md row is
+#    rewritten with it.
+scripts/capture.sh --container
 ```
 
 Step 4 is the one that matters. `verify_contract.sh` alone proves the two
@@ -78,6 +83,27 @@ verified with.
 
 If `cargo test --test contract` then fails, the engine changed a shape this
 client decodes. Fix the client, never the vendored file.
+
+Step 5 is not tidying. Many captures answer `setup.state.get` straight from the
+vendored fixtures — 29 of the 46 capture references, measured on 2026-09-20 —
+and the panes they draw hide a row entirely when its field is absent rather
+than drawing it wrong. So a capture taken after a field moves shows a group
+missing, which a reviewer sees at once, and a capture taken before it moved
+shows the old row perfectly and proves nothing while still looking like
+evidence that somebody checked.
+
+Re-take all of them, and never a chosen subset. Which captures depend on the
+golden changes with the method that moved, so any list of "the affected ones"
+is right on the day it is written and silently wrong afterwards — and being
+silently wrong here produces exactly the stale capture the step exists to
+prevent. `scripts/capture.sh --container` with no further arguments takes every
+capture and rewrites each one's row in `docs/design/captures/INDEX.md`.
+
+Re-taking also sends the reviewer and decision columns of every capture it
+touches back to `pending`, which is the point rather than a side effect: a new
+image has not been looked at, and the index should not claim otherwise. Expect
+the review pass that follows a re-vendor to be a real one. Nothing enforces
+this step yet, so it is on you.
 
 One more audience runs over the same records: `scripts/verify_contract.sh
 --release`, which the release rail runs and which turns the `committed_upstream`
@@ -96,11 +122,18 @@ scripts/verify_contract.sh          scripts/verify_contract_test.sh
 scripts/check_app_identity.sh       scripts/check_app_identity_test.sh
 scripts/check_copy.sh               scripts/check_copy_test.sh
 scripts/check_vendor_marks.sh       scripts/check_vendor_marks_test.sh
+scripts/check_no_network.sh         scripts/check_no_network_test.sh
+scripts/check_copyright.sh          scripts/check_copyright_test.sh
+scripts/check_private_runtime.sh    scripts/check_private_runtime_test.sh
 scripts/container_build.sh          scripts/container_build_test.sh
 scripts/build_packages.sh           scripts/build_packages_test.sh
 scripts/verify_engine.sh            scripts/verify_engine_test.sh
+scripts/engine_bump.py              scripts/engine_bump_test.sh
+scripts/asset_name.sh               scripts/asset_name_test.sh
+scripts/runtime_watch.py            scripts/runtime_watch_test.sh
 scripts/install_smoke.sh            scripts/install_smoke_test.sh
 scripts/render_install_notes.sh     scripts/render_install_notes_test.sh
+packaging/runtime/build_runtime.sh  packaging/runtime/build_runtime_test.sh
 ```
 
 Two scripts have no harness of their own, deliberately. `scripts/render_icons.sh`
@@ -122,9 +155,13 @@ is a change in four places at once, and the gates hold them together:
 - a file added or removed joins `INSTALLED_PATHS` in `App/Fermix/tests/packaging.rs`
   and the `contents:` list in `packaging/nfpm-fermix-desktop.yaml.tmpl`, or the
   suite fails;
-- a new dependency is declared in both families in that same template, and
-  `scripts/build_packages.sh` then checks the declaration against what the built
-  binary actually needs;
+- a new host dependency is declared in both families in that same template, and
+  `scripts/package_dependencies.py` then checks that nothing in the package
+  links outside `/usr/lib/fermix-desktop` except to a declared host relation;
+- a new bundled library joins `packaging/runtime/RUNTIME.lock.json` with its
+  licence, or `scripts/check_copyright.sh` fails, and the runtime image key
+  changes so `runtime.yml` rebuilds and republishes the image before any package
+  build can pull it;
 - the application identity goes in every place `scripts/check_app_identity.sh`
   lists, which is now all six of them;
 - a change to `App/Fermix/resources/icons/` is followed by
@@ -147,14 +184,29 @@ cd ../..
 scripts/container_build.sh
 ```
 
+`cargo test` on its own does **not** run the widget suite: it needs a display
+and runs only with `FERMIX_GTK_TESTS=1`, which `scripts/container_build.sh` and
+`scripts/build_packages.sh` set for you. A skipped widget run and a passing one
+both print `1 passed`, and the only thing separating them is the duration —
+`finished in 0.00s` is a skip, not a pass. To be certain it executed, run it
+with `-- --nocapture` and confirm the `skipped:` line is absent.
+
 If the change touches `packaging/`, `engine/PIN.json` or anything under
-`scripts/`, build both packages too, which runs every gate above inside the
-container and then checks the declaration against the built binary:
+`scripts/`, build the package too, which runs every gate above inside the
+container, and install it on the floor:
 
 ```sh
+export DOCKER_HOST=unix:///var/run/docker.sock
+
 FERMIX_DESKTOP_BUILD_ID=local-1 \
 FERMIX_DESKTOP_SOURCE_COMMIT=$(git rev-parse HEAD) \
   scripts/build_packages.sh <version> <amd64|arm64> --container
+
+scripts/install_smoke.sh --image ubuntu:22.04 packaging/out/packages/fermix-desktop_<version>_amd64.deb
 ```
+
+A tree with no pinned engine is not buildable, because the package contains the
+engine. On a machine with no Elixir, build one from the engine checkout and pass
+it: `docs/RELEASING.md` has the two commands.
 
 Say which gates are not applicable and why. Never mark work done without proof.

@@ -2,12 +2,17 @@ name: release-fermix-desktop
 
 # One tag, two architectures, two package families, one release page.
 #
-# The tag is `fermix-desktop-vX.Y.Z` and nothing else. A version containing `-`
-# or `:` is refused before anything is built, because neither package may ever
-# carry a Debian revision or an rpm epoch: that is what makes
-# `Depends: fermix (= <v>)` and `Requires: fermix = <v>` mean the same thing in
-# both families (M38 section 2.2). One consequence is worth stating rather than
-# discovering: a prerelease tag produces no packages at all.
+# The tag is `fermix-desktop-vX.Y.Z` or `fermix-desktop-vX.Y.Z+N` and nothing
+# else. `+N` is a desktop-only rebuild: a toolkit CVE, a copy fix, a packaging
+# fix (amendment section 6.4). A version containing `-` or `:` is refused before
+# anything is built, because neither package may carry a Debian revision or an
+# rpm epoch, so a prerelease tag produces no packages at all.
+#
+# The package carries the engine and a private GTK4 runtime, so a release is
+# four things assembled rather than one thing compiled: the runtime image
+# published for the current lock file, the signed engine archive the pin names,
+# the crate, and the packaging. Each has its own job and each refuses on its own
+# terms.
 #
 # Everything is built inside packaging/docker/Dockerfile.build, because the
 # runner images carry a GTK below this application's floor and a green build
@@ -19,7 +24,7 @@ name: release-fermix-desktop
 on:
   push:
     tags:
-      - "fermix-desktop-v*.*.*"
+      - "fermix-desktop-v*"
 
 permissions:
   contents: read
@@ -32,9 +37,11 @@ jobs:
   version:
     name: The version this tag names
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.read.outputs.version }}
-      engine_pin: ${{ steps.read.outputs.engine_pin }}
+      engine_version: ${{ steps.read.outputs.engine_version }}
+      runtime_key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -53,17 +60,19 @@ jobs:
 
           case "$version" in
             *-*)
-              echo "::error::$version carries a Debian revision, and neither package may. A packaging fix is published as the next version."
+              echo "::error::$version carries a Debian revision, and neither package may. A desktop-only fix is published as X.Y.Z+N."
               exit 1
               ;;
             *:*)
-              echo "::error::$version carries an rpm epoch, and neither package may. A packaging fix is published as the next version."
+              echo "::error::$version carries an rpm epoch, and neither package may. A desktop-only fix is published as X.Y.Z+N."
               exit 1
               ;;
           esac
 
-          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::$version is not X.Y.Z"
+          # X.Y.Z, or X.Y.Z+N for a desktop-only rebuild. Both orders correctly
+          # in dpkg and in rpm, which is the whole reason `+` was chosen.
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?$'; then
+            echo "::error::$version is neither X.Y.Z nor X.Y.Z+N"
             exit 1
           fi
 
@@ -80,11 +89,40 @@ jobs:
             exit 1
           fi
 
+          # The engine is inside the package now, so an unpinned pin is not a
+          # release with a missing half: it is not buildable at all.
           state="$(bash -c 'source scripts/engine_pin.sh; engine_pin_state engine/PIN.json')"
+          if [ "$state" != "pinned" ]; then
+            echo "::error::engine/PIN.json is $state, and the package carries the engine. There is nothing to build."
+            exit 1
+          fi
+          engine_version="$(bash -c 'source scripts/engine_pin.sh; engine_pin_field engine/PIN.json engine_version')"
+
+          # A `+N` rebuild carries the same engine as the X.Y.Z it rebuilds, so
+          # the pin's version is the part before the `+`.
+          if [ "${version%%+*}" != "$engine_version" ]; then
+            echo "::error::the pin names engine $engine_version and the tag names $version"
+            exit 1
+          fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "engine_pin=$state" >> "$GITHUB_OUTPUT"
-          echo "fermix-desktop $version, engine pin $state"
+          echo "engine_version=$engine_version" >> "$GITHUB_OUTPUT"
+          echo "fermix-desktop $version, carrying engine $engine_version"
+
+      # The runtime image's tag, computed exactly as runtime.yml computes it, so
+      # the tag that workflow publishes and the tag this one expects are one
+      # string. Nothing is built here: a runtime compile is an hour per
+      # architecture and belongs to runtime.yml.
+      - name: The runtime key this lock file names
+        id: key
+        run: |
+          set -euo pipefail
+          # Asked of the script that owns the key rather than recomputed here, so
+          # the tag runtime.yml publishes and the tag this run expects cannot
+          # drift. It needs no Docker daemon.
+          key="$(packaging/runtime/build_runtime.sh --print-key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "runtime key $key"
 
       # The release audience of the contract pin. A contract vendored from an
       # engine working tree rather than from a commit pins bytes nobody else can
@@ -92,10 +130,112 @@ jobs:
       - name: The vendored contracts came from committed engine bytes
         run: scripts/verify_contract.sh --release
 
+      # A published release is never re-cut. The engine repository refuses it in
+      # `refuse_published_release.sh` and this rail refuses it for the same
+      # reason: the assets a person has already downloaded are the release, and
+      # replacing them under the same tag makes every recorded digest a lie.
+      - name: Refuse a tag that is already published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)"
+            if [ "$draft" = "false" ]; then
+              echo "::error::$TAG is already published. Publish the fix as the next version."
+              exit 1
+            fi
+            echo "::notice::$TAG has a draft release, which this run replaces"
+          fi
+
+  runtime:
+    name: The private runtime this build links
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # Both architectures, because a release that found one and not the other
+      # would fail an hour later in a build job whose error names a missing
+      # directory rather than a missing image.
+      - name: Both architectures are published for this key
+        env:
+          KEY: ${{ needs.version.outputs.runtime_key }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          # Both tags per architecture, not one. The runtime workflow publishes
+          # <key>-<arch>, whose entire content is the installed prefix, and
+          # <key>-<arch>-dev, which carries the development headers the build
+          # image links against. The package build consumes the -dev tag, so a
+          # gate that only looked for the first would pass in a state where
+          # nothing can be built.
+          for arch in amd64 arm64; do
+            for tag in "${KEY}-${arch}" "${KEY}-${arch}-dev"; do
+              image="ghcr.io/tezra-io/fermix-desktop-runtime:${tag}"
+              docker buildx imagetools inspect "$image" >/dev/null 2>&1 || {
+                echo "::error::$image is not published. Run the runtime workflow on this commit first: it builds and pushes both tags for this lock file, and it takes about an hour per architecture."
+                exit 1
+              }
+              echo "$image"
+            done
+          done
+
+  # One job, both targets, because verifying the engine needs cosign and a token
+  # and the rule that a file has no standing until it is verified is easiest to
+  # hold when one job is the only thing that writes a staging tree.
+  engine:
+    name: The engine this package carries
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Download the pinned engine archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch_engine.sh engine/PIN.json engine-download
+
+      # The pin is the only authority: the .sha256 sidecar beside an asset is
+      # written by the same release that wrote the asset, so a re-cut release
+      # carries a sidecar that agrees with itself and with nothing we decided.
+      # Verified here as a gate of its own, and verified again by
+      # build_packages.sh before it unpacks. The download is what travels,
+      # because the build script is the thing that decides what it unpacks and
+      # a staging tree handed to it would be a tree it did not verify itself.
+      - name: Verify them against the pin
+        run: |
+          set -euo pipefail
+          scripts/verify_engine.sh engine/PIN.json engine-download \
+            --staging engine-staging
+          rm -rf engine-staging
+
+      - name: Upload the verified archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: engine-download
+          path: engine-download/*
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build (${{ matrix.arch }})
-    needs: version
+    needs: [version, runtime, engine]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +246,18 @@ jobs:
             arch: arm64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Collect the verified engine
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: engine-download
+          path: engine-download
+
+      - name: Sign in to the registry the runtime image is in
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       # The build id is this run, and the same value is compiled into the binary
       # and written into the manifest the package installs, so the window's
@@ -119,6 +271,11 @@ jobs:
           arch: ${{ matrix.arch }}
           build-id: ${{ github.sha }}
           source-commit: ${{ github.sha }}
+          engine-download: engine-download
+          # The -dev tag, which carries the development headers the build
+          # image links the crate against. The tag without it is the installed
+          # prefix alone and is what the package ships.
+          runtime-image: ghcr.io/tezra-io/fermix-desktop-runtime:${{ needs.version.outputs.runtime_key }}-${{ matrix.arch }}-dev
           artifact-name: packages-${{ matrix.arch }}
           retention-days: "1"
 
@@ -126,6 +283,7 @@ jobs:
     name: Sign
     needs: [version, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -139,21 +297,61 @@ jobs:
           merge-multiple: true
           path: packages
 
+      # The written offer, built from the lock file and nothing else. The script
+      # fetches whatever it does not already have from each component's locked
+      # URL and checks every file against the recorded sha256 on both paths, so
+      # the archive is a function of RUNTIME.lock.json rather than of what some
+      # earlier run happened to leave in a cache.
+      #
+      # There is deliberately no cache restore here. An actions/cache entry is
+      # evicted after seven days unread, and this lock file sits unchanged for
+      # months at a time, so a cache would be cold on exactly the releases that
+      # matter: a rarely exercised fast path is the path that breaks.
+      #
+      # The version is an argument, and the script enforces its shape and not
+      # its value, so it is given the same variable the packages were built
+      # from and the name it produced is then required exactly below.
+      - name: Assemble the runtime sources tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/runtime/package_sources.sh "$VERSION" --out packages
+
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
-      - name: Sign, hash, and verify every package
+      # Four packages, counted rather than globbed into whatever arrived, and
+      # the runtime sources tarball beside them.
+      #
+      # That tarball is the written offer LGPL 2.1 is satisfied by (amendment
+      # section 4.6), and it is signed with the same identity as the packages,
+      # because a source offer nobody can verify is not an offer.
+      - name: Sign, hash, and verify every artifact
         env:
           CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release-fermix-desktop.yml@refs/tags/${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(packages/fermix-desktop_*.deb packages/fermix-desktop-*.rpm)
-          if [ "${#artifacts[@]}" -ne 4 ]; then
-            echo "::error::Expected two debs and two rpms, found ${#artifacts[@]}"
+          packages=(packages/fermix-desktop_*.deb packages/fermix-desktop-*.rpm)
+          if [ "${#packages[@]}" -ne 4 ]; then
+            echo "::error::Expected two debs and two rpms, found ${#packages[@]}"
             exit 1
           fi
-          for artifact in "${artifacts[@]}"; do
+          # Named exactly, not globbed. The script takes the version as an
+          # argument and enforces its shape rather than its value, so the one
+          # thing that binds the offer to these packages is that this rail asks
+          # for the version it built and refuses anything else.
+          sources="packages/fermix_desktop_runtime_sources_${VERSION}.tar.gz"
+          if [ ! -f "$sources" ]; then
+            echo "::error::No $sources. It is the written offer the bundled LGPL components are shipped under, and this release may not go out without it."
+            exit 1
+          fi
+          stray=(packages/fermix_desktop_runtime_sources_*.tar.gz)
+          if [ "${#stray[@]}" -ne 1 ]; then
+            echo "::error::Found ${#stray[@]} runtime sources tarballs, and a release carries one"
+            exit 1
+          fi
+          for artifact in "${packages[@]}" "$sources"; do
             cosign sign-blob --yes \
               --output-signature "${artifact}.sig" \
               --output-certificate "${artifact}.pem" \
@@ -168,7 +366,7 @@ jobs:
               "$artifact"
           done
 
-      - name: Upload the signed packages
+      - name: Upload the signed artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: signed-packages
@@ -177,58 +375,31 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  engine:
-    name: The engine packages this release is paired with
-    needs: version
-    if: needs.version.outputs.engine_pin == 'pinned'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-
-      # The engine lives in another repository, so this needs a token that can
-      # read its releases. The workflow token reaches a public one; a private
-      # engine repository needs a token supplied to the release-linux
-      # environment instead, and the download fails by name rather than quietly
-      # producing an empty directory.
-      - name: Download the pinned engine packages
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/fetch_engine.sh engine/PIN.json engine-packages
-
-      # The pin is the only authority: the .sha256 sidecar beside an asset is
-      # written by the same release that wrote the asset, so a re-cut release
-      # carries a sidecar that agrees with itself and with nothing we decided.
-      - name: Verify them against the pin
-        run: scripts/verify_engine.sh engine/PIN.json engine-packages
-
-      - name: Upload them
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: engine-packages
-          path: engine-packages/*
-          if-no-files-found: error
-          retention-days: 1
-
+  # The matrix of amendment section 8.4, corrected to the releases that are
+  # supported today. The floors stay floors: ubuntu:22.04 is the oldest deb
+  # target and almalinux:9 is the oldest rpm target and the glibc floor the
+  # build base sets. The newest of each family draws the window a second time on
+  # a headless Weston, because Xvfb proves nothing about the private
+  # libwayland-client and that is the component whose failure mode is a window
+  # that never appears.
   verify:
-    name: Install smoke (${{ matrix.arch }})
-    needs: [version, sign, engine]
-    # `always()` so a release with an unpinned engine, where the engine job is
-    # skipped, still runs this. A failed engine job is still a failed release.
-    if: always() && needs.sign.result == 'success' && needs.engine.result != 'failure'
+    name: Install smoke (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: [version, sign]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: amd64
-            engine_arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-            engine_arch: arm64
+          - { image: "ubuntu:22.04", family: deb, arch: amd64, runner: ubuntu-24.04, wayland: false }
+          - { image: "ubuntu:22.04", family: deb, arch: arm64, runner: ubuntu-24.04-arm, wayland: false }
+          - { image: "ubuntu:24.04", family: deb, arch: amd64, runner: ubuntu-24.04, wayland: false }
+          - { image: "ubuntu:24.04", family: deb, arch: arm64, runner: ubuntu-24.04-arm, wayland: false }
+          - { image: "ubuntu:26.04", family: deb, arch: amd64, runner: ubuntu-24.04, wayland: true }
+          - { image: "debian:12", family: deb, arch: amd64, runner: ubuntu-24.04, wayland: false }
+          - { image: "debian:13", family: deb, arch: amd64, runner: ubuntu-24.04, wayland: false }
+          - { image: "almalinux:9", family: rpm, arch: x86_64, runner: ubuntu-24.04, wayland: false }
+          - { image: "fedora:44", family: rpm, arch: x86_64, runner: ubuntu-24.04, wayland: true }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -238,91 +409,136 @@ jobs:
           name: signed-packages
           path: packages
 
-      - name: Collect the engine packages
-        if: needs.version.outputs.engine_pin == 'pinned'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: engine-packages
-          path: engine-packages
-
-      - name: Install both packages on a machine with a systemd
+      - name: Install it on a machine with a systemd
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
           ARCH: ${{ matrix.arch }}
-          ENGINE_PIN: ${{ needs.version.outputs.engine_pin }}
+          WAYLAND: ${{ matrix.wayland }}
         run: |
           set -euo pipefail
-          desktop="packages/fermix-desktop_${VERSION}_${ARCH}.deb"
-          [ -f "$desktop" ] || { echo "::error::no $desktop"; exit 1; }
-
-          if [ "$ENGINE_PIN" = "pinned" ]; then
-            engine="$(ls engine-packages/fermix_*_${ARCH}.deb)"
+          if [ "$FAMILY" = "deb" ]; then
+            package="packages/fermix-desktop_${VERSION}_${ARCH}.deb"
           else
-            engine="-"
-            echo "::notice::The engine pin is unpinned, so the smoke installs the desktop package alone. What it cannot prove is the exact-version relation between the two packages, which is the whole reason they are published together."
+            package="packages/fermix-desktop-${VERSION}-1.${ARCH}.rpm"
           fi
+          [ -f "$package" ] || { echo "::error::no $package"; exit 1; }
 
-          scripts/install_smoke.sh "$engine" "$desktop"
+          wayland=()
+          [ "$WAYLAND" != "true" ] || wayland=(--wayland)
+          scripts/install_smoke.sh --image "$IMAGE" "${wayland[@]}" "$package"
 
       - name: Upload the evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: smoke-${{ matrix.arch }}
+          name: smoke-${{ matrix.family }}-${{ matrix.arch }}-${{ strategy.job-index }}
           path: packaging/out/smoke/*
           if-no-files-found: warn
           retention-days: 7
 
   publish:
     name: Publish
-    needs: [version, sign, engine, verify]
-    if: always() && needs.verify.result == 'success'
+    needs: [version, sign, verify]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     environment: release-linux
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Collect the signed packages
+      - name: Collect the signed artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: signed-packages
           path: release
 
-      - name: Collect the engine packages
-        if: needs.version.outputs.engine_pin == 'pinned'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: engine-packages
-          path: release
+      # Checked again here, and not only in `version`, because everything
+      # between the two took an hour and the state that matters is the one at
+      # the moment of writing.
+      - name: Refuse a tag that is already published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [ "$draft" = "false" ]; then
+            echo "::error::$TAG is already published. Publish the fix as the next version."
+            exit 1
+          fi
 
-      # One release page that carries everything an installer needs: both halves
-      # of the pair, both families, both architectures, and one page of
-      # instructions that names the exact commands.
+      # One release page that carries everything an installer needs: one package
+      # per family per architecture, the runtime sources tarball, every sidecar,
+      # and one page of instructions naming the exact commands.
       - name: Render the install instructions
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          ENGINE_PIN: ${{ needs.version.outputs.engine_pin }}
         run: |
           set -euo pipefail
-          engine_version=""
-          if [ "$ENGINE_PIN" = "pinned" ]; then
-            engine_version="$(bash -c 'source scripts/engine_pin.sh; engine_pin_field engine/PIN.json version')"
-          fi
-          scripts/render_install_notes.sh "$VERSION" "$ENGINE_PIN" "$engine_version" > release/INSTALL.md
+          scripts/render_install_notes.sh "$VERSION" > release/INSTALL.md
           cat release/INSTALL.md
 
+      # Every published name goes through the one function that owns the `+` of
+      # a desktop-only rebuild, so the name on the page and the name a
+      # downloader asks for cannot diverge (amendment section 6.4).
+      - name: Name every asset the way a downloader will ask for it
+        run: |
+          set -euo pipefail
+          source scripts/asset_name.sh
+          mkdir -p upload
+          for file in release/*; do
+            name="$(asset_name "$file")"
+            cp -- "$file" "upload/$name"
+          done
+          ls -1 upload
+
+      # `--latest` because this repository publishes one product and the newest
+      # tag is the one a person should download. It was false while the engine's
+      # own release page was the primary one and this page carried half a pair;
+      # one package per family means this page is the product.
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
+            --repo "$REPO" \
             --title "Fermix for Linux $VERSION" \
             --notes-file release/INSTALL.md \
-            --latest=false \
-            release/*
+            --latest \
+            upload/*
+
+      # What the dry run of docs/RELEASING.md exists to answer, asserted on
+      # every release rather than only on the dry run: the name the page carries
+      # is the name `gh release download --pattern` finds. A `+` that GitHub
+      # rewrote would fail here, at the end of the rail, rather than in front of
+      # a person following the install instructions.
+      - name: Ask for every asset back by name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source scripts/asset_name.sh
+          mkdir -p downloaded
+          for file in upload/*; do
+            pattern="$(asset_pattern "$file")"
+            gh release download "$TAG" --repo "$REPO" --dir downloaded \
+              --pattern "$pattern" || {
+              echo "::error::the release page does not carry an asset named $pattern, so the name published and the name asked for have diverged. docs/RELEASING.md says what to change."
+              exit 1
+            }
+            cmp -s "$file" "downloaded/$pattern" || {
+              echo "::error::$pattern downloaded back as different bytes"
+              exit 1
+            }
+          done
+          echo "every asset is downloadable under the name it was published as"

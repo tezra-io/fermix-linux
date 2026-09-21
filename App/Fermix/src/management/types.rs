@@ -205,6 +205,28 @@ pub struct SetupStateResult {
     pub features: SetupFeatures,
     pub profile: Option<String>,
     pub coexistence: SetupCoexistence,
+    /// Where secrets live and whether one can be stored right now.
+    ///
+    /// Absent on an engine that predates the row, which is not the same as
+    /// knowing there is no store: one says nothing has been said, the other
+    /// would be a claim nobody made.
+    #[serde(default)]
+    pub secrets: Option<SetupSecrets>,
+}
+
+/// The two secret-store facts, which one field could not carry.
+///
+/// A locked keyring is `store: "keyring"` with `availability: "locked"`, and
+/// a home on the file store is `availability: "ready"` whatever the keyring
+/// is doing, because that is what consenting to it bought. Answering both
+/// with one enum is the collapse this work exists to undo.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetupSecrets {
+    /// Where values live. `keyring` or `file`, never null and never "none".
+    pub store: String,
+    /// Whether a secret can be stored now: `ready`, `locked` or
+    /// `unavailable`.
+    pub availability: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -476,6 +498,15 @@ pub struct SecretResult {
     /// Presence, never a value. Secrets travel inbound only.
     pub present: bool,
     pub restart: RestartState,
+    /// Which store took it, so a client never infers that from what it asked
+    /// for. Absent on an engine that predates the field.
+    ///
+    /// `secret.clear` carries it too, and reports rather than decides: the
+    /// store a home uses should not appear and disappear between two calls
+    /// about the same secret, and forgetting one secret is not a decision
+    /// about where the next one goes.
+    #[serde(default)]
+    pub store: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1144,39 @@ pub struct SecretSetParams {
     /// Inbound only, and never blank: a blank value is refused before it is
     /// sent, in the one dialog that owns a secret entry.
     pub value: String,
+    /// Which store to write to. Absent means the keyring.
+    ///
+    /// Sending `file` IS the owner's consent, carried per call: there is no
+    /// persisted flag this application sets and no automatic fallback, so a
+    /// value can only reach the file store from a button that said so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<&'static str>,
+    /// Whether the engine should wait for the owner to finish unlocking.
+    ///
+    /// Absent rather than `false` when it was not asked for, so an engine that
+    /// predates the parameter sees exactly the request it saw before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unlock: Option<bool>,
+}
+
+/// `secret.migrate_to_keyring`: move every file-stored secret back.
+///
+/// It takes no value and names no secret, which is the point: the owner cannot
+/// retype what this application cannot read, so the way home moves what the
+/// engine already holds.
+#[derive(Debug, Clone, Serialize)]
+pub struct SecretMigrateParams {
+    pub unlock: bool,
+}
+
+/// What the migration moved.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecretMigrateResult {
+    /// The secrets that reached the keyring, by id. Empty when none had to.
+    #[serde(default)]
+    pub moved: Vec<String>,
+    /// Where values live now.
+    pub store: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

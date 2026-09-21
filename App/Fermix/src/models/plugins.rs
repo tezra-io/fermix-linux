@@ -465,6 +465,7 @@ impl PluginsModel {
             .map(|failure| Sentence {
                 code: None,
                 text: failure.sentence,
+                reason: None,
             });
 
         if let Some(sentence) = failure {

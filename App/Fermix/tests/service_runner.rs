@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use fermix_desktop::runtime::{RuntimeEnv, SCHEMA_DIR_VARIABLE};
 use fermix_desktop::service::runner::{ServiceError, OUTPUT_CEILING};
 use fermix_desktop::service::types::{ActionKind, ActionScope, Alignment, BindingState, Linger};
 use fermix_desktop::service::ServiceRunner;
@@ -61,10 +62,33 @@ fn wrappers() -> &'static std::path::Path {
             .expect("the wrapper is written");
             make_executable(&wrapper);
         }
+
+        // One more stand-in, written here for the same reason the others are:
+        // it answers with the environment it was given rather than from a
+        // state, which is how the environment gate below reads what a child
+        // actually saw.
+        let probe = root.join(ENVIRONMENT_PROBE);
+        std::fs::write(
+            &probe,
+            format!(
+                "#!/bin/sh\nprintf '{{\"schema_version\":1,\"ok\":false,\
+                 \"error\":{{\"code\":\"environment\",\"sentence\":\"%s\"}}}}' \
+                 \"${{{SCHEMA_DIR_VARIABLE}-{UNSET}}}\"\nexit 1\n"
+            ),
+        )
+        .expect("the probe is written");
+        make_executable(&probe);
     });
 
     root
 }
+
+/// The stand-in that answers with the environment it was handed.
+const ENVIRONMENT_PROBE: &str = "environment-probe";
+
+/// What the probe prints when the variable is not set at all, which is a
+/// different answer from an empty one.
+const UNSET: &str = "unset";
 
 /// A command line answering from one state, without this process's environment
 /// being touched.
@@ -442,6 +466,52 @@ fn a_command_line_that_cannot_run_is_a_launch_failure() {
         Err(ServiceError::Launch(_)) => {}
         other => panic!("expected a launch failure, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The environment the engine is spawned with
+// ---------------------------------------------------------------------------
+
+/// The sentence the probe answered with, which is the value of the one variable
+/// the private toolkit runtime sets.
+fn variable_seen_by_the_child(runtime: RuntimeEnv) -> String {
+    let runner = ServiceRunner::new(wrappers().join(ENVIRONMENT_PROBE)).with_runtime_env(runtime);
+
+    let refused = MainContext::new().block_on(async { runner.status(&uncancelled()).await });
+
+    match refused {
+        Err(ServiceError::Refused { code, sentence }) => {
+            assert_eq!(code, "environment", "the probe answered something else");
+            sentence
+        }
+        other => panic!("the probe did not answer: {other:?}"),
+    }
+}
+
+#[test]
+fn the_engine_is_spawned_with_the_environment_this_process_started_with() {
+    // The failure this gate exists for: the window sets a schema directory for
+    // its own private GTK, the engine inherits it, and every GSettings read the
+    // engine makes resolves against a toolkit it was not built against. The
+    // child gets the value the session had, or none where the session had none.
+    let session_value = "/usr/share/gnome/glib-2.0/schemas";
+
+    assert_eq!(
+        variable_seen_by_the_child(RuntimeEnv::restoring(vec![(
+            SCHEMA_DIR_VARIABLE.to_string(),
+            Some(session_value.to_string()),
+        )])),
+        session_value
+    );
+
+    assert_eq!(
+        variable_seen_by_the_child(RuntimeEnv::restoring(vec![(
+            SCHEMA_DIR_VARIABLE.to_string(),
+            None,
+        )])),
+        UNSET,
+        "a variable the session never set must reach the engine unset"
+    );
 }
 
 // ---------------------------------------------------------------------------

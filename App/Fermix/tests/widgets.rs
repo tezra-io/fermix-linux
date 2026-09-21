@@ -6,6 +6,7 @@
 //! in the container it runs under `xvfb-run`.
 
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adw::prelude::*;
@@ -17,16 +18,25 @@ use fermix_desktop::metrics;
 use fermix_desktop::models::api::ManagementApi;
 use fermix_desktop::models::onboarding::Stage;
 use fermix_desktop::models::peer::FixturePeer;
+use fermix_desktop::models::secret_store::{StoreKind, StoreRefusal};
+use fermix_desktop::models::settings_model::Sentence;
 use fermix_desktop::models::{pane, SettingsModel};
 use fermix_desktop::paths::Paths;
+use fermix_desktop::runtime::RuntimeEnv;
 use fermix_desktop::service::runner::ServiceRunner;
 use fermix_desktop::session::state::{self, WindowState, STATE_DIRECTORY_OVERRIDE};
 use fermix_desktop::testing::TempDirectory;
 use fermix_desktop::ui::settings::descriptor_row::{DescriptorRow, Placement};
+use fermix_desktop::ui::settings::dialogs::form_dialog;
+use fermix_desktop::ui::settings::dialogs::secret::{
+    migration_refusal, store_dialog, store_refusal_dialog, CANCEL, RETRY, STORE_ON_THIS_COMPUTER,
+    UNLOCK,
+};
 use fermix_desktop::ui::widgets::mark;
 use fermix_desktop::window::FermixWindow;
 use gtk4 as gtk;
 use gtk4::gio;
+use gtk4::glib;
 use gtk4::glib::MainContext;
 use libadwaita as adw;
 
@@ -49,6 +59,23 @@ fn the_shell_opens_and_answers_the_keyboard() {
         return;
     }
 
+    // Every warning the toolkit emits during the walk is collected, so a
+    // surface that draws correctly while complaining underneath does not pass
+    // as correct. The owner's journal showed two of these; a suite that only
+    // looks at widget state would never have seen them.
+    let complaints: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let collected = Arc::clone(&complaints);
+        glib::log_set_default_handler(move |domain, level, message| {
+            if matches!(level, glib::LogLevel::Warning | glib::LogLevel::Critical) {
+                collected
+                    .lock()
+                    .expect("the collector is not poisoned")
+                    .push(format!("{}: {message}", domain.unwrap_or("?")));
+            }
+        });
+    }
+
     let state_directory = TempDirectory::new("widgets-state");
     // One test in this binary, set before anything reads it: the window's
     // geometry comes from here rather than from the person running the suite.
@@ -65,7 +92,8 @@ fn the_shell_opens_and_answers_the_keyboard() {
 
     adw::init().expect("libadwaita starts");
 
-    let application = FermixApplication::new(Paths::resolve_from(None, None));
+    let application =
+        FermixApplication::new(Paths::resolve_from(None, None), RuntimeEnv::unchanged());
 
     // The program name is the application id, because that is where X11 takes a
     // window's WM_CLASS from and the launcher entry matches StartupWMClass
@@ -121,12 +149,21 @@ fn the_shell_opens_and_answers_the_keyboard() {
     the_pane_list_filters_on_what_the_daemon_publishes(&window);
     the_selected_pane_survives_leaving_and_returning(&window);
     one_restart_action_across_pane_changes(&window);
+    back_belongs_to_the_content_page(&window);
     the_trailing_edge_never_carries_more_than_three(&window);
+    the_window_controls_are_drawn_once_in_both_widths(&window);
+    closing_an_unpresented_dialog_is_what_the_journal_saw(&complaints);
+    a_second_close_is_what_the_journal_saw(&window, &complaints);
+    no_pane_leaves_a_paragraph_in_the_open(&window);
+    a_folded_statement_can_be_opened_and_read(&window);
+    no_row_parses_its_words_as_markup(&window);
+    a_form_dialog_opens_wide_enough_to_fill_in();
     a_text_row_commits_on_enter_and_reverts_on_escape(&window, &peer);
     a_toggle_row_commits_on_selection(&window, &peer);
     a_read_only_row_has_no_control_to_operate(&window);
     a_list_row_writes_the_whole_list(&window, &peer);
     every_icon_the_application_names_resolves();
+    the_bundled_icon_theme_reaches_the_search_path();
 
     every_pane_fits_the_narrowest_window(&window);
     every_page_fits_the_narrowest_window(&window);
@@ -143,7 +180,329 @@ fn the_shell_opens_and_answers_the_keyboard() {
     the_assistant_answers_enter_and_escape(&window);
     leaving_the_assistant_puts_the_window_back(&window);
 
+    each_store_refusal_offers_only_what_it_can_do();
+    the_secret_store_row_says_where_keys_live_and_offers_the_way_back(&window, &peer, &model);
+    no_refused_store_answers_with_silence();
+    no_refused_migration_answers_with_silence();
+
     closing_records_the_geometry(&window, state_directory.path());
+
+    // Said last, so every surface has been through the walk before it is read.
+    // Two complaints belong to the container, not to the product: there is no
+    // session bus and no passwd entry for this uid inside it. They are named
+    // rather than filtered by level, so a real warning cannot hide behind a
+    // blanket exemption.
+    const ENVIRONMENTAL: [&str; 2] = ["the session bus could not be reached", "getpwuid_r()"];
+
+    let complained: Vec<String> = complaints
+        .lock()
+        .expect("the collector is not poisoned")
+        .iter()
+        .filter(|line| !ENVIRONMENTAL.iter().any(|known| line.contains(known)))
+        .cloned()
+        .collect();
+    assert!(
+        complained.is_empty(),
+        "the toolkit complained {} time(s) while the surfaces were walked: {:#?}",
+        complained.len(),
+        complained
+    );
+}
+
+/// Each store refusal offers exactly the actions that can work on it, and
+/// every caption sits under the action it describes.
+///
+/// This is the design the owner's complaint produced, twice over. The old
+/// dialog offered one next action for three situations and it was wrong for
+/// all of them; the first version of this one stacked both captions above all
+/// three buttons, so "the key will be saved in a file" read as a thing that
+/// would happen whichever button you pressed. A caption that does not touch
+/// its own action is ambiguous however true its words are.
+fn each_store_refusal_offers_only_what_it_can_do() {
+    let locked = store_dialog(StoreRefusal::KeyringLocked, false, &store_sentence());
+    let offers = actions_with_captions(&locked);
+    assert_eq!(
+        offers,
+        vec![
+            (
+                UNLOCK.to_string(),
+                copy::text(Key::ActionUnlockKeyring),
+                copy::text(Key::SecretKeyringUnlockHint),
+            ),
+            (
+                STORE_ON_THIS_COMPUTER.to_string(),
+                copy::text(Key::ActionStoreOnThisComputer),
+                copy::text(Key::SecretStoreFileTradeoff),
+            ),
+        ],
+        "the locked dialog's captions do not follow their own actions, in order"
+    );
+    assert!(
+        locked.has_response(CANCEL),
+        "there is no way out without choosing"
+    );
+
+    let absent = store_dialog(StoreRefusal::NoKeyring, false, &store_sentence());
+    assert_eq!(
+        actions_with_captions(&absent),
+        vec![(
+            STORE_ON_THIS_COMPUTER.to_string(),
+            copy::text(Key::ActionStoreOnThisComputer),
+            copy::text(Key::SecretStoreFileTradeoff),
+        )],
+        "the absent-keyring dialog should offer the file store and say what it costs"
+    );
+    assert!(
+        !actions_with_captions(&absent)
+            .iter()
+            .any(|(name, _, _)| name == UNLOCK),
+        "there is no keyring here to unlock, so the button cannot work"
+    );
+
+    let hung = store_dialog(StoreRefusal::HelperDidNotAnswer, false, &store_sentence());
+    assert!(
+        actions_with_captions(&hung).is_empty(),
+        "a hung helper needs no caption: nothing is being chosen"
+    );
+    assert!(
+        hung.has_response(RETRY),
+        "a helper that did not answer may answer next time"
+    );
+    assert!(
+        !hung.has_response(UNLOCK),
+        "nothing is locked when a helper merely hung"
+    );
+
+    // Giving up on the unlock is not a third state: the same dialog comes
+    // back with the same two actions, so the owner is never stranded.
+    let gave_up = store_dialog(StoreRefusal::KeyringLocked, true, &store_sentence());
+    assert_eq!(
+        actions_with_captions(&gave_up).len(),
+        2,
+        "giving up dropped one of the two ways forward"
+    );
+    assert_eq!(
+        gave_up.body(),
+        copy::text(Key::SecretKeyringUnlockGaveUp),
+        "the cap passed and the dialog does not say so"
+    );
+}
+
+/// Every offered action in this dialog, as (response name, button, caption).
+///
+/// Walks the extra child the way a person reads it: top to bottom, each
+/// action with the words printed under it. A caption that drifted away from
+/// its button, or an action that lost its caption, changes this list.
+fn actions_with_captions(dialog: &adw::AlertDialog) -> Vec<(String, String, String)> {
+    let Some(extra) = dialog.extra_child() else {
+        return Vec::new();
+    };
+
+    let mut offers = Vec::new();
+    let mut group = extra.first_child();
+    while let Some(row) = group {
+        let button = row
+            .first_child()
+            .and_then(|child| child.downcast::<gtk::Button>().ok());
+        let caption = row
+            .last_child()
+            .and_then(|child| child.downcast::<gtk::Label>().ok());
+        if let (Some(button), Some(caption)) = (button, caption) {
+            offers.push((
+                button.widget_name().to_string(),
+                button.label().unwrap_or_default().to_string(),
+                caption.label().to_string(),
+            ));
+        }
+        group = row.next_sibling();
+    }
+    offers
+}
+
+fn no_refused_store_answers_with_silence() {
+    // What an engine that predates `store` answers when the button sends it:
+    // not a store refusal at all, so the code that only knows store refusals
+    // drew nothing and the owner's click vanished. This is the owner's report.
+    let stale = Sentence {
+        code: Some("invalid_params".into()),
+        text: "Request parameters are invalid.".into(),
+        reason: None,
+    };
+    let told = store_refusal_dialog(&stale, false);
+    assert!(
+        !told.body().is_empty(),
+        "a refused store answered with silence"
+    );
+    assert_eq!(
+        told.body().as_str(),
+        stale.text,
+        "an unrecognised refusal is shown in the daemon's own words"
+    );
+
+    // A refusal this build does know still gets its own words and its offers.
+    let locked = Sentence {
+        code: Some("secret_store_failed".into()),
+        text: "The daemon said so.".into(),
+        reason: Some("locked".into()),
+    };
+    assert_eq!(
+        store_refusal_dialog(&locked, false)
+            .heading()
+            .unwrap_or_default(),
+        copy::text(Key::SecretKeyringLockedTitle),
+        "a locked keyring should be named, not merely quoted"
+    );
+}
+
+fn no_refused_migration_answers_with_silence() {
+    let locked = Sentence {
+        code: Some("secret_store_failed".into()),
+        text: "The daemon said so.".into(),
+        reason: Some("locked".into()),
+    };
+    assert_eq!(
+        migration_refusal(&locked).heading().unwrap_or_default(),
+        copy::text(Key::SecretKeyringLockedTitle),
+        "a locked keyring should be named, not merely quoted"
+    );
+
+    // An engine that has not got the verb yet, which is the case that bit me.
+    let absent = Sentence {
+        code: Some("method_not_found".into()),
+        text: "This daemon does not know that method.".into(),
+        reason: None,
+    };
+    let told = migration_refusal(&absent);
+    assert_eq!(
+        told.body(),
+        absent.text,
+        "a refusal this build has no words for is still shown, in the daemon's"
+    );
+    assert!(
+        told.has_response(CANCEL),
+        "the owner is left with no way to dismiss it"
+    );
+}
+
+/// The Settings row names the store, and offers the way home only from away.
+///
+/// The way back is the half that does not exist without this row: a keyring
+/// write only happens when a secret is saved, and the owner cannot retype a
+/// value the application cannot read, so an owner who unlocked an hour later
+/// would otherwise have no route home at all.
+fn the_secret_store_row_says_where_keys_live_and_offers_the_way_back(
+    window: &FermixWindow,
+    peer: &Rc<FixturePeer>,
+    model: &Rc<SettingsModel>,
+) {
+    let label = copy::text(Key::SecretStoreRowLabel);
+
+    // Published nothing: an engine that predates the field has not said there
+    // is no store, so the row states nothing rather than guessing.
+    publish_store(window, peer, model, None);
+    assert!(
+        visible_rows_titled(window, &label).is_empty(),
+        "a row appeared for a store the engine never named"
+    );
+
+    for (published, expected) in [
+        ("keyring", Key::SecretStoreDesktopKeyring),
+        ("file", Key::SecretStoreThisComputer),
+    ] {
+        publish_store(window, peer, model, Some(published));
+
+        let rows = visible_rows_titled(window, &label);
+        assert_eq!(rows.len(), 1, "{published} drew no secret store row");
+        let named = rows[0]
+            .clone()
+            .downcast::<adw::ActionRow>()
+            .expect("the store row states its store as a subtitle")
+            .subtitle()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            named,
+            copy::text(expected),
+            "{published} is named as something else"
+        );
+
+        let offered = button_labelled(window, &copy::text(Key::ActionUseKeyringInstead))
+            .is_some_and(|button| button.is_visible());
+        assert_eq!(
+            offered,
+            published == "file",
+            "{published} offers the way back to the keyring when it should not, or not when it should"
+        );
+    }
+}
+
+/// The rows a person can actually see with this title.
+fn visible_rows_titled(window: &FermixWindow, title: &str) -> Vec<adw::PreferencesRow> {
+    rows_titled(window, &[title])
+        .into_iter()
+        .filter(gtk::prelude::WidgetExt::is_visible)
+        .collect()
+}
+
+/// The first button under the window carrying these words, where there is one.
+fn button_labelled(window: &FermixWindow, label: &str) -> Option<gtk::Button> {
+    descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .and_then(gtk::prelude::ButtonExt::label)
+            .is_some_and(|found| found == label)
+    })
+    .into_iter()
+    .find_map(|widget| widget.downcast::<gtk::Button>().ok())
+}
+
+/// Publish one `store` on the setup snapshot and let the pane redraw.
+fn publish_store(
+    window: &FermixWindow,
+    peer: &Rc<FixturePeer>,
+    model: &Rc<SettingsModel>,
+    store: Option<&str>,
+) {
+    let mut state = peer.result("setup.state.get", None);
+    match store {
+        Some(store) => {
+            state["secrets"] = serde_json::json!({
+                "store": store,
+                "availability": "ready",
+            });
+        }
+        None => {
+            state.as_object_mut().map(|state| state.remove("secrets"));
+        }
+    }
+    peer.set_result("setup.state.get", None, state);
+
+    // Settle first, or this read is refused and nothing says so. The model
+    // allows four reads at once, earlier surfaces in this test leave reads in
+    // flight, and a refused `refresh_setup` returns `Ok(())` having done
+    // nothing — so without this the model keeps its previous answer and every
+    // assertion below reports on a state nobody published.
+    settle();
+    MainContext::default().block_on(model.refresh_setup());
+
+    // The refresh is a precondition of the assertions, so it is checked here
+    // rather than left to be discovered as a confusing failure in the caller.
+    assert_eq!(
+        model.secret_store_kind(),
+        store.and_then(StoreKind::of),
+        "the published store never reached the model: the read was refused"
+    );
+
+    show_pane(window, SettingsPane::Permissions);
+    settle();
+}
+
+fn store_sentence() -> Sentence {
+    Sentence {
+        code: Some("fixture".into()),
+        text: "The daemon said so.".into(),
+        reason: None,
+    }
 }
 
 /// No page asks for more width than the narrowest window can give it.
@@ -422,23 +781,61 @@ fn the_permissions_pane_is_the_seven_rights_and_the_platform_fact(window: &Fermi
         "one expander per right, and nothing prompts to draw them"
     );
 
+    // The fact is folded now: the pane carries its lead and the paragraph is
+    // in the popover. Both halves are asserted, because a fold that lost the
+    // text would look exactly like a fold that kept it.
     assert!(
-        rows_titled(window, &[&copy::text(Key::PermissionsPlatformFact)]).len() == 1,
+        rows_titled(window, &[&copy::text(Key::PermissionsPlatformFactLead)]).len() == 1,
         "the platform fact is stated once, underneath them all"
     );
+    assert!(
+        folded_paragraphs(window).contains(&copy::text(Key::PermissionsPlatformFact)),
+        "folding the platform fact dropped the fact"
+    );
+}
+
+/// Every paragraph held in a popover on the pane on screen.
+fn folded_paragraphs(window: &FermixWindow) -> Vec<String> {
+    descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+        widget.is::<gtk::MenuButton>()
+    })
+    .into_iter()
+    .filter_map(|widget| {
+        let button = widget.downcast::<gtk::MenuButton>().ok()?;
+        let label = button.popover()?.child()?.downcast::<gtk::Label>().ok()?;
+        Some(label.text().to_string())
+    })
+    .collect()
 }
 
 /// Both statements are above the controls, in the catalogue's own words.
 fn the_voice_pane_states_both_things_above_its_controls(window: &FermixWindow) {
     show_pane(window, SettingsPane::Voice);
 
-    for key in [Key::VoiceCompanionStatement, Key::VoiceMicrophoneStatement] {
-        assert_eq!(
-            rows_titled(window, &[&copy::text(key)]).len(),
-            1,
-            "{key:?} is rendered verbatim, once"
-        );
-    }
+    // The companion statement is two lines, so it stays in the pane.
+    assert_eq!(
+        rows_titled(window, &[&copy::text(Key::VoiceCompanionStatement)]).len(),
+        1,
+        "the companion statement is rendered verbatim, once"
+    );
+
+    // The microphone statement is the seven-line one the owner complained
+    // about. It is folded: its lead is on the pane and the paragraph is whole
+    // inside the popover, still verbatim, still exactly once.
+    assert_eq!(
+        rows_titled(window, &[&copy::text(Key::VoiceMicrophoneLead)]).len(),
+        1,
+        "the microphone lead is rendered verbatim, once"
+    );
+    let folded = folded_paragraphs(window);
+    assert_eq!(
+        folded
+            .iter()
+            .filter(|text| *text == &copy::text(Key::VoiceMicrophoneStatement))
+            .count(),
+        1,
+        "the microphone statement is whole in the popover, once"
+    );
 }
 
 /// Every mark the bundle ships decodes on this host.
@@ -565,6 +962,36 @@ fn fake_cli() -> std::path::PathBuf {
 
 fn geometry_is_restored(window: &FermixWindow, remembered: &WindowState) {
     let (width, height) = window.default_size();
+
+    // Said before the comparison, because the comparison's own failure is
+    // misleading. GTK clamps a window to the screen it is on, and Xvfb defaults
+    // to 640x480, which is smaller than every geometry this test remembers. The
+    // bare assertion then reports left (640, 480) right (900, 620), which reads
+    // as the window state feature being broken and is a display that is too
+    // small. Two people have now lost time to that, so the test says which it
+    // is rather than leaving it to be rediscovered.
+    if (width, height) != (remembered.width, remembered.height) {
+        let screen = gtk::gdk::Display::default()
+            .and_then(|display| display.monitors().item(0))
+            .and_downcast::<gtk::gdk::Monitor>()
+            .map(|monitor| {
+                let area = monitor.geometry();
+                (area.width(), area.height())
+            });
+
+        if let Some((screen_width, screen_height)) = screen {
+            assert!(
+                screen_width >= remembered.width && screen_height >= remembered.height,
+                "the display is {screen_width}x{screen_height} and this test remembers a \
+                 {}x{} window, so GTK clamped it to the screen and the geometry was never \
+                 the thing under test. Give the display a real size, for example \
+                 xvfb-run -s \"-screen 0 1280x1024x24\"",
+                remembered.width,
+                remembered.height
+            );
+        }
+    }
+
     assert_eq!((width, height), (remembered.width, remembered.height));
 
     let (minimum_width, minimum_height) = window.size_request();
@@ -1013,7 +1440,428 @@ fn one_restart_action_across_pane_changes(window: &FermixWindow) {
     WidgetExt::activate_action(window, "win.back", None).expect("back runs");
 }
 
+/// Collapsed, the split shows the content column, and the window controls are
+/// drawn exactly once.
+///
+/// A header per page means two headers, and both ask for the close and
+/// minimise buttons on both sides: measured, each one's `shows-start-title-
+/// buttons` and `shows-end-title-buttons` read true. Only one set is drawn,
+/// because the toolkit empties the controls of a header that is not at the
+/// window's edge. So this counts what is on screen rather than what was asked
+/// for, and it records that the arrangement survives the collapse, where the
+/// sidebar page unmaps and the content page inherits the edge.
+fn the_window_controls_are_drawn_once_in_both_widths(window: &FermixWindow) {
+    let split = descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+        widget.is::<adw::NavigationSplitView>()
+    })
+    .into_iter()
+    .next()
+    .and_then(|widget| widget.downcast::<adw::NavigationSplitView>().ok())
+    .expect("the window is built around a split view");
+
+    for collapsed in [false, true] {
+        split.set_collapsed(collapsed);
+        if collapsed {
+            split.set_show_content(true);
+        }
+        settle();
+
+        assert!(
+            !collapsed || split.shows_content(),
+            "collapsed, the split left the person on the sidebar"
+        );
+
+        let drawn = descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+            widget
+                .downcast_ref::<gtk::WindowControls>()
+                .is_some_and(|controls| !controls.is_empty() && controls.is_mapped())
+        });
+        assert_eq!(
+            drawn.len(),
+            1,
+            "collapsed={collapsed}: the close and minimise buttons are drawn {} times",
+            drawn.len()
+        );
+    }
+
+    split.set_collapsed(false);
+    settle();
+}
+
+/// A dialog carrying a form opens at a width a form can be read in.
+///
+/// `adw::AlertDialog` sizes itself around a sentence and a row of buttons, so
+/// a preferences group put inside one opens at roughly the width of the
+/// message it was built for: entry rows arrive squeezed, and their titles wrap
+/// against their own fields. A form belongs in `adw::Dialog`, which takes a
+/// content width, with the actions on a header bar rather than in a response
+/// strip.
+/// No paragraph is left sitting in a pane: nothing wraps past two lines.
+///
+/// The owner asked for the UI to be cleaner and named a description that
+/// filled the Voice page. One rule rather than three judgements: a label that
+/// renders more than two lines at the default width belongs behind the (i),
+/// where someone who wants it can open it and everyone else is not made to
+/// scroll past it. `over_two_lines` is the rule itself, so the planted case
+/// below can put it to the same question the panes are put to.
+fn no_pane_leaves_a_paragraph_in_the_open(window: &FermixWindow) {
+    for row in pane::PANES {
+        show_pane(window, row.pane);
+        settle();
+
+        let offenders = over_two_lines(window.upcast_ref::<gtk::Widget>());
+        assert!(
+            offenders.is_empty(),
+            "{:?} leaves {} paragraph(s) in the open, the worst at {} lines: {}",
+            row.pane,
+            offenders.len(),
+            offenders[0].1,
+            offenders[0].0.chars().take(60).collect::<String>()
+        );
+    }
+
+    // The control. A rule that cannot fail is not a rule, and this one is
+    // only ever read through a green suite, so it states its own teeth: a
+    // planted paragraph in a real pane must be caught by the same call that
+    // just passed. Without this, deleting the walk's body would look
+    // identical to obeying it.
+    let planted = gtk::Label::builder()
+        .label(PLANTED_PARAGRAPH)
+        .wrap(true)
+        // Wrapped at a pane's width, so the planted case is put to the rule
+        // under the conditions the panes themselves are measured under.
+        .max_width_chars(PLANTED_WRAP_CHARS)
+        .build();
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.append(&planted);
+    let probe = adw::Window::builder()
+        .default_width(metrics::WINDOW_DEFAULT_WIDTH)
+        .content(&holder)
+        .build();
+    probe.present();
+    settle();
+    let caught = over_two_lines(probe.upcast_ref::<gtk::Widget>());
+    probe.close();
+    assert!(
+        !caught.is_empty(),
+        "the rule let a planted paragraph through, so its green means nothing"
+    );
+}
+
+/// Every mapped wrapping label rendering more than two lines, with its count.
+fn over_two_lines(root: &gtk::Widget) -> Vec<(String, i32)> {
+    descendants(root, &|widget| {
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.wraps() && label.is_mapped())
+    })
+    .into_iter()
+    .filter_map(|widget| {
+        let label = widget.downcast::<gtk::Label>().ok()?;
+        let lines = label.layout().line_count();
+        (lines > 2).then(|| (label.text().to_string(), lines))
+    })
+    .collect()
+}
+
+/// The width the planted paragraph is wrapped at, in characters.
+const PLANTED_WRAP_CHARS: i32 = 40;
+
+/// Long enough to wrap past two lines at any width this product opens at.
+const PLANTED_PARAGRAPH: &str = "This sentence exists only to be too long. It \
+is planted by the test that forbids paragraphs in panes, so that the \
+forbidding can be seen to work rather than merely reported as working. It is \
+this long on purpose: a control that only fails at a narrow width would pass \
+at a wide one and take the rule's credibility with it, so it runs past two \
+rendered lines at every width this product can be opened at, which is the \
+only property a control of this kind needs to have and the only one it \
+claims. Anything shorter would be a control that agrees with the rule by \
+accident rather than one that puts the rule to a question it could fail.";
+
+/// The (i) a folded statement hides behind is reachable and readable.
+///
+/// Folding a paragraph away is only an improvement if it can still be got at.
+/// A suffix button that the Tab order skips, or that announces itself as
+/// "button" with no word about what it explains, would have moved the text
+/// out of sight for everyone who does not use a mouse rather than tidied it
+/// for everyone.
+fn a_folded_statement_can_be_opened_and_read(window: &FermixWindow) {
+    show_pane(window, SettingsPane::Voice);
+    settle();
+
+    let button = descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+        widget.is::<gtk::MenuButton>()
+    })
+    .into_iter()
+    .filter_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+    // The pane carries other menu buttons; this is the one holding the
+    // statement, chosen by what is inside it rather than by walk order.
+    .find(|button| {
+        button
+            .popover()
+            .and_then(|popover| popover.child())
+            .and_then(|child| child.downcast::<gtk::Label>().ok())
+            .is_some_and(|label| label.text() == copy::text(Key::VoiceMicrophoneStatement))
+    })
+    .expect("the folded statement carries a button");
+
+    // A MenuButton delegates focus to the toggle it wraps, so the container
+    // itself reads as not focusable while Tab still reaches the control. The
+    // claim is that something here takes focus, which is what a person using
+    // the keyboard actually needs.
+    let takes_focus = button.is_focusable()
+        || !descendants(button.upcast_ref::<gtk::Widget>(), &|widget| {
+            widget.is_focusable()
+        })
+        .is_empty();
+    assert!(takes_focus, "the (i) is in the keyboard's order");
+
+    // The accessible name is set where the row is built, in
+    // `folded_statement_row`. It is deliberately not asserted here: this
+    // binding offers `update_property` and no reader, so any assertion the
+    // test could make would be about something other than the property, and
+    // a check that agrees with itself is worse than an absent one.
+    assert_eq!(
+        button.accessible_role(),
+        gtk::AccessibleRole::Button,
+        "the (i) presents itself as a control, not as decoration"
+    );
+
+    let popover = button.popover().expect("the (i) carries its popover");
+    let body = popover
+        .child()
+        .and_then(|child| child.downcast::<gtk::Label>().ok())
+        .expect("the popover holds the paragraph");
+
+    assert_eq!(
+        body.text(),
+        copy::text(Key::VoiceMicrophoneStatement),
+        "the popover holds the statement whole"
+    );
+    assert!(
+        body.is_selectable(),
+        "the paragraph can be selected to quote"
+    );
+    assert!(body.wraps(), "the paragraph wraps rather than running off");
+
+    // Opening and leaving it again, the way a person does.
+    button.popup();
+    settle();
+    assert!(popover.is_visible(), "the (i) opens");
+    popover.popdown();
+    settle();
+    assert!(!popover.is_visible(), "escape leaves the paragraph");
+}
+
+/// Closing a dialog that is not presented is what the owner's journal saw.
+///
+/// The journal on the owner's machine carried "Trying to close AdwAlertDialog
+/// … that's not presented" twice. This pins what produces that line, so the
+/// reading of the secret flow below it is checking for the right shape rather
+/// than for a guess: a second close on a dialog already gone.
+fn closing_an_unpresented_dialog_is_what_the_journal_saw(complaints: &Mutex<Vec<String>>) {
+    let before = complaints
+        .lock()
+        .expect("the collector is not poisoned")
+        .len();
+
+    let dialog = adw::AlertDialog::new(None, Some("probe"));
+    dialog.add_response("cancel", "Cancel");
+    dialog.set_close_response("cancel");
+    // Never presented, so this close has nothing to close.
+    dialog.close();
+    settle();
+
+    let after: Vec<String> = complaints
+        .lock()
+        .expect("the collector is not poisoned")
+        .iter()
+        .skip(before)
+        .cloned()
+        .collect();
+    assert!(
+        after.iter().any(|line| line.contains("not presented")),
+        "closing an unpresented dialog did not produce the journal's line: {after:#?}"
+    );
+
+    // Taken back out, so the probe's own complaint does not fail the gate.
+    complaints
+        .lock()
+        .expect("the collector is not poisoned")
+        .retain(|line| !line.contains("not presented"));
+}
+
+/// A second close on a dialog already gone produces the journal's line.
+///
+/// Measured, against the two other shapes it could have been. Presenting and
+/// closing within one turn of the loop does not complain, so the cause is not
+/// a close that outran its presentation. Closing twice does. That is the
+/// shape a dialog has when a person cancels it while a write is in flight and
+/// the write then closes it on success, which is why `close_if_open` exists
+/// and why the flows that spawn a write past their own dialog use it.
+fn a_second_close_is_what_the_journal_saw(window: &FermixWindow, complaints: &Mutex<Vec<String>>) {
+    let before = complaints
+        .lock()
+        .expect("the collector is not poisoned")
+        .len();
+
+    let dialog = adw::AlertDialog::new(None, Some("probe"));
+    dialog.present(Some(window.upcast_ref::<gtk::Widget>()));
+    settle();
+    dialog.close();
+    settle();
+    // The second close: presented once, already gone, closed again. This is
+    // the shape a dialog gets when a person cancels it while a write is in
+    // flight and the write then closes it on success.
+    dialog.close();
+    settle();
+
+    let mut held = complaints.lock().expect("the collector is not poisoned");
+    let said = held
+        .iter()
+        .skip(before)
+        .any(|line| line.contains("not presented"));
+    held.retain(|line| !line.contains("not presented"));
+    drop(held);
+
+    assert!(
+        said,
+        "a second close no longer complains, so the journal's line has another cause \
+         and the guard below is guarding nothing"
+    );
+}
+
+/// No row on any pane renders its words as markup.
+///
+/// `adw::PreferencesRow::use-markup` defaults to true and governs the title
+/// and the subtitle alike, so a row built the ordinary way asks Pango to
+/// parse whatever it is given. Most of what these rows carry comes from the
+/// daemon: a path, a command line, a journal line. An `&` in any of it is not
+/// an entity, so Pango fails the parse and the row renders wrong or empty.
+/// Escaping at each site would be one forgotten call away from the same bug,
+/// so the property is turned off instead, and this walks every row that a
+/// person can reach to say that none of them was missed.
+fn no_row_parses_its_words_as_markup(window: &FermixWindow) {
+    let mut checked = 0;
+    for row in pane::PANES {
+        show_pane(window, row.pane);
+        settle();
+
+        for widget in descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+            widget.is::<adw::PreferencesRow>()
+        }) {
+            let reached = widget
+                .downcast::<adw::PreferencesRow>()
+                .expect("the walk selected preferences rows");
+            assert!(
+                !reached.uses_markup(),
+                "{:?} has a row still parsing its title as markup: {}",
+                row.pane,
+                reached.title()
+            );
+            checked += 1;
+        }
+    }
+
+    // A walk that reached nothing would pass this for the wrong reason.
+    assert!(checked > 0, "the walk found no rows to check at all");
+}
+
+fn a_form_dialog_opens_wide_enough_to_fill_in() {
+    let group = adw::PreferencesGroup::new();
+    group.add(&adw::EntryRow::builder().title("Identifier").build());
+
+    let form = form_dialog(
+        &copy::text(Key::OAuthClientDialogTitle),
+        &group,
+        &copy::text(Key::ActionContinue),
+    );
+
+    assert_eq!(
+        form.dialog.content_width(),
+        metrics::DIALOG_FORM_WIDTH,
+        "a form dialog opens at the form width"
+    );
+    assert!(
+        form.dialog.content_width() >= metrics::CLAMP_TIGHTENING,
+        "a form narrower than a tightened clamp is the squeeze this replaced"
+    );
+
+    // Both ways out are offered, and the one that writes is the suggested one.
+    assert_eq!(
+        form.confirm.label().unwrap_or_default(),
+        copy::text(Key::ActionContinue)
+    );
+    assert!(
+        form.confirm.has_css_class("suggested-action"),
+        "the response that writes is the suggested one"
+    );
+    assert_eq!(
+        form.cancel.label().unwrap_or_default(),
+        copy::text(Key::ActionCancel)
+    );
+
+    // Escape still cancels and Enter still writes, as they did when the
+    // response strip owned the default. A form whose Enter did nothing would
+    // be a regression nobody sees until they type a key and press it.
+    assert!(form.dialog.can_close(), "escape closes the form dialog");
+    assert_eq!(
+        form.dialog.default_widget().map(|widget| widget.type_()),
+        Some(form.confirm.type_()),
+        "enter presses the response that writes"
+    );
+    assert!(
+        form.dialog
+            .default_widget()
+            .is_some_and(|widget| widget == form.confirm.clone().upcast::<gtk::Widget>()),
+        "enter presses the response that writes"
+    );
+}
+
 /// The trailing edge of the header bar never carries more than three children.
+/// Back sits with the content it returns from, not at the window's edge.
+///
+/// One header spanning the whole window put Back at the far leading corner,
+/// a sidebar's width away from where the content starts, and left that corner
+/// empty whenever there was no Back to show. A header per navigation page puts
+/// each one's controls at its own leading edge, which is what the Mac does
+/// with `ToolbarItem(placement: .navigation)` and what the toolkit expects of
+/// a split view.
+fn back_belongs_to_the_content_page(window: &FermixWindow) {
+    WidgetExt::activate_action(window, "win.settings", None).expect("settings shows");
+    settle();
+
+    let back = descendants(window.upcast_ref::<gtk::Widget>(), &|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .and_then(|button| button.icon_name())
+            .is_some_and(|icon| icon == "go-previous-symbolic")
+    })
+    .into_iter()
+    .collect::<Vec<_>>();
+    // The window owns exactly one back control. A second would mean the
+    // toolkit's automatic one came back in a page header.
+    assert_eq!(back.len(), 1, "one back control, not the toolkit's spares");
+    let back = back.into_iter().next().expect("the back button is built");
+
+    let page = back
+        .ancestor(adw::NavigationPage::static_type())
+        .and_then(|widget| widget.downcast::<adw::NavigationPage>().ok())
+        .expect("back sits inside a navigation page rather than the window header");
+
+    // The content page's title follows whichever pane is showing, so the
+    // claim is about which page owns the button rather than about its words:
+    // the sidebar page is the one it must not be in.
+    assert_ne!(
+        page.title(),
+        copy::text(Key::ProductName),
+        "back belongs to the content page, not the sidebar"
+    );
+
+    WidgetExt::activate_action(window, "win.home", None).expect("home shows");
+    settle();
+}
+
 fn the_trailing_edge_never_carries_more_than_three(window: &FermixWindow) {
     for action in ["win.home", "win.doctor", "win.logs", "win.settings"] {
         WidgetExt::activate_action(window, action, None).expect("the page shows");
@@ -1305,4 +2153,47 @@ fn count_labelled(root: &gtk::Widget, label: &str) -> usize {
     let mut found = 0;
     walk(root, label, &mut found);
     found
+}
+
+/// The bundled Adwaita theme is reachable once it is named.
+///
+/// GTK builds its icon search path from `XDG_DATA_DIRS` and the user's own data
+/// directory, never from the prefix it was compiled with, so a packaged build
+/// that does not name the bundled theme opens a window with no icons in it and
+/// nothing reports why. Slice 1's runtime smoke proved that the compiled-in
+/// prefix does not carry the icons; this proves the application's repair works
+/// against the live display.
+///
+/// A directory of this test's own making rather than the real prefix, so the
+/// assertion means the same thing on a machine that carries the packaged
+/// runtime and on one that does not.
+fn the_bundled_icon_theme_reaches_the_search_path() {
+    let display = gtk::gdk::Display::default().expect("the test runs under a display");
+    let bundle = TempDirectory::new("bundled-icons");
+
+    let prefix = bundle.path().join("usr/lib/fermix-desktop");
+    let schemas = prefix.join("share/glib-2.0/schemas");
+    std::fs::create_dir_all(&schemas).expect("the schema directory is created");
+    std::fs::write(schemas.join("gschemas.compiled"), b"").expect("the schemas are written");
+    let icons = prefix.join("share/icons");
+    std::fs::create_dir_all(&icons).expect("the icon directory is created");
+
+    let before = gtk::IconTheme::for_display(&display).search_path();
+    assert!(
+        !before.contains(&icons),
+        "the bundled directory was already on the search path, so this proves nothing"
+    );
+
+    fermix_desktop::runtime::add_bundled_icons_from(&display, &prefix);
+
+    let after = gtk::IconTheme::for_display(&display).search_path();
+    assert!(
+        after.contains(&icons),
+        "naming the bundled theme did not put it on the icon search path"
+    );
+    assert_eq!(
+        after.last(),
+        Some(&icons),
+        "the bundle must go last, so a host theme that matches the session still wins"
+    );
 }

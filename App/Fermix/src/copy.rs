@@ -111,6 +111,9 @@ pub enum Key {
     ActionCopyCommand,
     ActionCopyCommands,
     ActionShowMeHow,
+    ActionUnlockKeyring,
+    ActionStoreOnThisComputer,
+    ActionUseKeyringInstead,
     ActionOpenSettingsPane,
     ActionSearchAccessible,
     ActionMoreAccessible,
@@ -240,6 +243,9 @@ pub enum Key {
     ProviderModelsSearch,
     ProviderModelsMore,
     ProviderModelsLive,
+    ProviderModelsEmpty,
+    ProviderModelsNoMatch,
+    ProviderModelsBuiltIn,
     ProviderProbeResult,
 
     // ---- Channels -------------------------------------------------------
@@ -285,12 +291,14 @@ pub enum Key {
     MeetingsSignInAgain,
     MeetingsSignInUnanswered,
     MeetingsSleepStatement,
+    MeetingsSleepLead,
     MeetingsEnableFooter,
     MeetingsGoogleAccount,
 
     // ---- Voice ----------------------------------------------------------
     VoiceCompanionStatement,
     VoiceMicrophoneStatement,
+    VoiceMicrophoneLead,
 
     // ---- Computer -------------------------------------------------------
     ComputerEnable,
@@ -298,6 +306,7 @@ pub enum Key {
     ComputerScreenCapture,
     ComputerInputControl,
     ComputerProbedAt,
+    ComputerStandingLead,
     ComputerArm64,
     ComputerNoGraphicalSession,
     ComputerWaylandSession,
@@ -311,6 +320,7 @@ pub enum Key {
     PermissionsColumnRevoke,
     PermissionsColumnArtifact,
     PermissionsPlatformFact,
+    PermissionsPlatformFactLead,
     PermissionMicrophoneTitle,
     PermissionMicrophonePrincipal,
     PermissionMicrophoneRevoke,
@@ -502,11 +512,16 @@ pub enum Key {
     LoginManagerAbsentBody,
     LoginManagerAbsentNextAction,
     SecretStoreDesktopKeyring,
-    SecretStorePasswordStore,
-    SecretStoreNone,
+    SecretStoreThisComputer,
+    SecretStoreThisComputerDetail,
+    SecretKeyringLockedTitle,
+    SecretKeyringLockedBody,
+    SecretKeyringUnlockHint,
+    SecretKeyringUnlockWaiting,
+    SecretKeyringUnlockGaveUp,
     SecretStoreUnavailableTitle,
     SecretStoreUnavailableBody,
-    SecretStoreUnavailableNextAction,
+    SecretStoreFileTradeoff,
     SystemScopeRefusalTitle,
     SystemScopeRefusalBody,
     SystemScopeRefusalNextAction,
@@ -580,6 +595,17 @@ pub const CATALOGUE: &[Entry] = &[
     row(Key::ActionCopyCommand, "Copy command", Casing::Header),
     row(Key::ActionCopyCommands, "Copy commands", Casing::Header),
     row(Key::ActionShowMeHow, "Show me how", Casing::Header),
+    row(Key::ActionUnlockKeyring, "Unlock keyring", Casing::Header),
+    row(
+        Key::ActionStoreOnThisComputer,
+        "Store on this computer",
+        Casing::Header,
+    ),
+    row(
+        Key::ActionUseKeyringInstead,
+        "Use the keyring instead",
+        Casing::Header,
+    ),
     row(Key::ActionOpenSettingsPane, "Open settings", Casing::Header),
     row(Key::ActionSearchAccessible, "Search", Casing::Header),
     row(Key::ActionMoreAccessible, "More actions", Casing::Header),
@@ -727,7 +753,13 @@ pub const CATALOGUE: &[Entry] = &[
     row(Key::SecretDialogTitleAdd, "Add a key", Casing::Header),
     row(Key::SecretDialogTitleReplace, "Replace the key", Casing::Header),
     row(Key::SecretFieldLabel, "Key", Casing::Sentence),
-    row(Key::SecretStoreRowLabel, "Secret store", Casing::Sentence),
+    // Not "secret store": that is the engine's word for the thing, and the
+    // row answers a person's question about their own keys.
+    row(
+        Key::SecretStoreRowLabel,
+        "Where keys are stored",
+        Casing::Sentence,
+    ),
     row(Key::SecretDialogConfirm, "Store the key", Casing::Header),
     // Providers.
     row(Key::ProvidersGroupPrimary, "Primary", Casing::Header),
@@ -782,6 +814,21 @@ pub const CATALOGUE: &[Entry] = &[
     row(Key::ProviderModelsSearch, "Search models", Casing::Sentence),
     row(Key::ProviderModelsMore, "Show more", Casing::Header),
     row(Key::ProviderModelsLive, "Ask the provider", Casing::Header),
+    row(
+        Key::ProviderModelsEmpty,
+        "This provider listed no models.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::ProviderModelsNoMatch,
+        "No models match “{query}”.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::ProviderModelsBuiltIn,
+        "This provider has no live listing. These are the models this build ships with.",
+        Casing::Sentence,
+    ),
     row(
         Key::ProviderProbeResult,
         "Answered in {count} ms with {model}",
@@ -857,6 +904,11 @@ pub const CATALOGUE: &[Entry] = &[
         Casing::Sentence,
     ),
     row(
+        Key::MeetingsSleepLead,
+        "Fermix cannot keep this computer awake during a meeting",
+        Casing::Sentence,
+    ),
+    row(
         Key::MeetingsEnableFooter,
         "Installs the notetaker and its browser on first enable, about 150 MB.",
         Casing::Sentence,
@@ -877,12 +929,22 @@ pub const CATALOGUE: &[Entry] = &[
         "Linux has no microphone permission. Nothing asked you, nothing appears in your system settings, and there is nothing to revoke. While Fermix is running it can open the microphone at any time, and so can any other program you run. Your real controls are to not run it, to mute the microphone in your sound settings or in PipeWire, or to run it in a sandbox that withholds audio, which also stops it playing sound. On macOS the operating system asks first. On Linux it does not.",
         Casing::Sentence,
     ),
+    row(
+        Key::VoiceMicrophoneLead,
+        "Linux has no microphone permission",
+        Casing::Sentence,
+    ),
     // Computer.
     row(Key::ComputerEnable, "Let Fermix use this computer", Casing::Sentence),
     row(Key::ComputerInstall, "Install the helper", Casing::Header),
     row(Key::ComputerScreenCapture, "Screen capture", Casing::Sentence),
     row(Key::ComputerInputControl, "Input control", Casing::Sentence),
     row(Key::ComputerProbedAt, "Checked {time}", Casing::Sentence),
+    row(
+        Key::ComputerStandingLead,
+        "Computer use on this machine",
+        Casing::Sentence,
+    ),
     row(
         Key::ComputerArm64,
         "Computer use is not available on this architecture. Fermix runs fully on arm64 Linux, but the computer-use sidecar has no arm64 build, so there is nothing to install.",
@@ -915,6 +977,11 @@ pub const CATALOGUE: &[Entry] = &[
     row(
         Key::PermissionsPlatformFact,
         "On this platform a permission is something Fermix asserts about itself and keeps for itself, not something the operating system verifies and stores. Lose what Fermix keeps and the consent is gone; copy it and the consent moves with it.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::PermissionsPlatformFactLead,
+        "A permission here is what Fermix asserts, not what the system verifies",
         Casing::Sentence,
     ),
     row(Key::PermissionMicrophoneTitle, "Microphone and voice", Casing::Sentence),
@@ -1143,7 +1210,7 @@ pub const CATALOGUE: &[Entry] = &[
     ),
     row(
         Key::RecoveryPackageRepair,
-        "Reinstall the packages with your package manager, then try again.",
+        "Reinstall Fermix with your package manager, then try again.",
         Casing::Sentence,
     ),
     // Setup assistant.
@@ -1253,7 +1320,7 @@ pub const CATALOGUE: &[Entry] = &[
     ),
     row(
         Key::PreflightPreManagementDaemonBody,
-        "The Fermix running on this account was built before this window could talk to it. Nothing was changed. Update the packages, then start again.",
+        "The Fermix running on this account was built before this window could talk to it. Nothing was changed. Update Fermix, then start again.",
         Casing::Sentence,
     ),
     row(Key::PreflightEngineSkewTitle, "A newer Fermix is installed", Casing::Header),
@@ -1292,7 +1359,7 @@ pub const CATALOGUE: &[Entry] = &[
     ),
     row(
         Key::ActivationProtocolMismatchBody,
-        "This window speaks versions {app_range} and the background service speaks {daemon_range}. Update both packages together.",
+        "This window speaks versions {app_range} and the background service speaks {daemon_range}. Update Fermix and restart the background service.",
         Casing::Sentence,
     ),
     row(
@@ -1383,21 +1450,54 @@ pub const CATALOGUE: &[Entry] = &[
         Casing::Sentence,
     ),
     row(Key::SecretStoreDesktopKeyring, "Stored in your desktop keyring", Casing::Sentence),
-    row(Key::SecretStorePasswordStore, "Stored in your password store", Casing::Sentence),
-    row(Key::SecretStoreNone, "No store on this host", Casing::Sentence),
+    row(
+        Key::SecretStoreThisComputer,
+        "Stored on this computer",
+        Casing::Sentence,
+    ),
+    row(
+        Key::SecretStoreThisComputerDetail,
+        "Readable only by your user account, and not protected by a keyring.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::SecretKeyringLockedTitle,
+        "Your keyring is locked",
+        Casing::Header,
+    ),
+    row(
+        Key::SecretKeyringLockedBody,
+        "Your desktop keyring is locked, so the key was not saved. Everything else you entered is unchanged.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::SecretKeyringUnlockHint,
+        "Your desktop will ask for your computer account password. A fingerprint cannot unlock the keyring.",
+        Casing::Sentence,
+    ),
+    row(
+        Key::SecretKeyringUnlockWaiting,
+        "Waiting for you to unlock the keyring",
+        Casing::Sentence,
+    ),
+    row(
+        Key::SecretKeyringUnlockGaveUp,
+        "Fermix stopped waiting for the keyring. The key was not saved. Everything else you entered is unchanged.",
+        Casing::Sentence,
+    ),
     row(
         Key::SecretStoreUnavailableTitle,
-        "Fermix has nowhere to store this key",
+        "This computer has no keyring",
         Casing::Header,
     ),
     row(
         Key::SecretStoreUnavailableBody,
-        "This host has no unlocked keyring, so the key was not saved. Everything else you entered is unchanged.",
+        "Fermix found no keyring on this computer to keep the key in. The key was not saved. Everything else you entered is unchanged.",
         Casing::Sentence,
     ),
     row(
-        Key::SecretStoreUnavailableNextAction,
-        "Install pass and pass-secret-service, or start a desktop keyring, then add the key again",
+        Key::SecretStoreFileTradeoff,
+        "The key will be saved in a file that only your user account can read. It is not protected by a keyring.",
         Casing::Sentence,
     ),
     row(
@@ -1442,6 +1542,7 @@ pub const TEMPLATED: &[(Key, &[&str])] = &[
     (Key::HomeUptimeHoursMinutes, &["{hours}", "{minutes}"]),
     (Key::HomeUptimeMinutes, &["{minutes}"]),
     (Key::ProviderProbeResult, &["{count}", "{model}"]),
+    (Key::ProviderModelsNoMatch, &["{query}"]),
     (Key::IntegrationsSwitchAccessible, &["{name}"]),
     (Key::CountedFilter, &["{name}", "{count}"]),
     (Key::ComputerProbedAt, &["{time}"]),

@@ -17,6 +17,7 @@ use crate::models::home::{AttentionAction, AttentionRow, HomeModel, HomeSnapshot
 use crate::models::{spawn, Change, SettingsModel};
 
 use super::{caption, fact_row, identifier_label, open_pane, value_label, CaptionRow};
+use crate::ui::plain;
 
 /// The Home surface.
 pub struct HomePage {
@@ -45,13 +46,17 @@ impl HomePage {
         column.add_css_class("fermix-gutter");
 
         let status = value_label("");
-        let background = adw::SwitchRow::builder()
-            .title(copy::text(Key::HomeSwitchRunInBackground))
-            .build();
+        let background = plain(
+            adw::SwitchRow::builder()
+                .title(copy::text(Key::HomeSwitchRunInBackground))
+                .build(),
+        );
         let background_caption = CaptionRow::new();
-        let login = adw::SwitchRow::builder()
-            .title(copy::text(Key::HomeSwitchOpenAtLogin))
-            .build();
+        let login = plain(
+            adw::SwitchRow::builder()
+                .title(copy::text(Key::HomeSwitchOpenAtLogin))
+                .build(),
+        );
         let login_caption = CaptionRow::new();
 
         let background_group = background_group(
@@ -254,7 +259,7 @@ impl HomePage {
     }
 
     fn attention_row(&self, row: &AttentionRow) -> adw::ActionRow {
-        let widget = adw::ActionRow::builder().activatable(false).build();
+        let widget = plain(adw::ActionRow::builder().activatable(false).build());
 
         match &row.title {
             RowTitle::Words(key) => widget.set_title(&copy::text(*key)),
@@ -333,10 +338,12 @@ fn background_group(
         .title(copy::text(Key::HomeGroupBackground))
         .build();
 
-    let status_row = adw::ActionRow::builder()
-        .title(copy::text(Key::HomeRowStatus))
-        .activatable(false)
-        .build();
+    let status_row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(Key::HomeRowStatus))
+            .activatable(false)
+            .build(),
+    );
     status_row.add_suffix(status);
 
     group.add(&status_row);
@@ -352,10 +359,12 @@ fn runtime_group() -> (adw::PreferencesGroup, Vec<(Key, gtk::Label)>) {
     // The expander is the heading: a group title above a single expander of the
     // same name says it twice.
     let group = adw::PreferencesGroup::new();
-    let expander = adw::ExpanderRow::builder()
-        .title(copy::text(Key::HomeGroupRuntimeDetails))
-        .expanded(false)
-        .build();
+    let expander = plain(
+        adw::ExpanderRow::builder()
+            .title(copy::text(Key::HomeGroupRuntimeDetails))
+            .expanded(false)
+            .build(),
+    );
 
     let labels = [
         Key::HomeRuntimeEngine,

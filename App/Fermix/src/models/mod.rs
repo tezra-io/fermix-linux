@@ -21,6 +21,7 @@ pub mod peer;
 pub mod plugins;
 pub mod providers;
 pub mod recovery;
+pub mod secret_store;
 pub mod settings_model;
 
 pub use settings_model::{Change, RowId, Sentence, SettingsModel, State};

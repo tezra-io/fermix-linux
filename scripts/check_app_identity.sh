@@ -103,7 +103,7 @@ require_in_file "launchable" \
 
 # ---- 5. the icon theme -----------------------------------------------------
 
-for size in 16 22 24 32 48 64 128 256; do
+for size in 16 22 24 32 48 64 128 256 512; do
   require_file "icon ${size}x${size}" \
     "packaging/icons/hicolor/${size}x${size}/apps/$APP_ID.png"
 done

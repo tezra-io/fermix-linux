@@ -1,0 +1,16 @@
+{
+  "libpng": [
+    {
+      "id": "OSV-2099-0001",
+      "summary": "Out-of-bounds read in the fixture png reader",
+      "aliases": ["CVE-2099-0001"]
+    }
+  ],
+  "gtk": [
+    {
+      "id": "OSV-2099-0002",
+      "summary": "",
+      "aliases": []
+    }
+  ]
+}

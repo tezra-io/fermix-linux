@@ -241,6 +241,7 @@ impl ComputerModel {
         let failure = job.and_then(|job| job.failure).map(|failure| Sentence {
             code: None,
             text: failure.sentence,
+            reason: None,
         });
 
         self.ledger.refresh().await;

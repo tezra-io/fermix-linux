@@ -24,6 +24,7 @@ use crate::models::{spawn, SettingsModel};
 use crate::ui::CaptionRow;
 
 use super::Screen;
+use crate::ui::plain;
 
 /// Above this many zones the dialog is searched rather than read. The count is
 /// the daemon's, so nothing here keys on which row this is.
@@ -59,9 +60,11 @@ impl AboutYouScreen {
         let name = entry(Key::SetupFieldYourName);
         let assistant = entry(Key::SetupFieldAssistantName);
         let (zone, zone_value) = zone_row();
-        let style = adw::ComboRow::builder()
-            .title(copy::text(Key::SetupFieldStyle))
-            .build();
+        let style = plain(
+            adw::ComboRow::builder()
+                .title(copy::text(Key::SetupFieldStyle))
+                .build(),
+        );
 
         let group = adw::PreferencesGroup::new();
         group.add(&name);
@@ -221,20 +224,25 @@ impl Screen for AboutYouScreen {
 }
 
 fn entry(label: Key) -> adw::EntryRow {
-    adw::EntryRow::builder()
-        .title(copy::text(label))
-        // Enter in a field commits it and reaches the bar's one suggested
-        // action, which is the same key the rest of the product commits with.
-        .activates_default(true)
-        .build()
+    plain(
+        adw::EntryRow::builder()
+            .title(copy::text(label))
+            // Enter in a field commits it and reaches the bar's one suggested
+            // action, which is the same key the rest of the product commits
+            // with.
+            .activates_default(true)
+            .build(),
+    )
 }
 
 /// The zone row: a row that opens something, which says so.
 fn zone_row() -> (adw::ActionRow, gtk::Label) {
-    let row = adw::ActionRow::builder()
-        .title(copy::text(Key::SetupFieldTimeZone))
-        .activatable(true)
-        .build();
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(Key::SetupFieldTimeZone))
+            .activatable(true)
+            .build(),
+    );
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
 
     // The identifier the daemon takes, kept beside the label a person reads.
@@ -270,13 +278,13 @@ fn zone_dialog(
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
     for zone in zones {
-        list.append(
-            &adw::ActionRow::builder()
+        list.append(&plain(
+            adw::ActionRow::builder()
                 .title(zone.label.as_str())
                 .subtitle(zone.hint.clone().unwrap_or_default())
                 .activatable(true)
                 .build(),
-        );
+        ));
     }
 
     let search = gtk::SearchEntry::builder()

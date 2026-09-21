@@ -30,6 +30,12 @@ pub struct RecordedCall {
     pub params: serde_json::Value,
 }
 
+/// How long a held call waits before the fixture gives up on the test.
+///
+/// Two seconds at a millisecond a tick: long enough for any test that means to
+/// release, short enough that one which does not fails rather than hangs.
+const HELD_CALL_TICKS: u32 = 2000;
+
 /// A daemon made of goldens.
 pub struct FixturePeer {
     goldens: Goldens,
@@ -41,6 +47,7 @@ pub struct FixturePeer {
     overrides: RefCell<BTreeMap<String, serde_json::Value>>,
     rebinds: RefCell<Vec<std::path::PathBuf>>,
     silent: Cell<bool>,
+    held: RefCell<Option<String>>,
 }
 
 impl FixturePeer {
@@ -57,7 +64,29 @@ impl FixturePeer {
             overrides: RefCell::new(BTreeMap::new()),
             rebinds: RefCell::new(Vec::new()),
             silent: Cell::new(false),
+            held: RefCell::new(None),
         }
+    }
+
+    /// Hold every answer until [`FixturePeer::release`], so a caller can put
+    /// calls in flight and keep them there.
+    ///
+    /// The model's gate counts calls that have started and not finished, and
+    /// a fixture that answers the instant it is polled can never produce that
+    /// state. This is the only way to test what the application does when its
+    /// own concurrency ceiling is reached.
+    pub fn hold(&self, method: &str) {
+        self.held.replace(Some(method.to_string()));
+    }
+
+    /// Let held answers through.
+    pub fn release(&self) {
+        self.held.replace(None);
+    }
+
+    /// Whether this call is one of the held ones.
+    fn is_held(&self, method: &str) -> bool {
+        self.held.borrow().as_deref() == Some(method)
     }
 
     /// Every call this peer has been asked for, in order.
@@ -103,6 +132,36 @@ impl FixturePeer {
         self.overrides
             .borrow_mut()
             .insert(key(method, section), serde_json::json!({"result": result}));
+    }
+
+    /// One method's current result, as this peer would answer it now.
+    ///
+    /// The override where one has been set, and the vendored golden
+    /// otherwise, so a caller can take what the daemon publishes, change the
+    /// one field it is testing and hand the whole thing back to
+    /// [`FixturePeer::set_result`] without rebuilding a response by hand.
+    pub fn result(&self, method: &str, section: Option<&str>) -> serde_json::Value {
+        if let Some(replaced) = self.overrides.borrow().get(&key(method, section)) {
+            return replaced
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+
+        let mut request = serde_json::json!({
+            "request_id": "fixture",
+            "protocol_version": self.negotiated.get().unwrap_or(contract::supported_range().max),
+            "method": method,
+            "params": {},
+        });
+        if let Some(section) = section {
+            request["params"] = serde_json::json!({"section": section});
+        }
+        self.goldens
+            .answer(&request)
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
     }
 
     /// Every socket this peer was asked to point at, in order.
@@ -211,6 +270,20 @@ impl ManagementApi for FixturePeer {
                     value: Err(ManagementError::Transport(TransportError::NotRunning)),
                 };
             }
+
+            // Held calls wait here, which is where a real one waits: after the
+            // permit is taken and before an answer exists. The wait is capped
+            // so a test that forgets to release fails as a slow test rather
+            // than hanging the suite forever.
+            let mut waited = 0;
+            while self.is_held(&method) && waited < HELD_CALL_TICKS {
+                gtk4::glib::timeout_future(Duration::from_millis(1)).await;
+                waited += 1;
+            }
+            assert!(
+                !self.is_held(&method),
+                "a held call was never released: {method} waited {waited} ticks"
+            );
 
             // The negotiation a real client performs before its first call,
             // performed here for the same reason: a method above the window is

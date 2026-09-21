@@ -32,6 +32,7 @@ use crate::models::plugins::{
 };
 use crate::models::providers::ProvidersModel;
 use crate::models::{spawn, Change, SettingsModel};
+use crate::ui::plain;
 use crate::ui::settings::dialogs::consent::ConsentDialog;
 use crate::ui::settings::dialogs::oauth_client::OAuthClientDialog;
 use crate::ui::settings::dialogs::secret::SecretDialog;
@@ -383,11 +384,13 @@ impl IntegrationsPane {
     /// and the way in. The switch is its own focus stop and does not activate
     /// the row.
     fn plugin_row(self: &Rc<Self>, row: &IntegrationRow) -> ListRow {
-        let widget = adw::ActionRow::builder()
-            .title(row.title.as_str())
-            .subtitle(row.subtitle())
-            .activatable(true)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(row.title.as_str())
+                .subtitle(row.subtitle())
+                .activatable(true)
+                .build(),
+        );
 
         widget.add_prefix(&mark::from_record(
             MarkKind::Plugin,
@@ -430,11 +433,13 @@ impl IntegrationsPane {
 
     /// One native driver row: where it stands, and the pane that owns it.
     fn feature_row(self: &Rc<Self>, feature: &FeatureRow) -> adw::ActionRow {
-        let widget = adw::ActionRow::builder()
-            .title(copy::text(feature.title))
-            .subtitle(copy::text(feature.summary))
-            .activatable(true)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(feature.title))
+                .subtitle(copy::text(feature.summary))
+                .activatable(true)
+                .build(),
+        );
 
         widget.add_prefix(&mark::from_record(
             MarkKind::Feature,
@@ -486,15 +491,17 @@ impl IntegrationsPane {
             .map(|record| record.display_name.clone())
             .unwrap_or_else(|| client.provider.clone());
 
-        let widget = adw::ActionRow::builder()
-            .title(title)
-            .subtitle(if client.configured {
-                copy::text(Key::SecretStored)
-            } else {
-                String::new()
-            })
-            .activatable(true)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(title)
+                .subtitle(if client.configured {
+                    copy::text(Key::SecretStored)
+                } else {
+                    String::new()
+                })
+                .activatable(true)
+                .build(),
+        );
 
         widget.add_prefix(&mark::from_record(MarkKind::OauthClient, record));
         widget.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -770,13 +777,13 @@ impl Detail {
         clear(&self.verbs);
 
         if let Some(verb) = row.primary_verb.as_deref() {
-            self.verbs.add(
-                &adw::ActionRow::builder()
+            self.verbs.add(&plain(
+                adw::ActionRow::builder()
                     .title(copy::text(Key::IntegrationsNextStep))
                     .subtitle(verb)
                     .activatable(false)
                     .build(),
-            );
+            ));
         }
 
         let buttons = row.buttons();
@@ -808,14 +815,14 @@ impl Detail {
             button.connect_clicked(move |button| detail.perform(action, button));
         }
 
-        self.verbs.add(
-            &adw::PreferencesRow::builder()
+        self.verbs.add(&plain(
+            adw::PreferencesRow::builder()
                 .activatable(false)
                 .selectable(false)
                 .focusable(false)
                 .child(&wrap)
                 .build(),
-        );
+        ));
     }
 
     /// The plugin's own settings, in the two kinds the manifest declares.
@@ -825,10 +832,12 @@ impl Detail {
         for setting in &row.settings {
             match setting.kind {
                 Some(PluginSettingKind::Boolean) => {
-                    let widget = adw::SwitchRow::builder()
-                        .title(setting.label.as_str())
-                        .active(setting.value.as_deref() == Some(TRUE))
-                        .build();
+                    let widget = plain(
+                        adw::SwitchRow::builder()
+                            .title(setting.label.as_str())
+                            .active(setting.value.as_deref() == Some(TRUE))
+                            .build(),
+                    );
                     let detail = Rc::clone(self);
                     let key = setting.key.clone();
                     widget.connect_active_notify(move |widget| {
@@ -839,10 +848,12 @@ impl Detail {
                 // A kind this build has never seen reads as text, which is what
                 // the wire carries for every setting anyway.
                 _ => {
-                    let widget = adw::EntryRow::builder()
-                        .title(setting.label.as_str())
-                        .text(setting.value.clone().unwrap_or_default())
-                        .build();
+                    let widget = plain(
+                        adw::EntryRow::builder()
+                            .title(setting.label.as_str())
+                            .text(setting.value.clone().unwrap_or_default())
+                            .build(),
+                    );
                     let detail = Rc::clone(self);
                     let key = setting.key.clone();
                     widget.connect_entry_activated(move |widget| {
@@ -872,15 +883,17 @@ impl Detail {
         };
 
         if let Some(client) = pane.model.client_for(row) {
-            let widget = adw::ActionRow::builder()
-                .title(copy::text(Key::IntegrationsClientRow))
-                .subtitle(if client.configured {
-                    copy::text(Key::SecretStored)
-                } else {
-                    String::new()
-                })
-                .activatable(true)
-                .build();
+            let widget = plain(
+                adw::ActionRow::builder()
+                    .title(copy::text(Key::IntegrationsClientRow))
+                    .subtitle(if client.configured {
+                        copy::text(Key::SecretStored)
+                    } else {
+                        String::new()
+                    })
+                    .activatable(true)
+                    .build(),
+            );
             widget.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             self.doors.add(&widget);
 
@@ -896,11 +909,13 @@ impl Detail {
         }
 
         if row.binds_workspace() {
-            let widget = adw::ActionRow::builder()
-                .title(copy::text(Key::IntegrationsWorkspaceRow))
-                .subtitle(row.workspace_label.clone().unwrap_or_default())
-                .activatable(true)
-                .build();
+            let widget = plain(
+                adw::ActionRow::builder()
+                    .title(copy::text(Key::IntegrationsWorkspaceRow))
+                    .subtitle(row.workspace_label.clone().unwrap_or_default())
+                    .activatable(true)
+                    .build(),
+            );
             widget.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             self.doors.add(&widget);
 
@@ -914,15 +929,17 @@ impl Detail {
 
     /// The credential slot, which is the one door to a plugin's own token.
     fn token_row(self: &Rc<Self>, row: &IntegrationRow) -> adw::ActionRow {
-        let widget = adw::ActionRow::builder()
-            .title(copy::text(Key::SecretFieldLabel))
-            .subtitle(if row.credential_present {
-                copy::text(Key::SecretStored)
-            } else {
-                String::new()
-            })
-            .activatable(false)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::SecretFieldLabel))
+                .subtitle(if row.credential_present {
+                    copy::text(Key::SecretStored)
+                } else {
+                    String::new()
+                })
+                .activatable(false)
+                .build(),
+        );
 
         let button = gtk::Button::builder()
             .label(copy::text(if row.credential_present {

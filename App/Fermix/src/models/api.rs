@@ -26,6 +26,15 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(10);
 /// How long a write may take. Longer than a read: a write can touch a keyring
 /// or rewrite the settings file before it answers.
 pub const WRITE_DEADLINE: Duration = Duration::from_secs(20);
+/// How long a write that waits for the owner to unlock their keyring may take.
+///
+/// The engine caps its own wait at 90 seconds, and that cap has to expire
+/// first: whichever side gives up first is the side whose words the owner
+/// reads, and the engine's are the typed ones that say what happened. The
+/// ordinary write deadline stays short, because the unlock is the one call
+/// that waits on a person rather than on a machine, and a person hunting for
+/// an unexpected password dialog is slower than any daemon.
+pub const UNLOCK_DEADLINE: Duration = Duration::from_secs(105);
 
 /// At most this many reads are in flight at once. A refresh that would exceed
 /// it is coalesced away rather than queued, because a superseded read has

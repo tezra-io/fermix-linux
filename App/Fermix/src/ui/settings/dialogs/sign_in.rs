@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk4 as gtk;
+use gtk4::glib;
 use libadwaita as adw;
 
 use crate::copy::{self, Key};
@@ -50,10 +51,17 @@ impl SignInDialog {
             let dialog = Rc::clone(&dialog);
             let window = crate::ui::window_of(parent);
             spawn(async move {
-                if DesktopSession::open_url(window.as_ref(), &url)
-                    .await
-                    .is_err()
-                {
+                // The address on screen is the owner's way out, but it is not
+                // an explanation: a browser that never opened looks identical
+                // to one the owner was too slow to notice. The reason goes to
+                // the journal, because the last time this failed it took a day
+                // to find and the cause was a missing file the log never
+                // mentioned.
+                if let Err(error) = DesktopSession::open_url(window.as_ref(), &url).await {
+                    glib::g_warning!(
+                        "fermix-desktop",
+                        "the browser was not opened for the sign-in: {error}"
+                    );
                     dialog.show_address();
                 }
             });

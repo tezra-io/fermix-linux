@@ -24,6 +24,7 @@ use crate::management::types::{
 };
 use crate::management::vocabulary::ChannelStanding;
 use crate::models::{spawn, Change, SettingsModel, State};
+use crate::ui::plain;
 use crate::ui::settings::descriptor_form::DescriptorForm;
 use crate::ui::widgets::mark::{self, MarkKind};
 use crate::ui::CaptionRow;
@@ -179,10 +180,12 @@ impl ChannelsPane {
 
     fn build_row(self: &Rc<Self>, channel: &SetupChannelRow, section: &str) -> Row {
         let updating = Rc::new(Cell::new(false));
-        let row = adw::SwitchRow::builder()
-            .title(self.title_of(section, &channel.name))
-            .activatable(true)
-            .build();
+        let row = plain(
+            adw::SwitchRow::builder()
+                .title(self.title_of(section, &channel.name))
+                .activatable(true)
+                .build(),
+        );
 
         row.add_prefix(&mark::slot(MarkKind::Channel, &channel.name));
         row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));

@@ -1,0 +1,128 @@
+# The host boundary, as package relations.
+#
+# One row per shared library the package is allowed to load from the host
+# (amendment section 4.1's host column), giving the name that library is known
+# by in each family:
+#
+#   <soname> :: <deb relation> :: <rpm capability>
+#
+# `scripts/package_dependencies.py` reads it and holds three things equal: the
+# NEEDED entries of every ELF in the staged tree, this map, and the relations
+# the built packages actually declare. A soname an ELF needs that has no row
+# here is a refusal, because it is a host dependency nobody decided to take. A
+# row whose relation the package does not declare is a refusal. A relation the
+# package declares that no ELF needs is a refusal too, so the list a user's
+# package manager acts on is the list the binaries justify.
+#
+# The fields are separated by " :: " rather than by a bar, so that the deb
+# column can carry a bar if a library ever needs an alternation. None does
+# today.
+#
+# The names in both columns are verified rather than copied from the design
+# document, which named one package that does not exist as a real package and
+# one alternation the wrong way round.
+#
+# Every deb name below was read out of Ubuntu 22.04's own package index, the
+# oldest deb target. Every rpm capability below was read out of AlmaLinux 9's,
+# the oldest rpm target and the build base, including the versioned glibc
+# capability that carries the floor. Two findings are worth keeping:
+#
+#   * `libz1` is not a package. It is a virtual name that zlib1g provides, with
+#     no version of its own, so `zlib1g` is the name to depend on.
+#   * `libcurl4` is the name to depend on in every suite. It is a real package
+#     on jammy and bookworm; on noble and trixie the real package is
+#     `libcurl4t64`, which carries a versioned `Provides: libcurl4` and is its
+#     sole provider. An alternation would have worked and is unnecessary, and
+#     `libcurl4t64` alone would break the two oldest targets.
+#
+# The newest of each family, Debian 13 and Fedora 42, carry the same frozen
+# SONAMEs and were not re-read name by name. The install smoke matrix is what
+# proves them, which is why it has a row for each.
+
+# The one thing a bundled copy cannot be, and the frozen unwinder beside it.
+#
+# The loader itself is on the list because an ELF names it in PT_INTERP, and
+# some name it as a NEEDED entry too, so a boundary built out of NEEDED entries
+# has to answer for it. Both spellings are here, since the name belongs to the
+# architecture rather than to the library, and both come from the package that
+# carries the C library.
+#
+# Both point at the C library's own relation rather than at a capability named
+# after the loader. The loader is not a separable package in either family: it
+# ships inside libc6 on the deb side and inside glibc on the rpm side, so the
+# relation that gets a machine the C library is the relation that gets it the
+# loader, and naming a second capability for the same file would put a
+# per-architecture string in a template that has no business knowing the
+# architecture.
+ld-linux-x86-64.so.2 :: libc6 :: libc.so.6()(64bit)
+ld-linux-aarch64.so.1 :: libc6 :: libc.so.6()(64bit)
+libc.so.6 :: libc6 :: libc.so.6()(64bit)
+libm.so.6 :: libc6 :: libc.so.6()(64bit)
+libdl.so.2 :: libc6 :: libc.so.6()(64bit)
+libpthread.so.0 :: libc6 :: libc.so.6()(64bit)
+librt.so.1 :: libc6 :: libc.so.6()(64bit)
+libresolv.so.2 :: libc6 :: libc.so.6()(64bit)
+libgcc_s.so.1 :: libgcc-s1 :: libgcc_s.so.1()(64bit)
+
+# The driver. A bundled Mesa cannot talk to the kernel module the host has.
+#
+# Every row here is reachable through libepoxy, which links none of them: it
+# dlopens whichever it needs at the moment it needs it. `strings` on the shipped
+# libepoxy.so.0 names six, and a row here is only the knowledge of what each
+# soname is called in each family. Which of them the package actually DECLARES
+# is a separate decision, made in packaging/nfpm-fermix-desktop.yaml.tmpl, and
+# three of these six are deliberately not declared:
+#
+#   * libGLESv1_CM.so.1 is OpenGL ES 1, an API GTK never asks for. epoxy would
+#     load it only for a GLES 1 context, which nothing in this application
+#     creates.
+#   * libOpenGL.so.0 and libGLX.so.1 are epoxy's glvnd-preferred alternatives.
+#     Where they are absent it falls back to libGL.so.1, which is declared, so a
+#     machine that satisfies the declaration always has a working path.
+#
+# libGLX.so.1 has no row at all, and that is a measurement rather than an
+# omission: nothing in Ubuntu 22.04, Debian 13, AlmaLinux 9 or Fedora 44 ships
+# that soname. glvnd's is libGLX.so.0. The string inside libepoxy names a file
+# no distribution has, so that dlopen can only ever fail and fall back, which is
+# the second reason it is not declared. The row below is the soname that exists.
+libGL.so.1 :: libgl1 :: libGL.so.1()(64bit)
+libEGL.so.1 :: libegl1 :: libEGL.so.1()(64bit)
+libGLESv2.so.2 :: libgles2 :: libGLESv2.so.2()(64bit)
+libGLESv1_CM.so.1 :: libgles1 :: libGLESv1_CM.so.1()(64bit)
+libOpenGL.so.0 :: libopengl0 :: libOpenGL.so.0()(64bit)
+libGLX.so.0 :: libglx0 :: libGLX.so.0()(64bit)
+libGLdispatch.so.0 :: libglvnd0 :: libGLdispatch.so.0()(64bit)
+libgbm.so.1 :: libgbm1 :: libgbm.so.1()(64bit)
+libdrm.so.2 :: libdrm2 :: libdrm.so.2()(64bit)
+
+# The session bus. Portals, the activation file and the accessibility bus all
+# go through it, and all three are session state.
+libdbus-1.so.3 :: libdbus-1-3 :: libdbus-1.so.3()(64bit)
+
+# The X11 wire-protocol clients. Frozen ABIs, and the host GL stack links the
+# same ones, so a second copy of Xlib in one process is how the XCB lock is
+# lost. GTK links them directly even in a Wayland session.
+libX11.so.6 :: libx11-6 :: libX11.so.6()(64bit)
+libX11-xcb.so.1 :: libx11-xcb1 :: libX11-xcb.so.1()(64bit)
+libxcb.so.1 :: libxcb1 :: libxcb.so.1()(64bit)
+libxcb-render.so.0 :: libxcb-render0 :: libxcb-render.so.0()(64bit)
+libxcb-shm.so.0 :: libxcb-shm0 :: libxcb-shm.so.0()(64bit)
+libXext.so.6 :: libxext6 :: libXext.so.6()(64bit)
+libXi.so.6 :: libxi6 :: libXi.so.6()(64bit)
+libXcursor.so.1 :: libxcursor1 :: libXcursor.so.1()(64bit)
+libXdamage.so.1 :: libxdamage1 :: libXdamage.so.1()(64bit)
+libXfixes.so.3 :: libxfixes3 :: libXfixes.so.3()(64bit)
+libXrandr.so.2 :: libxrandr2 :: libXrandr.so.2()(64bit)
+libXinerama.so.1 :: libxinerama1 :: libXinerama.so.1()(64bit)
+libXrender.so.1 :: libxrender1 :: libXrender.so.1()(64bit)
+
+# It consumes the keymap the compositor sends, so it is session-adjacent, and
+# the oldest target is already above the version GTK asks for.
+libxkbcommon.so.0 :: libxkbcommon0 :: libxkbcommon.so.0()(64bit)
+
+# Frozen SONAMEs on every target in the matrix.
+libz.so.1 :: zlib1g :: libz.so.1()(64bit)
+libyaml-0.so.2 :: libyaml-0-2 :: libyaml-0.so.2()(64bit)
+libcurl.so.4 :: libcurl4 :: libcurl.so.4()(64bit)
+libzstd.so.1 :: libzstd1 :: libzstd.so.1()(64bit)
+liblzma.so.5 :: liblzma5 :: liblzma.so.5()(64bit)

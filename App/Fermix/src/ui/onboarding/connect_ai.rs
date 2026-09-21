@@ -30,6 +30,7 @@ use crate::ui::widgets::mark::{self, MarkKind};
 use crate::ui::CaptionRow;
 
 use super::Screen;
+use crate::ui::plain;
 
 /// The Connect your AI screen.
 pub struct ConnectAiScreen {
@@ -135,11 +136,13 @@ impl ConnectAiScreen {
     }
 
     fn build_row(self: &Rc<Self>, row: &ProviderRow) -> (adw::ActionRow, gtk::Button) {
-        let widget = adw::ActionRow::builder()
-            .title(row.label.as_str())
-            .subtitle(standing_line(row))
-            .activatable(false)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(row.label.as_str())
+                .subtitle(standing_line(row))
+                .activatable(false)
+                .build(),
+        );
         widget.add_prefix(&mark::slot(MarkKind::Provider, &row.id));
 
         let verb = verb_button();
@@ -315,10 +318,12 @@ impl Screen for ConnectAiScreen {
 /// the button back to the list.
 fn connected_group() -> (adw::PreferencesGroup, adw::ActionRow, adw::ButtonRow) {
     let group = adw::PreferencesGroup::new();
-    let row = adw::ActionRow::builder().activatable(false).build();
-    let change = adw::ButtonRow::builder()
-        .title(copy::text(Key::SetupChangeProvider))
-        .build();
+    let row = plain(adw::ActionRow::builder().activatable(false).build());
+    let change = plain(
+        adw::ButtonRow::builder()
+            .title(copy::text(Key::SetupChangeProvider))
+            .build(),
+    );
 
     group.add(&row);
     group.add(&change);

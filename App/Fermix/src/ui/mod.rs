@@ -74,12 +74,22 @@ pub fn shorten(button: &gtk::Button) {
 /// installed here. They are the only thing on the pane there is to read, so
 /// they are read at body size in a box of the toolkit's, rather than in the
 /// smallest and dimmest type the deck has.
+///
+/// The rule for which of the two this takes: a statement that renders more
+/// than two lines at the default width goes through
+/// [`folded_statement_row`] instead, so the pane carries a line and the
+/// paragraph is a click away. Nothing is dropped by folding it — the full
+/// text is what the popover holds — and a statement whose length is only
+/// known at runtime is folded unconditionally, because a rule that depends on
+/// what a probe happened to return is not a rule.
 pub fn statement_row(text: &str) -> adw::ActionRow {
-    adw::ActionRow::builder()
-        .title(text)
-        .title_lines(0)
-        .activatable(false)
-        .build()
+    plain(
+        adw::ActionRow::builder()
+            .title(text)
+            .title_lines(0)
+            .activatable(false)
+            .build(),
+    )
 }
 
 /// Supporting copy, at body size in the toolkit's caption style.
@@ -183,10 +193,12 @@ pub fn identifier_label(text: &str) -> gtk::Label {
 /// thing about a fact that changes and hunting for it in the tree afterwards is
 /// how a refresh quietly stops updating one row.
 pub fn fact_row(label: Key, value: &str) -> (adw::ActionRow, gtk::Label) {
-    let row = adw::ActionRow::builder()
-        .title(copy::text(label))
-        .activatable(false)
-        .build();
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(label))
+            .activatable(false)
+            .build(),
+    );
     let value = value_label(value);
     row.add_suffix(&value);
     (row, value)
@@ -213,13 +225,15 @@ impl CaptionRow {
         label.set_margin_top(metrics::SPACE_TIGHT);
         label.set_margin_bottom(metrics::SPACE_TIGHT);
 
-        let row = adw::PreferencesRow::builder()
-            .activatable(false)
-            .selectable(false)
-            .focusable(false)
-            .child(&label)
-            .visible(false)
-            .build();
+        let row = plain(
+            adw::PreferencesRow::builder()
+                .activatable(false)
+                .selectable(false)
+                .focusable(false)
+                .child(&label)
+                .visible(false)
+                .build(),
+        );
 
         Self { row, label }
     }
@@ -354,3 +368,89 @@ pub fn open_pane(
 pub fn window_of(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
     widget.as_ref().root().and_downcast::<gtk::Window>()
 }
+
+/// One row, told to render its words rather than parse them.
+///
+/// `adw::PreferencesRow::use-markup` defaults to true and governs the title
+/// and the subtitle alike. Nearly everything these rows carry is the daemon's:
+/// a path, a command line, a journal line, a provider's own label. A bare `&`
+/// in any of it is not a Pango entity, so the parse fails and the row draws
+/// wrong or draws nothing. Escaping at each site would be one forgotten call
+/// away from the same defect, so the property is turned off instead and every
+/// row in the product is built through here.
+pub fn plain<R: IsA<adw::PreferencesRow>>(row: R) -> R {
+    row.as_ref().set_use_markup(false);
+    row
+}
+
+/// One statement whose paragraph is behind an (i) rather than in the pane.
+///
+/// `lead` is the line the pane carries and `full` is the whole statement,
+/// which the popover holds and which is selectable, because a person who
+/// opens it may well want to quote it. The button is in the focus order and
+/// carries the lead as its accessible name, so it announces what it explains
+/// rather than announcing "button". The body label comes back with the row so
+/// a statement that is only known once a probe has answered can be set into
+/// it without rebuilding the pane.
+pub struct FoldedStatement {
+    /// The row the pane carries.
+    pub row: adw::ActionRow,
+    /// The paragraph inside the popover, so a runtime statement can be set.
+    pub body: gtk::Label,
+}
+
+pub fn folded_statement_row(lead: &str, full: &str) -> FoldedStatement {
+    assert!(!full.trim().is_empty(), "a folded statement needs its text");
+    fold(lead, full)
+}
+
+/// A folded statement whose paragraph is not known yet.
+///
+/// The runtime case: the pane is built before the probe has answered, so the
+/// popover starts empty and the row starts hidden. The caller shows the row
+/// only once it has set the body, which is why there is no text to assert
+/// here and why this is a separate door rather than a blank allowed through
+/// the one above.
+pub fn pending_statement(lead: &str) -> FoldedStatement {
+    fold(lead, "")
+}
+
+fn fold(lead: &str, full: &str) -> FoldedStatement {
+    assert!(!lead.trim().is_empty(), "a folded statement needs its line");
+
+    let body = gtk::Label::builder()
+        .label(full)
+        .wrap(true)
+        .selectable(true)
+        .xalign(0.0)
+        .max_width_chars(POPOVER_WIDTH_CHARS)
+        .build();
+    body.set_margin_top(metrics::SPACE_HEADING);
+    body.set_margin_bottom(metrics::SPACE_HEADING);
+    body.set_margin_start(metrics::SPACE_HEADING);
+    body.set_margin_end(metrics::SPACE_HEADING);
+
+    let popover = gtk::Popover::builder().child(&body).build();
+
+    let button = gtk::MenuButton::builder()
+        .icon_name("help-about-symbolic")
+        .popover(&popover)
+        .valign(gtk::Align::Center)
+        .focusable(true)
+        .build();
+    button.add_css_class("flat");
+    button.update_property(&[gtk::accessible::Property::Label(lead)]);
+
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(lead)
+            .title_lines(0)
+            .activatable(false)
+            .build(),
+    );
+    row.add_suffix(&button);
+    FoldedStatement { row, body }
+}
+
+/// How wide the folded paragraph is allowed to run before it wraps.
+const POPOVER_WIDTH_CHARS: i32 = 48;

@@ -18,7 +18,10 @@ use crate::models::plugins::PluginsModel;
 use crate::models::{spawn, SettingsModel};
 use crate::ui::CaptionRow;
 
+use super::{close_if_open, form_dialog};
+
 use super::secret::SecretDialog;
+use crate::ui::plain;
 
 /// The dialog one sign-in client is registered through.
 pub struct OAuthClientDialog;
@@ -31,12 +34,14 @@ impl OAuthClientDialog {
         client: PluginOAuthClient,
         parent: &impl IsA<gtk::Widget>,
     ) {
-        let identifier = adw::EntryRow::builder()
-            .title(copy::text(Key::OAuthClientId))
-            .text(client.client_id.clone().unwrap_or_default())
-            .build();
+        let identifier = plain(
+            adw::EntryRow::builder()
+                .title(copy::text(Key::OAuthClientId))
+                .text(client.client_id.clone().unwrap_or_default())
+                .build(),
+        );
 
-        let port = adw::SpinRow::with_range(MINIMUM_PORT, MAXIMUM_PORT, 1.0);
+        let port = plain(adw::SpinRow::with_range(MINIMUM_PORT, MAXIMUM_PORT, 1.0));
         port.set_title(&copy::text(Key::OAuthClientRedirectPort));
         port.set_value(f64::from(client.redirect_port.unwrap_or(0)));
 
@@ -52,10 +57,12 @@ impl OAuthClientDialog {
                 .iter()
                 .map(|region| region.label.as_str())
                 .collect();
-            let combo = adw::ComboRow::builder()
-                .title(copy::text(Key::OAuthClientRegion))
-                .model(&gtk::StringList::new(&words))
-                .build();
+            let combo = plain(
+                adw::ComboRow::builder()
+                    .title(copy::text(Key::OAuthClientRegion))
+                    .model(&gtk::StringList::new(&words))
+                    .build(),
+            );
             if let Some(at) = client
                 .regions
                 .iter()
@@ -73,29 +80,27 @@ impl OAuthClientDialog {
         let notice = CaptionRow::new();
         group.add(notice.row());
 
-        let dialog = adw::AlertDialog::new(Some(&copy::text(Key::OAuthClientDialogTitle)), None);
-        dialog.set_extra_child(Some(&group));
-        dialog.add_response(CANCEL, &copy::text(Key::ActionCancel));
-        dialog.add_response(SAVE, &copy::text(Key::ActionContinue));
-        dialog.set_response_appearance(SAVE, adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some(SAVE));
-        dialog.set_close_response(CANCEL);
+        let form = form_dialog(
+            &copy::text(Key::OAuthClientDialogTitle),
+            &group,
+            &copy::text(Key::ActionContinue),
+        );
+        let dialog = form.dialog.clone();
 
         // Blank is never sent: the one response that writes is unavailable
         // until the identifier says something.
         {
-            let dialog = dialog.clone();
-            dialog.set_response_enabled(SAVE, !identifier.text().trim().is_empty());
+            let save = form.confirm.clone();
+            save.set_sensitive(!identifier.text().trim().is_empty());
             identifier.connect_changed(move |identifier| {
-                dialog.set_response_enabled(SAVE, !identifier.text().trim().is_empty());
+                save.set_sensitive(!identifier.text().trim().is_empty());
             });
         }
 
         let typed = identifier.clone();
-        dialog.connect_response(None, move |dialog, response| {
-            if response != SAVE {
-                return;
-            }
+        let dialog_for_save = dialog.clone();
+        form.confirm.connect_clicked(move |_| {
+            let dialog = dialog_for_save.clone();
 
             let client_id = typed.text().trim().to_string();
             if client_id.is_empty() {
@@ -121,7 +126,10 @@ impl OAuthClientDialog {
                     .await
                 {
                     None => {
-                        dialog.close();
+                        // The person may have cancelled while this was in
+                        // flight; closing what is already gone is what the
+                        // owner's journal complained about.
+                        close_if_open(&dialog);
                     }
                     // The daemon's own sentence, beside the fields it refused.
                     Some(sentence) => notice.set(Some(&sentence.text)),
@@ -140,15 +148,17 @@ fn secret_row(
     settings: Rc<SettingsModel>,
     parent: &impl IsA<gtk::Widget>,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(copy::text(Key::OAuthClientSecret))
-        .subtitle(if client.secret_present {
-            copy::text(Key::SecretStored)
-        } else {
-            String::new()
-        })
-        .activatable(false)
-        .build();
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(Key::OAuthClientSecret))
+            .subtitle(if client.secret_present {
+                copy::text(Key::SecretStored)
+            } else {
+                String::new()
+            })
+            .activatable(false)
+            .build(),
+    );
 
     let button = gtk::Button::builder()
         .label(copy::text(if client.secret_present {
@@ -177,6 +187,3 @@ const CLIENT_SECTION: &str = "";
 /// The ports a loopback redirect can come back on.
 const MINIMUM_PORT: f64 = 0.0;
 const MAXIMUM_PORT: f64 = 65_535.0;
-
-const CANCEL: &str = "cancel";
-const SAVE: &str = "save";

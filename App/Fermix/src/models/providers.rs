@@ -333,6 +333,7 @@ impl ProvidersModel {
             None => Err(self.record(Sentence {
                 code: None,
                 text: crate::copy::text(Key::BusyQueueFull),
+                reason: None,
             })),
             Some(Ok(result)) => {
                 self.refresh().await;
@@ -381,6 +382,7 @@ impl ProvidersModel {
             None => Err(self.record(Sentence {
                 code: None,
                 text: crate::copy::text(Key::BusyQueueFull),
+                reason: None,
             })),
             Some(Ok(result)) => {
                 let started = SignIn {
@@ -412,6 +414,7 @@ impl ProvidersModel {
                 return Err(self.record(Sentence {
                     code: None,
                     text: format!("{other:?}"),
+                    reason: None,
                 }));
             }
         };
@@ -430,6 +433,7 @@ impl ProvidersModel {
             None => Err(self.record(Sentence {
                 code: None,
                 text: crate::copy::text(Key::BusyQueueFull),
+                reason: None,
             })),
             Some(Ok(result)) => {
                 let started = SignIn {
@@ -469,6 +473,7 @@ impl ProvidersModel {
             None => Err(self.record(Sentence {
                 code: None,
                 text: crate::copy::text(Key::BusyQueueFull),
+                reason: None,
             })),
             Some(Ok(job)) => {
                 self.probing.replace(Some(provider.to_string()));
@@ -510,6 +515,7 @@ impl ProvidersModel {
             None => Err(Sentence {
                 code: None,
                 text: crate::copy::text(Key::BusyQueueFull),
+                reason: None,
             }),
             Some(Ok(result)) => Ok(result),
             Some(Err(error)) => Err(Sentence::of(&error)),
@@ -592,7 +598,18 @@ fn verb_for(provider: &SetupProviderRow, adoptable: bool) -> Option<ProviderVerb
     let token_usable = !TokenState::of(provider.token_state.as_deref()).is_stale();
     // A provider the daemon already reports as working has nothing for the list
     // to do: replacing a key and signing out live on its own sub-page.
-    if provider.configured && token_usable && (provider.primary || provider.present_key) {
+    //
+    // Being primary or holding a key is deliberately not required. The macOS
+    // projection still asks for one of them
+    // (FermixAppCore/Settings/Panes/ProviderProjection.swift:315), and that
+    // rule is wrong for a provider signed in through a browser: an OAuth
+    // provider stores no key, and the engine promotes a new sign-in to primary
+    // only when nothing else already is. Sign in to Codex on a machine that
+    // already has a primary and both halves are false, so the row went on
+    // offering Sign In to an account it was signed in to — while the same
+    // provider's own page offered Sign Out. The divergence is stated here
+    // rather than left to be discovered.
+    if provider.configured && token_usable {
         return None;
     }
 

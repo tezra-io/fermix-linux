@@ -1,10 +1,11 @@
 //! Where the engine's command line and its socket are.
 //!
 //! The packaged path is a compile-time constant and is never resolved on
-//! `PATH`: the `fermix` package owns `/usr/bin/fermix` and the desktop package
-//! declares an exact-version dependency on it, so resolving on `PATH` would let
-//! a shell alias, a Nix profile or a stale standalone install answer for the
-//! package this interface is bound to (M38 section 5.6).
+//! `PATH`: this package owns `/usr/bin/fermix`, so resolving on `PATH` would
+//! let a shell alias, a Nix profile or a stale standalone install answer for
+//! the package this interface is bound to (M38 section 5.6). The path is the
+//! same one the engine-only `fermix` package installs, because both carry the
+//! same engine build at the same layout.
 //!
 //! The two development configurations below are `cfg(debug_assertions)` only.
 //! They are declared configurations, not a runtime branch: a release build

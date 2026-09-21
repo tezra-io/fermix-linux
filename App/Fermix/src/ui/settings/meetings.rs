@@ -22,6 +22,7 @@ use crate::management::types::{SettingsPane, SettingsRow};
 use crate::models::jobs::{phase_word, JobRunner};
 use crate::models::meetings::{MeetingsModel, SignInState, ENABLED_KEY, SECTION};
 use crate::models::{spawn, Change, SettingsModel};
+use crate::ui::plain;
 use crate::ui::settings::descriptor_form::DescriptorForm;
 use crate::ui::widgets::mark::{self, MarkKind};
 use crate::ui::CaptionRow;
@@ -51,7 +52,7 @@ impl MeetingsPane {
     pub fn new(settings: Rc<SettingsModel>) -> Rc<Self> {
         let model = MeetingsModel::new(Rc::clone(&settings));
 
-        let enable = adw::SwitchRow::builder().build();
+        let enable = plain(adw::SwitchRow::builder().build());
         let head = adw::PreferencesGroup::new();
         head.add(&enable);
 
@@ -66,11 +67,13 @@ impl MeetingsPane {
             .label(copy::text(Key::ActionCancel))
             .valign(gtk::Align::Center)
             .build();
-        let progress = adw::ActionRow::builder()
-            .title(copy::text(Key::MeetingsInstall))
-            .activatable(false)
-            .visible(false)
-            .build();
+        let progress = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::MeetingsInstall))
+                .activatable(false)
+                .visible(false)
+                .build(),
+        );
         progress.add_suffix(&phase);
         progress.add_suffix(&cancel);
         head.add(&progress);
@@ -98,10 +101,12 @@ impl MeetingsPane {
             .label(copy::text(Key::MeetingsSignIn))
             .valign(gtk::Align::Center)
             .build();
-        let sign_in = adw::ActionRow::builder()
-            .title(copy::text(Key::MeetingsGoogleAccount))
-            .activatable(false)
-            .build();
+        let sign_in = plain(
+            adw::ActionRow::builder()
+                .title(copy::text(Key::MeetingsGoogleAccount))
+                .activatable(false)
+                .build(),
+        );
         sign_in.add_suffix(&sign_in_button);
         google.add(&sign_in);
 
@@ -123,9 +128,13 @@ impl MeetingsPane {
         // The platform statement, in the shape Voice and Computer state theirs:
         // body copy in a box of the toolkit's rather than a dim caption.
         let sleep = adw::PreferencesGroup::new();
-        sleep.add(&crate::ui::statement_row(&copy::text(
-            Key::MeetingsSleepStatement,
-        )));
+        sleep.add(
+            &crate::ui::folded_statement_row(
+                &copy::text(Key::MeetingsSleepLead),
+                &copy::text(Key::MeetingsSleepStatement),
+            )
+            .row,
+        );
         column.append(&sleep);
 
         let pane = Rc::new(Self {

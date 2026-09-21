@@ -1,30 +1,33 @@
-Fermix for Linux is two packages. `fermix` is the assistant itself, a background
-service your own systemd runs. `fermix-desktop` is the window you set it up and
-watch it from. The window depends on exactly the `fermix` version beside it, so
-install the two together from this page.
+Fermix for Linux is one package. `fermix-desktop` carries the window, the
+assistant itself, and the toolkit the window draws with, so one install is the
+whole product and there is nothing to pair it with.
 
-{{ENGINE_NOTE}}
+On a machine with no desktop, install `fermix` instead. It is the same assistant
+without the window, for a server, and it is published on the engine's own
+release page. The two are alternatives rather than layers: installing either one
+replaces the other, and your settings are kept because neither package owns
+them.
 
 ## Debian, Ubuntu, Mint, Pop!_OS, elementary
 
 ```sh
-sudo apt install ./fermix_{{ENGINE_VERSION}}_$(dpkg --print-architecture).deb \
-                 ./fermix-desktop_{{VERSION}}_$(dpkg --print-architecture).deb
+sudo apt install ./fermix-desktop_{{VERSION}}_$(dpkg --print-architecture).deb
 ```
 
 ## Fedora, RHEL, CentOS Stream, Alma, Rocky
 
 ```sh
-sudo dnf install ./fermix-{{ENGINE_VERSION}}-1.$(uname -m).rpm \
-                 ./fermix-desktop-{{VERSION}}-1.$(uname -m).rpm
+sudo dnf install ./fermix-desktop-{{VERSION}}-1.$(uname -m).rpm
 ```
 
 ## openSUSE and SLE
 
 ```sh
-sudo zypper install ./fermix-{{ENGINE_VERSION}}-1.$(uname -m).rpm \
-                    ./fermix-desktop-{{VERSION}}-1.$(uname -m).rpm
+sudo zypper install ./fermix-desktop-{{VERSION}}-1.$(uname -m).rpm
 ```
+
+Leap 15.6 is below the glibc floor named below, so zypper refuses it rather than
+installing something that cannot start. Tumbleweed is above the floor.
 
 ## Then
 
@@ -50,10 +53,52 @@ cosign verify-blob \
   "$package"
 ```
 
-{{ENGINE_SIGNING_NOTE}}
-
 ## Requirements
 
-GTK 4.16 or later with libadwaita 1.6 or later. Both packages declare what they
-need, so your package manager refuses the install on a host below that floor
-rather than letting it fail when the window is opened.
+glibc 2.34 or later, which every supported release of Ubuntu, Debian, Fedora and
+the RHEL family has carried since 2021. The package declares it, so your package
+manager refuses the install on a host below that floor rather than letting it
+fail when the window is opened.
+
+The window needs no GTK from you: it carries its own, and everything under it,
+so it draws the same on Ubuntu 22.04 as on Fedora 44. What it does use from your
+system is the graphics driver, the session bus, the X11 client libraries and
+your installed fonts, and your package manager brings any of those you are
+missing.
+
+## Where your keys are kept
+
+Keys you give Fermix go to your desktop's own keyring through the freedesktop
+Secret Service, so the package needs `secret-tool` and asks for it. It also
+*recommends* `gnome-keyring`, which is a suggestion rather than a requirement:
+if you already run KWallet, KeePassXC or another Secret Service, refuse the
+recommendation and Fermix will use yours.
+
+```sh
+sudo apt install --no-install-recommends ./fermix-desktop_{{VERSION}}_$(dpkg --print-architecture).deb
+sudo dnf install --setopt=install_weak_deps=False ./fermix-desktop-{{VERSION}}-1.$(uname -m).rpm
+```
+
+On a machine with no keyring at all, such as a server or a desktop that runs
+none, Fermix says so plainly and offers to keep keys in a file it owns, readable
+only by you, inside your Fermix home. That is a choice you make rather than
+something it does quietly, and it is reversible later: if you set a keyring up
+afterwards, **Use the Keyring Instead** moves every key across for you, so you
+never have to find and retype them.
+
+## What it installs, and what removing it leaves
+
+The window and its toolkit live under `/usr/lib/fermix-desktop`. The assistant is
+at `/usr/bin/fermix` with its own files under `/usr/lib/fermix`, at exactly the
+paths the engine-only package uses.
+
+Removing the package leaves two things on purpose. `/var/lib/fermix/runtimes`
+holds the loader a running assistant asks the kernel for every time it starts a
+helper, a few hundred kilobytes per version, and deleting it under a running
+assistant would break it. Your own configuration, your Fermix home and anything
+you have saved are yours, and no package owns them.
+
+Every bundled component, its version and its licence are listed in
+`/usr/share/doc/fermix-desktop/copyright`, and
+`/usr/share/doc/fermix-desktop/runtime-manifest.json` records the exact source
+each one was built from, so you can check any of it from the installed machine.

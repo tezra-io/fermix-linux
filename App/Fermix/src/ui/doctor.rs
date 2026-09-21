@@ -22,6 +22,7 @@ use crate::models::{spawn, SettingsModel};
 
 use super::widgets::status_pill;
 use super::{caption, identifier_label, value_label, PageToolbar};
+use crate::ui::plain;
 
 /// The Doctor surface.
 pub struct DoctorPage {
@@ -328,7 +329,7 @@ impl DoctorPage {
     }
 
     fn check_row(&self, row: &CheckRow) -> adw::ActionRow {
-        let widget = adw::ActionRow::builder().activatable(false).build();
+        let widget = plain(adw::ActionRow::builder().activatable(false).build());
 
         match &row.name {
             CheckName::Words(name) => widget.set_title(name),
@@ -463,13 +464,15 @@ fn subtitle(row: &CheckRow) -> String {
 
 /// The evidence, in an expander under the row it belongs to.
 fn evidence_row(row: &CheckRow) -> adw::ExpanderRow {
-    let expander = adw::ExpanderRow::builder()
-        .title(copy::text(Key::DoctorEvidence))
-        .expanded(false)
-        .build();
+    let expander = plain(
+        adw::ExpanderRow::builder()
+            .title(copy::text(Key::DoctorEvidence))
+            .expanded(false)
+            .build(),
+    );
 
     for (label, value) in &row.evidence {
-        let line = adw::ActionRow::builder().activatable(false).build();
+        let line = plain(adw::ActionRow::builder().activatable(false).build());
         line.add_prefix(&identifier_label(label));
         line.add_suffix(&value_label(value));
         expander.add_row(&line);

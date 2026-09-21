@@ -21,10 +21,6 @@ DoctorNeedsNewerEngine
 LogsCursorExpired
 LogsExportDiagnostics
 RecoveryPackageRepair
-SecretStoreDesktopKeyring
-SecretStoreNone
-SecretStorePasswordStore
-SecretStoreRowLabel
 SystemScopeRefusalBody
 SystemScopeRefusalCommandValue
 SystemScopeRefusalNextAction

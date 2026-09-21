@@ -441,15 +441,13 @@ fn the_linux_only_moments_carry_their_fixed_words() {
             Key::SecretStoreDesktopKeyring,
             "Stored in your desktop keyring",
         ),
-        (
-            Key::SecretStorePasswordStore,
-            "Stored in your password store",
-        ),
-        (Key::SecretStoreNone, "No store on this host"),
+        // Revised on the owner's finding: the old title covered a locked
+        // keyring and an absent one at once, and named neither.
         (
             Key::SecretStoreUnavailableTitle,
-            "Fermix has nowhere to store this key",
+            "This computer has no keyring",
         ),
+        (Key::SecretKeyringLockedTitle, "Your keyring is locked"),
         (Key::SkewNewerInstalledTitle, "A newer Fermix is installed"),
         (
             Key::SkewRestartToFinish,
@@ -521,6 +519,130 @@ fn the_one_ellipsis_is_the_unicode_one() {
         assert!(
             !copy::text(key).contains("..."),
             "{key:?} mixes the two spellings"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The secret store, when the keyring will not take the key
+// ---------------------------------------------------------------------------
+
+/// The two refusals say which of the two situations the owner is in.
+///
+/// The message these replace said "no unlocked keyring", which is true both
+/// when a keyring exists and is locked and when none exists at all. One
+/// sentence covering two states leaves the owner unable to tell which they are
+/// in, and the next action it offered was wrong for both.
+#[test]
+fn each_secret_store_refusal_names_its_own_situation() {
+    assert_eq!(
+        copy::text(Key::SecretKeyringLockedTitle),
+        "Your Keyring Is Locked"
+    );
+    assert_eq!(
+        copy::text(Key::SecretKeyringLockedBody),
+        "Your desktop keyring is locked, so the key was not saved. \
+         Everything else you entered is unchanged."
+    );
+    assert_eq!(
+        copy::text(Key::SecretStoreUnavailableTitle),
+        "This Computer Has No Keyring"
+    );
+    assert_eq!(
+        copy::text(Key::SecretStoreUnavailableBody),
+        "Fermix found no keyring on this computer to keep the key in. \
+         The key was not saved. Everything else you entered is unchanged."
+    );
+}
+
+/// The unlock hint says the thing the owner cannot discover by trying.
+///
+/// This is the whole of the real finding: the owner logs in by fingerprint, so
+/// the prompt wants a password they may never type, and no amount of touching
+/// the reader will satisfy it.
+#[test]
+fn the_unlock_hint_says_a_fingerprint_will_not_do() {
+    let hint = copy::text(Key::SecretKeyringUnlockHint);
+    assert!(
+        hint.contains("account password"),
+        "the hint does not name what to type: {hint}"
+    );
+    assert!(
+        hint.to_lowercase().contains("fingerprint"),
+        "the hint does not say a fingerprint cannot unlock it: {hint}"
+    );
+}
+
+/// The tradeoff is written as a consequence of the button, not as a state.
+///
+/// It is shown in both dialogs before the click, and in the locked dialog the
+/// secondary button stores to the file in one press, so the future tense is
+/// what makes it a warning rather than a report.
+#[test]
+fn the_file_store_tradeoff_reads_as_a_consequence_before_the_click() {
+    let tradeoff = copy::text(Key::SecretStoreFileTradeoff);
+    assert_eq!(
+        tradeoff,
+        "The key will be saved in a file that only your user account can read. \
+         It is not protected by a keyring."
+    );
+    assert!(
+        tradeoff.contains("will be saved"),
+        "the tradeoff reads as a state rather than a consequence: {tradeoff}"
+    );
+
+    // Settings reports what is already true, so it stays in the present.
+    let detail = copy::text(Key::SecretStoreThisComputerDetail);
+    assert!(
+        !detail.contains("will be"),
+        "the settings detail should report, not warn: {detail}"
+    );
+}
+
+/// Giving up on the unlock is not a dead end.
+///
+/// The owner who walked away from the prompt is in exactly the situation the
+/// dialog opened on, so it keeps both of its actions rather than stranding
+/// them in a third state with nothing to press.
+#[test]
+fn giving_up_on_the_unlock_leaves_both_actions_standing() {
+    let gave_up = copy::text(Key::SecretKeyringUnlockGaveUp);
+    assert!(
+        gave_up.contains("not saved"),
+        "the owner is not told the key is still unsaved: {gave_up}"
+    );
+    assert!(
+        gave_up.contains("unchanged"),
+        "the promise that what they typed survives is dropped: {gave_up}"
+    );
+
+    // Both actions are catalogue rows rather than literals, so the dialog that
+    // re-presents them after the cap cannot quietly lose one.
+    assert_eq!(copy::text(Key::ActionUnlockKeyring), "Unlock Keyring");
+    assert_eq!(
+        copy::text(Key::ActionStoreOnThisComputer),
+        "Store on This Computer"
+    );
+}
+
+/// No refusal sends the owner to install something.
+///
+/// The deleted next action told a GNOME owner to install pass and
+/// pass-secret-service, which was wrong on every path that reached it.
+#[test]
+fn no_secret_store_refusal_advises_installing_a_password_manager() {
+    for key in [
+        Key::SecretKeyringLockedTitle,
+        Key::SecretKeyringLockedBody,
+        Key::SecretKeyringUnlockHint,
+        Key::SecretStoreUnavailableTitle,
+        Key::SecretStoreUnavailableBody,
+        Key::SecretStoreFileTradeoff,
+    ] {
+        let rendered = copy::text(key).to_lowercase();
+        assert!(
+            !rendered.contains("install"),
+            "{key:?} tells the owner to install something: {rendered}"
         );
     }
 }

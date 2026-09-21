@@ -20,6 +20,7 @@ use crate::copy::{self, Key};
 use crate::management::types::SettingsPane;
 use crate::models::ledger::{PermissionLedger, Right};
 use crate::models::SettingsModel;
+use crate::ui::plain;
 use crate::ui::settings::descriptor_form::DescriptorForm;
 
 /// The Voice pane.
@@ -40,19 +41,25 @@ impl VoicePane {
 
         let statements = adw::PreferencesGroup::new();
         statements.add(&statement(Key::VoiceCompanionStatement));
-        statements.add(&statement(Key::VoiceMicrophoneStatement));
+        statements.add(
+            &crate::ui::folded_statement_row(
+                &copy::text(Key::VoiceMicrophoneLead),
+                &copy::text(Key::VoiceMicrophoneStatement),
+            )
+            .row,
+        );
 
         // The microphone row of the one ledger, which is what makes this pane
         // and Permissions incapable of disagreeing about it.
         let microphone = ledger.row(Right::Microphone);
-        statements.add(
-            &adw::ActionRow::builder()
+        statements.add(&plain(
+            adw::ActionRow::builder()
                 .title(copy::text(microphone.right.title()))
                 .subtitle(copy::text(microphone.right.principal()))
                 .subtitle_lines(0)
                 .activatable(false)
                 .build(),
-        );
+        ));
 
         let column = crate::ui::column();
         column.add_css_class("fermix-gutter");

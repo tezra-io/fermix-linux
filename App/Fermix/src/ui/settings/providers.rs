@@ -24,6 +24,7 @@ use crate::models::providers::{
     detail_verbs, import_source, probe_sentence, ProviderRow, ProviderVerb, ProvidersModel,
 };
 use crate::models::{spawn, Change, SettingsModel};
+use crate::ui::plain;
 use crate::ui::settings::descriptor_form::DescriptorForm;
 use crate::ui::settings::descriptor_row::OpenChoice;
 use crate::ui::settings::dialogs::model_picker::ModelPicker;
@@ -177,11 +178,13 @@ impl ProvidersPane {
     }
 
     fn build_row(self: &Rc<Self>, row: &ProviderRow) -> Row {
-        let widget = adw::ActionRow::builder()
-            .title(row.label.as_str())
-            .subtitle(standing_line(row))
-            .activatable(true)
-            .build();
+        let widget = plain(
+            adw::ActionRow::builder()
+                .title(row.label.as_str())
+                .subtitle(standing_line(row))
+                .activatable(true)
+                .build(),
+        );
 
         widget.add_prefix(&mark::slot(MarkKind::Provider, &row.id));
 
@@ -247,8 +250,12 @@ impl ProvidersPane {
         let anchor = anchor.as_ref().clone();
         let id = id.to_string();
         spawn(async move {
-            if let Ok(started) = model.start_sign_in(&id).await {
-                SignInDialog::present(model, started, &anchor);
+            // A refused start is reported rather than dropped: the press that
+            // asked for it was the owner's, and a button that does nothing
+            // cannot be told from one that worked.
+            match model.start_sign_in(&id).await {
+                Ok(started) => SignInDialog::present(model, started, &anchor),
+                Err(sentence) => present_refusal(&sentence.text, &anchor),
             }
         });
     }
@@ -261,8 +268,11 @@ impl ProvidersPane {
         let anchor = anchor.as_ref().clone();
         let id = id.to_string();
         spawn(async move {
-            if let Ok(started) = model.import_sign_in(&id, source).await {
-                SignInDialog::present(model, started, &anchor);
+            // Reported rather than dropped, for the same reason as the sign-in
+            // beside it: the owner pressed something.
+            match model.import_sign_in(&id, source).await {
+                Ok(started) => SignInDialog::present(model, started, &anchor),
+                Err(sentence) => present_refusal(&sentence.text, &anchor),
             }
         });
     }
@@ -363,9 +373,11 @@ impl ProvidersPane {
         for verb in detail_verbs(&row.id, adoptable, None) {
             // One control per row: a row that is the button rather than a row
             // with the same word twice.
-            let button = adw::ButtonRow::builder()
-                .title(copy::text(verb.key()))
-                .build();
+            let button = plain(
+                adw::ButtonRow::builder()
+                    .title(copy::text(verb.key()))
+                    .build(),
+            );
             group.add(&button);
 
             let pane = Rc::clone(self);
@@ -403,10 +415,12 @@ impl ProvidersPane {
     /// about afterwards.
     fn primary_row(self: &Rc<Self>, row: &ProviderRow, notice: CaptionRow) -> adw::ButtonRow {
         let offered = row.configured && !row.primary;
-        let widget = adw::ButtonRow::builder()
-            .title(copy::text(Key::ProviderUseAsPrimary))
-            .sensitive(offered)
-            .build();
+        let widget = plain(
+            adw::ButtonRow::builder()
+                .title(copy::text(Key::ProviderUseAsPrimary))
+                .sensitive(offered)
+                .build(),
+        );
         // Suggested only while it can be taken: a filled control that cannot
         // be pressed reads as the one thing to do and is not.
         if offered {
@@ -454,10 +468,12 @@ impl ProvidersPane {
     }
 
     fn sign_out_row(self: &Rc<Self>, row: &ProviderRow, notice: CaptionRow) -> adw::ButtonRow {
-        let widget = adw::ButtonRow::builder()
-            .title(copy::text(Key::ProviderSignOut))
-            .sensitive(row.configured)
-            .build();
+        let widget = plain(
+            adw::ButtonRow::builder()
+                .title(copy::text(Key::ProviderSignOut))
+                .sensitive(row.configured)
+                .build(),
+        );
         widget.add_css_class("destructive-action");
 
         let model = Rc::clone(&self.model);
@@ -482,9 +498,11 @@ impl ProvidersPane {
         let group = adw::PreferencesGroup::new();
         let result = CaptionRow::new();
 
-        let button = adw::ButtonRow::builder()
-            .title(copy::text(Key::ProviderTestConnection))
-            .build();
+        let button = plain(
+            adw::ButtonRow::builder()
+                .title(copy::text(Key::ProviderTestConnection))
+                .build(),
+        );
         group.add(&button);
         group.add(result.row());
 
@@ -574,3 +592,18 @@ const ROUTING: &str = "routing";
 
 const CANCEL: &str = "cancel";
 const CONFIRM: &str = "confirm";
+
+/// The daemon's own words for an action this pane could not start.
+///
+/// The list has no notice line of its own — the one on a provider's page
+/// belongs to that page — so a refusal here is shown where the press was, in
+/// the daemon's sentence rather than a guess at what it meant.
+fn present_refusal(sentence: &str, parent: &gtk::Widget) {
+    let dialog = adw::AlertDialog::new(None, Some(sentence));
+    dialog.add_response(CANCEL_RESPONSE, &copy::text(Key::ActionCancel));
+    dialog.set_close_response(CANCEL_RESPONSE);
+    dialog.present(Some(parent));
+}
+
+/// The one response these refusal dialogs carry.
+const CANCEL_RESPONSE: &str = "cancel";

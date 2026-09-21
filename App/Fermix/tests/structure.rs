@@ -619,3 +619,171 @@ fn user_facing_literal(line: &str) -> Option<String> {
     }
     None
 }
+
+/// Every action the tray menu names is one the application registers.
+///
+/// The tray's rows are a table of action names, and the actions are registered
+/// somewhere else, so the two can drift without either file looking wrong. When
+/// they drift the failure is quiet in the worst way: the icon appears, the menu
+/// opens, the row is there, and clicking it does nothing at all. A person would
+/// report that as "the tray is broken" and the cause would be a typed string.
+///
+/// This is a source-level check on purpose. Activating the real actions needs a
+/// running application with a window, which is the one thing the container lane
+/// cannot have; the names, though, are readable without any of that.
+#[test]
+fn every_action_the_tray_offers_is_one_the_application_registers() {
+    let directory = manifest_directory();
+
+    let menu_body = std::fs::read_to_string(directory.join("src/tray/menu.rs"))
+        .expect("the tray menu table reads");
+    let app = std::fs::read_to_string(directory.join("src/app.rs")).expect("the application reads");
+
+    // Only the part that ships. The table's own tests assert on the shape of an
+    // action name (`starts_with("app.")`), and reading those as rows finds an
+    // action with an empty name that nothing could ever register.
+    let menu = shipped(&menu_body);
+
+    // The names the table hands to the bus, as `"app.something"`.
+    let named: BTreeSet<String> = menu
+        .split("\"app.")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect();
+
+    assert!(
+        !named.is_empty(),
+        "no application actions were found in the tray menu table, so this test read nothing"
+    );
+
+    for action in &named {
+        let registered = app.contains(&format!("SimpleAction::new(\"{action}\""));
+        assert!(
+            registered,
+            "the tray offers app.{action}, which the application never registers: \
+             the row would open, click, and do nothing"
+        );
+    }
+}
+
+/// The control for the test above: it is looking, not agreeing.
+///
+/// A name the table does not carry must not be found in it. Without this, a
+/// membership test that had stopped reading the table would pass exactly as
+/// happily as one that read it.
+#[test]
+fn an_action_the_tray_does_not_offer_is_not_found_in_its_table() {
+    let menu = std::fs::read_to_string(manifest_directory().join("src/tray/menu.rs"))
+        .expect("the tray menu table reads");
+
+    assert!(
+        !shipped(&menu).contains("\"app.tray-no-such-row\""),
+        "the table was read as carrying a row that does not exist in it"
+    );
+}
+
+/// Every row construction in the surfaces goes through `plain`.
+///
+/// The walking gate in tests/widgets.rs covers the rows a pane shows, and it
+/// reaches around three thousand of them. It cannot reach a row that only
+/// exists inside a dialog or in the onboarding flow, because those are not
+/// mapped while it walks. This reads the source instead, so a row built
+/// anywhere under src/ui is held to the rule whether or not a test can open
+/// the surface it lives on.
+///
+/// `ButtonRow` and a bare `PreferencesRow` are named explicitly: they are
+/// PreferencesRow subclasses carrying daemon text, and the first mechanical
+/// pass missed both.
+#[test]
+fn every_row_the_surfaces_build_is_plain() {
+    let missed = rows_built_without_plain();
+    assert!(
+        missed.is_empty(),
+        "these rows are built without plain(), so they parse their words as markup: {missed:#?}"
+    );
+}
+
+/// The rule above, put to a case that must fail it.
+///
+/// `every_row_the_surfaces_build_is_plain` can only ever be read green, and a
+/// green that would survive the rule being deleted says nothing. This feeds
+/// the same matcher a construction it must object to, and one it must not.
+#[test]
+fn the_plain_rule_objects_to_a_row_built_without_it() {
+    let offending = "let row = adw::ButtonRow::builder().title(\"x\").build();";
+    assert_eq!(
+        rows_without_plain_in(offending).len(),
+        1,
+        "the rule let an unwrapped row through"
+    );
+
+    let obedient = "let row = plain(adw::ButtonRow::builder().title(\"x\").build());";
+    assert!(
+        rows_without_plain_in(obedient).is_empty(),
+        "the rule objected to a row that obeys it"
+    );
+}
+
+/// Every row construction under src/ui that is not wrapped in `plain`.
+fn rows_built_without_plain() -> Vec<String> {
+    sources()
+        .into_iter()
+        .filter(|(path, _)| path.components().any(|part| part.as_os_str() == "ui"))
+        .flat_map(|(path, body)| {
+            rows_without_plain_in(shipped(&body))
+                .into_iter()
+                .map(move |found| format!("{}: {found}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The matcher itself, over one piece of source text.
+fn rows_without_plain_in(body: &str) -> Vec<String> {
+    const ROWS: [&str; 9] = [
+        "ActionRow",
+        "EntryRow",
+        "SwitchRow",
+        "ComboRow",
+        "SpinRow",
+        "ExpanderRow",
+        "PasswordEntryRow",
+        "ButtonRow",
+        "PreferencesRow",
+    ];
+
+    // Only a construction counts. `adw::PreferencesRow` also appears as a
+    // type bound — `plain` is generic over it — and a bound builds nothing.
+    const MAKERS: [&str; 3] = ["builder(", "new(", "with_range("];
+
+    let mut missed = Vec::new();
+    for row in ROWS {
+        let needle = format!("adw::{row}::");
+        let mut from = 0;
+        while let Some(at) = body[from..].find(&needle) {
+            let at = from + at;
+            from = at + needle.len();
+            let tail = &body[from..body.len().min(from + MAKER_REACH)];
+            if !MAKERS.iter().any(|maker| tail.starts_with(maker)) {
+                continue;
+            }
+            // `plain(` may sit immediately before it or on the line above,
+            // because rustfmt moves the call onto its own line once the
+            // construction is long enough to wrap.
+            let before = &body[at.saturating_sub(PLAIN_REACH)..at];
+            if !before.contains("plain(") {
+                missed.push(body[at..from].to_string());
+            }
+        }
+    }
+    missed
+}
+
+/// How far back the wrapper may sit, in bytes: enough for `plain(` plus the
+/// newline and indentation rustfmt puts between it and the constructor.
+const PLAIN_REACH: usize = 40;
+
+/// How much of what follows the path is read to tell a construction from a
+/// type bound.
+const MAKER_REACH: usize = 12;

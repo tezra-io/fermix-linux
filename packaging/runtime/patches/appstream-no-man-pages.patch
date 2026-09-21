@@ -1,0 +1,36 @@
+Do not build AppStream's man pages.
+
+AppStream 1.0.6 includes docs/ unconditionally, and docs/meson.build begins by
+running `xsltproc --nonet` against the Docbook manpages stylesheet and calling
+`error()` if that returns non-zero. Two reasons that has to go rather than be
+satisfied.
+
+The first is that satisfying it means carrying a documentation toolchain for
+output nobody reads. It was also, historically, the point where this build first
+went wrong: the private prefix was once put on LD_LIBRARY_PATH so each
+component's build-time tools could find the libraries just installed, and the
+host's xsltproc, which links libxml2.so.2, then loaded the private libxml2 2.13
+instead of the system 2.9 it was built against and lost its catalog lookup. That
+variable is gone now — every private tool resolves through its own RUNPATH — so
+the mismatch no longer occurs, but the dependency on a host xsltproc and a
+matching set of Docbook stylesheets would still be a build input nothing pins.
+
+The second is that the output is not wanted. Those man pages document
+`appstreamcli`, a tool this runtime does not ship; the shipped tree has no
+share/man at all. libadwaita links libappstream for metadata parsing and nothing
+else.
+
+Dropping the subdir leaves data/, which still uses itstool, and every library
+target untouched. There is nothing to send upstream: this is a local choice not
+to build a documentation target, not a defect.
+
+--- a/meson.build
++++ b/meson.build
+@@ -226,7 +226,6 @@
+ subdir('po/')
+ subdir('data/')
+ subdir('contrib/')
+-subdir('docs/')
+ subdir('tests/')
+ if get_option('qt')
+     subdir('qt/')

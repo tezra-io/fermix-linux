@@ -3,10 +3,10 @@
   "description": "Provenance of the vendored Fermix wire contracts. The canonical files live in the fermix repository under apps/fermix_core/priv/; this tree is a byte-identical copy pinned by CHECKSUMS.txt. scripts/verify_contract.sh asserts the two agree, and --source <fermix-checkout> byte-compares every contract against upstream.",
   "upstream": {
     "repository": "tezra-io/fermix",
-    "commit": "3058bf88f058d10157c99b24637bf2cef83f7035",
+    "commit": "ecf56e55ead505e02e5328a17c3a5e17c5ca1f12",
     "branch": "dev",
-    "working_tree": "clean",
-    "retrieved_at": "2026-09-14"
+    "working_tree": "modified",
+    "retrieved_at": "2026-09-20"
   },
   "contracts": [
     {
@@ -19,18 +19,18 @@
         "minimum": 1,
         "maximum": 2
       },
-      "committed_upstream": true,
-      "provenance_note": "Taken from the fermix repository on dev; re-pinned to 3058bf88f058 without a byte changing: the management export did not move between fd0798e45e97 and this commit. Every file under apps/fermix_core/priv/management is committed and unmodified there, which is why committed_upstream is true. The realtime contract is deliberately not vendored, because the Linux application ships no voice client and no pet in v1 (M38 section 12.3).",
+      "committed_upstream": false,
+      "provenance_note": "Re-vendored for the secrets row on setup.state.get, the secret.migrate_to_keyring verb, and that verb's `moved` list carrying the ids secret.set takes rather than the environment names a store files values under. The four files taken are UNCOMMITTED modifications in the engine working tree at ecf56e55ead5, so committed_upstream is false: the bytes pinned here exist on one machine and cannot be retrieved by commit. verify_contract.sh --release refuses this pin, which is correct and deliberate, and re-pinning from the commit that publishes the directory is a pre-release obligation rather than something this build clears. The realtime contract is deliberately not vendored, because the Linux application ships no voice client and no pet in v1 (M38 section 12.3).",
       "files": [
         {
           "path": "management/PROTOCOL.md",
           "source_path": "apps/fermix_core/priv/management/PROTOCOL.md",
-          "sha256": "5eaff890f3dfd4feb3ec87513b520aa81ffbb6e1c82b58d30ea6bb2334c6bc77"
+          "sha256": "fd10c9b579abc97cf16d9207ace83ae1f64a836fe9c0a5aff2c7cca349d26d0d"
         },
         {
           "path": "management/protocol.schema.json",
           "source_path": "apps/fermix_core/priv/management/protocol.schema.json",
-          "sha256": "8a7904365cc2c2ed20f52b0db8912d564d703af9812d98a5281bf23c4dc7a547"
+          "sha256": "c9c405fb4d40b073917fbaecd024e576ac36513b1ec970028877d6f8b8fb6728"
         },
         {
           "path": "management/fixtures/compatibility.jsonl",
@@ -45,12 +45,12 @@
         {
           "path": "management/fixtures/requests.jsonl",
           "source_path": "apps/fermix_core/priv/management/fixtures/requests.jsonl",
-          "sha256": "1d22723461211806835772f747710e81ed39694999e08261863599aa50108cf0"
+          "sha256": "0806686b4091ad51f87866846b1d75144e05585c8a6a78294ab4cfc3b872d354"
         },
         {
           "path": "management/fixtures/success.jsonl",
           "source_path": "apps/fermix_core/priv/management/fixtures/success.jsonl",
-          "sha256": "0d87d3f2c082ceddca5e3fc776d2dfd8ad53853ff7de9a97831108b50bcec742"
+          "sha256": "a40b03f8acc021fc8c7626de11769bdb5eb9dae71c834365aa8e303aa9c8df3a"
         }
       ]
     },

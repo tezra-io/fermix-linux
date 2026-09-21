@@ -208,10 +208,12 @@ impl MeetingsModel {
                 .map(|failure| Sentence {
                     code: None,
                     text: failure.sentence,
+                    reason: None,
                 })
                 .unwrap_or_else(|| Sentence {
                     code: None,
                     text: crate::copy::text(crate::copy::Key::JobCancelled),
+                    reason: None,
                 });
             self.probe().await;
             return Err(sentence);

@@ -5,6 +5,13 @@
 # A launcher entry that survives its binary is worse than no entry: it opens
 # nothing and says nothing. Rebuilding both caches on removal is what stops that.
 #
+# This is the desktop half of the package's postremove, assembled at build time
+# after the engine's own fragment by scripts/assemble_maintainer.sh (amendment
+# section 3.3). The engine half is a deliberate no-op: the trusted loader store
+# under /var/lib/fermix/runtimes is installer-managed state that outlives the
+# package, because a still-running release asks the kernel for that exact file
+# on every spawn.
+#
 # This script removes no user data. The application keeps its window geometry
 # and its selected pane under $XDG_STATE_HOME/fermix-desktop and its autostart
 # entry under $XDG_CONFIG_HOME/autostart, both of which belong to the person

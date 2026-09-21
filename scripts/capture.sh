@@ -23,6 +23,14 @@
 # docs/design/captures/INDEX.md with the facts a reviewer needs to read it.
 # A capture that exists is not an accepted capture: the decision column is
 # filled in by a person.
+#
+# A row is replaced per capture taken, and never pruned. Retiring a scenario
+# therefore leaves its rows in INDEX.md describing images that no longer exist,
+# and a full re-take cannot notice: it rewrites every row that still exists and
+# has no way to see one that does not. A stale row is worse than a stale image,
+# because an image can be opened and found wrong, while a row whose file is gone
+# cannot be opened at all — and it carries a reviewer and a decision column, so
+# it reads as settled. Delete the rows by hand when you delete a capture.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,11 +44,17 @@ SCENARIOS=(default setup_required restart_pending not_running external_change un
            onboarding_welcome onboarding_starting onboarding_linger_denied \
            onboarding_boot_failed onboarding_connect_ai onboarding_about_you \
            onboarding_refused_personalization onboarding_no_restart \
-           onboarding_restart_needed onboarding_ready onboarding_skew)
+           onboarding_restart_needed onboarding_ready onboarding_skew \
+           secret_store_file)
 SCHEMES=(prefer-light prefer-dark)
 
 IMAGE="${FERMIX_BUILD_IMAGE:-fermix-desktop-build}"
 CACHE_VOLUME="${FERMIX_CARGO_CACHE:-fermix-desktop-cargo}"
+# The private toolkit's installed prefix, the same constant the crate compiles
+# in as `runtime::PRIVATE_PREFIX` and `scripts/container_build.sh` spells as
+# PREFIX. A capture binary lives in target/debug, where $ORIGIN/../lib does not
+# resolve, which is the one documented case for LD_LIBRARY_PATH.
+PREFIX="/usr/lib/fermix-desktop"
 CONTAINER=0
 
 fail() {
@@ -90,20 +104,38 @@ fi
 
 # The same script, run inside the image the crate is built in, under a display
 # it makes for itself.
+#
+# Three things here are the same three the crate's test run needs, and for the
+# same reasons, so the display argument comes from `scripts/crate_gates.sh`
+# rather than being spelled a third time. The gate path and the release path
+# already drifted apart once over exactly this.
 if [ "$CONTAINER" = "1" ]; then
   command -v docker >/dev/null 2>&1 || fail "docker is not installed"
   docker image inspect "$IMAGE" >/dev/null 2>&1 ||
     fail "no $IMAGE image: run scripts/container_build.sh first"
 
+  # shellcheck source=scripts/crate_gates.sh
+  . "$ROOT_DIR/scripts/crate_gates.sh"
+
   docker volume create "$CACHE_VOLUME" >/dev/null
+  # The cache belongs to the invoking account, or the capture run writes PNGs
+  # into the tree as root and the next person cannot replace them.
+  docker run --rm \
+    -v "$CACHE_VOLUME:/cache" \
+    --entrypoint chown alpine:latest -R "$(id -u):$(id -g)" /cache >/dev/null 2>&1 ||
+    true
+
   exec docker run --rm --init \
+    -u "$(id -u):$(id -g)" \
     -v "$ROOT_DIR:/workspace" \
     -v "$CACHE_VOLUME:/cache" \
     -e CARGO_HOME=/cache/cargo \
     -e CARGO_TARGET_DIR=/cache/target \
     -e FERMIX_DESKTOP_TEST_ROOT=/tmp/fermix-desktop-tests \
+    -e "LD_LIBRARY_PATH=$PREFIX/lib" \
+    -e HOME=/tmp \
     -w /workspace \
-    "$IMAGE" xvfb-run -a scripts/capture.sh "${SCENARIOS[@]}"
+    "$IMAGE" xvfb-run "${XVFB_ARGUMENTS[@]}" scripts/capture.sh "${SCENARIOS[@]}"
 fi
 
 # The facts a reviewer needs to read a capture, taken from the machine that
@@ -113,6 +145,79 @@ GTK_VERSION="$(pkg-config --modversion gtk4)"
 ADW_VERSION="$(pkg-config --modversion libadwaita-1)"
 WINDOW_SIZE="880x560"
 TEXT_SCALE="1.0"
+
+# Which private toolkit drew these. The key is the runtime lock file's, which is
+# what names the published runtime image, and it belongs in the index because a
+# capture is a picture of a toolkit as much as of a layout.
+RUNTIME_KEY="$("$ROOT_DIR/packaging/runtime/build_runtime.sh" --print-key 2>/dev/null || echo unknown)"
+
+# And a guard, because the key is computed from the lock file while the pictures
+# are drawn by whatever the image happens to carry. A build image that was not
+# rebuilt after a lock change would put a key in the index that describes a
+# toolkit nothing here ever ran, which is worse than recording no key at all:
+# the index is read later by someone deciding whether a capture is current.
+lock_version() {
+  python3 - "$1" <<'PYTHON'
+import json
+import sys
+
+name = sys.argv[1]
+with open("packaging/runtime/RUNTIME.lock.json", encoding="utf-8") as handle:
+    locked = json.load(handle)
+for component in locked["components"]:
+    if component["name"] == name:
+        print(component["version"])
+        break
+PYTHON
+}
+
+LOCKED_GTK="$(cd "$ROOT_DIR" && lock_version gtk)"
+LOCKED_ADW="$(cd "$ROOT_DIR" && lock_version libadwaita)"
+if [ "$LOCKED_GTK" != "$GTK_VERSION" ] || [ "$LOCKED_ADW" != "$ADW_VERSION" ]; then
+  fail "the lock file names gtk $LOCKED_GTK and libadwaita $LOCKED_ADW, and this image
+  carries gtk $GTK_VERSION and libadwaita $ADW_VERSION. The image predates the lock
+  file, so runtime key $RUNTIME_KEY would describe a toolkit that drew none of these
+  captures. Rebuild the build image against the current runtime tree first."
+fi
+
+# The version comparison above is necessary and not sufficient, and the gap is
+# not hypothetical: runtimes ac37ab970c0e971c and a3f02e1ab136fbc5 both report
+# gtk 4.16.7 and libadwaita 1.6.9 while hashing to different trees, so a build
+# image carrying the first passes every check above while the lock file names
+# the second. That is how a whole capture batch can be drawn by a toolkit the
+# index then misreports. The only cheap way to settle identity from inside the
+# image is for the runtime to have written its own key into the prefix, which
+# it now does: the runtime build stamps identity.json with the cache key that
+# names it. Read that rather than any property the key is derived from.
+RUNTIME_KEY_FILE="$PREFIX/share/fermix-desktop-runtime/identity.json"
+if [ -r "$RUNTIME_KEY_FILE" ]; then
+  INSTALLED_KEY="$(python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["cache_key"])
+' "$RUNTIME_KEY_FILE")"
+  if [ "$INSTALLED_KEY" != "$RUNTIME_KEY" ]; then
+    fail "the lock file names runtime key $RUNTIME_KEY and the toolkit installed in
+  $PREFIX says it is $INSTALLED_KEY. These captures would be drawn by one toolkit
+  and filed under another. Rebuild the build image against the current runtime."
+  fi
+elif [ "${CAPTURE_ALLOW_UNVERIFIED_RUNTIME:-}" = "1" ]; then
+  # Recorded rather than waved through: an index row that admits the key was
+  # never checked is honest, and a reviewer can act on it. A row that silently
+  # claims a key nobody verified is the failure this guard exists to prevent.
+  echo "capture: warning, $RUNTIME_KEY_FILE is absent, so the toolkit drawing these" >&2
+  echo "capture: captures is unverified and the index will say so" >&2
+  RUNTIME_KEY="unverified:$RUNTIME_KEY"
+else
+  fail "$RUNTIME_KEY_FILE does not exist, so nothing in this image says which runtime
+  it carries, and the versions above cannot tell two runtimes apart. The runtime has
+  stamped this file since key a89ab0607a323501, so an image without it predates the
+  freeze and should be rebuilt. To take the batch anyway, set
+  CAPTURE_ALLOW_UNVERIFIED_RUNTIME=1 and every index row will record the key as
+  unverified."
+fi
 
 mkdir -p "$OUT_DIR"
 echo "capture: building"
@@ -211,8 +316,8 @@ for scenario in "${SCENARIOS[@]}"; do
       # again.
       grep -v "^| \`$name\`" "$INDEX" > "$INDEX.next" || true
       mv "$INDEX.next" "$INDEX"
-      printf '| `%s` | %s | %s | %s | %s | %s | %s | %s | pending | pending |\n' \
-        "$name" "$scenario" "$COMMIT" "$GTK_VERSION" "$ADW_VERSION" \
+      printf '| `%s` | %s | %s | %s | %s | %s | %s | %s | %s | pending | pending |\n' \
+        "$name" "$scenario" "$COMMIT" "$GTK_VERSION" "$ADW_VERSION" "$RUNTIME_KEY" \
         "$WINDOW_SIZE" "$TEXT_SCALE" "$scheme_name" >> "$INDEX"
     done <<< "$captured"
   done

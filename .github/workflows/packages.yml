@@ -1,23 +1,30 @@
 name: packages
 
-# The packages, built on demand and on any change that could alter them.
+# The package, built on demand and on any change that could alter it.
 #
 # `app.yml` builds and gates the crate on every push; it does not build a deb or
 # an rpm, because that takes minutes and most changes cannot affect one. This
 # workflow covers the changes that can: the nFPM configuration and everything
-# else under packaging/, the build script itself, the crate's version, and this
-# workflow and the action it shares with the release rail. It signs nothing and
-# publishes nothing. The artifacts exist so a reviewer can install what a pull
-# request would ship before the tag that ships it.
+# else under packaging/, the runtime lock file, the build script itself, the
+# crate's version, the engine pin, and this workflow and the action it shares
+# with the release rail. It signs nothing and publishes nothing. The artifacts
+# exist so a reviewer can install what a pull request would ship before the tag
+# that ships it.
 #
 # It builds through the same composite action the release rail's build job uses,
-# so a change to how a package is built reaches both at once.
+# so a change to how a package is built reaches both at once, and it fetches and
+# verifies the pinned engine the same way, because a package that carries an
+# engine cannot be built without one.
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - "packaging/**"
       - "scripts/build_packages.sh"
+      - "scripts/package_dependencies.py"
+      - "scripts/check_private_runtime.sh"
+      - "scripts/check_copyright.sh"
+      - "engine/PIN.json"
       - "App/Fermix/Cargo.toml"
       - ".github/workflows/packages.yml"
       - ".github/actions/build-packages/action.yml"
@@ -30,17 +37,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  packages:
-    name: Packages (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+  inputs:
+    name: What this build is made of
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      runtime_key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -53,17 +56,151 @@ jobs:
           version="$(awk -F'"' '/^version = "/ { print $2; exit }' App/Fermix/Cargo.toml)"
           [ -n "$version" ] || { echo "::error::App/Fermix/Cargo.toml names no version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "fermix-desktop $version (${{ matrix.arch }})"
+          echo "fermix-desktop $version"
+
+      # Computed exactly as runtime.yml computes it, so the image this build
+      # pulls is the image that workflow published for this lock file.
+      - name: The runtime key this lock file names
+        id: key
+        run: |
+          set -euo pipefail
+          # Asked of the script that owns the key rather than recomputed here, so
+          # the tag runtime.yml publishes and the tag this run expects cannot
+          # drift. It needs no Docker daemon.
+          key="$(packaging/runtime/build_runtime.sh --print-key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "runtime key $key"
+
+  engine:
+    name: The engine this package carries
+    needs: inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # An unpinned pin is not buildable from this amendment on: one package
+      # carries the engine, so no pin means no engine and there is nothing to
+      # build. Saying so here is kinder than a build script saying it after the
+      # container has started.
+      - name: There is a pin at all
+        run: |
+          set -euo pipefail
+          state="$(bash -c 'source scripts/engine_pin.sh; engine_pin_state engine/PIN.json')"
+          [ "$state" = "pinned" ] || {
+            echo "::error::engine/PIN.json is $state, and the package carries the engine. There is nothing to build."
+            exit 1
+          }
+
+      - name: Download the pinned engine archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch_engine.sh engine/PIN.json engine-download
+
+      # Verified here as a gate of its own, and verified again by
+      # build_packages.sh before it unpacks. The download is what travels,
+      # because the build script is the thing that decides what it unpacks and
+      # a staging tree handed to it would be a tree it did not verify itself.
+      - name: Verify them against the pin
+        run: |
+          set -euo pipefail
+          scripts/verify_engine.sh engine/PIN.json engine-download \
+            --staging engine-staging
+          rm -rf engine-staging
+
+      - name: Upload the verified archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: engine-download
+          path: engine-download/*
+          if-no-files-found: error
+          retention-days: 1
+
+  packages:
+    name: Packages (${{ matrix.arch }})
+    needs: [inputs, engine]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Collect the verified engine
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: engine-download
+          path: engine-download
+
+      - name: Sign in to the registry the runtime image is in
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       - name: Build both packages
         uses: ./.github/actions/build-packages
         with:
-          version: ${{ steps.version.outputs.version }}
+          version: ${{ needs.inputs.outputs.version }}
           arch: ${{ matrix.arch }}
           # A build id that says which run made it, so a package handed to a
           # reviewer can be traced back to the run that built it and can never
           # be mistaken for a released generation.
           build-id: pr-${{ github.run_id }}
           source-commit: ${{ github.sha }}
+          engine-download: engine-download
+          # The -dev tag, which carries the development headers the build
+          # image links the crate against. The tag without it is the installed
+          # prefix alone and is what the package ships.
+          runtime-image: ghcr.io/tezra-io/fermix-desktop-runtime:${{ needs.inputs.outputs.runtime_key }}-${{ matrix.arch }}-dev
           artifact-name: fermix-desktop-packages-${{ matrix.arch }}
           retention-days: "7"
+
+  # One row of the release matrix, on the floor, on every pull request that can
+  # change the package. The whole matrix is nine containers and belongs to the
+  # release rail; the oldest deb target is the row that catches a relation the
+  # archive does not carry and a window that does not draw against a host GTK
+  # 4.6, which is the claim the private runtime exists to make.
+  smoke:
+    name: Install smoke (ubuntu:22.04)
+    needs: [inputs, packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fermix-desktop-packages-amd64
+          path: packages
+
+      - name: Install it on a machine with a systemd
+        env:
+          VERSION: ${{ needs.inputs.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="packages/fermix-desktop_${VERSION}_amd64.deb"
+          [ -f "$package" ] || { echo "::error::no $package"; exit 1; }
+          scripts/install_smoke.sh --image ubuntu:22.04 "$package"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-ubuntu-2204
+          path: packaging/out/smoke/*
+          if-no-files-found: warn
+          retention-days: 7

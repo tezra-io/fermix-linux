@@ -381,6 +381,7 @@ fn decode_result(method: &str, result: &Value) -> Result<(), String> {
         "settings.apply" => check::<SettingsApplyResult>(result),
         "settings.reload" => check::<SettingsReloadResult>(result),
         "secret.set" | "secret.clear" => check::<SecretResult>(result),
+        "secret.migrate_to_keyring" => check::<SecretMigrateResult>(result),
         "providers.set_primary" => check::<ProvidersSetPrimaryResult>(result),
         "providers.models.list" => check::<ProvidersModelsListResult>(result),
         "providers.probe.start"

@@ -37,6 +37,7 @@ use crate::ui::doctor::DoctorPage;
 use crate::ui::home::HomePage;
 use crate::ui::logs::LogsPage;
 use crate::ui::onboarding::Assistant;
+use crate::ui::plain;
 use crate::ui::recovery::RecoveryPage;
 use crate::ui::settings::SettingsPresentation;
 use crate::ui::PageToolbar;
@@ -270,7 +271,6 @@ impl FermixWindow {
         self.follow_assistant();
         self.build_sidebar();
         self.build_content();
-        self.build_split_view();
         self.build_chrome();
         self.add_window_actions();
         self.install_breakpoint();
@@ -379,14 +379,32 @@ impl FermixWindow {
     fn build_split_view(&self) {
         let imp = self.imp();
 
+        // The sidebar's own header, carrying the product name and nothing
+        // else: its leading edge is the window's, which is where the window
+        // controls belong on this side.
+        // The toolkit offers every page in a navigation stack an automatic
+        // back button. This window already owns one, shown only where going
+        // back means something, so the automatic pair are duplicates: one in
+        // a corner Back never belongs in, one beside the real control.
+        let sidebar_header = adw::HeaderBar::builder().show_back_button(false).build();
+        let sidebar_toolbar = adw::ToolbarView::builder()
+            .content(&imp.sidebar_stack)
+            .build();
+        sidebar_toolbar.add_top_bar(&sidebar_header);
+
         let sidebar = adw::NavigationPage::builder()
             .title(copy::text(Key::ProductName))
-            .child(&imp.sidebar_stack)
+            .child(&sidebar_toolbar)
             .build();
 
         let content = adw::NavigationPage::builder()
             .title(copy::text(Key::PageHome))
-            .child(&imp.content_stack)
+            .child(
+                imp.toolbar
+                    .borrow()
+                    .as_ref()
+                    .expect("the content toolbar is built before the split"),
+            )
             .build();
 
         imp.split.set_sidebar(Some(&sidebar));
@@ -437,18 +455,33 @@ impl FermixWindow {
             Key::MenuPrimaryAccessible,
         ))]);
 
-        let header = adw::HeaderBar::builder().title_widget(&imp.title).build();
+        // The content page's own header, so its leading edge is where the
+        // content starts rather than where the window does. One header
+        // spanning both columns put Back a sidebar's width from the page it
+        // returns from, and left that corner empty when there was no Back to
+        // show. This is the toolkit's arrangement for a split view and the one
+        // the Mac reaches by giving its back control the navigation placement.
+        let header = adw::HeaderBar::builder()
+            .title_widget(&imp.title)
+            .show_back_button(false)
+            .build();
         header.pack_start(&imp.back);
         header.pack_start(&imp.page_start);
         header.pack_end(&menu);
         header.pack_end(&imp.page_end);
         header.pack_end(&imp.prominent);
 
-        let toolbar = adw::ToolbarView::builder().content(&imp.split).build();
+        let toolbar = adw::ToolbarView::builder()
+            .content(&imp.content_stack)
+            .build();
         toolbar.add_top_bar(&header);
-        self.set_content(Some(&toolbar));
         imp.toolbar.replace(Some(toolbar));
         imp.header.replace(Some(header));
+
+        // After the content toolbar exists, because the content page is built
+        // around it.
+        self.build_split_view();
+        self.set_content(Some(&imp.split));
 
         let window = self.clone();
         imp.prominent
@@ -1129,11 +1162,13 @@ fn destination_named(page: &str) -> Option<Destination> {
 /// two paths is two paths to keep in step, and the action map is the one that
 /// the menu, the accelerators and the shortcuts dialog already use.
 fn sidebar_row(destination: Destination) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(copy::text(destination.title))
-        .activatable(true)
-        .action_name(destination.action)
-        .build();
+    let row = plain(
+        adw::ActionRow::builder()
+            .title(copy::text(destination.title))
+            .activatable(true)
+            .action_name(destination.action)
+            .build(),
+    );
 
     row.add_prefix(&gtk::Image::from_icon_name(destination.icon));
     row

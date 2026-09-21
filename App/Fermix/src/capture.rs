@@ -21,6 +21,8 @@ use libadwaita as adw;
 use crate::app::FermixApplication;
 use crate::management::types::SettingsPane;
 use crate::metrics;
+use crate::models::secret_store::StoreRefusal;
+use crate::models::settings_model::Sentence;
 use crate::window::FermixWindow;
 
 /// The flag that turns this on.
@@ -171,6 +173,32 @@ const REFERENCES: &[Reference] = &[
         name: "secret_dialog",
         scenario: "default",
         arrange: show_secret_dialog,
+    },
+    // Both stores get a capture of their own, because the row differs in more
+    // than one word between them: the file store carries a caption about who
+    // can read the file and a button back to the keyring, and the keyring
+    // carries neither. The default scenario does show the row in Permissions,
+    // but it sits below the fold there, so the keyring case needs the same
+    // scrolled arrangement the file case uses to be reviewable at all.
+    Reference {
+        name: "settings_secret_store_keyring",
+        scenario: "default",
+        arrange: show_secret_store,
+    },
+    Reference {
+        name: "settings_secret_store_file",
+        scenario: "secret_store_file",
+        arrange: show_secret_store,
+    },
+    Reference {
+        name: "secret_keyring_locked",
+        scenario: "default",
+        arrange: show_keyring_locked,
+    },
+    Reference {
+        name: "secret_store_absent",
+        scenario: "default",
+        arrange: show_store_absent,
     },
     Reference {
         name: "consent_dialog",
@@ -493,6 +521,40 @@ fn show_model_picker(window: &FermixWindow) {
 fn show_secret_dialog(window: &FermixWindow) {
     show_pane(window, SettingsPane::Providers);
     click_button_labelled(window, &crate::copy::text(crate::copy::Key::ProviderAddKey));
+}
+
+/// Where secrets live, and the way home, which sit below the rights.
+///
+/// Scrolled to the foot: the row is the last thing in the pane, and a capture
+/// that cuts it in half says nothing about the one control it carries.
+fn show_secret_store(window: &FermixWindow) {
+    show_permissions(window);
+    scroll_to_end(window);
+}
+
+/// The keyring is here and locked, which is the one refusal with a way through.
+///
+/// The dialog is built and presented directly rather than driven through a
+/// refused write: the words and the buttons are what a capture is for, and the
+/// routing that chooses between these two is covered by its own tests.
+fn show_keyring_locked(window: &FermixWindow) {
+    present_store_refusal(window, StoreRefusal::KeyringLocked);
+}
+
+/// No keyring at all, where the private file is the whole of what is offered.
+fn show_store_absent(window: &FermixWindow) {
+    present_store_refusal(window, StoreRefusal::NoKeyring);
+}
+
+/// One store refusal, on this window.
+fn present_store_refusal(window: &FermixWindow, refusal: StoreRefusal) {
+    let sentence = Sentence {
+        code: Some("fixture".to_string()),
+        text: String::new(),
+        reason: None,
+    };
+    crate::ui::settings::dialogs::secret::store_dialog(refusal, false, &sentence)
+        .present(Some(window.upcast_ref::<gtk::Widget>()));
 }
 
 /// The consent a plugin is installed under, which is what a switch-on asks for.

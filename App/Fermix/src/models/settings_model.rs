@@ -25,18 +25,30 @@ use gtk4::gio;
 
 use crate::management::types::{
     ConfigState, DetectResult, DetectTarget, HelloResult, JobView, OverviewResult, RestartState,
-    SecretClearParams, SecretResult, SecretSetParams, SettingValue, SettingsApplyParams,
-    SettingsApplyResult, SettingsGetParams, SettingsGetResult, SettingsPane, SettingsReloadResult,
-    SettingsRow, SettingsSection, SettingsSectionsResult, SetupDetectParams, SetupDetectResult,
-    SetupStateResult,
+    SecretClearParams, SecretMigrateParams, SecretMigrateResult, SecretResult, SecretSetParams,
+    SettingValue, SettingsApplyParams, SettingsApplyResult, SettingsGetParams, SettingsGetResult,
+    SettingsPane, SettingsReloadResult, SettingsRow, SettingsSection, SettingsSectionsResult,
+    SetupDetectParams, SetupDetectResult, SetupStateResult,
 };
 use crate::management::vocabulary::{ConfigCondition, Refusal};
 use crate::management::{ManagementError, TransportError};
 use crate::service::runner::{ServiceError, ServiceRunner};
+
+/// How many times the re-read after a write asks the gate for a slot.
+///
+/// Twenty tries a quarter-second apart is five seconds: far longer than four
+/// reads take to finish, and still bounded.
+const SETUP_REREAD_ATTEMPTS: u32 = 20;
+
+/// How long that re-read waits between asking.
+const SETUP_REREAD_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 use crate::service::types::{Restart, ServiceStatus};
 use crate::session::autostart;
 
-use super::api::{accept, ask, Gate, ManagementApi, READ_DEADLINE, WRITE_DEADLINE};
+use super::api::{
+    accept, ask, Gate, ManagementApi, READ_DEADLINE, UNLOCK_DEADLINE, WRITE_DEADLINE,
+};
+use super::secret_store::StoreKind;
 
 /// One row, by the section it belongs to and the key it writes.
 pub type RowId = (String, String);
@@ -72,6 +84,13 @@ pub struct Sentence {
     pub code: Option<String>,
     /// The words.
     pub text: String,
+    /// `details.reason`, where the code publishes one.
+    ///
+    /// A code alone cannot separate a locked keyring from an absent one: both
+    /// arrive under the same store refusal, and only the reason says which. It
+    /// was dropped here before any surface could read it, so the dialog that
+    /// had to tell them apart never had the field that does.
+    pub reason: Option<String>,
 }
 
 impl Sentence {
@@ -81,24 +100,31 @@ impl Sentence {
             ManagementError::Wire(wire) => Sentence {
                 code: Some(wire.code.clone()),
                 text: wire.rendered().to_string(),
+                reason: wire.detail("reason").map(str::to_owned),
             },
             other => Sentence {
                 code: None,
                 text: other.to_string(),
+                reason: None,
             },
         }
     }
 
     /// One command line refusal, as the sentence a person is shown.
+    ///
+    /// The typed command line publishes no reason, so this carries none rather
+    /// than parsing one out of the words.
     pub fn of_service(error: &ServiceError) -> Self {
         match error {
             ServiceError::Refused { code, sentence } => Sentence {
                 code: Some(code.clone()),
                 text: sentence.clone(),
+                reason: None,
             },
             other => Sentence {
                 code: None,
                 text: other.to_string(),
+                reason: None,
             },
         }
     }
@@ -353,9 +379,45 @@ impl SettingsModel {
     /// that has to say which step could not be taken, so it asks for the
     /// answer. One read, two entry points, and no second code path.
     pub async fn read_setup(&self) -> Result<(), ManagementError> {
-        let Some(_permit) = self.gate.read() else {
+        let Some(permit) = self.gate.read() else {
             return Ok(());
         };
+        self.read_setup_holding(permit).await
+    }
+
+    /// The re-read a write owes the row, which the gate must not be able to
+    /// lose.
+    ///
+    /// Reads are capped at four in flight and [`SettingsModel::read_setup`]
+    /// answers a refused permit with `Ok(())`, which everywhere else is
+    /// harmless: a surface that only redraws gets the next snapshot. After a
+    /// write that moved where secrets live it is not harmless at all, because
+    /// nothing else on that path reads again and the row would go on naming
+    /// the store the owner just moved away from. So this waits for a slot
+    /// rather than giving up on one, bounded, and says so at the cap instead
+    /// of returning as though it had read.
+    async fn reread_setup_after_write(&self) {
+        for _ in 0..SETUP_REREAD_ATTEMPTS {
+            if let Some(permit) = self.gate.read() {
+                let _ = self.read_setup_holding(permit).await;
+                return;
+            }
+            gtk4::glib::timeout_future(SETUP_REREAD_PAUSE).await;
+        }
+
+        // The cap is reached only if four reads stayed in flight for the whole
+        // window, which means the application is wedged rather than busy. The
+        // row is stale and this is the only place that knows it.
+        eprintln!(
+            "the setup re-read after a write never got a slot: the store row may name the wrong store"
+        );
+    }
+
+    async fn read_setup_holding(
+        &self,
+        permit: crate::models::api::Permit,
+    ) -> Result<(), ManagementError> {
+        let _permit = permit;
 
         let issued = ask::<_, SetupStateResult>(
             self.api.as_ref(),
@@ -726,6 +788,52 @@ impl SettingsModel {
         key: &str,
         value: String,
     ) -> Result<(), Sentence> {
+        self.send_secret(section, key, value, None, None, WRITE_DEADLINE)
+            .await
+    }
+
+    /// `secret.set` into the private file store, because the owner chose it.
+    ///
+    /// The choice travels in this one request rather than in a flag set here:
+    /// the engine never falls back on its own, so a value in the file store
+    /// can only have come from a button that said what it would do.
+    pub async fn store_secret_on_this_computer(
+        &self,
+        section: &str,
+        key: &str,
+        value: String,
+    ) -> Result<(), Sentence> {
+        self.send_secret(section, key, value, Some("file"), None, WRITE_DEADLINE)
+            .await
+    }
+
+    /// `secret.set` again, waiting for the owner to finish unlocking.
+    ///
+    /// The only call that waits on a person, so the only one given the long
+    /// deadline.
+    pub async fn retry_secret_after_unlock(
+        &self,
+        section: &str,
+        key: &str,
+        value: String,
+    ) -> Result<(), Sentence> {
+        self.send_secret(section, key, value, None, Some(true), UNLOCK_DEADLINE)
+            .await
+    }
+
+    /// One `secret.set`, however the caller chose to store it.
+    ///
+    /// Every store marks the row busy and records the answer the same way, so
+    /// a refusal from the file store reads like any other.
+    async fn send_secret(
+        &self,
+        section: &str,
+        key: &str,
+        value: String,
+        store: Option<&'static str>,
+        unlock: Option<bool>,
+        deadline: std::time::Duration,
+    ) -> Result<(), Sentence> {
         let id = (section.to_string(), key.to_string());
         if value.is_empty() {
             return Ok(());
@@ -743,12 +851,65 @@ impl SettingsModel {
         let params = SecretSetParams {
             id: key.to_string(),
             value,
+            store,
+            unlock,
         };
         let issued =
-            ask::<_, SecretResult>(self.api.as_ref(), "secret.set", &params, WRITE_DEADLINE).await;
+            ask::<_, SecretResult>(self.api.as_ref(), "secret.set", &params, deadline).await;
 
         self.finish_secret(section, &id, accept(self.api.as_ref(), issued))
             .await
+    }
+
+    /// Where secrets live, as the last setup snapshot published it.
+    ///
+    /// `None` when the engine published nothing, which is not `none`: an
+    /// engine that predates the field has not said there is no store, it has
+    /// said nothing at all, and a row that claimed otherwise would be making
+    /// the same kind of untrue statement this work exists to remove.
+    pub fn secret_store_kind(&self) -> Option<StoreKind> {
+        let state = self.state.borrow();
+        let secrets = state.setup.as_ref()?.secrets.as_ref()?;
+        StoreKind::of(&secrets.store)
+    }
+
+    /// `secret.migrate_to_keyring`: the way back from the file store.
+    ///
+    /// Takes no secret, because this application cannot read one back out of
+    /// the file store and the owner should not have to retype what the engine
+    /// already holds. A refusal leaves every value where it was.
+    pub async fn migrate_to_keyring(&self, unlock: bool) -> Result<Vec<String>, Sentence> {
+        let Some(_permit) = self.gate.write() else {
+            return Err(busy_sentence());
+        };
+
+        let deadline = if unlock {
+            UNLOCK_DEADLINE
+        } else {
+            WRITE_DEADLINE
+        };
+        let params = SecretMigrateParams { unlock };
+        let issued = ask::<_, SecretMigrateResult>(
+            self.api.as_ref(),
+            "secret.migrate_to_keyring",
+            &params,
+            deadline,
+        )
+        .await;
+
+        let moved = match accept(self.api.as_ref(), issued) {
+            Some(Ok(result)) => result.moved,
+            Some(Err(error)) => return Err(Sentence::of(&error)),
+            None => return Ok(Vec::new()),
+        };
+
+        // The permit is released before the read, because the gate counts a
+        // write against the same ceiling and this read is the whole point of
+        // the write: the values are in the keyring now, so the row has to stop
+        // saying otherwise and stop offering a way back already taken.
+        drop(_permit);
+        self.reread_setup_after_write().await;
+        Ok(moved)
     }
 
     /// `secret.clear`.
@@ -798,6 +959,13 @@ impl SettingsModel {
                     state.refusals.remove(id);
                 }
                 self.notify(Change::Setup);
+                // Where secrets live can have moved, and only the engine knows
+                // whether it did: consenting to the file store is a write whose
+                // visible consequence is a different answer on the next
+                // snapshot. A notify alone redraws the row from the cached one,
+                // so the row would state the old store immediately after the
+                // owner chose a new one.
+                self.reread_setup_after_write().await;
                 self.refresh_section(section).await;
                 Ok(())
             }
@@ -940,6 +1108,7 @@ fn busy_sentence() -> Sentence {
     Sentence {
         code: Some("busy".to_string()),
         text: crate::copy::text(crate::copy::Key::BusyQueueFull),
+        reason: None,
     }
 }
 

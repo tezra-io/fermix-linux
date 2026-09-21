@@ -345,7 +345,7 @@ impl SettingsPresentation {
                 Content::Computer(ComputerPane::new(settings, Rc::clone(&self.ledger)))
             }
             (PaneKind::HandBuilt, SettingsPane::Permissions) => {
-                let built = PermissionsPane::new(Rc::clone(&self.ledger));
+                let built = PermissionsPane::new(settings, Rc::clone(&self.ledger));
                 let presentation = Rc::downgrade(self);
                 built.on_open_home(move || {
                     if let Some(presentation) = presentation.upgrade() {

@@ -2,13 +2,16 @@
 
 A native GTK4 and libadwaita client for the Fermix engine, written in Rust.
 
-Fermix itself is a background service: the `fermix` package installs it and your
-own systemd user manager runs it. This application is the window you set it up
-and keep an eye on it from. It contains no engine, writes no unit, reads no
-configuration file and holds no secret code. Everything it shows and changes
-goes over `daemon.sock` through the management protocol, and everything that has
-to work while the daemon is stopped goes through five typed operations of the
-packaged `fermix` command line.
+Fermix itself is a background service that your own systemd user manager runs.
+This application is the window you set it up and keep an eye on it from, and the
+two ship as one package: `fermix-desktop` carries the window, the engine and a
+private GTK4 runtime, so one install is the whole product. The window still
+contains no engine of its own, writes no unit, reads no configuration file and
+holds no secret code. Everything it shows and changes goes over `daemon.sock`
+through the management protocol, and everything that has to work while the
+daemon is stopped goes through five typed operations of the packaged
+`/usr/bin/fermix` command line, which is the same binary the engine-only
+`fermix` package installs at the same path.
 
 The design is `MILESTONE_38_LINUX_COMPANION_APP.md` in the engine repository.
 The rules for this application are `docs/design/LINUX_DESIGN_SYSTEM_REDLINES.md`,
@@ -18,20 +21,36 @@ and the build order is `docs/design/IMPLEMENTATION_BRIEF.md`.
 
 ```
 App/Fermix/               the crate: Cargo.toml, build.rs, src/, resources/, contracts/, tests/
-packaging/                everything the package installs, the nFPM configuration, both containers
-engine/PIN.json           the engine release this desktop version is paired with
+packaging/                everything the package installs, the nFPM configuration, the containers
+packaging/runtime/        the private GTK4 runtime: its lock file, its build, its manifest
+engine/PIN.json           the engine release this package carries
 scripts/                  the gates, each with a *_test.sh beside it
-docs/design/              the redlines, the brief, reviewed captures
+docs/design/              the redlines, the brief, the single package amendment, reviewed captures
 docs/RELEASING.md         how a version reaches a Linux desktop
 docs/ACCEPTANCE_RUNBOOK.md  the gates that need a person and a real desktop
-.github/workflows/        app.yml and contract.yml (every push), release-fermix-desktop.yml (tags)
+.github/workflows/        app.yml, contract.yml (every push), packages.yml, runtime.yml,
+                          engine-release.yml, release-fermix-desktop.yml, runtime-watch.yml
 ```
 
 ## Building it
 
 The toolkit floor is GTK 4.16 and libadwaita 1.6, and only the floor's features
 are enabled, so a symbol above the floor is a compile error rather than a
-missing symbol on somebody's machine.
+missing symbol on somebody's machine. The package carries exactly that: a
+private GTK 4.16 and libadwaita 1.6 at `/usr/lib/fermix-desktop`, built from
+`packaging/runtime/RUNTIME.lock.json`.
+
+The build that matters therefore happens in a container, where that prefix is at
+the same absolute path it is at on a user's machine:
+
+```sh
+scripts/container_build.sh
+```
+
+Inside it the crate finds the toolkit through
+`PKG_CONFIG_PATH=/usr/lib/fermix-desktop/lib/pkgconfig` and needs nothing from
+the host. Against a host toolkit, on a machine that happens to have GTK 4.16 and
+libadwaita 1.6, the ordinary commands still work and prove less:
 
 ```sh
 cd App/Fermix
@@ -40,9 +59,6 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
-
-On a Mac with Homebrew's GTK, `export PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig`
-first if `pkg-config` does not find the toolkit.
 
 ## Running it against the fixture daemon
 
@@ -139,7 +155,11 @@ quits.
 
 The development machine is usually not a Linux desktop, and the runner images
 carry a GTK below the floor, so the build that matters happens in a container.
-It needs Docker and takes fifteen to thirty minutes the first time.
+It needs Docker and takes fifteen to thirty minutes the first time. It pulls the
+private runtime image for the current lock file rather than compiling it; a
+change to `packaging/runtime/RUNTIME.lock.json` needs one run of
+`packaging/runtime/build_runtime.sh --container`, which takes about forty
+minutes and is then cached.
 
 ```sh
 scripts/container_build.sh            # build the image if needed, then gate
@@ -163,9 +183,15 @@ works.
 | `scripts/check_copy.sh` | The copy catalogue: its casing column, its forbidden substrings, and no word a surface shows written as a literal |
 | `scripts/check_vendor_marks.sh` | Every vendor mark ships with its provenance record, and the roster is the one the daemon publishes |
 | `scripts/container_build.sh` | The crate builds and every gate passes on the toolkit floor |
-| `scripts/build_packages.sh` | Both packages build from one configuration, and their declared relations cover what the binary actually needs |
-| `scripts/verify_engine.sh` | The engine packages a release republishes are the ones `engine/PIN.json` names |
-| `scripts/install_smoke.sh` | Both packages install on a machine with a systemd, and the window opens against a real daemon |
+| `scripts/build_packages.sh` | Both families build from one configuration, and nothing in the package links outside the private prefix except a declared host relation |
+| `scripts/check_private_runtime.sh` | Every private object resolves through `$ORIGIN/../lib`, and no private object names a host GTK, GLib or pango |
+| `scripts/check_no_network.sh` | The application ELF names no symbol from GIO's TLS or resolver surface, so the claim that the window opens no connection is a gate |
+| `scripts/check_copyright.sh` | The generated copyright file and the runtime lock file agree, which is what stops a component being bundled without its licence |
+| `scripts/verify_engine.sh` | The engine archive the package carries is the one `engine/PIN.json` names, by digest and by cosign identity, and its manifest agrees with what was unpacked |
+| `scripts/engine_bump.py` | The dispatch that writes the pin is the engine repository's own, field by field |
+| `scripts/asset_name.sh` | The name an asset is published under is the name a downloader asks for |
+| `scripts/runtime_watch.py` | Every bundled component is watched for advisories and for upstream releases |
+| `scripts/install_smoke.sh` | The package installs on a machine with a systemd, on the oldest and newest release of each family, and the window opens against a real daemon on X11 and on Wayland |
 
 ## The contract with the engine
 
@@ -192,57 +218,75 @@ else.
 
 ## Installing it
 
-Fermix for Linux is two packages, and they move together. `fermix` is the
-assistant itself, a background service your own systemd runs; `fermix-desktop` is
-this window. The window declares an exact-version dependency on the engine, so
-install the two from the same release page in one command.
+Fermix for Linux is one package. `fermix-desktop` carries the window, the
+assistant itself and the toolkit the window draws with, so one install is the
+whole product and there is nothing to pair it with.
 
 ```sh
 # Debian, Ubuntu, Mint, Pop!_OS, elementary
-sudo apt install ./fermix_<version>_$(dpkg --print-architecture).deb \
-                 ./fermix-desktop_<version>_$(dpkg --print-architecture).deb
+sudo apt install ./fermix-desktop_<version>_$(dpkg --print-architecture).deb
 
 # Fedora, RHEL, CentOS Stream, Alma, Rocky
-sudo dnf install ./fermix-<version>-1.$(uname -m).rpm \
-                 ./fermix-desktop-<version>-1.$(uname -m).rpm
+sudo dnf install ./fermix-desktop-<version>-1.$(uname -m).rpm
 
-# openSUSE and SLE
-sudo zypper install ./fermix-<version>-1.$(uname -m).rpm \
-                    ./fermix-desktop-<version>-1.$(uname -m).rpm
+# openSUSE Tumbleweed and SLE
+sudo zypper install ./fermix-desktop-<version>-1.$(uname -m).rpm
 ```
 
 Then open Fermix from the launcher, which takes you through setup. On a machine
-with no desktop, run `fermix setup` in a terminal instead and install the
-`fermix` package alone.
+with no desktop, install the engine-only `fermix` package from the engine's own
+release page instead and run `fermix setup` in a terminal. The two are
+alternatives rather than layers: each provides, conflicts with and replaces the
+other, so installing either one replaces the other in a single transaction and
+your settings survive, because neither package owns them.
 
 Every file on a release page is cosign-signed and carries its own `.sha256`,
 `.sig` and `.pem`; the release page's own `INSTALL.md` gives the exact
-`cosign verify-blob` command for that release. The toolkit floor is GTK 4.16 with
-libadwaita 1.6, and the packages declare it, so a host below the floor refuses
-the install rather than failing when the window is opened.
+`cosign verify-blob` command for that release.
+
+The only requirement is glibc 2.34, which every supported release of Ubuntu,
+Debian, Fedora and the RHEL family has carried since 2021. The package declares
+it, so a host below that floor refuses the install rather than failing when the
+window is opened. There is no GTK requirement at all: the package carries its
+own GTK 4.16, libadwaita 1.6 and everything under them, which is why it runs on
+Ubuntu 22.04 with its GTK 4.6. What it uses from the host is the graphics
+driver, the session bus, the X11 client libraries and the installed fonts, and
+the package manager brings any of those that are missing.
+
+Removing the package leaves `/var/lib/fermix/runtimes` behind on purpose,
+because a running engine asks the kernel for that exact file every time it
+starts a helper.
 
 ## Releasing it
 
-`docs/RELEASING.md` is the procedure, and the order in it is not optional: the
-engine releases first, the engine pin bump lands here as a pull request, and only
-then is `fermix-desktop-vX.Y.Z` tagged. Both packages of a version become visible
-together, because each pins the other exactly.
+`docs/RELEASING.md` is the procedure, and almost none of it is typed. An engine
+release in `tezra-io/fermix` dispatches here, a bot writes `engine/PIN.json` and
+the version after verifying the engine archives it pins, opens an auto-merging
+pull request behind the full gate set, and tags `fermix-desktop-vX.Y.Z` when it
+lands. A person is involved at the engine tag and at the protected
+`release-linux` environment, and nowhere in between.
 
-The desktop version is the version of the engine it pairs with, so this crate is
-at the engine's version rather than counting on its own, and a desktop release
-carries the number of the engine release its packages depend on exactly.
+The desktop version is the version of the engine the package carries, so this
+crate is at the engine's version rather than counting on its own. A desktop-only
+fix, a toolkit CVE rebuild or a packaging fix is published as `X.Y.Z+N`; neither
+package may ever carry a Debian revision or an rpm epoch, so a version
+containing `-` or `:` is refused before anything is built and a prerelease tag
+produces no packages at all.
+
+On a machine with only Docker, the whole loop by hand, with both checkouts as
+siblings:
 
 ```sh
-# Both packages, for this machine's architecture, in the build container.
-FERMIX_DESKTOP_BUILD_ID=local-1 \
-FERMIX_DESKTOP_SOURCE_COMMIT=$(git rev-parse HEAD) \
-  scripts/build_packages.sh 0.10.4 arm64 --container
+export DOCKER_HOST=unix:///var/run/docker.sock
 
-# Install them on a machine that has a systemd, and watch the window open.
-scripts/install_smoke.sh <engine.deb> packaging/out/fermix-desktop_0.10.4_arm64.deb
+cd ../fermix
+scripts/release/build_app_engine.sh linux_x86_64 /tmp/engine 0.10.5 --container --dev
+
+cd ../fermix-linux
+scripts/build_packages.sh 0.10.5 amd64 --container --engine /tmp/engine/fermix_app_engine_linux_x86_64.tar.gz
+scripts/install_smoke.sh --image ubuntu:22.04 packaging/out/packages/fermix-desktop_0.10.5_amd64.deb
 ```
 
-Neither package may ever carry a Debian revision or an rpm epoch, so a version
-containing `-` or `:` is refused before anything is built, and a prerelease tag
-produces no packages at all. A packaging-only fix is published as the next
-version.
+`--dev` on the engine build relaxes exactly three release refusals so that
+building an engine needs no Elixir on this machine, and `verify_engine.sh` still
+refuses the result against a real pin, which is what keeps it out of a release.

@@ -82,7 +82,12 @@ else
 fi
 
 # 2. The manifest covers the tree exactly.
-present="$(find . -type f ! -name CHECKSUMS.txt ! -name SOURCE.json |
+# `|| true` on the find: this is an assignment in a `set -e` + pipefail shell,
+# so find's status propagates, and find exits 1 on any unreadable path. Without
+# it this gate would end there — exit 1, no message, in the one situation it
+# exists to describe. A partial listing instead reaches the comparison below and
+# is refused loudly, naming the files that differ.
+present="$( { find . -type f ! -name CHECKSUMS.txt ! -name SOURCE.json || true; } |
   sed 's|^\./||' | LC_ALL=C sort)"
 pinned="$(awk '{ print $2 }' CHECKSUMS.txt | LC_ALL=C sort)"
 if [ "$present" != "$pinned" ]; then
