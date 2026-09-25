@@ -139,22 +139,18 @@ impl ChatPage {
         self.follow.latest();
     }
 
-    /// Draws what changed: entries already on screen stay, the last one grows
-    /// in place while it streams, and anything after the first difference is
-    /// drawn anew.
+    /// Draws what changed: entries already on screen stay, one that streamed
+    /// more in or changed its status is updated in place, and everything from
+    /// the first entry that cannot be is drawn anew.
     fn show_entries(&self, transcript: &Transcript) {
         let entries = transcript.entries();
         let mut shown = self.shown.borrow_mut();
-        let mut same = shown
-            .iter()
-            .zip(entries)
-            .take_while(|(drawn, entry)| drawn.entry == **entry)
-            .count();
-        let last = same + 1 == entries.len();
-        if let (true, Some(drawn)) = (last, shown.get_mut(same)) {
-            if drawn.grow(&entries[same]) {
-                same += 1;
+        let mut same = 0;
+        for (drawn, entry) in shown.iter_mut().zip(entries) {
+            if drawn.entry != *entry && !drawn.grow(entry) {
+                break;
             }
+            same += 1;
         }
         for stale in shown.drain(same..) {
             self.list.remove(&stale.row);
@@ -273,20 +269,10 @@ impl Follow {
             stuck.set(at_bottom);
             button.set_visible(!at_bottom);
         });
-        // The scroll waits for an idle: this signal comes while the viewport
-        // lays out, and a value set then is only drawn at the next layout.
         let stuck = follow.stuck.clone();
-        follow.adjustment.connect_changed(move |a| {
-            if !stuck.get() {
-                return;
-            }
-            let (a, stuck) = (a.clone(), stuck.clone());
-            glib::idle_add_local_once(move || {
-                if stuck.get() {
-                    a.set_value(a.upper() - a.page_size());
-                }
-            });
-        });
+        follow
+            .adjustment
+            .connect_changed(move |a| scroll_to_end_when_idle(a, &stuck));
         let (stuck, adjustment) = (follow.stuck.clone(), follow.adjustment.clone());
         jump.connect_clicked(move |_| {
             stuck.set(true);
@@ -302,14 +288,25 @@ impl Follow {
     }
 }
 
+/// The content grew: follow it down while the reader is at the bottom. The
+/// scroll waits for an idle: this signal comes while the viewport lays out,
+/// and a value set then is only drawn at the next layout.
+fn scroll_to_end_when_idle(adjustment: &gtk::Adjustment, stuck: &Rc<Cell<bool>>) {
+    if !stuck.get() {
+        return;
+    }
+    let (a, stuck) = (adjustment.clone(), stuck.clone());
+    glib::idle_add_local_once(move || {
+        if stuck.get() {
+            a.set_value(a.upper() - a.page_size());
+        }
+    });
+}
+
 /// A small breathing orb in Fermix's place while it works with nothing else
-/// on screen moving. The motion is CSS, which GTK holds still when animations
-/// are off.
+/// on screen moving.
 fn orb_row() -> gtk::Box {
-    let orb = gtk::Box::builder()
-        .css_classes(["chat-orb"])
-        .valign(gtk::Align::Center)
-        .build();
+    let orb = entries::orb();
     let row = gtk::Box::builder()
         .accessible_role(gtk::AccessibleRole::Status)
         .tooltip_text("Fermix is thinking")
@@ -360,8 +357,12 @@ fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
         .sensitive(false)
         .build();
     send.set_action_name(Some("win.send-message"));
+    // Its side margins sit inside the clamp, as the conversation column's do,
+    // so the composer lines up with the bubbles above it.
     let row = gtk::Box::builder()
         .spacing(6)
+        .margin_start(18)
+        .margin_end(18)
         .css_classes(["chat-composer"])
         .build();
     row.append(&field);
@@ -369,16 +370,14 @@ fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
     wire_composer(&input, &placeholder, &send);
     let clamp = adw::Clamp::builder()
         .maximum_size(760)
-        .margin_start(18)
-        .margin_end(18)
         .margin_bottom(18)
         .child(&row)
         .build();
     (clamp, input, send)
 }
 
-/// Enter sends, Shift+Enter starts a new line, and the placeholder and Send
-/// button follow whether there is anything to send.
+/// Enter or Ctrl+Enter sends, Shift+Enter starts a new line, and the
+/// placeholder and Send button follow whether there is anything to send.
 fn wire_composer(input: &gtk::TextView, placeholder: &gtk::Label, send: &gtk::Button) {
     let (hint, button) = (placeholder.clone(), send.clone());
     input.buffer().connect_changed(move |buffer| {
@@ -391,8 +390,7 @@ fn wire_composer(input: &gtk::TextView, placeholder: &gtk::Label, send: &gtk::Bu
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed(|controller, key, _, modifiers| {
         let enter = matches!(key, gdk::Key::Return | gdk::Key::KP_Enter);
-        let plain =
-            !modifiers.intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK);
+        let plain = !modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         if !(enter && plain) {
             return glib::Propagation::Proceed;
         }

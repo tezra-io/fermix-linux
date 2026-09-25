@@ -64,7 +64,8 @@ impl Transcript {
     }
 
     /// Fermix is working on a reply and nothing on screen shows it: no text is
-    /// streaming in and no tool is running. The page shows its thinking orb.
+    /// streaming in, no tool is running, and no thought is coming in (a live
+    /// thought carries the orb in its own title). The page shows its thinking orb.
     pub fn thinking(&self) -> bool {
         if self.phase == Phase::Idle {
             return false;
@@ -72,6 +73,7 @@ impl Transcript {
         !matches!(
             self.entries.last(),
             Some(Entry::Assistant(_))
+                | Some(Entry::Thought(_))
                 | Some(Entry::Tool {
                     status: ToolStatus::Running,
                     ..
@@ -95,10 +97,12 @@ impl Transcript {
         true
     }
 
-    pub fn apply(&mut self, update: &Update) {
+    /// Adds what the agent sent. False when it was not shown: a kind of update
+    /// this app does not know, or a tool no entry has; the caller logs those.
+    pub fn apply(&mut self, update: &Update) -> bool {
         match update {
-            Update::MessageChunk(text) if text.is_empty() => return,
-            Update::ThoughtChunk(text) if text.is_empty() => return,
+            Update::MessageChunk(text) if text.is_empty() => return true,
+            Update::ThoughtChunk(text) if text.is_empty() => return true,
             Update::MessageChunk(text) => self.append_reply(text),
             Update::ThoughtChunk(text) => self.append_thought(text),
             Update::Image(image) => self.push(Entry::Image(image.clone()), None),
@@ -112,9 +116,10 @@ impl Transcript {
                 self.push(tool, None);
             }
             Update::ToolUpdate { id, status } => return self.set_tool_status(id, *status),
-            Update::Other(_) => return,
+            Update::Other(_) => return false,
         }
         self.mark_streaming();
+        true
     }
 
     fn append_reply(&mut self, text: &str) {
@@ -137,14 +142,17 @@ impl Transcript {
         }
     }
 
-    fn set_tool_status(&mut self, tool_id: &str, new: ToolStatus) {
+    /// False when no tool entry has `tool_id`.
+    fn set_tool_status(&mut self, tool_id: &str, new: ToolStatus) -> bool {
         let tool = self.entries.iter_mut().rev().find_map(|entry| match entry {
             Entry::Tool { id, status, .. } if id == tool_id => Some(status),
             _ => None,
         });
-        if let Some(status) = tool {
-            *status = new;
-        }
+        let Some(status) = tool else {
+            return false;
+        };
+        *status = new;
+        true
     }
 
     /// Asks the reply to stop; false when there is nothing to stop.
@@ -162,14 +170,18 @@ impl Transcript {
         match reason {
             StopReason::EndTurn => {}
             StopReason::Cancelled => self.push(Entry::Notice("Stopped".into()), None),
-            StopReason::Other(_) => self.push(Entry::Notice("The reply ended early".into()), None),
+            StopReason::Other(reason) => self.push(Entry::Notice(cut_short(reason)), None),
         }
     }
 
-    /// Times the reply's last entry; a reply that brought nothing has none.
+    /// Times the reply's last entry when it is a bubble; a reply that brought
+    /// nothing, or ended on a caption line (a thought, a tool), has none.
     fn time_reply(&mut self, at: i64) {
         if let (Some(last), Some(time)) = (self.entries.last(), self.times.last_mut()) {
-            if !matches!(last, Entry::User(_)) {
+            if matches!(
+                last,
+                Entry::Assistant(_) | Entry::Image(_) | Entry::Attachment(_)
+            ) {
                 *time = Some(at);
             }
         }
@@ -222,6 +234,16 @@ impl Transcript {
                 _ => None,
             })
     }
+}
+
+/// Why a reply ended before its turn did, from ACP's stop reasons.
+fn cut_short(reason: &str) -> String {
+    match reason {
+        "max_tokens" => "The reply ran out of room.",
+        "refusal" => "Fermix declined to answer this.",
+        _ => "The reply ended early.",
+    }
+    .into()
 }
 
 /// How a tool's state reads after its name: "Web search running".
@@ -291,7 +313,7 @@ pub enum ReplyError {
     SignInAgain,
     /// The engine refused the message itself, in its own words.
     Refused(String),
-    /// The turn failed inside the engine; the reason is in its log.
+    /// The turn failed inside the engine; the reason is in the daemon's log.
     Failed,
 }
 
@@ -310,7 +332,7 @@ impl ReplyError {
                 "Your provider refused Fermix's sign-in. Sign in again under Providers.".into()
             }
             ReplyError::Refused(message) => format!("Fermix refused the message: {message}"),
-            ReplyError::Failed => "Fermix could not answer. The reason is in its log.".into(),
+            ReplyError::Failed => "Fermix could not answer. The reason is in Logs.".into(),
         }
     }
 }

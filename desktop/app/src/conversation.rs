@@ -35,6 +35,8 @@ impl App {
         self.chat.clear_input();
         self.chat.follow_latest();
         self.render();
+        // A click on Send leaves the keyboard where the next message goes.
+        self.chat.focus_input();
         self.ask(&text).await;
     }
 
@@ -109,7 +111,9 @@ impl App {
         let prompt_id = self.conversation.borrow().prompt_id;
         match incoming {
             Incoming::Update { session_id, update } if session_id == link.session_id => {
-                self.conversation.borrow_mut().transcript.apply(&update);
+                if !self.conversation.borrow_mut().transcript.apply(&update) {
+                    glib::g_debug!("fermix", "chat update not shown: {update:?}");
+                }
             }
             Incoming::Response { id, result } if Some(id) == prompt_id => {
                 let mut conversation = self.conversation.borrow_mut();

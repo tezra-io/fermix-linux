@@ -77,11 +77,44 @@ fn chunks_join_into_one_reply_until_a_tool_runs_between_them() {
 fn an_update_for_a_tool_nobody_announced_changes_nothing() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    t.apply(&Update::ToolUpdate {
+    let shown = t.apply(&Update::ToolUpdate {
         id: "ghost".into(),
         status: ToolStatus::Failed,
     });
+    assert!(!shown, "the page logs what it could not place");
     assert_eq!(t.entries(), [Entry::User("hi".into())]);
+}
+
+#[test]
+fn an_update_this_app_does_not_know_is_reported_as_not_shown() {
+    let mut t = Transcript::default();
+    t.send("hi", at(0));
+    assert!(!t.apply(&Update::Other("plan".into())));
+    assert!(
+        t.apply(&chunk("")),
+        "an empty chunk is understood, only empty"
+    );
+    assert!(t.apply(&chunk("Hello")));
+    assert_eq!(t.entries().len(), 2);
+}
+
+#[test]
+fn a_reply_cut_short_says_why_in_a_note() {
+    for (reason, note) in [
+        ("max_tokens", "The reply ran out of room."),
+        ("refusal", "Fermix declined to answer this."),
+        ("max_turn_requests", "The reply ended early."),
+    ] {
+        let mut t = Transcript::default();
+        t.send("essay", at(0));
+        t.apply(&chunk("Once"));
+        t.finish(&StopReason::Other(reason.into()), at(1));
+        assert_eq!(
+            t.entries().last(),
+            Some(&Entry::Notice(note.into())),
+            "{reason}"
+        );
+    }
 }
 
 #[test]
@@ -175,7 +208,7 @@ fn a_refused_reply_is_explained_in_words_a_person_can_act_on() {
     );
     assert_eq!(
         ReplyError::Failed.sentence(),
-        "Fermix could not answer. The reason is in its log."
+        "Fermix could not answer. The reason is in Logs."
     );
     assert_eq!(
         reply_error(-32602, "prompt must be a list of ACP content blocks"),
@@ -277,7 +310,10 @@ fn the_orb_shows_while_fermix_works_and_nothing_else_on_screen_moves() {
     t.send("hi", at(0));
     assert!(t.thinking(), "asked, nothing back");
     t.apply(&Update::ThoughtChunk("Hmm".into()));
-    assert!(t.thinking(), "thoughts are collapsed, so the orb stays");
+    assert!(
+        !t.thinking(),
+        "a live thought carries the orb in its own title, so there is one signal"
+    );
     t.apply(&running("t1"));
     assert!(!t.thinking(), "a running tool shows its own progress");
     t.apply(&Update::ToolUpdate {
@@ -322,6 +358,26 @@ fn a_stopped_reply_is_timed_above_its_note() {
     assert_eq!(t.entries()[2], Entry::Notice("Stopped".into()));
     assert_eq!(t.time(1), Some(at(5)));
     assert_eq!(t.time(2), None);
+}
+
+#[test]
+fn only_a_bubble_carries_the_time_a_reply_ended() {
+    let mut t = Transcript::default();
+    t.send("think", at(0));
+    t.apply(&Update::ThoughtChunk("Hmm".into()));
+    t.stop();
+    t.finish(&StopReason::Cancelled, at(4));
+    assert_eq!(t.time(1), None, "a thought is a caption, not a bubble");
+    let mut t = Transcript::default();
+    t.send("search", at(0));
+    t.apply(&running("t1"));
+    t.finish(&StopReason::EndTurn, at(4));
+    assert_eq!(t.time(1), None, "a tool row is a caption too");
+    let mut t = Transcript::default();
+    t.send("draw", at(0));
+    t.apply(&Update::Image(picture()));
+    t.finish(&StopReason::EndTurn, at(4));
+    assert_eq!(t.time(1), Some(at(4)), "a picture is a bubble");
 }
 
 #[test]

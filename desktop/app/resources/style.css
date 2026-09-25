@@ -30,6 +30,10 @@
   box-shadow: 0 0 0 1px var(--border-color);
 }
 
+.chat-composer:focus-within {
+  box-shadow: 0 0 0 2px var(--accent-bg-color);
+}
+
 .chat-composer textview,
 .chat-composer textview text {
   background: none;
@@ -145,11 +149,16 @@ window.fermix-companion.opaque {
   min-height: 16px;
   margin: 6px 0;
   border-radius: 999px;
-  background-image: radial-gradient(circle at 35% 30%,
-                                    color-mix(in srgb, var(--accent-bg-color) 45%, var(--accent-fg-color)),
-                                    var(--accent-bg-color) 70%);
+  background-color: var(--accent-bg-color);
   box-shadow: 0 0 10px 3px color-mix(in srgb, var(--accent-bg-color) 45%, transparent);
   animation: chat-orb-breathe 1.6s ease-in-out infinite alternate;
+}
+
+/* The orb in a live thought's title, the size of its caption text. */
+.chat-orb.inline {
+  min-width: 10px;
+  min-height: 10px;
+  margin: 0;
 }
 
 @keyframes chat-orb-breathe {

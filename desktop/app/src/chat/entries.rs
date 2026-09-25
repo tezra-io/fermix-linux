@@ -37,8 +37,20 @@ pub struct Drawn {
 enum Parts {
     Fixed,
     Reply(Reply),
-    Thought { title: gtk::Label, text: gtk::Label },
-    Failure { retry: gtk::Button },
+    Thought {
+        orb: gtk::Box,
+        title: gtk::Label,
+        text: gtk::Label,
+    },
+    /// A tool's line, whose marker and state follow its status in place.
+    Tool {
+        id: String,
+        marker: gtk::Box,
+        state: gtk::Label,
+    },
+    Failure {
+        retry: gtk::Button,
+    },
 }
 
 struct Reply {
@@ -50,8 +62,8 @@ struct Reply {
 
 impl Drawn {
     pub fn new(entry: &Entry) -> Drawn {
-        let (side, body, copy, parts) = draw_body(entry);
-        let (row, time) = row(side, &body, copy);
+        let (side, body, source, parts) = draw_body(entry);
+        let (row, time) = row(side, &body, source);
         Drawn {
             entry: entry.clone(),
             row,
@@ -60,12 +72,19 @@ impl Drawn {
         }
     }
 
-    /// Grows this entry into `entry`, the same entry with more streamed in;
-    /// false when `entry` is a different one and has to be drawn anew.
+    /// Grows this entry into `entry`, the same entry with more streamed in or
+    /// a new status; false when `entry` is a different one and has to be
+    /// drawn anew.
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
             (Parts::Reply(reply), Entry::Assistant(text)) => reply.grow(text),
             (Parts::Thought { text: label, .. }, Entry::Thought(text)) => label.set_text(text),
+            (
+                Parts::Tool { id, marker, state },
+                Entry::Tool {
+                    id: new, status, ..
+                },
+            ) if id == new => set_tool_status(marker, state, *status),
             _ => return false,
         }
         self.entry = entry.clone();
@@ -79,27 +98,29 @@ impl Drawn {
         self.time.set_text(time.unwrap_or_default());
         match &self.parts {
             Parts::Failure { retry: button } => button.set_visible(retry),
-            Parts::Thought { title, .. } => {
+            Parts::Thought { orb, title, .. } => {
+                orb.set_visible(live);
                 title.set_text(if live { "Thinking…" } else { "Thought" })
             }
-            Parts::Fixed | Parts::Reply(_) => {}
+            Parts::Fixed | Parts::Reply(_) | Parts::Tool { .. } => {}
         }
     }
 }
 
-fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<gtk::Button>, Parts) {
+/// The entry's widget, its side, what copying it copies, and its parts.
+fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
     match entry {
         Entry::User(text) => {
-            let copy = copy_button(Rc::new(RefCell::new(text.clone())));
-            (Side::Person, user_bubble(text), Some(copy), Parts::Fixed)
+            let source = Rc::new(RefCell::new(text.clone()));
+            (Side::Person, user_bubble(text), Some(source), Parts::Fixed)
         }
         Entry::Assistant(text) => {
             let reply = Reply::new(text);
-            let copy = copy_button(reply.source.clone());
+            let source = reply.source.clone();
             (
                 Side::Fermix,
                 reply.body.clone().upcast(),
-                Some(copy),
+                Some(source),
                 Parts::Reply(reply),
             )
         }
@@ -109,8 +130,9 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<gtk::Button>, Parts) {
         }
         Entry::Image(image) => (Side::Fermix, picture(image), None, Parts::Fixed),
         Entry::Attachment(name) => (Side::Fermix, attachment(name), None, Parts::Fixed),
-        Entry::Tool { title, status, .. } => {
-            (Side::Fermix, tool_line(title, *status), None, Parts::Fixed)
+        Entry::Tool { id, title, status } => {
+            let (widget, parts) = tool_line(id, title, *status);
+            (Side::Fermix, widget, None, parts)
         }
         Entry::Notice(text) => (Side::Middle, notice_line(text), None, Parts::Fixed),
         Entry::Failure(text) => {
@@ -120,16 +142,23 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<gtk::Button>, Parts) {
     }
 }
 
+/// The Markdown or text a message's copy button and menu item copy.
+type Source = Rc<RefCell<String>>;
+
 /// The entry on its side of the conversation, its copy button on the inside
-/// edge, and the time under it, hidden until there is one.
-fn row(side: Side, body: &gtk::Widget, copy: Option<gtk::Button>) -> (gtk::Box, gtk::Label) {
+/// edge, and the time under it, hidden until there is one. A message's row
+/// also carries `message.copy`, which its labels' right-click menu offers.
+fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk::Label) {
     let align = match side {
         Side::Person => gtk::Align::End,
         Side::Fermix => gtk::Align::Start,
         Side::Middle => gtk::Align::Center,
     };
     let line = gtk::Box::builder().spacing(6).halign(align).build();
-    match copy {
+    if let Some(source) = &source {
+        line.insert_action_group("message", Some(&message_actions(&line, source.clone())));
+    }
+    match source.map(copy_button) {
         Some(copy) if side == Side::Person => {
             line.append(&copy);
             line.append(body);
@@ -157,7 +186,28 @@ fn row(side: Side, body: &gtk::Widget, copy: Option<gtk::Button>) -> (gtk::Box, 
     (row, time)
 }
 
-fn copy_button(source: Rc<RefCell<String>>) -> gtk::Button {
+/// `message.copy`, for the right-click menu of the labels inside `line`.
+fn message_actions(line: &gtk::Box, source: Source) -> gio::SimpleActionGroup {
+    let copy = gio::SimpleAction::new("copy", None);
+    let line = line.downgrade();
+    copy.connect_activate(move |_, _| {
+        if let Some(line) = line.upgrade() {
+            copy_text(&line, &source.borrow());
+        }
+    });
+    let group = gio::SimpleActionGroup::new();
+    group.add_action(&copy);
+    group
+}
+
+/// Added to a message label's own right-click menu (Copy, Select All).
+fn message_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    menu.append(Some("Copy Message"), Some("message.copy"));
+    menu
+}
+
+fn copy_button(source: Source) -> gtk::Button {
     let button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
         .tooltip_text("Copy")
@@ -181,16 +231,18 @@ fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
 }
 
 fn user_bubble(text: &str) -> gtk::Widget {
-    gtk::Label::builder()
+    let label = gtk::Label::builder()
         .label(text)
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .xalign(0.0)
         .selectable(true)
         .max_width_chars(60)
+        .extra_menu(&message_menu())
         .css_classes(["chat-user"])
-        .build()
-        .upcast()
+        .build();
+    label.update_property(&[gtk::accessible::Property::Description("Your message")]);
+    label.upcast()
 }
 
 impl Reply {
@@ -198,8 +250,10 @@ impl Reply {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
+            .accessible_role(gtk::AccessibleRole::Group)
             .css_classes(["chat-reply"])
             .build();
+        body.update_property(&[gtk::accessible::Property::Label("Reply from Fermix")]);
         let mut reply = Reply {
             body,
             blocks: Vec::new(),
@@ -254,12 +308,15 @@ fn set_in_place(label: &gtk::Label, old: &Block, new: &Block) -> bool {
     }
 }
 
+/// A reply's text, no wider than reads comfortably.
 fn text_label(markup: &str) -> gtk::Label {
     let label = gtk::Label::builder()
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .xalign(0.0)
         .selectable(true)
+        .max_width_chars(90)
+        .extra_menu(&message_menu())
         .build();
     label.set_markup(markup);
     label
@@ -302,6 +359,7 @@ fn code_block(text: &str) -> (gtk::Widget, Option<gtk::Label>) {
         .label(text)
         .xalign(0.0)
         .selectable(true)
+        .extra_menu(&message_menu())
         .css_classes(["monospace"])
         .build();
     let scroller = gtk::ScrolledWindow::builder()
@@ -329,12 +387,18 @@ fn code_block(text: &str) -> (gtk::Widget, Option<gtk::Label>) {
     (block.upcast(), Some(label))
 }
 
-/// Collapsed and dim: the reasoning is there for whoever wants it.
+/// Collapsed and dim: the reasoning is there for whoever wants it. While it
+/// comes in, the thinking orb sits in its title, the page's one sign of work.
 fn thought(text: &str) -> (gtk::Widget, Parts) {
+    let orb = orb();
+    orb.add_css_class("inline");
     let title = gtk::Label::builder()
         .label("Thinking…")
         .css_classes(["dim-label", "caption"])
         .build();
+    let heading = gtk::Box::builder().spacing(6).build();
+    heading.append(&orb);
+    heading.append(&title);
     let body = gtk::Label::builder()
         .label(text)
         .wrap(true)
@@ -344,11 +408,25 @@ fn thought(text: &str) -> (gtk::Widget, Parts) {
         .css_classes(["dim-label", "chat-thought-text"])
         .build();
     let expander = gtk::Expander::builder()
-        .label_widget(&title)
+        .label_widget(&heading)
         .child(&body)
         .css_classes(["chat-thought"])
         .build();
-    (expander.upcast(), Parts::Thought { title, text: body })
+    let parts = Parts::Thought {
+        orb,
+        title,
+        text: body,
+    };
+    (expander.upcast(), parts)
+}
+
+/// The breathing accent orb. The motion is CSS, which GTK holds still when
+/// animations are off.
+pub fn orb() -> gtk::Box {
+    gtk::Box::builder()
+        .css_classes(["chat-orb"])
+        .valign(gtk::Align::Center)
+        .build()
 }
 
 fn picture(image: &Image) -> gtk::Widget {
@@ -358,7 +436,7 @@ fn picture(image: &Image) -> gtk::Widget {
         Err(e) => {
             glib::g_warning!("fermix", "a {} picture did not decode: {e}", image.mime);
             let line = format!(
-                "Fermix sent a picture ({}) this app cannot show.",
+                "Fermix sent a picture this app cannot open ({}).",
                 image.mime
             );
             quiet_line("image-missing-symbolic", &line)
@@ -496,7 +574,7 @@ fn attachment(name: &str) -> gtk::Widget {
         .css_classes(["heading"])
         .build();
     let note = gtk::Label::builder()
-        .label("Files cannot come through this chat yet.")
+        .label("Fermix has this file but cannot send it here yet.")
         .xalign(0.0)
         .wrap(true)
         .css_classes(["dim-label", "caption"])
@@ -516,11 +594,38 @@ fn attachment(name: &str) -> gtk::Widget {
     chip.upcast()
 }
 
-fn tool_line(title: &str, status: ToolStatus) -> gtk::Widget {
+fn tool_line(id: &str, title: &str, status: ToolStatus) -> (gtk::Widget, Parts) {
     let row = gtk::Box::builder()
         .spacing(8)
         .css_classes(["chat-tool"])
         .build();
+    let marker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.append(&marker);
+    let name = gtk::Label::builder()
+        .label(tool_label(title))
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    row.append(&name);
+    let state = gtk::Label::builder()
+        .css_classes(["caption", "dim-label"])
+        .build();
+    row.append(&state);
+    set_tool_status(&marker, &state, status);
+    let parts = Parts::Tool {
+        id: id.to_owned(),
+        marker,
+        state,
+    };
+    (row.upcast(), parts)
+}
+
+/// A spinner while the tool runs, then a check or a warning, and the word.
+fn set_tool_status(slot: &gtk::Box, state: &gtk::Label, status: ToolStatus) {
+    // The slot holds the one marker drawn last.
+    if let Some(old) = slot.first_child() {
+        slot.remove(&old);
+    }
     let marker: gtk::Widget = match status {
         ToolStatus::Running => adw::Spinner::new().upcast(),
         ToolStatus::Completed => gtk::Image::from_icon_name("object-select-symbolic").upcast(),
@@ -531,19 +636,8 @@ fn tool_line(title: &str, status: ToolStatus) -> gtk::Widget {
     } else {
         "dim-label"
     });
-    row.append(&marker);
-    let name = gtk::Label::builder()
-        .label(tool_label(title))
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .css_classes(["caption", "dim-label"])
-        .build();
-    row.append(&name);
-    let state = gtk::Label::builder()
-        .label(tool_state(status))
-        .css_classes(["caption", "dim-label"])
-        .build();
-    row.append(&state);
-    row.upcast()
+    slot.append(&marker);
+    state.set_text(tool_state(status));
 }
 
 fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
@@ -584,16 +678,28 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .build();
     let retry = gtk::Button::builder()
         .label("Retry")
-        .halign(gtk::Align::Start)
         .action_name("win.retry-reply")
         .visible(false)
         .build();
+    // The reason for any failure is in the daemon's log, which Logs shows.
+    let logs = gtk::Button::builder()
+        .label("Open Logs")
+        .css_classes(["flat"])
+        .action_name("win.page")
+        .action_target(&"logs".to_variant())
+        .build();
+    let actions = gtk::Box::builder()
+        .spacing(6)
+        .halign(gtk::Align::Start)
+        .build();
+    actions.append(&retry);
+    actions.append(&logs);
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(8)
         .build();
     column.append(&label);
-    column.append(&retry);
+    column.append(&actions);
     let bubble = gtk::Box::builder()
         .spacing(10)
         .css_classes(["chat-failure"])
