@@ -90,3 +90,54 @@ fn a_table_is_kept_as_monospace_text_one_row_per_line() {
         [Block::Code("a | bb\n1 | 2".into())]
     );
 }
+
+#[test]
+fn a_bare_web_address_becomes_a_link() {
+    assert_eq!(
+        render("See https://example.com/a?b=1&c=2."),
+        [Block::Text(
+            "See <a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a>."
+                .into()
+        )]
+    );
+}
+
+#[test]
+fn a_bare_address_keeps_only_the_brackets_that_are_its_own() {
+    assert_eq!(
+        render("(https://en.wikipedia.org/wiki/Rust_(language))"),
+        [Block::Text(
+            "(<a href=\"https://en.wikipedia.org/wiki/Rust_(language)\">https://en.wikipedia.org/wiki/Rust_(language)</a>)"
+                .into()
+        )]
+    );
+    assert_eq!(
+        render("(see http://a.io/x), then"),
+        [Block::Text(
+            "(see <a href=\"http://a.io/x\">http://a.io/x</a>), then".into()
+        )]
+    );
+}
+
+#[test]
+fn text_already_linked_or_in_code_is_not_linked_again() {
+    assert_eq!(
+        render("[https://a.io](https://a.io) `https://b.io` <https://c.io>"),
+        [Block::Text(
+            "<a href=\"https://a.io\">https://a.io</a> <tt>https://b.io</tt> <a href=\"https://c.io\">https://c.io</a>"
+                .into()
+        )]
+    );
+    assert_eq!(
+        render("```\ncurl https://d.io\n```"),
+        [Block::Code("curl https://d.io".into())]
+    );
+}
+
+#[test]
+fn a_scheme_alone_is_not_a_link() {
+    assert_eq!(
+        render("type https:// then the host"),
+        [Block::Text("type https:// then the host".into())]
+    );
+}

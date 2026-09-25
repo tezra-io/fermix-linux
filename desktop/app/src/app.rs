@@ -468,6 +468,11 @@ fn install_chat_actions(app: &Rc<App>) {
         app.send_message().await
     });
     on_plain(app, "stop-reply", |app| async move { app.stop_reply() });
+    on_plain(
+        app,
+        "retry-reply",
+        |app| async move { app.retry_reply().await },
+    );
     on_plain(app, "new-chat", |app| async move {
         app.shell.show_page("chat");
         app.new_conversation()

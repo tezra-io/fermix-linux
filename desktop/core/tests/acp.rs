@@ -194,3 +194,107 @@ fn a_line_that_is_not_json_rpc_is_refused_with_a_reason() {
             .is_err()
     );
 }
+
+fn reply_update(content: Value) -> String {
+    json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1",
+        "update": {"sessionUpdate": "agent_message_chunk", "content": content}}})
+    .to_string()
+}
+
+#[test]
+fn a_picture_in_the_reply_decodes_to_its_bytes() {
+    use fermix_client::acp::Image;
+    let line = reply_update(json!({"type": "image", "mimeType": "image/png", "data": "iVBORw0K"}));
+    assert_eq!(
+        parse_line(&line).unwrap(),
+        Incoming::Update {
+            session_id: "s1".into(),
+            update: Update::Image(Image {
+                mime: "image/png".into(),
+                bytes: vec![0x89, b'P', b'N', b'G', b'\r', b'\n'].into(),
+            })
+        }
+    );
+}
+
+#[test]
+fn a_picture_that_is_not_readable_breaks_the_line() {
+    let not_base64 = reply_update(json!({"type": "image", "mimeType": "image/png", "data": "%%%"}));
+    assert!(parse_line(&not_base64).is_err());
+    let no_data = reply_update(json!({"type": "image", "mimeType": "image/png"}));
+    assert!(parse_line(&no_data).is_err());
+    let not_a_picture =
+        reply_update(json!({"type": "image", "mimeType": "text/html", "data": "PGI+"}));
+    assert!(parse_line(&not_a_picture).is_err());
+}
+
+#[test]
+fn thought_text_decodes_apart_from_the_reply() {
+    let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Checking the calendar"}}}}"#;
+    assert_eq!(
+        parse_line(line).unwrap(),
+        Incoming::Update {
+            session_id: "s1".into(),
+            update: Update::ThoughtChunk("Checking the calendar".into())
+        }
+    );
+}
+
+#[test]
+fn a_file_fermix_could_not_send_arrives_by_name() {
+    let line = reply_update(json!({"type": "text",
+        "text": "[attachment: screen shot.png — not transferable over this surface]"}));
+    assert_eq!(
+        parse_line(&line).unwrap(),
+        Incoming::Update {
+            session_id: "s1".into(),
+            update: Update::Attachment("screen shot.png".into())
+        }
+    );
+    let quoted = reply_update(json!({"type": "text",
+        "text": "It said [attachment: a.png — not transferable over this surface] earlier"}));
+    assert!(matches!(
+        parse_line(&quoted).unwrap(),
+        Incoming::Update {
+            update: Update::MessageChunk(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn reply_content_this_app_does_not_draw_is_kept_by_kind() {
+    let link = reply_update(json!({"type": "resource_link", "uri": "file:///tmp/a", "name": "a"}));
+    assert_eq!(
+        parse_line(&link).unwrap(),
+        Incoming::Update {
+            session_id: "s1".into(),
+            update: Update::Other("agent_message_chunk".into())
+        }
+    );
+}
+
+#[test]
+fn a_picture_logs_as_its_type_and_size_not_its_bytes() {
+    let image = fermix_client::acp::Image {
+        mime: "image/png".into(),
+        bytes: vec![0; 4096].into(),
+    };
+    assert_eq!(
+        format!("{image:?}"),
+        r#"Image { mime: "image/png", bytes: 4096 }"#
+    );
+}
+
+#[test]
+fn a_file_name_may_hold_brackets() {
+    let line = reply_update(json!({"type": "text",
+        "text": "[attachment: photo [1].png — not transferable over this surface]"}));
+    assert_eq!(
+        parse_line(&line).unwrap(),
+        Incoming::Update {
+            session_id: "s1".into(),
+            update: Update::Attachment("photo [1].png".into())
+        }
+    );
+}

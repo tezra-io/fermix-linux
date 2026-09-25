@@ -2,12 +2,20 @@
 //! after Fermix's own bridge handshake (engine `Channels.Acp.Peer`). Pure: it
 //! turns lines into typed messages and back, and does no I/O.
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use serde_json::{json, Map, Value};
+use std::fmt;
+use std::sync::Arc;
 
 pub const BRIDGE_VERSION: u64 = 1;
 pub const PROTOCOL_VERSION: u64 = 1;
 /// The engine's line cap (`Acp.Wire.max_line_bytes/0`); a longer line is broken.
 pub const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+/// ACP carries no files, so the engine names one it could not send in a reply
+/// chunk of its own (engine `Acp.Peer.attachment_line/1`).
+const ATTACHMENT_OPEN: &str = "[attachment: ";
+const ATTACHMENT_CLOSE: &str = " — not transferable over this surface]";
 const CLIENT_NAME: &str = "fermix-desktop";
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -93,9 +101,31 @@ pub enum ToolStatus {
     Failed,
 }
 
+/// A picture in a reply, decoded from the wire but not yet into pixels.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Image {
+    pub mime: String,
+    pub bytes: Arc<[u8]>,
+}
+
+/// The type and size only: a picture's bytes would flood any log line.
+impl fmt::Debug for Image {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Image")
+            .field("mime", &self.mime)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Update {
     MessageChunk(String),
+    /// The assistant's reasoning, apart from the reply.
+    ThoughtChunk(String),
+    Image(Image),
+    /// A file the assistant sent that ACP cannot carry, by name.
+    Attachment(String),
     ToolCall {
         id: String,
         title: String,
@@ -214,17 +244,10 @@ fn decode_update(update: &Map<String, Value>) -> Result<Update, String> {
         .ok_or("an update without a sessionUpdate kind")?;
     let text = |key: &str| update.get(key).and_then(Value::as_str).map(str::to_owned);
     let decoded = match kind {
-        "agent_message_chunk" => match update.get("content") {
-            Some(content) if content.get("type").and_then(Value::as_str) == Some("text") => {
-                Update::MessageChunk(
-                    content
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                )
-            }
-            _ => Update::Other(kind.to_owned()),
+        "agent_message_chunk" => reply_content(update.get("content"))?,
+        "agent_thought_chunk" => match content_text(update.get("content")) {
+            Some(text) => Update::ThoughtChunk(text.to_owned()),
+            None => Update::Other(kind.to_owned()),
         },
         "tool_call" => Update::ToolCall {
             id: text("toolCallId").ok_or("a tool_call without a toolCallId")?,
@@ -241,6 +264,68 @@ fn decode_update(update: &Map<String, Value>) -> Result<Update, String> {
         other => Update::Other(other.to_owned()),
     };
     Ok(decoded)
+}
+
+/// The text of a `text` content block, or `None` for any other kind.
+fn content_text(content: Option<&Value>) -> Option<&str> {
+    let content = content?;
+    if content.get("type").and_then(Value::as_str) != Some("text") {
+        return None;
+    }
+    Some(
+        content
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+}
+
+fn reply_content(content: Option<&Value>) -> Result<Update, String> {
+    if let Some(text) = content_text(content) {
+        return Ok(match attachment_name(text) {
+            Some(name) => Update::Attachment(name.to_owned()),
+            None => Update::MessageChunk(text.to_owned()),
+        });
+    }
+    match content {
+        Some(image) if image.get("type").and_then(Value::as_str) == Some("image") => {
+            decode_image(image).map(Update::Image)
+        }
+        _ => Ok(Update::Other("agent_message_chunk".into())),
+    }
+}
+
+fn attachment_name(text: &str) -> Option<&str> {
+    let name = text
+        .strip_prefix(ATTACHMENT_OPEN)?
+        .strip_suffix(ATTACHMENT_CLOSE)?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// An image block that says it is a picture and carries its bytes; anything
+/// less breaks the line, as a malformed frame does.
+fn decode_image(image: &Value) -> Result<Image, String> {
+    let mime = image
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .filter(|mime| mime.starts_with("image/"))
+        .ok_or_else(|| {
+            format!(
+                "an image without a picture type: {:?}",
+                image.get("mimeType")
+            )
+        })?;
+    let data = image
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or("an image without data")?;
+    let bytes = STANDARD
+        .decode(data)
+        .map_err(|e| format!("an image whose data is not base64: {e}"))?;
+    Ok(Image {
+        mime: mime.to_owned(),
+        bytes: bytes.into(),
+    })
 }
 
 fn tool_status(status: Option<&Value>) -> Option<ToolStatus> {

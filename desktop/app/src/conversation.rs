@@ -21,14 +21,38 @@ pub struct Conversation {
     generation: u64,
 }
 
+/// Wall-clock seconds since the epoch, for the times under entries.
+fn now() -> i64 {
+    glib::real_time() / 1_000_000
+}
+
 impl App {
     pub async fn send_message(self: Rc<Self>) {
         let text = self.chat.input_text();
-        if !self.conversation.borrow_mut().transcript.send(&text) {
+        if !self.conversation.borrow_mut().transcript.send(&text, now()) {
             return;
         }
         self.chat.clear_input();
+        self.chat.follow_latest();
         self.render();
+        self.ask(&text).await;
+    }
+
+    /// Asks the question whose reply failed again, in place of that reply.
+    pub async fn retry_reply(self: Rc<Self>) {
+        let Some(text) = self.conversation.borrow_mut().transcript.retry() else {
+            return;
+        };
+        self.chat.follow_latest();
+        self.render();
+        // The Retry button is gone with the failure it sat in.
+        self.chat.focus_input();
+        self.ask(&text).await;
+    }
+
+    /// Sends a question the transcript already shows, opening the chat
+    /// connection first if there is none.
+    async fn ask(self: &Rc<Self>, text: &str) {
         let link = match self.ensure_link().await {
             Ok(link) => link,
             Err(e) => {
@@ -38,7 +62,7 @@ impl App {
         };
         let id = link.next_id();
         self.conversation.borrow_mut().prompt_id = Some(id);
-        link.send(acp::prompt(id, &link.session_id, &text));
+        link.send(acp::prompt(id, &link.session_id, text));
     }
 
     async fn ensure_link(self: &Rc<Self>) -> Result<Rc<Link>, LinkError> {
@@ -91,10 +115,11 @@ impl App {
                 let mut conversation = self.conversation.borrow_mut();
                 conversation.prompt_id = None;
                 match StopReason::from_result(&result) {
-                    Some(reason) => conversation.transcript.finish(&reason),
-                    None => conversation
-                        .transcript
-                        .fail("Fermix answered in a way this app does not understand."),
+                    Some(reason) => conversation.transcript.finish(&reason, now()),
+                    None => conversation.transcript.fail(
+                        "Fermix answered in a way this app does not understand.",
+                        now(),
+                    ),
                 }
             }
             Incoming::Error { id, code, message } if id.is_some() && id == prompt_id => {
@@ -102,7 +127,7 @@ impl App {
                 let mut conversation = self.conversation.borrow_mut();
                 conversation.prompt_id = None;
                 let sentence = reply_error(code, &message).sentence();
-                conversation.transcript.fail(&sentence);
+                conversation.transcript.fail(&sentence, now());
             }
             Incoming::Request { id, method } => {
                 glib::g_debug!("fermix", "declined the agent's {method} request");
@@ -114,7 +139,10 @@ impl App {
     }
 
     fn reply_failed(&self, sentence: &str) {
-        self.conversation.borrow_mut().transcript.fail(sentence);
+        self.conversation
+            .borrow_mut()
+            .transcript
+            .fail(sentence, now());
         self.render();
     }
 
@@ -167,6 +195,7 @@ impl App {
             link.close();
         }
         self.chat.clear_input();
+        self.chat.follow_latest();
         self.render();
         self.chat.focus_input();
     }

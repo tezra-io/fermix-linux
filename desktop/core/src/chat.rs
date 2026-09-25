@@ -1,13 +1,18 @@
 //! One conversation as the Chat page draws it: the questions, the replies as
 //! they stream, the tools the assistant ran, and whether a reply is coming.
 
-use crate::acp::{StopReason, ToolStatus, Update};
+use crate::acp::{Image, StopReason, ToolStatus, Update};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     User(String),
     /// Markdown, growing while it streams.
     Assistant(String),
+    /// The assistant's reasoning, growing while it streams; drawn collapsed.
+    Thought(String),
+    Image(Image),
+    /// A file the assistant sent that cannot come through the chat, by name.
+    Attachment(String),
     Tool {
         id: String,
         title: String,
@@ -30,9 +35,12 @@ pub enum Phase {
     Stopping,
 }
 
+/// Times are wall-clock seconds since the epoch, passed in so this stays pure.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Transcript {
     entries: Vec<Entry>,
+    /// One per entry: when a question was sent, or when the reply it ends ended.
+    times: Vec<Option<i64>>,
     phase: Phase,
 }
 
@@ -49,40 +57,78 @@ impl Transcript {
         self.phase == Phase::Idle
     }
 
+    /// The time shown under entry `index`: set on each question, and on the
+    /// last entry of each reply once the reply has ended.
+    pub fn time(&self, index: usize) -> Option<i64> {
+        self.times.get(index).copied().flatten()
+    }
+
+    /// Fermix is working on a reply and nothing on screen shows it: no text is
+    /// streaming in and no tool is running. The page shows its thinking orb.
+    pub fn thinking(&self) -> bool {
+        if self.phase == Phase::Idle {
+            return false;
+        }
+        !matches!(
+            self.entries.last(),
+            Some(Entry::Assistant(_))
+                | Some(Entry::Tool {
+                    status: ToolStatus::Running,
+                    ..
+                })
+        )
+    }
+
+    fn push(&mut self, entry: Entry, time: Option<i64>) {
+        self.entries.push(entry);
+        self.times.push(time);
+    }
+
     /// Records a question; false when it is blank or a reply is still coming.
-    pub fn send(&mut self, text: &str) -> bool {
+    pub fn send(&mut self, text: &str, at: i64) -> bool {
         let text = text.trim();
         if text.is_empty() || !self.can_send() {
             return false;
         }
-        self.entries.push(Entry::User(text.to_owned()));
+        self.push(Entry::User(text.to_owned()), Some(at));
         self.phase = Phase::Waiting;
         true
     }
 
     pub fn apply(&mut self, update: &Update) {
         match update {
-            Update::MessageChunk(text) if text.is_empty() => {}
+            Update::MessageChunk(text) if text.is_empty() => return,
+            Update::ThoughtChunk(text) if text.is_empty() => return,
             Update::MessageChunk(text) => self.append_reply(text),
+            Update::ThoughtChunk(text) => self.append_thought(text),
+            Update::Image(image) => self.push(Entry::Image(image.clone()), None),
+            Update::Attachment(name) => self.push(Entry::Attachment(name.clone()), None),
             Update::ToolCall { id, title, status } => {
-                self.entries.push(Entry::Tool {
+                let tool = Entry::Tool {
                     id: id.clone(),
                     title: title.clone(),
                     status: *status,
-                });
-                self.mark_streaming();
+                };
+                self.push(tool, None);
             }
-            Update::ToolUpdate { id, status } => self.set_tool_status(id, *status),
-            Update::Other(_) => {}
+            Update::ToolUpdate { id, status } => return self.set_tool_status(id, *status),
+            Update::Other(_) => return,
         }
+        self.mark_streaming();
     }
 
     fn append_reply(&mut self, text: &str) {
         match self.entries.last_mut() {
             Some(Entry::Assistant(reply)) => reply.push_str(text),
-            _ => self.entries.push(Entry::Assistant(text.to_owned())),
+            _ => self.push(Entry::Assistant(text.to_owned()), None),
         }
-        self.mark_streaming();
+    }
+
+    fn append_thought(&mut self, text: &str) {
+        match self.entries.last_mut() {
+            Some(Entry::Thought(thought)) => thought.push_str(text),
+            _ => self.push(Entry::Thought(text.to_owned()), None),
+        }
     }
 
     fn mark_streaming(&mut self) {
@@ -110,14 +156,22 @@ impl Transcript {
         true
     }
 
-    pub fn finish(&mut self, reason: &StopReason) {
+    pub fn finish(&mut self, reason: &StopReason, at: i64) {
         self.phase = Phase::Idle;
+        self.time_reply(at);
         match reason {
             StopReason::EndTurn => {}
-            StopReason::Cancelled => self.entries.push(Entry::Notice("Stopped".into())),
-            StopReason::Other(_) => self
-                .entries
-                .push(Entry::Notice("The reply ended early".into())),
+            StopReason::Cancelled => self.push(Entry::Notice("Stopped".into()), None),
+            StopReason::Other(_) => self.push(Entry::Notice("The reply ended early".into()), None),
+        }
+    }
+
+    /// Times the reply's last entry; a reply that brought nothing has none.
+    fn time_reply(&mut self, at: i64) {
+        if let (Some(last), Some(time)) = (self.entries.last(), self.times.last_mut()) {
+            if !matches!(last, Entry::User(_)) {
+                *time = Some(at);
+            }
         }
     }
 
@@ -128,13 +182,70 @@ impl Transcript {
         if self.entries.is_empty() || repeat {
             return;
         }
-        self.entries.push(Entry::Notice(text.to_owned()));
+        self.push(Entry::Notice(text.to_owned()), None);
     }
 
-    pub fn fail(&mut self, sentence: &str) {
+    pub fn fail(&mut self, sentence: &str, at: i64) {
         self.phase = Phase::Idle;
-        self.entries.push(Entry::Failure(sentence.to_owned()));
+        self.push(Entry::Failure(sentence.to_owned()), Some(at));
     }
+
+    /// True when the conversation ends in a failed reply that can be asked again.
+    pub fn can_retry(&self) -> bool {
+        self.phase == Phase::Idle
+            && matches!(self.entries.last(), Some(Entry::Failure(_)))
+            && self.last_question().is_some()
+    }
+
+    /// Asks the failed question again: what the failed reply left is cleared,
+    /// the question stays, and its text comes back to send. `None` when
+    /// `can_retry` is false.
+    pub fn retry(&mut self) -> Option<String> {
+        if !self.can_retry() {
+            return None;
+        }
+        let (index, question) = self.last_question()?;
+        let question = question.to_owned();
+        self.entries.truncate(index + 1);
+        self.times.truncate(index + 1);
+        self.phase = Phase::Waiting;
+        Some(question)
+    }
+
+    fn last_question(&self) -> Option<(usize, &str)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, entry)| match entry {
+                Entry::User(question) => Some((index, question.as_str())),
+                _ => None,
+            })
+    }
+}
+
+/// How a tool's state reads after its name: "Web search running".
+pub fn tool_state(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Running => "running",
+        ToolStatus::Completed => "done",
+        ToolStatus::Failed => "failed",
+    }
+}
+
+/// The width to draw a `width` by `height` picture at so it fits a `bound`
+/// pixel square, never larger than itself and never zero wide.
+pub fn picture_width(width: i32, height: i32, bound: i32) -> i32 {
+    assert!(
+        width > 0 && height > 0 && bound > 0,
+        "a picture that has no size: {width}x{height} in {bound}"
+    );
+    let for_height = i64::from(bound) * i64::from(width) / i64::from(height);
+    let fitted = i64::from(width)
+        .min(i64::from(bound))
+        .min(for_height)
+        .max(1);
+    i32::try_from(fitted).expect("no wider than the picture itself")
 }
 
 /// A tool's wire name as words: `web_search` reads "Web search".
@@ -148,6 +259,23 @@ pub fn tool_label(name: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => "Tool".into(),
+    }
+}
+
+/// The name a saved picture starts with: its type's usual extension, and none
+/// when the type is not a plain word, since the agent chose it.
+pub fn picture_file_name(mime: &str) -> String {
+    let subtype = mime.strip_prefix("image/").unwrap_or_default();
+    let extension = match subtype {
+        "jpeg" => "jpg",
+        "svg+xml" => "svg",
+        other => other,
+    };
+    let plain = !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric());
+    if plain {
+        format!("Fermix image.{extension}")
+    } else {
+        "Fermix image".into()
     }
 }
 

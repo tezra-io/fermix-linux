@@ -1,8 +1,9 @@
 //! Replies arrive as Markdown and are drawn as blocks of Pango markup. Every byte
 //! of model text is escaped before it becomes markup, and only web and mail links
-//! stay clickable, so a reply can never inject markup or open a local file.
+//! stay clickable, so a reply can never inject markup or open a local file. A
+//! bare web address in the text is a link too, as in any messenger.
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -21,7 +22,8 @@ pub fn render(markdown: &str) -> Vec<Block> {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut renderer = Renderer::default();
-    for event in Parser::new_ext(markdown, options) {
+    // Merged, so an address the parser split into pieces is linked whole.
+    for event in TextMergeStream::new(Parser::new_ext(markdown, options)) {
         renderer.event(event);
     }
     renderer.flush_text();
@@ -137,7 +139,8 @@ impl Renderer {
     fn push_text(&mut self, text: &str) {
         match self.raw.as_mut() {
             Some(raw) => raw.push_str(text),
-            None => self.text.push_str(&escape(text)),
+            None if !self.links.is_empty() => self.text.push_str(&escape(text)),
+            None => self.text.push_str(&linkify(text)),
         }
     }
 
@@ -231,6 +234,61 @@ impl Renderer {
         if !markup.trim().is_empty() {
             self.blocks.push(Block::Text(markup));
         }
+    }
+}
+
+/// Escaped text with each bare `http(s)://` address made a link. The address
+/// ends at whitespace; trailing punctuation, and a closing bracket it did not
+/// open, belong to the sentence.
+fn linkify(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    // Each pass consumes at least the scheme it found, so this ends.
+    while let Some((start, scheme)) = next_address(rest) {
+        out.push_str(&escape(&rest[..start]));
+        let tail = &rest[start..];
+        let address = &tail[..address_length(tail)];
+        if address.len() > scheme {
+            let url = escape_attribute(address);
+            out.push_str(&format!("<a href=\"{url}\">{}</a>", escape(address)));
+        } else {
+            out.push_str(&escape(address));
+        }
+        rest = &tail[address.len().max(scheme)..];
+    }
+    out.push_str(&escape(rest));
+    out
+}
+
+/// Where the next web address starts, and the length of its scheme.
+fn next_address(text: &str) -> Option<(usize, usize)> {
+    let lower = text.to_ascii_lowercase();
+    ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| lower.find(scheme).map(|start| (start, scheme.len())))
+        .min()
+}
+
+fn address_length(text: &str) -> usize {
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let mut address = &text[..end];
+    // Each pass drops a character or stops, so the address's length bounds it.
+    for _ in 0..=end {
+        let trimmed = trim_sentence_end(address);
+        if trimmed.len() == address.len() {
+            break;
+        }
+        address = trimmed;
+    }
+    address.len()
+}
+
+fn trim_sentence_end(address: &str) -> &str {
+    let trimmed = address.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
+    let unmatched = trimmed.matches('(').count() < trimmed.matches(')').count();
+    match trimmed.strip_suffix(')') {
+        Some(inner) if unmatched => inner,
+        _ => trimmed,
     }
 }
 

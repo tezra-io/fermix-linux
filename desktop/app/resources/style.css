@@ -65,3 +65,77 @@ window.fermix-companion .card {
   background-color: var(--window-bg-color);
   border-radius: 18px;
 }
+
+/* Chat: Fermix's replies sit in a bubble of their own, opposite the person's. */
+.chat-reply,
+.chat-file {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border-radius: 18px;
+  padding: 10px 14px;
+  box-shadow: 0 0 0 1px var(--border-color);
+}
+
+.chat-failure {
+  background-color: color-mix(in srgb, var(--error-bg-color) 12%, transparent);
+  border-radius: 18px;
+  padding: 10px 14px;
+}
+
+.chat-picture-button {
+  padding: 0;
+  border-radius: 14px;
+}
+
+.chat-picture {
+  border-radius: 14px;
+}
+
+/* A message's copy button shows while the pointer is on the message. */
+.chat-row .chat-hover {
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+
+.chat-row:hover .chat-hover,
+.chat-row .chat-hover:focus-visible {
+  opacity: 1;
+}
+
+.chat-code > button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: -4px -8px -4px 0;
+}
+
+.chat-thought-text {
+  font-size: smaller;
+  padding: 6px 0 0 18px;
+}
+
+/* The thinking orb: the accent colour, breathing. */
+.chat-orb {
+  min-width: 16px;
+  min-height: 16px;
+  margin: 6px 0;
+  border-radius: 999px;
+  background-image: radial-gradient(circle at 35% 30%,
+                                    color-mix(in srgb, var(--accent-bg-color) 45%, var(--accent-fg-color)),
+                                    var(--accent-bg-color) 70%);
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--accent-bg-color) 45%, transparent);
+  animation: chat-orb-breathe 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes chat-orb-breathe {
+  from {
+    opacity: 0.7;
+    transform: scale(0.8);
+    box-shadow: 0 0 3px 0 color-mix(in srgb, var(--accent-bg-color) 30%, transparent);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 12px 4px color-mix(in srgb, var(--accent-bg-color) 55%, transparent);
+  }
+}
