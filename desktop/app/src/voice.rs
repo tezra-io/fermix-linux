@@ -137,6 +137,7 @@ impl VoicePage {
         *self.shown.borrow_mut() = Some(view.clone());
         self.mascot.set_expression(view.expression);
         self.mascot.set_in_call(view.in_call);
+        self.mascot.set_palette(view.palette);
         let gate_shown = !view.gate.ready && !view.in_call;
         self.render_status(view, !gate_shown);
         self.render_controls(view);
@@ -224,9 +225,9 @@ const COMPANION_NOTE: &str = "A small window you can leave open beside your work
     keep it above other windows on Linux; GNOME can: press Alt+Space and choose Always on Top.";
 
 /// Adwaita's status colours; each mode also has its word and icon.
-const TONES: [&str; 4] = ["accent", "warning", "success", "error"];
+pub const TONES: [&str; 4] = ["accent", "warning", "success", "error"];
 
-fn tone(palette: Palette) -> Option<&'static str> {
+pub fn tone(palette: Palette) -> Option<&'static str> {
     match palette {
         Palette::Accent => Some("accent"),
         Palette::Warning => Some("warning"),

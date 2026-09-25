@@ -3,7 +3,9 @@
 //! only while the widget is mapped, so a hidden page or window costs nothing.
 //! With animations off it holds still in its current expression.
 
+use crate::voice::{tone, TONES};
 use fermix_client::mascot::{self, Expression, Fade, Plate, Pose, Transition, ART, STAGE};
+use fermix_client::realtime::session::Palette;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
@@ -11,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 const RESOURCES: &str = "/io/tezra/Fermix/pet";
-/// The accent glow's strength, out of a call and in one (M `PetView.swift:74-78`).
+/// The glow's strength, out of a call and in one (M `PetView.swift:74-78`).
 const GLOW: f32 = 0.18;
 const GLOW_IN_CALL: f32 = 0.34;
 /// The glow's radius and how far below the centre it sits, in default points:
@@ -69,6 +71,19 @@ impl Mascot {
         self.canvas.imp().in_call.set(in_call);
         self.canvas.queue_draw();
     }
+
+    /// The glow takes the status colour, as the macOS pet's does
+    /// (M `VoicePresentation.swift:127`): the accent while listening, green
+    /// while speaking, red on an error. Idle, it is the text colour.
+    pub fn set_palette(&self, palette: Palette) {
+        for class in TONES {
+            self.canvas.remove_css_class(class);
+        }
+        if let Some(class) = tone(palette) {
+            self.canvas.add_css_class(class);
+        }
+        self.canvas.queue_draw();
+    }
 }
 
 glib::wrapper! {
@@ -119,7 +134,8 @@ mod imp {
         type ParentType = gtk::Widget;
 
         fn class_init(klass: &mut Self::Class) {
-            // Decorative: the status line beside it says the state in words.
+            // Decorative: the Voice page's status line and the companion's
+            // label and tooltip say the state in words.
             klass.set_accessible_role(gtk::AccessibleRole::Presentation);
         }
     }
@@ -195,9 +211,9 @@ mod imp {
             (f64::from(width) / STAGE.0).min(f64::from(height) / STAGE.1) as f32
         }
 
-        /// A soft disc of the accent colour behind the ring.
+        /// A soft disc of the status colour (the widget's CSS colour) behind the ring.
         fn draw_glow(&self, snapshot: &gtk::Snapshot) {
-            let accent = adw::StyleManager::default().accent_color_rgba();
+            let colour = self.obj().color();
             let strength = if self.in_call.get() {
                 GLOW_IN_CALL
             } else {
@@ -210,11 +226,11 @@ mod imp {
                 2.0 * GLOW_RADIUS,
                 2.0 * GLOW_RADIUS,
             );
-            let tint = accent.with_alpha(accent.alpha() * strength);
+            let tint = colour.with_alpha(colour.alpha() * strength);
             let stops = [
                 gsk::ColorStop::new(0.0, tint),
                 gsk::ColorStop::new(GLOW_SOLID, tint),
-                gsk::ColorStop::new(1.0, accent.with_alpha(0.0)),
+                gsk::ColorStop::new(1.0, colour.with_alpha(0.0)),
             ];
             snapshot.append_radial_gradient(
                 &bounds,

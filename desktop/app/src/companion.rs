@@ -99,6 +99,7 @@ impl Companion {
         }
         self.mascot.set_expression(view.expression);
         self.mascot.set_in_call(view.in_call);
+        self.mascot.set_palette(view.palette);
         // The error mode's word is a whole sentence: the label says that voice
         // failed, and the tooltip says why.
         let error = view.palette == Palette::Error;
