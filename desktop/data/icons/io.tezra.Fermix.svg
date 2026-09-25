@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Fermix">
+  <title>Fermix</title>
+  <!--
+    The application icon, authored to the GNOME icon guidelines: a 128 px
+    canvas, one flat brand-blue shape inside the 8 px margin, and one white
+    glyph taken from the Fermix wordmark rather than invented for the icon.
+    Brand blue is permitted in resources/icons and resources/brand only; the
+    application sources and the stylesheet carry no colour at all.
+  -->
+  <rect x="8" y="8" width="112" height="112" rx="26" ry="26" fill="#2b5cff"/>
+  <g transform="translate(46.08 32) scale(0.64)" fill="#ffffff" fill-rule="evenodd">
+    <path d="M9,0 H17 V100 H0 V9 Z"/>
+    <path d="M17,0 H56 V9 L48,17 H17 Z"/>
+    <path d="M17,41 H48 V50 L40,58 H17 Z"/>
+  </g>
+</svg>

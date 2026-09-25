@@ -1,0 +1,67 @@
+/* The few looks libadwaita has no class for. Colours come from its variables,
+   so light, dark and high contrast all follow the system. */
+
+.chat-user {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  border-radius: 18px;
+  padding: 8px 14px;
+}
+
+.chat-user link {
+  color: var(--accent-fg-color);
+}
+
+.chat-code {
+  background-color: color-mix(in srgb, currentColor 7%, transparent);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.chat-quote {
+  border-left: 3px solid color-mix(in srgb, currentColor 25%, transparent);
+  padding-left: 10px;
+}
+
+.chat-composer {
+  background-color: var(--card-bg-color);
+  border-radius: 20px;
+  padding: 4px 4px 4px 12px;
+  box-shadow: 0 0 0 1px var(--border-color);
+}
+
+.chat-composer textview,
+.chat-composer textview text {
+  background: none;
+}
+
+/* Logs: one dense monospace line per entry. */
+listview.log-lines > row {
+  padding: 1px 12px;
+}
+
+/* A settings row whose last write the daemon refused: its sentence replaces the footer. */
+.setting-refused .subtitle {
+  color: var(--error-color);
+  opacity: 1;
+}
+
+/* A vendor mark that carries its own ground fills its slot, clipped to the slot's radius. */
+.plugin-mark-bleed {
+  border-radius: 8px;
+}
+
+/* The companion window: only its card shows. The window around the card is
+   see-through, and the card takes the window's own solid colour. */
+window.fermix-companion {
+  background: none;
+}
+
+window.fermix-companion.opaque {
+  background-color: var(--window-bg-color);
+}
+
+window.fermix-companion .card {
+  background-color: var(--window-bg-color);
+  border-radius: 18px;
+}

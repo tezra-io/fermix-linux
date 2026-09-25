@@ -1,0 +1,1035 @@
+{
+  "schema_version": 2,
+  "recorded_on": "2026-09-20",
+  "contract": "MILESTONE_34_UNIFIED_MACOS_APP_IMPLEMENTATION.md section 7",
+  "policy": {
+    "sources": "A mark ships only when it was retrieved from the source recorded beside it and shipped byte for byte. Nothing here is redrawn, traced, recolored, or reconstructed from a screenshot. Three source kinds appear, and each record says which it is: a vendor's own host, fermix's checked-in plugin catalog, and fermix's own first-party artwork.",
+    "no_fabrication": "A vendor whose official mark could not be retrieved renders as the vendor text name beside a neutral SF Symbol. A monogram is never invented and another vendor's mark is never substituted.",
+    "neutral_symbols": "One neutral symbol per roster kind, so the fallback carries no invented vendor identity: providers use cpu, channels use bubble.left.and.bubble.right, meeting platforms use video, plugins and features use puzzlepiece.extension. All exist on the macOS 15 floor.",
+    "accessibility": "A mark is decorative at every site that draws one: the row around it carries the name, so nothing is spoken twice. The label recorded here is the name that row must speak, and it is unique within its kind. Two kinds may name one vendor, because Discord and Slack are each both a channel and a plugin.",
+    "sizing": "Marks ship as the vendor's own file, in the format that vendor serves, and the file is named for the format its bytes actually are. An SVG is resolution independent; a raster is at least 128 points on its shorter side, which covers the 20 to 36 point tiles at 2x. A vendor that publishes a horizontal lockup rather than a square icon is shipped as that lockup, because cropping one into a square is an edit no record here permits.",
+    "origin": "Every record names where its bytes came from, and the refresh step reads it: vendor marks are re-downloaded from the vendor's own URL, while catalog and first_party marks are pinned to fermix's own repository and are re-vendored there rather than fetched from a third party.",
+    "plate": "Every shipped mark records the plate it is drawn on, and the app reads that field rather than guessing from the pixels. neutral: a coloured glyph on transparency, inset on the app's own tile. bleed: the file is an opaque square or disc carrying its own ground, so it fills the tile and is clipped to its radius. There is deliberately no third plate: a plate painted under a single dark ink is the treatment GitHub and Notion were given on 2026-09-03, and it failed both ways, vanishing into the light ground it matched and glaring on the dark one. A vendor that publishes two inks resolves by appearance, and a vendor that publishes one that already carries its own light ink needs nothing. The catalog's brand_color is not used as a plate either: painting a vendor's brand colour behind a mark authored for white is a recolouring of the mark's context that no record here permits."
+  },
+  "roster_source": {
+    "repository": "https://github.com/tezra-io/fermix",
+    "providers": "apps/fermix_core/lib/fermix_core/providers/descriptor.ex (Providers.Descriptor.all/0)",
+    "channels": "apps/fermix_web/lib/fermix_web_web/live/setup_live.ex (the channels form map)",
+    "plugins": "apps/fermix_core/priv/plugins/index.json and catalog.json (the static catalog and the bundled set)",
+    "features": "apps/fermix_web/lib/fermix_web_web/live/setup_live (the three native driver logos)",
+    "roster": "ROSTER.json",
+    "roster_sha256": "944cb5744e8ee87412e80bb4700b6893cdad840c22811b2c5ad37667859844b8",
+    "provider_count": 8,
+    "channel_count": 5,
+    "plugin_count": 12,
+    "feature_count": 3,
+    "channel_exclusions": {
+      "editing": "The form map's own cursor, not a channel.",
+      "acp": "The ACP agent surface from milestone 29. It is a local agent protocol endpoint, not a messaging vendor, so it has no vendor mark to record."
+    },
+    "oauth_client_count": 1,
+    "meeting_platform_count": 2
+  },
+  "linux": {
+    "copied_on": "2026-09-25",
+    "copied_from": "https://github.com/tezra-io/fermix-macos, Apps/Fermix/Sources/FermixAppCore/Resources/VendorMarks/PROVENANCE.json",
+    "copied_from_sha256": "8beb1efbc6f3ef9c2ae786a19ccfa97787e78f8c64a1241cbae3db786e66e34e",
+    "scope": "Each vendor record here is the macOS record, word for word, for a mark the Linux app draws. Asset paths are relative to app/marks/, which mirrors the macOS VendorMarks directory, and every file there is byte for byte the macOS file with the sha256 its record gives. A Linux-only fact about a record is in its linux_note field. The pet record is the Linux app's own. roster_source describes the macOS ROSTER.json, which is not copied. app/src/marks.rs tests that its table, these records and these files agree.",
+    "omitted": {
+      "computer_history": "Linux has no Computer history row: the Integrations page's Features filter lists computer_use and meetings only.",
+      "computer_use_sidecar": "Not a plugin row on Linux: plugins.list does not list it, and the Computer pane heads it with its own switch. Its file, features/computer-use-color.svg, ships for the computer_use feature."
+    },
+    "neutral_icons": "The Linux fallback, one per kind: providers network-server-symbolic; channels fermix-chat-symbolic, the app's own speech bubble, because the GNOME 50 Adwaita theme has no plain chat bubble (it has no chat-bubbles-text-symbolic); meeting platforms camera-video-symbolic; plugins, features and sign-in clients application-x-addon-symbolic. It is drawn smaller than a mark and dimmed, so it never reads as one.",
+    "decoding": "An SVG is drawn by GTK's own SVG renderer (GtkSvg, GTK 4.22), which needs no image loader, so it also draws in the dev loop and stays sharp at any size. On 2026-09-25, at 128 pixels wide, it matched rsvg-convert 2.62.4 on every SVG here but two: no pixel differed by more than 10 percent, apart from 15 anti-aliased edge pixels of providers/openai-color.svg that differed by less than 25 percent. The two are channels/discord-blurple.svg and channels/discord-white.svg, which colour their path with a <style> element GtkSvg does not implement and so drew black. Where GtkSvg reports a feature it does not implement, the app decodes the file with the image loader (glycin), as GTK's own icon loader does. A raster (PNG, WebP) always goes to the image loader. The loader runs in the installed app, where every file here decoded on 2026-09-25; the dev loop runs the runtime directly, cannot start the loader's sandbox, and so decodes PNG only.",
+    "plates": "bleed fills the 32 pixel slot and is clipped to an 8 pixel radius; neutral is drawn as is in the slot. The app draws no tile under either."
+  },
+  "marks": [
+    {
+      "key": "discord",
+      "kind": "channel",
+      "display_name": "Discord",
+      "accessibility_label": "Discord",
+      "treatment": "vendor_mark",
+      "source_url": "https://discord.com/branding",
+      "source_retrieved_on": "2026-08-21",
+      "usage_terms": "The official branding page states the marks may be used to inform people that you are a Discord user or have a Discord server, subject to the brand guidelines, and that you must not edit, change, distort, recolor, or reconfigure the Discord logo, or use the marks on merchandise. Published colors: Blurple #5865F2, Light Blurple #E0E3FF, Black #000000.",
+      "permitted_treatment": "Ship the vendor's own symbol files verbatim and scale uniformly. Never recolor: the black and white files are the vendor's variants, not tints of the blurple one.",
+      "dark_mode_policy": "Blurple is the default in both appearances. Where a surface needs a monochrome mark, light appearance takes discord-black and dark appearance takes discord-white, both official files.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/discord-blurple.svg",
+          "sha256": "d06eaa51e78a9984ebbd3fbc82f0245ac2ecb5bf0150f537204397c1da5c7bd8",
+          "asset_url": "https://cdn.discordapp.com/assets/content/a736b95923ddbc155e828651c92471292e40727655d770a06cec89c48ba0b41f.zip",
+          "asset_member": "Discord_Symbol_Color/Discord-Symbol-Blurple.svg",
+          "retrieved_on": "2026-08-21"
+        },
+        {
+          "role": "light",
+          "path": "channels/discord-black.svg",
+          "sha256": "2d1bd85831cdab67a5b8c893a218a47c3892b66a9fd073659022b8c8669fff2e",
+          "asset_url": "https://cdn.discordapp.com/assets/content/aecd9009fd6a24c06c8ce71f6bb84463eaf7252bc5259022fb887b381a428250.zip",
+          "asset_member": "Discord_Symbol_Black/Discord-Symbol-Black.svg",
+          "retrieved_on": "2026-08-21"
+        },
+        {
+          "role": "dark",
+          "path": "channels/discord-white.svg",
+          "sha256": "de4cc484cdc0e3a8f3a58a84b0c80c5ac8acefeebf730930545ff3b279b5d0a3",
+          "asset_url": "https://cdn.discordapp.com/assets/content/80af2c38f13b4a7d2cb3572e1220f6e958d3c3aedccc7c7d3ddc9832f6b3d725.zip",
+          "asset_member": "Discord_Symbol_White/Discord-Symbol-White.svg",
+          "retrieved_on": "2026-08-21"
+        }
+      ],
+      "fallback": null,
+      "notes": "The branding page's Color and White symbol download links are transposed relative to the archives they serve: the link labelled Color delivers Discord_Symbol_White and the link labelled White delivers Discord_Symbol_Color. Each asset here records the URL that actually contains its member, so the fetch script verifies content rather than the page's label.",
+      "plate": "neutral",
+      "origin": "vendor",
+      "linux_note": "GTK's own SVG renderer does not implement the <style> element that colours this path, so the app decodes discord-blurple.svg with the image loader instead, as GTK's icon loader does. It draws in the installed app; in the dev loop the loader cannot start and the row shows the neutral channel icon. The black and white files ship with the record and are not drawn, as on macOS."
+    },
+    {
+      "key": "signal",
+      "kind": "channel",
+      "display_name": "Signal",
+      "accessibility_label": "Signal",
+      "treatment": "vendor_mark",
+      "source_url": "https://signal.org/brand/",
+      "source_retrieved_on": "2026-08-21",
+      "usage_terms": "The brand page states: always maintain the set proportions and never show the glyph smaller than 26 by 26 pixels; keep clear space of at least half the size of the logo around it; do not alter the Signal logo by rotating, stretching, outlining, or adding effects; do not modify the typography of the Signal wordmark; distinguish the brand assets from surrounding text.",
+      "permitted_treatment": "Ship the vendor's own logo files verbatim, scale uniformly, and never render below 26 by 26 points. The wordmark lockups are not used; only the logo glyph is.",
+      "dark_mode_policy": "Ultramarine is the default in both appearances. Where a surface needs a monochrome mark, light appearance takes signal-black and dark appearance takes signal-white, both official files rather than tints.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/signal-ultramarine.svg",
+          "sha256": "60c84ad5184f14b9f85a1e7852411762cd0879a45439abd31810f2775f4db9d9",
+          "asset_url": "https://signal.org/brand/bundles/Signal%20Logo.zip",
+          "asset_member": "Logo/SVG/Signal-Logo-Ultramarine.svg",
+          "retrieved_on": "2026-08-21"
+        },
+        {
+          "role": "light",
+          "path": "channels/signal-black.svg",
+          "sha256": "fb83fd63ff6b09ca12148857b15387d290b64e5fc27e467d0321ee8502c3ac61",
+          "asset_url": "https://signal.org/brand/bundles/Signal%20Logo.zip",
+          "asset_member": "Logo/SVG/Signal-Logo-Black.svg",
+          "retrieved_on": "2026-08-21"
+        },
+        {
+          "role": "dark",
+          "path": "channels/signal-white.svg",
+          "sha256": "d434b1f688ed4c978b413bf7b2f0c6e5e44bac74c12e68529ce2782a977e52fd",
+          "asset_url": "https://signal.org/brand/bundles/Signal%20Logo.zip",
+          "asset_member": "Logo/SVG/Signal-Logo-White.svg",
+          "retrieved_on": "2026-08-21"
+        }
+      ],
+      "fallback": null,
+      "notes": "The 26 by 26 point floor is the tightest published minimum in this file. Any chip that renders a Signal mark must respect it; the 30 point icon tile in the redlines does.",
+      "plate": "neutral",
+      "origin": "vendor",
+      "linux_note": "The black and white files ship with the record and are not drawn, as on macOS."
+    },
+    {
+      "key": "slack",
+      "kind": "channel",
+      "origin": "vendor",
+      "display_name": "Slack",
+      "accessibility_label": "Slack",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://slack.com/media-kit",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "The media kit states: \"These resources are here to help you use our brand and assets, including our logo, content and trademarks, without having to negotiate legal agreements\", and \"By using the Slack marks you agree to follow these guidelines as well as our Terms of Service and all our rules and policies.\" The downloadable logo bundle behind the page needs an interactive session; what ships is the Slack mark the media kit page itself serves.",
+      "permitted_treatment": "Drawn whole at the tile's size, unrecolored and uncropped in aspect.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/slack-color.png",
+          "sha256": "fff0ab554a4dc202afd1cbf2033a3ad340cf25b4991035d2d31407b5e7e4c366",
+          "asset_url": "https://a.slack-edge.com/80588/marketing/img/meta/slack_hash_256.png",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "telegram",
+      "kind": "channel",
+      "display_name": "Telegram",
+      "accessibility_label": "Telegram",
+      "treatment": "vendor_mark",
+      "source_url": "https://telegram.org/tour/screenshots",
+      "source_retrieved_on": "2026-08-21",
+      "usage_terms": "The official page states: \"Please feel free to use these Telegram logos for article illustrations, graphs, 'forward to Telegram' buttons, etc. Just make sure people understand you're not representing Telegram officially.\"",
+      "permitted_treatment": "Ship the file verbatim and scale uniformly. The surrounding copy must not imply Fermix is an official Telegram product; the Connect channel row names Telegram only as a destination.",
+      "dark_mode_policy": "One gradient roundel with its own white glyph on a blue disc. It carries its own ground, so it needs no appearance variant, is never rendered as a template image, and fills the tile rather than being inset on a second disc.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/telegram-color.svg",
+          "sha256": "85059d5e5bf7bda91ebab30664993c49867a26be6b947834aca16c846581766a",
+          "asset_url": "https://telegram.org/img/t_logo.svg",
+          "asset_member": null,
+          "retrieved_on": "2026-08-21"
+        }
+      ],
+      "fallback": null,
+      "notes": "The tour page also offers a logo bundle at https://telegram.org/file/464001088/1/bI7AJLo7oX4.287931.zip/374fe3b0a59dc60005; the single canonical SVG telegram.org serves was taken instead so the pin is one file, not an archive member.",
+      "plate": "bleed",
+      "origin": "vendor"
+    },
+    {
+      "key": "whatsapp",
+      "kind": "channel",
+      "origin": "vendor",
+      "display_name": "WhatsApp",
+      "accessibility_label": "WhatsApp",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://www.meta.com/brand/resources/whatsapp/whatsapp-brand/",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "Not retrieved. The brand resource centre offers one archive, served from an fbcdn host that answers HTTP 403 to non-interactive requests, so the terms packaged with it could not be read. What ships is the WhatsApp glyph whatsapp.com serves itself, byte for byte and unmodified.",
+      "permitted_treatment": "Drawn whole at the tile's size, unrecolored and uncropped in aspect, until the kit and its terms are retrieved.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/whatsapp-color.webp",
+          "sha256": "48e94afeffb29c66f5e84dc8df4ee247f838c287f87cb8960cbf67f4e8d3dd37",
+          "asset_url": "https://www.whatsapp.com/favicon.ico",
+          "retrieved_on": "2026-09-03"
+        }
+      ],
+      "notes": "The bytes served at that URL are WebP, not the ICO or PNG the name suggests, so the file is named for what it is. ImageIO decodes WebP, so nothing about the drawing changes; what changes is that the record no longer claims a format the file does not have.",
+      "linux_note": "Decoded by the image loader. On 2026-09-25 gdk::Texture::from_bytes decoded it, 194 by 194, inside the installed io.tezra.Fermix sandbox. In the dev loop the loader cannot start and the row shows the neutral channel icon."
+    },
+    {
+      "key": "computer_use",
+      "kind": "feature",
+      "origin": "first_party",
+      "display_name": "Computer use",
+      "accessibility_label": "Computer use",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The mark is Fermix's own, drawn for the engine's setup surface, and it ships here as the same bytes that surface serves.",
+      "permitted_treatment": "Drawn inset on the neutral tile, at the accent it is authored in.",
+      "dark_mode_policy": "A coloured glyph on transparency, which reads on both appearances, so it needs no appearance variant and is drawn inset on the neutral tile.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "features/computer-use-color.svg",
+          "sha256": "50de395cd3f1af1d637c2d2f4c54a331ca304c355d76ffb88c0773b92323b841",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_web/lib/fermix_web_web/live/setup_live/computer_use_logo.svg",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "meetings",
+      "kind": "feature",
+      "origin": "first_party",
+      "display_name": "Meeting notetaker",
+      "accessibility_label": "Meeting notetaker",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The mark is Fermix's own, drawn for the engine's setup surface, and it ships here as the same bytes that surface serves.",
+      "permitted_treatment": "Drawn inset on the neutral tile, at the accent it is authored in.",
+      "dark_mode_policy": "A coloured glyph on transparency, which reads on both appearances, so it needs no appearance variant and is drawn inset on the neutral tile.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "features/meetings-color.svg",
+          "sha256": "53157efacc86ab24e13290e63051302fb0b9f127e9515cc373de85dc95b0e00e",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_web/lib/fermix_web_web/live/setup_live/meetings_logo.svg",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "agentmail",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "AgentMail",
+      "accessibility_label": "AgentMail",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "agentmail",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/agentmail-color.png",
+          "sha256": "1f2264cde21b3ea30dbaa4106520c2067e486e1965febbb3cd808e74de22f791",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=agentmail].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "discord",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Discord",
+      "accessibility_label": "Discord",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "A coloured glyph on transparency, which reads on both appearances, so it needs no appearance variant and is drawn inset on the neutral tile.",
+      "catalog_entry": {
+        "name": "discord",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/discord-color.svg",
+          "sha256": "3b259d2f7fb29ea10ecf8dc9c430deaa24ebcffa5bcee7b3391221a85f2191f9",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=discord].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "github",
+      "kind": "plugin",
+      "origin": "vendor",
+      "display_name": "GitHub",
+      "accessibility_label": "GitHub",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://brand.github.com/",
+      "source_retrieved_on": "2026-09-04",
+      "usage_terms": "The logo page states: \"The GitHub logo is made up of two parts: the Invertocat and the GitHub logotype... The Invertocat can appear in white, black, or GitHub Blue, and when in doubt, use the highest contrast option.\" It asks that the mark not be modified, recolored beyond those inks, or used to imply a partnership. The GitHub row names GitHub only as a plugin destination.",
+      "permitted_treatment": "Ship each ink verbatim and scale uniformly. Neither file is recolored, and the two are never mixed with a plate: the kit's own rule is to pick the higher contrast ink for the ground.",
+      "dark_mode_policy": "The kit publishes both inks, so the appearance picks the vendor's own file: black on the light appearance and white on the dark one. Nothing is tinted and no plate is drawn under it.",
+      "assets": [
+        {
+          "role": "light",
+          "path": "plugins/github-black.svg",
+          "sha256": "693d7abe6f899646cc2e96856723b45e95f71885a54910b2749f6decdf7e1ee1",
+          "asset_url": "https://brand.github.com/GitHub_Logos.zip",
+          "asset_member": "GitHub Logos/SVG/GitHub_Invertocat_Black.svg",
+          "retrieved_on": "2026-09-04"
+        },
+        {
+          "role": "dark",
+          "path": "plugins/github-white.svg",
+          "sha256": "ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b",
+          "asset_url": "https://brand.github.com/GitHub_Logos.zip",
+          "asset_member": "GitHub Logos/SVG/GitHub_Invertocat_White.svg",
+          "retrieved_on": "2026-09-04"
+        }
+      ],
+      "notes": "Retrieved from the official kit rather than from fermix's catalog, which publishes only the dark ink. A plate is what a single dark ink forces, and a plate that matches the light ground is not a plate: on the light appearance it vanished and on the dark one it was the brightest object on the page. Two published inks remove the need for one."
+    },
+    {
+      "key": "gmail",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Gmail",
+      "accessibility_label": "Gmail",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/gmail/assets/gmail.png",
+      "source_retrieved_on": "2026-09-04",
+      "usage_terms": "First party. The logo ships inside fermix's own bundled plugin set, which is checked into the engine repository at apps/fermix_core/priv/plugins and is unioned into every install by Registry.list, so it is present on a machine that installed nothing. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the bundled plugin's own bytes, the same file the web setup renders through plugin_asset_data_uri.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file is an opaque square that carries its own ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "gmail",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/catalog.json",
+        "manifest": "apps/fermix_core/priv/plugins/gmail/plugin.json"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/gmail-color.png",
+          "sha256": "72c7ea5b14525549049a91aca31bbadbde2c16531b26274ff05a440b9ced263b",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/gmail/assets/gmail.png",
+          "retrieved_on": "2026-09-04",
+          "asset_member": null
+        }
+      ],
+      "fallback": null,
+      "notes": "One of the three plugins fermix ships inside the engine rather than publishing in the static catalog. Registry.list unions them into every install, so they are what the Integrations page draws under its own Installed pill on a machine that added nothing."
+    },
+    {
+      "key": "google_calendar",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Google Calendar",
+      "accessibility_label": "Google Calendar",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/google_calendar/assets/logo.png",
+      "source_retrieved_on": "2026-09-04",
+      "usage_terms": "First party. The logo ships inside fermix's own bundled plugin set, which is checked into the engine repository at apps/fermix_core/priv/plugins and is unioned into every install by Registry.list, so it is present on a machine that installed nothing. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the bundled plugin's own bytes, the same file the web setup renders through plugin_asset_data_uri.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file is an opaque square that carries its own ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "google_calendar",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/catalog.json",
+        "manifest": "apps/fermix_core/priv/plugins/google_calendar/plugin.json"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/google-calendar-color.png",
+          "sha256": "3a845f4584a6cb7539d9de0af304ae1b9ca30f8cc9dec0c947c1d6082d112670",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/google_calendar/assets/logo.png",
+          "retrieved_on": "2026-09-04",
+          "asset_member": null
+        }
+      ],
+      "fallback": null,
+      "notes": "One of the three plugins fermix ships inside the engine rather than publishing in the static catalog. Registry.list unions them into every install, so they are what the Integrations page draws under its own Installed pill on a machine that added nothing."
+    },
+    {
+      "key": "google_drive",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Google Drive",
+      "accessibility_label": "Google Drive",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/google_drive/assets/app-icon.png",
+      "source_retrieved_on": "2026-09-04",
+      "usage_terms": "First party. The logo ships inside fermix's own bundled plugin set, which is checked into the engine repository at apps/fermix_core/priv/plugins and is unioned into every install by Registry.list, so it is present on a machine that installed nothing. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the bundled plugin's own bytes, the same file the web setup renders through plugin_asset_data_uri.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file is an opaque square that carries its own ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "google_drive",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/catalog.json",
+        "manifest": "apps/fermix_core/priv/plugins/google_drive/plugin.json"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/google-drive-color.png",
+          "sha256": "5ff77ef6e6b77b3d8db507195246722c6ffb6b0a361ef11288479278b0aded59",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/google_drive/assets/app-icon.png",
+          "retrieved_on": "2026-09-04",
+          "asset_member": null
+        }
+      ],
+      "fallback": null,
+      "notes": "One of the three plugins fermix ships inside the engine rather than publishing in the static catalog. Registry.list unions them into every install, so they are what the Integrations page draws under its own Installed pill on a machine that added nothing."
+    },
+    {
+      "key": "notion",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Notion",
+      "accessibility_label": "Notion",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The mark is a white page with the wordmark cut out of it, so it carries its own light ink and reads on both appearances without a plate and without being recolored. It is inset on the app's own tile like every other glyph on transparency.",
+      "catalog_entry": {
+        "name": "notion",
+        "version": "1.0.1",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/notion-color.svg",
+          "sha256": "1b52a185d8166d9339f5c16dd51789ee30f49a65b4d40738290b60423e331160",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=notion].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "obsidian",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Obsidian",
+      "accessibility_label": "Obsidian",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "obsidian",
+        "version": "1.0.3",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/obsidian-color.png",
+          "sha256": "0e276566c7e648afc03a63c68f27905e6d76c8b4ad3626fdebdd2138f0badbb4",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=obsidian].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "slack",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Slack",
+      "accessibility_label": "Slack",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "slack",
+        "version": "1.0.0",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/slack-color.svg",
+          "sha256": "132f5d81ad1a22bccc79fe6900d85f9612ae449cf1841f3d33904da5e568af79",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=slack].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "tesla",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "Tesla",
+      "accessibility_label": "Tesla",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-20",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "A coloured glyph on transparency, which reads on both appearances, so it needs no appearance variant and is drawn inset on the neutral tile.",
+      "catalog_entry": {
+        "name": "tesla",
+        "version": "1.1.0",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-09-19T15:17:56Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/tesla-color.png",
+          "sha256": "c82462c37d740922a2e4dd0f5cc8f4da3d1e646453cfb3c525fae4f34864a6fc",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-20",
+          "asset_member": "plugins[name=tesla].logo.data_base64"
+        }
+      ],
+      "notes": "The file is one red ink on a transparent canvas, so it carries no ground of its own and is inset rather than bled. It is a colour and not a dark ink: drawn inset on the neutral tile it reads on both appearances, the way the Discord plugin mark's single blurple ink does, so it is never tinted as a template and takes no plate. The catalog's brand_color is a red as well, which is one more reason it is never painted behind the mark."
+    },
+    {
+      "key": "x",
+      "kind": "plugin",
+      "origin": "catalog",
+      "display_name": "X",
+      "accessibility_label": "X",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "First party. The logo ships inside fermix's own plugin catalog, which is generated by scripts/release/sync_plugin_catalog.py from the plugin's published manifest and is checked into the engine repository. Nothing here was retrieved from the vendor directly, and nothing was redrawn: these are the catalog's own bytes.",
+      "permitted_treatment": "Drawn at the size the row's icon tile gives it, unscaled in aspect and unrecolored. The plate under it is this record's own field.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "catalog_entry": {
+        "name": "x",
+        "version": "1.0.1",
+        "catalog": "apps/fermix_core/priv/plugins/index.json",
+        "generated_at": "2026-08-04T02:49:35Z"
+      },
+      "assets": [
+        {
+          "role": "color",
+          "path": "plugins/x-color.svg",
+          "sha256": "0e41e2dc051ea320995bbdb217ba96ae173e02524b345bec8bf6ecd0704557ce",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_core/priv/plugins/index.json",
+          "retrieved_on": "2026-09-03",
+          "asset_member": "plugins[name=x].logo.data_base64"
+        }
+      ]
+    },
+    {
+      "key": "anthropic",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "Anthropic",
+      "accessibility_label": "Claude by Anthropic",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://claude.ai/",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "Not retrieved. Anthropic publishes no brand page at anthropic.com/brand, which answers 404, and no downloadable kit was reachable from anthropic.com. What ships is the Claude application icon Anthropic serves on claude.ai, byte for byte and unmodified.",
+      "permitted_treatment": "Drawn whole at the tile's size, unrecolored and uncropped in aspect. Never redrawn and never recut.",
+      "dark_mode_policy": "The file carries its own square ground, so it needs no appearance variant and is never rendered as a template image. It fills the tile and is clipped to its radius.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "providers/anthropic-color.png",
+          "sha256": "c7b5642f810adfba78781592d9dec18d7eb376c7ebf403c4d882fb9d39f65408",
+          "asset_url": "https://claude.ai/images/claude_app_icon.png",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "mistral",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "Mistral AI",
+      "accessibility_label": "Mistral AI",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://mistral.ai/brand",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "Not retrieved. The brand page links four asset archives, every one of them on a content CDN that answers HTTP 403 to non-interactive requests, so the terms packaged with the kit could not be read. What ships is the logomark file mistral.ai serves itself, byte for byte and unmodified.",
+      "permitted_treatment": "Drawn inset on the neutral tile, unrecolored and unstretched, until the kit and its terms are retrieved.",
+      "dark_mode_policy": "A coloured glyph on transparency, which reads on both appearances, so it needs no appearance variant and is drawn inset on the neutral tile.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "providers/mistral-color.svg",
+          "sha256": "66ceaf186f2075da38e5a3c2e46fc0015936e0cb57692d1f8ae0ba565354874d",
+          "asset_url": "https://mistral.ai/favicon.svg",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "ollama",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "Ollama",
+      "accessibility_label": "Ollama",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://github.com/ollama/ollama/blob/main/docs/ollama-logo.svg",
+      "source_retrieved_on": "2026-08-21",
+      "usage_terms": "Repository licensed, not brand-kit licensed. The mark lives inside the ollama/ollama repository, which is under the MIT License (https://github.com/ollama/ollama/blob/main/LICENSE, sha256 5934ed2ce0d1eec91e4e4d1e6a9a0e7ba7c8b3dfd63b4b2e6e5a4d9a6bd6e5d2). Ollama publishes no separate brand guidelines page.",
+      "permitted_treatment": "Single-ink mark, rendered as a template image tinted with the system label color.",
+      "dark_mode_policy": "The official file is a single fill=\"black\" path with no light variant published. It is rendered as a template image tinted with the system label color, which is the one treatment that keeps a single-ink mark legible in both appearances without redrawing it.",
+      "assets": [
+        {
+          "role": "monochrome",
+          "path": "providers/ollama-mono.svg",
+          "sha256": "397a6ee071cce1496edd8a86dd1c91ce005712ec161690e411b3dc7f151181f5",
+          "asset_url": "https://raw.githubusercontent.com/ollama/ollama/main/docs/ollama-logo.svg",
+          "retrieved_on": "2026-08-21"
+        }
+      ],
+      "linux_note": "Drawn as a template by the app's TemplateMark paintable, which fills the alpha of GTK's own rendering of the file with the foreground colour GTK passes: the label ink in both appearances. The file keeps its macOS name: one template path serves both single-ink marks, and xai's white ink cannot take GTK's symbolic file naming."
+    },
+    {
+      "key": "openai",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "OpenAI",
+      "accessibility_label": "OpenAI",
+      "treatment": "vendor_mark",
+      "source_url": "https://openai.com/brand",
+      "source_retrieved_on": "2026-09-05",
+      "usage_terms": "OpenAI owns the mark. Its brand guidelines permit accurate references to OpenAI services, require the supplied logo and spacing, and prohibit alterations or implied endorsement. The icon is the one OpenAI publishes in its Agents SDK documentation, pinned to its source commit. Guidelines: https://openai.com/brand/.",
+      "permitted_treatment": "The official service icon is drawn whole, with its supplied ground and spacing, without recoloring or changing its aspect ratio.",
+      "dark_mode_policy": "The published image carries its own ground and is used unchanged in both appearances.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "providers/openai-color.svg",
+          "sha256": "7691e823f5c2f6f0f050e6b9e6ddbef067a6d88b1b167200200a396c1844c04d",
+          "asset_url": "https://raw.githubusercontent.com/openai/openai-agents-python/1d471a4775bf2f40179f411824da383deb4c3fca/docs/assets/images/favicon-platform.svg",
+          "retrieved_on": "2026-09-05"
+        }
+      ],
+      "plate": "bleed",
+      "notes": "The API-key and ChatGPT sign-in rows identify OpenAI services using the same official OpenAI icon."
+    },
+    {
+      "key": "openai_codex",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "OpenAI Codex (ChatGPT)",
+      "accessibility_label": "OpenAI Codex, sign in with ChatGPT",
+      "treatment": "vendor_mark",
+      "source_url": "https://openai.com/brand",
+      "source_retrieved_on": "2026-09-05",
+      "usage_terms": "OpenAI owns the mark. Its brand guidelines permit accurate references to OpenAI services, require the supplied logo and spacing, and prohibit alterations or implied endorsement. The icon is the one OpenAI publishes in its Agents SDK documentation, pinned to its source commit. Guidelines: https://openai.com/brand/.",
+      "permitted_treatment": "The official service icon is drawn whole, with its supplied ground and spacing, without recoloring or changing its aspect ratio.",
+      "dark_mode_policy": "The published image carries its own ground and is used unchanged in both appearances.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "providers/openai-color.svg",
+          "sha256": "7691e823f5c2f6f0f050e6b9e6ddbef067a6d88b1b167200200a396c1844c04d",
+          "asset_url": "https://raw.githubusercontent.com/openai/openai-agents-python/1d471a4775bf2f40179f411824da383deb4c3fca/docs/assets/images/favicon-platform.svg",
+          "retrieved_on": "2026-09-05"
+        }
+      ],
+      "notes": "The API-key and ChatGPT sign-in rows identify OpenAI services using the same official OpenAI icon.",
+      "plate": "bleed"
+    },
+    {
+      "key": "openrouter",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "OpenRouter",
+      "accessibility_label": "OpenRouter",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://openrouter.ai/brand",
+      "source_retrieved_on": "2026-09-03",
+      "usage_terms": "The brand page states: \"Every configuration of the OpenRouter mark, ready to use. SVG scales anywhere; PNGs are exported at 2x. Please don't stretch, recolor, or remix the marks.\" It publishes the glyph in four inks and names which backgrounds each is for.",
+      "permitted_treatment": "The transparent glyph, unstretched, unrecolored and unremixed. Grape is the ink the page marks for light backgrounds and Volt the one for dark, so the app draws the vendor's own choice per appearance rather than tinting one file.",
+      "dark_mode_policy": "Two published inks, resolved by appearance: light takes openrouter-grape, dark takes openrouter-volt. Never a template tint, because recoloring is what the vendor's page asks callers not to do.",
+      "assets": [
+        {
+          "role": "light",
+          "path": "providers/openrouter-grape.svg",
+          "sha256": "5b49593d44e6aa41011be377e182cd89e57473f1948e0dfb128f99a92adfc68d",
+          "asset_url": "https://openrouter.ai/brand/logos/transparent/glyph/svg/glyph-grape.svg",
+          "retrieved_on": "2026-09-03"
+        },
+        {
+          "role": "dark",
+          "path": "providers/openrouter-volt.svg",
+          "sha256": "0d22462e4f2835a5a5b9000af0a55fc9238e39996100f54706e41ec45b9d1727",
+          "asset_url": "https://openrouter.ai/brand/logos/transparent/glyph/svg/glyph-volt.svg",
+          "retrieved_on": "2026-09-03"
+        }
+      ]
+    },
+    {
+      "key": "venice",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "Venice",
+      "accessibility_label": "Venice",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://venice.ai/brand",
+      "source_retrieved_on": "2026-09-19",
+      "usage_terms": "The brand kit page publishes the marks and the kit's own DESIGN.md carries the rules. On the files: \"Always use these approved files. Never redraw, retype, or recreate any mark.\" On the keys, which is the mark used here: \"The keys are the compact symbol for the brand. Use them cleanly and never decorate, outline, fade, or redraw the vector.\", with \"Do not change the opacity of the keys.\" and \"Do not modify curves, anchor points, or proportions.\" On colour: \"The logo only appears in Deep Blue, Off White, white, or black.\" and \"For the logo: use Deep Blue on light backgrounds and Off White on dark backgrounds.\"",
+      "permitted_treatment": "The keys symbol, which the kit names the compact mark for icons, from the transparent approved file. Drawn inset on the neutral tile, unmodified, unrecoloured, unstretched and never outlined. The wordmark and the lockup are not used here: both are wide and the provider row is a square tile, and cropping one is an edit no record permits.",
+      "dark_mode_policy": "Two published inks, resolved by appearance, which is the vendor's own instruction: light takes venice-deep-blue and dark takes venice-off-white. Never a template tint, because Deep Blue and Off White are the only approved logo colours the app has a use for and a tint would be a third.",
+      "assets": [
+        {
+          "role": "light",
+          "path": "providers/venice-deep-blue.svg",
+          "sha256": "0db01572736b52eabfef31b5ca55725749a8cf4158667dd89da5a65a43a2020c",
+          "asset_url": "https://basehub.venice.ai/brand/venice-keys-svg.zip",
+          "asset_member": "Venice Keys SVG/venice-keys-deep-blue.svg",
+          "retrieved_on": "2026-09-19"
+        },
+        {
+          "role": "dark",
+          "path": "providers/venice-off-white.svg",
+          "sha256": "b28fa0fa44f87360aedd746fa5824e6c6ffa5a65cbc80844a5ae4c20f0792851",
+          "asset_url": "https://basehub.venice.ai/brand/venice-keys-svg.zip",
+          "asset_member": "Venice Keys SVG/venice-keys-off-white.svg",
+          "retrieved_on": "2026-09-19"
+        }
+      ]
+    },
+    {
+      "key": "xai",
+      "kind": "provider",
+      "origin": "vendor",
+      "display_name": "xAI",
+      "accessibility_label": "xAI",
+      "treatment": "vendor_mark",
+      "source_url": "https://x.ai/legal/brand-guidelines",
+      "source_retrieved_on": "2026-09-05",
+      "usage_terms": "SpaceXAI owns the mark. Its brand guidelines permit accurate references to its services and prohibit alterations or implied endorsement. This is the Grok icon published by xai-org in its official cookbook, pinned to its source commit. Guidelines: https://x.ai/legal/brand-guidelines.",
+      "permitted_treatment": "The official single-ink Grok mark retains its complete geometry and aspect ratio. It is drawn as a template in the system label ink on the neutral tile, matching the app treatment for a vendor that supplies only one monochrome ink.",
+      "dark_mode_policy": "The published mark is white on transparency. Template rendering uses the system label ink so it remains visible in both appearances without redrawing the mark.",
+      "assets": [
+        {
+          "role": "monochrome",
+          "path": "providers/xai-mono.png",
+          "sha256": "359056ee8983cfa0ba7e72795078c7c0ddf6c5d7a1870401ab960ed4f9df9e53",
+          "asset_url": "https://raw.githubusercontent.com/xai-org/xai-cookbook/01d842179c4c41c326bd8ce8aa65edce9c9c231d/voice-examples/agent/web/client/public/grok.png",
+          "retrieved_on": "2026-09-05"
+        }
+      ],
+      "plate": "neutral",
+      "notes": "The SpaceXAI provider serves Grok; the row uses the official Grok service icon.",
+      "linux_note": "Drawn as a template by the app's TemplateMark paintable, which fills the file's own alpha with the foreground colour GTK passes to a symbolic paintable: the label ink in both appearances. The file keeps its macOS name. It is not shipped under a .symbolic.png name, because GTK recolours such a PNG with a channel matrix that assumes black ink: on 2026-09-25 this white ink drew pale yellow on light and black on dark that way."
+    },
+    {
+      "key": "google_meet",
+      "kind": "meeting_platform",
+      "origin": "vendor",
+      "display_name": "Google Meet",
+      "accessibility_label": "Google Meet",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://about.google/brand-resource-center/",
+      "source_retrieved_on": "2026-09-06",
+      "usage_terms": "Google's brand resource center routes logo use to its trademark guidelines at https://www.google.com/permissions/trademark/rules/, which state: “Use only Google-approved artwork when using Google’s logos.”, “Maintain clear space around Google logos according to the provided guidelines.”, “Don’t remove, distort, or alter any element of a Google Brand Feature.”, “Don’t display any Google Brand Features as the most prominent element in your content.” and “Don’t display Google Brand Features in any manner that implies a relationship with, affiliation with, sponsorship by, or endorsement by Google.” The brand resource center gates its own asset downloads behind an application (“Please complete your application to access brand resources.”), so what ships is the Google Meet product icon Google itself serves, byte for byte and unmodified.",
+      "permitted_treatment": "Ship the vendor's own file verbatim and scale uniformly. Never recolored, never cropped, never redrawn. It heads the Google Meet section of the Meetings pane beside that section's name, at the same measure every other mark in settings takes, so it is never the most prominent element on the page, and the copy around it names Google Meet only as a platform the notetaker joins.",
+      "dark_mode_policy": "One coloured camera glyph on transparency, which reads on both appearances, so it needs no appearance variant, is never rendered as a template image, and is drawn inset on the app's own neutral tile.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "meeting_platforms/google-meet-color.png",
+          "sha256": "c5b75f2bb1da327999c6fa414f825650884bb2f4f05860fd0f0a83347bb911af",
+          "asset_url": "https://www.gstatic.com/images/branding/productlogos/meet_2026/v2/web-96dp/logo_meet_2026_color_2x_web_96dp.png",
+          "asset_member": null,
+          "retrieved_on": "2026-09-06"
+        }
+      ],
+      "fallback": null,
+      "notes": "meet.google.com references this exact product logo path, which is how the current mark was identified: the older fonts.gstatic.com/s/i/productlogos/meet_2020q4 icon still resolves and is superseded artwork. The raster is taken rather than the 192 point SVG Google serves beside it, for the reason the Google sign-in client already records: AppKit loads that SVG but omits its feGaussianBlur filter, so the soft wedge inside the camera draws with a hard edge. The vendor's own raster renders the complete artwork with no custom renderer."
+    },
+    {
+      "key": "zoom",
+      "kind": "meeting_platform",
+      "origin": "vendor",
+      "display_name": "Zoom",
+      "accessibility_label": "Zoom",
+      "treatment": "vendor_mark",
+      "plate": "neutral",
+      "source_url": "https://www.zoom.com/",
+      "source_retrieved_on": "2026-09-06",
+      "usage_terms": "This is the square application icon Zoom serves for its own site (the touch icon at https://www.zoom.com/apple-touch-icon.png), the current mark since Zoom's rebrand; written guidance is at “Zoom Brand Guidelines”, https://brand.zoom.com/. Zoom's own terms for the marks, published in plain text in its App Marketplace terms of service at https://www.zoom.com/en/trust/legal/zoom-api-license-and-tou/, state: “The “Zoom” word mark and the Zoom logo are trademarks and/or registered trademarks of Zoom (“Zoom Marks”). Subject to compliance with the Terms, Zoom grants SDK App developers a non-exclusive, non-transferable, royalty-free, fully paid-up, revocable, worldwide right and license, during the term of use of the Zoom SDK, to use the Zoom Marks solely for display within your SDK App and on your SDK App’s website to promote your SDK App’s compatibility with Zoom’s services and software. Zoom must agree in advance and in writing to all other uses of the Zoom Marks. All uses of the Zoom Marks must comply with Zoom’s Brand Guidelines and Partner Guide, which may be modified from time to time and are available at https://zoom.us/brandguidelines or from brand@zoom.us.” The Brand Center itself is a JavaScript portal: its logo library and the guideline text on it cannot be read without an interactive session, so the terms recorded here are the ones Zoom publishes as text.",
+      "permitted_treatment": "Ship the vendor's own file verbatim and scale uniformly. Never recolored, never cropped, never re-lettered, never redrawn. It heads the Zoom section of the Meetings pane beside that section's name, and the copy around it names Zoom only as a platform the notetaker joins, never as an endorsement or a partnership.",
+      "dark_mode_policy": "A white wordmark on Zoom's blue rounded square. The file carries its own ground, so it needs no appearance variant, is never rendered as a template image, and is drawn inset on the app's own neutral tile in both appearances.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "meeting_platforms/zoom-color.png",
+          "sha256": "9ebe81173b0722df0a6cab4b27bfb4784d72ee11dfa8ab33d8fcbed381631366",
+          "asset_url": "https://www.zoom.com/apple-touch-icon.png",
+          "asset_member": null,
+          "retrieved_on": "2026-09-06"
+        }
+      ],
+      "fallback": null,
+      "notes": "Zoom's Brand Center is an interactive portal, so the icon recorded here is the one Zoom serves for its own site chrome: 72 by 72 pixels, which covers the pane's 20 point tile at 2x. The media kit's downloadable file is a horizontal wordmark, which draws as a thin band in a square tile and is not used. The retired camera glyph in a blue circle is not Zoom's current mark and is not an option."
+    },
+    {
+      "key": "google",
+      "kind": "oauth_client",
+      "origin": "vendor",
+      "display_name": "Google",
+      "accessibility_label": "Google sign-in client",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://developers.google.com/identity/branding-guidelines",
+      "source_retrieved_on": "2026-09-05",
+      "usage_terms": "Google supplies approved sign-in icon assets in light and dark variants. Keep the standard Google G colors and supplied background, aspect and spacing. The images here are unchanged archive members.",
+      "permitted_treatment": "Draw the complete supplied icon, without recoloring, stretching or removing its background.",
+      "dark_mode_policy": "Use the published light icon on light appearance and dark icon on dark appearance. Both retain the supplied light ground behind the colored G.",
+      "assets": [
+        {
+          "role": "light",
+          "path": "oauth_clients/google-light.png",
+          "sha256": "2bc2ae8e4c67de66d74bf1deed12cd8f22981270266a487576b671b0b4df361c",
+          "asset_url": "https://developers.google.com/static/identity/images/signin-assets.zip",
+          "asset_member": "Android + Web/PNG @4x/Light/Theme=Light, Show text=No, Shape=Square, Platform=Android+Web@4x.png",
+          "retrieved_on": "2026-09-05"
+        },
+        {
+          "role": "dark",
+          "path": "oauth_clients/google-dark.png",
+          "sha256": "0da0f2b6250ddbde07200b1d49555111c314fe32bde94c9f7a306227650e50d5",
+          "asset_url": "https://developers.google.com/static/identity/images/signin-assets.zip",
+          "asset_member": "Android + Web/PNG @4x/Dark/Theme=Dark, Show text=No, Shape=Square, Platform=Android+Web@4x.png",
+          "retrieved_on": "2026-09-05"
+        }
+      ],
+      "notes": "The official 4x PNGs preserve the full Google G. The companion SVGs rely on HTML foreignObject conic gradients, which AppKit omits even though NSImage loads the file; the vendor rasters render the complete artwork without a custom renderer.",
+      "linux_note": "Drawn on the Google sign-in client row of the Integrations page. The other client rows (GitHub, Notion, Tesla, X) take their plugin marks, the way the macOS client lookup does."
+    },
+    {
+      "key": "pet",
+      "kind": "mascot",
+      "origin": "first_party",
+      "display_name": "Voice mascot",
+      "accessibility_label": "Fermix",
+      "treatment": "first_party_artwork",
+      "plate": null,
+      "source_url": "https://github.com/tezra-io/fermix-macos",
+      "source_retrieved_on": "2026-09-25",
+      "usage_terms": "First party. MIT, copyright 2026 Tezra, per the fermix-macos LICENSE; the Linux workspace is MIT too. The fifteen layers are the macOS pet's own artwork and the only masters there are: no layered or vector file exists in either repository.",
+      "permitted_treatment": "Downscaled once, from 1024 to 256 pixels square, and otherwise unedited: not redrawn, recoloured, cropped or re-registered. Every layer keeps the shared 1024 canvas's registration at a quarter of its size, and the app composes them exactly as the macOS pet does.",
+      "dark_mode_policy": "Painted artwork on transparency that carries its own light and dark tones, so it needs no appearance variant.",
+      "derivation": {
+        "origin_repository": "https://github.com/tezra-io/fermix",
+        "origin_commit": "3dcce9055958d0ea16d760d63bf2cdb56c9f3fc7",
+        "origin_path": "clients/macos/FermixPet/Sources/FermixPet/Resources/PetExpressions",
+        "source_repository": "https://github.com/tezra-io/fermix-macos",
+        "source_commit": "8852cc5da037d079c1b850bfbb1779ce95cb7545",
+        "source_path": "Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions",
+        "source_format": "1024 by 1024, 8-bit RGBA PNG, untagged sRGB",
+        "tool": "ImageMagick 6.9.11-60 Q16 x86_64 2021-01-25",
+        "command": "for f in \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions\"/*.png; do convert \"$f\" -filter Lanczos -resize 256x256 -strip -define png:exclude-chunks=date,time PNG32:\"app/resources/pet/$(basename \"$f\")\"; done",
+        "working_directory": "desktop",
+        "output_format": "256 by 256, 8-bit RGBA PNG, untagged sRGB, no metadata chunks"
+      },
+      "assets": [
+        {
+          "role": "ball",
+          "path": "../resources/pet/pet_ball.png",
+          "sha256": "6abf2cede99f445a94b1191c3d4f5b9af92fbc005fc4417b8fdc50545636c5c5",
+          "source_sha256": "bd7a2cb8277aed34a580d62d69c77d0d57e6dfc85a77543393dc2cd0e93f9e2c",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_ball.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "idle_body",
+          "path": "../resources/pet/pet_idle_body.png",
+          "sha256": "efd754eddc19e500110b905903a5fba4e4035c4fe2305c4729900fc10cade6fa",
+          "source_sha256": "82ec0a56c91be3f7c3d2152278e6753e03362b41ff1c3abc0119d0ec245d63be",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_idle_body.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "idle_face",
+          "path": "../resources/pet/pet_idle_face.png",
+          "sha256": "147ae8f7d37ea05157ffa04b80110a3a3b74a04d1a63115ee4a552f7d0b72e5b",
+          "source_sha256": "d35bdba17f0f2909c2d8a7b1b088fcc112fa5843294c70f982b1b664162d7902",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_idle_face.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "idle_ring",
+          "path": "../resources/pet/pet_idle_ring.png",
+          "sha256": "3a58fde4bacdd432e78f83d32546217433ce05d74114ba7f000fe2b1d0234480",
+          "source_sha256": "57892213df19d4bd6edd707e595b8fc46d1dd685f55a49f4bb06cae2ebb29da3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_idle_ring.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "listening_body",
+          "path": "../resources/pet/pet_listening_body.png",
+          "sha256": "70c43de9d80e3232cff7235dd63e0d755d858622bbd7c2681fac3948e1d56fa2",
+          "source_sha256": "8df267787a89678a17b8d60314763dc4c5d92a97120c7df9b3e5a6a9b55f8f15",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_listening_body.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "listening_face",
+          "path": "../resources/pet/pet_listening_face.png",
+          "sha256": "36247beff65b22240b734d77a1879284e8667876d3cd70329a82816b319a56c5",
+          "source_sha256": "0263d8c5ad43ad95fdf0c481a85d4bbf339eb3ffaab54f990e20cc59cb3ce177",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_listening_face.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "listening_ring",
+          "path": "../resources/pet/pet_listening_ring.png",
+          "sha256": "bea39d97708018f3b09aff247eb839f2d841b73e68e53757be468141f1bb9b89",
+          "source_sha256": "379c0b905746281115d6d91e15136ab8143dc1ca832f2bcf883d187fe420faa1",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_listening_ring.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "thinking_body",
+          "path": "../resources/pet/pet_thinking_body.png",
+          "sha256": "c11515fe0ae69463b7d99ddce9b836e78dc52dbc65403f0553cb5d3c96821364",
+          "source_sha256": "fe3fa6fbfeed8326b458ec02865ce8a814a24dd8eba9653866b453bf85c26e23",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_thinking_body.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "thinking_decor",
+          "path": "../resources/pet/pet_thinking_decor.png",
+          "sha256": "f6f159c26a4a52c2e3f86bd5abe6d4568d816806ec1a0e0d851e5f88076fcf8e",
+          "source_sha256": "0949acf164357c6d9a99f1727a374bb25d1919c75b3916e54de080c5202e9657",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_thinking_decor.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "thinking_face",
+          "path": "../resources/pet/pet_thinking_face.png",
+          "sha256": "f2a99246c247197917cdef1460e3e4d8c861f3fbadbec74adfe03493a04e43d3",
+          "source_sha256": "bb39406a90d00d8f067a25a52fc6ffeea68fb8efccb2995144d4f94719f6b77f",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_thinking_face.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "thinking_ring",
+          "path": "../resources/pet/pet_thinking_ring.png",
+          "sha256": "3a58fde4bacdd432e78f83d32546217433ce05d74114ba7f000fe2b1d0234480",
+          "source_sha256": "57892213df19d4bd6edd707e595b8fc46d1dd685f55a49f4bb06cae2ebb29da3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_thinking_ring.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "speaking_body",
+          "path": "../resources/pet/pet_speaking_body.png",
+          "sha256": "00c4b75b89d5c6b657a15d8315187a090909d48178baa5acfd69396b62359786",
+          "source_sha256": "5f6325c4fd8a1182fa91f98406b5c3c8345af21dfe876b5967077a3f58c1431c",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_speaking_body.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "speaking_decor",
+          "path": "../resources/pet/pet_speaking_decor.png",
+          "sha256": "ee86506ca54da7f4f541620493d3e73e4f7faba9cef70d97569d6dc826c37c9b",
+          "source_sha256": "f40f56cc019f258b9ab2eeb46f2767b97536d2e2bd63eaf0048ca9b4f872e80d",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_speaking_decor.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "speaking_face",
+          "path": "../resources/pet/pet_speaking_face.png",
+          "sha256": "5f7023c37037a765b47de81fbd3d4bba6b8334b96b664e12a6db713792576e42",
+          "source_sha256": "0102fe7c8a267789caf39704b6f566c4276cd1fd98beb4065c634e7df1d60906",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_speaking_face.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "speaking_ring",
+          "path": "../resources/pet/pet_speaking_ring.png",
+          "sha256": "085548e1c3adda51b7e959f5f70be64130034a0db1f44a67f08e268f42d7c49c",
+          "source_sha256": "5f0ce3b9ade6c5c1691e5eed16634149f5ed61e881ce9df551c6499c179a4e64",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/8852cc5da037d079c1b850bfbb1779ce95cb7545/Apps/Fermix/Sources/FermixAppCore/Resources/PetExpressions/pet_speaking_ring.png",
+          "retrieved_on": "2026-09-25"
+        }
+      ],
+      "notes": "The one record not shipped byte for byte: fifteen 1024 pixel layers decode to about 60 MB, and the mascot is drawn 108 points tall, 216 pixels at 2x, so each layer ships at 256 pixels. The command above is reproducible: run twice with this ImageMagick it gives the same bytes, which is what each sha256 pins, and source_sha256 pins the master it came from. Another ImageMagick version may resample differently, so a refresh re-records both. The masters are byte-identical from fermix commit 3dcce905, which added them, through fermix-macos commit 8852cc5, which added them at the path recorded here, to that repository's head on 2026-09-25. The pet is not a vendor mark and is drawn on no tile, so it has no plate. core/tests/mascot.rs fails when any layer is missing or is not a 256 pixel RGBA PNG."
+    }
+  ]
+}

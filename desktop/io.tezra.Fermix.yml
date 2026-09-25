@@ -1,0 +1,61 @@
+# Flatpak recipe for the Fermix desktop app. The engine is NOT in here: it is the
+# host's `fermix` package, running as the `fermix.service` user unit. The app only
+# talks to its sockets.
+id: io.tezra.Fermix
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: fermix-desktop
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # The daemon's sockets live in ~/.fermix. Read-only: connecting to a socket
+  # needs no write access to the mount, and the app must never touch the config,
+  # secrets or memory files beside them.
+  - --filesystem=~/.fermix:ro
+  # Home's "Run in the background" and "Start Fermix" ask the systemd user
+  # manager to enable, start, restart or stop fermix.service.
+  - --talk-name=org.freedesktop.systemd1
+  # Linger: the service keeps running after logout only if logind keeps the
+  # user's manager alive. Read to show it, set when the service is enabled.
+  - --system-talk-name=org.freedesktop.login1
+  # The package's binding (service.json), read only to know whether enabling
+  # the unit can work. The app never writes there.
+  - --filesystem=xdg-config/fermix:ro
+  # Voice calls: microphone capture and speech playback go through the
+  # PulseAudio protocol (pipewire-pulse on current desktops). Flatpak has no
+  # finer grant: this socket is both record and play (M38 §7.5). The
+  # voice socket itself, realtime.sock, sits in ~/.fermix beside daemon.sock.
+  - --socket=pulseaudio
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: fermix-desktop
+    buildsystem: simple
+    build-options:
+      # Development builds fetch crates over the network. A release build vendors
+      # them (cargo vendor + flatpak-cargo-generator) and drops this line.
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/fermix-desktop/cargo
+    build-commands:
+      - cargo build --release -p fermix-desktop
+      - install -Dm755 target/release/fermix-desktop /app/bin/fermix-desktop
+      - install -Dm644 data/io.tezra.Fermix.desktop /app/share/applications/io.tezra.Fermix.desktop
+      - install -Dm644 data/icons/io.tezra.Fermix.svg /app/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
+      - install -Dm644 data/icons/io.tezra.Fermix-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.tezra.Fermix-symbolic.svg
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - target
+          # scripts/dev.sh's own build and crate cache, which the build never reads.
+          - target-sdk
+          - .cargo-sdk
+          - .flatpak-builder
+          - build-dir

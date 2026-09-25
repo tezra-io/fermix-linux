@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AdwApplication loads style.css from the app's resource base path, and
+     GtkApplication adds icons/ there to the icon theme. -->
+<gresources>
+  <gresource prefix="/io/tezra/Fermix">
+    <file>style.css</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-chat-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-doctor-symbolic.svg</file>
+    <!-- The voice mascot's layers, 256 px, from the macOS masters (marks/PROVENANCE.json, key pet). -->
+    <file>pet/pet_ball.png</file>
+    <file>pet/pet_idle_body.png</file>
+    <file>pet/pet_idle_face.png</file>
+    <file>pet/pet_idle_ring.png</file>
+    <file>pet/pet_listening_body.png</file>
+    <file>pet/pet_listening_face.png</file>
+    <file>pet/pet_listening_ring.png</file>
+    <file>pet/pet_thinking_body.png</file>
+    <file>pet/pet_thinking_decor.png</file>
+    <file>pet/pet_thinking_face.png</file>
+    <file>pet/pet_thinking_ring.png</file>
+    <file>pet/pet_speaking_body.png</file>
+    <file>pet/pet_speaking_decor.png</file>
+    <file>pet/pet_speaking_face.png</file>
+    <file>pet/pet_speaking_ring.png</file>
+  </gresource>
+</gresources>

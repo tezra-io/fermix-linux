@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fermix
+Comment=Set up Fermix and chat with it
+Exec=fermix-desktop
+Icon=io.tezra.Fermix
+Terminal=false
+Categories=Utility;GTK;
+Keywords=assistant;agent;fermix;chat;
+StartupNotify=true
+SingleMainWindow=true
