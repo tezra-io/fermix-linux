@@ -184,41 +184,22 @@ fn swap_suffix(stack: &gtk::Stack, fresh: &gtk::Box) {
 
 fn suffix_widgets(provider: &ProviderRow, suffix: &Suffix) -> Vec<gtk::Widget> {
     let id = provider.id.as_str();
-    match suffix {
-        Suffix::Split { main, others } => {
-            let verb = main.verb(connection(provider) == Link::Expired);
-            let button: gtk::Widget = if others.is_empty() {
-                action_button(&verb, "win.door", Some(&main.target(id))).upcast()
-            } else {
-                split_button(id, &verb, *main, others).upcast()
-            };
-            if *main == Door::BrowserSignIn {
-                button.set_tooltip_text(Some(BROWSER_TOOLTIP));
-            }
-            vec![button]
+    let (lead, more) = match suffix {
+        Suffix::Busy { copy_link, cancel } => return busy_widgets(id, *copy_link, *cancel),
+        Suffix::Resting { lead, more } => (lead, more),
+    };
+    let mut widgets = Vec::new();
+    if let Some(lead) = lead {
+        let button = action_button(&lead.verb, "win.door", Some(&lead.door.target(id)));
+        if lead.door == Door::BrowserSignIn {
+            button.set_tooltip_text(Some(BROWSER_TOOLTIP));
         }
-        Suffix::AddKey => {
-            vec![action_button("Add key…", "win.door", Some(&Door::ApiKey.target(id))).upcast()]
-        }
-        Suffix::Busy { copy_link, cancel } => busy_widgets(id, *copy_link, *cancel),
-        Suffix::Menu(items) => vec![menu_button(id, items).upcast()],
-        Suffix::Nothing => Vec::new(),
+        widgets.push(button.upcast());
     }
-}
-
-fn split_button(id: &str, verb: &str, main: Door, others: &[Door]) -> adw::SplitButton {
-    let menu = gio::Menu::new();
-    for door in others {
-        menu.append_item(&menu_item(&door.verb(false), "win.door", &door.target(id)));
+    if !more.is_empty() {
+        widgets.push(menu_button(id, more).upcast());
     }
-    let button = adw::SplitButton::builder()
-        .label(verb)
-        .menu_model(&menu)
-        .valign(gtk::Align::Center)
-        .build();
-    button.set_action_name(Some("win.door"));
-    button.set_action_target_value(Some(&main.target(id).to_variant()));
-    button
+    widgets
 }
 
 fn busy_widgets(id: &str, copy_link: CopyLink, cancel: bool) -> Vec<gtk::Widget> {

@@ -2,9 +2,6 @@
 # Fast development loop. Builds the app inside the GNOME 50 SDK (Rust extension)
 # with incremental cargo caches kept in this directory, then runs the debug binary
 # on the GNOME 50 runtime with the same sandbox permissions the manifest grants.
-# Known gap: SVG vendor marks do not decode here (GTK's sandboxed image loader cannot
-# start when a runtime is run directly), so those rows show the neutral icon. The
-# installed Flatpak decodes them; check marks there.
 #   scripts/dev.sh build   # compile only
 #   scripts/dev.sh run     # compile, then run against the host daemon
 #   scripts/dev.sh check   # fmt, clippy -D warnings, tests (inside the SDK)

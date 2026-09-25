@@ -3,7 +3,7 @@
 
 use fermix_client::model::ProviderRow;
 use fermix_client::providers::{Door, ImportSource};
-use fermix_client::view::{row_view, Activity, CopyLink, MenuItem, Recent, Suffix};
+use fermix_client::view::{row_view, Activity, CopyLink, Lead, MenuItem, Recent, Suffix};
 use serde_json::json;
 
 fn row(id: &str, auth_modes: &[&str], auth_mode: &str) -> ProviderRow {
@@ -29,6 +29,17 @@ fn signed_in(mut r: ProviderRow) -> ProviderRow {
     r
 }
 
+/// A resting row: its one visible button, then the rest behind the ⋮ menu.
+fn resting(lead: Option<(Door, &str)>, more: Vec<MenuItem>) -> Suffix {
+    Suffix::Resting {
+        lead: lead.map(|(door, verb)| Lead {
+            door,
+            verb: verb.into(),
+        }),
+        more,
+    }
+}
+
 fn job(door: Door, phase: &str) -> Activity {
     Activity::Job {
         job_id: "job:1".into(),
@@ -46,10 +57,10 @@ fn chatgpt_not_signed_in_leads_with_the_browser() {
     assert!(!v.is_error);
     assert_eq!(
         v.suffix,
-        Suffix::Split {
-            main: Door::BrowserSignIn,
-            others: vec![Door::Import(ImportSource::CodexCli)]
-        }
+        resting(
+            Some((Door::BrowserSignIn, "Sign in")),
+            vec![MenuItem::Door(Door::Import(ImportSource::CodexCli))]
+        )
     );
 }
 
@@ -58,10 +69,16 @@ fn anthropic_not_signed_in_leads_with_claude_code_and_never_the_browser() {
     let v = row_view(&anthropic(), &Activity::Idle, None);
     assert_eq!(
         v.suffix,
-        Suffix::Split {
-            main: Door::Import(ImportSource::ClaudeCode),
-            others: vec![Door::SetupToken, Door::ApiKey]
-        }
+        resting(
+            Some((
+                Door::Import(ImportSource::ClaudeCode),
+                "Import from Claude Code"
+            )),
+            vec![
+                MenuItem::Door(Door::SetupToken),
+                MenuItem::Door(Door::ApiKey)
+            ]
+        )
     );
 }
 
@@ -73,7 +90,7 @@ fn a_key_only_provider_without_a_key_offers_add_key() {
         None,
     );
     assert_eq!(v.subtitle, "No API key");
-    assert_eq!(v.suffix, Suffix::AddKey);
+    assert_eq!(v.suffix, resting(Some((Door::ApiKey, "Add key…")), vec![]));
 }
 
 #[test]
@@ -85,11 +102,14 @@ fn a_stored_key_reads_key_added_with_its_menu() {
     assert_eq!(v.subtitle, "Key added");
     assert_eq!(
         v.suffix,
-        Suffix::Menu(vec![
-            MenuItem::MakePrimary,
-            MenuItem::ReplaceKey,
-            MenuItem::RemoveKey
-        ])
+        resting(
+            None,
+            vec![
+                MenuItem::MakePrimary,
+                MenuItem::ReplaceKey,
+                MenuItem::RemoveKey
+            ]
+        )
     );
 }
 
@@ -101,11 +121,50 @@ fn the_primary_row_says_so_and_does_not_offer_make_primary() {
     assert_eq!(v.subtitle, "Signed in · Primary");
     assert_eq!(
         v.suffix,
-        Suffix::Menu(vec![
-            MenuItem::Door(Door::BrowserSignIn),
-            MenuItem::Door(Door::Import(ImportSource::CodexCli)),
-            MenuItem::SignOut
-        ])
+        resting(
+            Some((Door::BrowserSignIn, "Sign in again")),
+            vec![
+                MenuItem::Door(Door::Import(ImportSource::CodexCli)),
+                MenuItem::SignOut
+            ]
+        )
+    );
+}
+
+/// Sign-in is the primary way in, so a signed-in row keeps it in view; only
+/// the rest waits behind ⋮ (owner, 2026-09-25).
+#[test]
+fn a_signed_in_row_keeps_its_sign_in_visible_and_the_rest_in_the_menu() {
+    let v = row_view(&signed_in(codex()), &Activity::Idle, None);
+    assert_eq!(
+        v.suffix,
+        resting(
+            Some((Door::BrowserSignIn, "Sign in again")),
+            vec![
+                MenuItem::MakePrimary,
+                MenuItem::Door(Door::Import(ImportSource::CodexCli)),
+                MenuItem::SignOut
+            ]
+        )
+    );
+}
+
+#[test]
+fn a_provider_on_a_key_still_leads_with_its_sign_in() {
+    let mut r = row("xai", &["api_key", "oauth"], "api_key");
+    r.configured = true;
+    r.present_key = true;
+    let v = row_view(&r, &Activity::Idle, None);
+    assert_eq!(
+        v.suffix,
+        resting(
+            Some((Door::BrowserSignIn, "Sign in")),
+            vec![
+                MenuItem::MakePrimary,
+                MenuItem::ReplaceKey,
+                MenuItem::RemoveKey
+            ]
+        )
     );
 }
 
@@ -117,11 +176,23 @@ fn an_expired_sign_in_asks_to_sign_in_again() {
     assert_eq!(v.subtitle, "Sign-in expired");
     assert!(matches!(
         v.suffix,
-        Suffix::Split {
-            main: Door::Import(ImportSource::ClaudeCode),
+        Suffix::Resting {
+            lead: Some(Lead {
+                door: Door::Import(ImportSource::ClaudeCode),
+                ..
+            }),
             ..
         }
     ));
+    let mut chatgpt = signed_in(codex());
+    chatgpt.token_state = Some("revoked".into());
+    assert_eq!(
+        row_view(&chatgpt, &Activity::Idle, None).suffix,
+        resting(
+            Some((Door::BrowserSignIn, "Sign in again")),
+            vec![MenuItem::Door(Door::Import(ImportSource::CodexCli))]
+        )
+    );
 }
 
 #[test]
@@ -202,8 +273,11 @@ fn a_failure_shows_the_daemons_sentence_as_an_error_and_the_door_again() {
     assert!(v.is_error);
     assert!(matches!(
         v.suffix,
-        Suffix::Split {
-            main: Door::BrowserSignIn,
+        Suffix::Resting {
+            lead: Some(Lead {
+                door: Door::BrowserSignIn,
+                ..
+            }),
             ..
         }
     ));
@@ -239,11 +313,14 @@ fn a_recent_claude_code_import_names_where_it_came_from() {
 #[test]
 fn a_provider_that_needs_nothing_says_so() {
     let mut r = row("ollama", &["none"], "none");
-    assert_eq!(row_view(&r, &Activity::Idle, None).suffix, Suffix::Nothing);
+    assert_eq!(
+        row_view(&r, &Activity::Idle, None).suffix,
+        resting(None, vec![])
+    );
     r.configured = true;
     let v = row_view(&r, &Activity::Idle, None);
     assert_eq!(v.subtitle, "No sign-in needed");
-    assert_eq!(v.suffix, Suffix::Menu(vec![MenuItem::MakePrimary]));
+    assert_eq!(v.suffix, resting(None, vec![MenuItem::MakePrimary]));
 }
 
 #[test]

@@ -83,7 +83,8 @@ impl Door {
         Some((provider.to_owned(), door))
     }
 
-    /// The button or menu words for this way in. `again` is for a sign-in that expired.
+    /// The button or menu words for this way in. `again` is for a provider that
+    /// already holds a sign-in, working or expired.
     pub fn verb(self, again: bool) -> String {
         match self {
             Door::BrowserSignIn if again => "Sign in again".into(),

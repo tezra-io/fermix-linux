@@ -82,13 +82,25 @@ pub enum CopyLink {
     Rescue,
 }
 
+/// The one way in a resting row shows as a button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lead {
+    pub door: Door,
+    pub verb: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Suffix {
-    Split { main: Door, others: Vec<Door> },
-    AddKey,
-    Busy { copy_link: CopyLink, cancel: bool },
-    Menu(Vec<MenuItem>),
-    Nothing,
+    /// At most one visible button, and everything else behind the ⋮ menu
+    /// (drawn only when `more` has something in it).
+    Resting {
+        lead: Option<Lead>,
+        more: Vec<MenuItem>,
+    },
+    Busy {
+        copy_link: CopyLink,
+        cancel: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,31 +208,45 @@ fn with_primary(row: &ProviderRow, sentence: String) -> String {
     }
 }
 
+/// Sign-in is the primary way in, so the row leads with its first way in even
+/// once connected; the rest waits behind ⋮ (owner, 2026-09-25). A key is only
+/// the lead while none is stored: a stored one is replaced from the menu.
 fn idle_suffix(row: &ProviderRow) -> Suffix {
     let ways_in = doors(row);
-    let connected = connection(row) == Connection::Connected;
-    if connected {
-        return Suffix::Menu(connected_menu(row, &ways_in));
-    }
-    match ways_in.as_slice() {
-        [] => Suffix::Nothing,
-        [Door::ApiKey] => Suffix::AddKey,
-        [main, others @ ..] => Suffix::Split {
-            main: *main,
-            others: others.to_vec(),
-        },
+    let link = connection(row);
+    let lead_door = ways_in
+        .first()
+        .copied()
+        .filter(|door| !(link == Connection::Connected && *door == Door::ApiKey));
+    let others = ways_in.iter().filter(|door| Some(**door) != lead_door);
+    let more = if link == Connection::Connected {
+        connected_menu(row, others)
+    } else {
+        others.map(|door| MenuItem::Door(*door)).collect()
+    };
+    let lead = lead_door.map(|door| Lead {
+        door,
+        verb: lead_verb(row, door, link),
+    });
+    Suffix::Resting { lead, more }
+}
+
+/// A sign-in that already holds a token is "again", whether it works or not.
+fn lead_verb(row: &ProviderRow, door: Door, link: Connection) -> String {
+    let signed_in_this_way = row.auth_mode.as_deref() == Some("oauth");
+    match door {
+        Door::ApiKey => "Add key…".into(),
+        _ => door.verb(link != Connection::NotConnected && signed_in_this_way),
     }
 }
 
-fn connected_menu(row: &ProviderRow, ways_in: &[Door]) -> Vec<MenuItem> {
+fn connected_menu<'a>(row: &ProviderRow, others: impl Iterator<Item = &'a Door>) -> Vec<MenuItem> {
     let mut items = Vec::new();
     if !row.primary {
         items.push(MenuItem::MakePrimary);
     }
     let uses_key = row.auth_mode.as_deref() == Some("api_key");
-    let other_doors = ways_in
-        .iter()
-        .filter(|d| !(uses_key && **d == Door::ApiKey));
+    let other_doors = others.filter(|d| !(uses_key && **d == Door::ApiKey));
     items.extend(other_doors.map(|d| MenuItem::Door(*d)));
     match row.auth_mode.as_deref() {
         Some("api_key") => items.extend([MenuItem::ReplaceKey, MenuItem::RemoveKey]),
