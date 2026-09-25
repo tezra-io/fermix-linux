@@ -330,7 +330,11 @@ fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox,
     let list = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
-    list.append(&nav_row("back", "Back to Fermix", "go-previous-symbolic"));
+    // An action, not a pane: keyboard focus on it never selects it, so Tab
+    // through the list never leaves Settings.
+    let back = nav_row("back", "Back to Fermix", "go-previous-symbolic");
+    back.set_selectable(false);
+    list.append(&back);
     for (group, slugs) in GROUPS {
         list.append(&heading_row(group));
         for slug in slugs {
@@ -367,17 +371,12 @@ fn row_visible(row: &gtk::ListBoxRow, visible: &[&'static str]) -> bool {
 }
 
 fn wire_sidebar(list: &gtk::ListBox, search: &gtk::SearchEntry) {
-    list.connect_row_activated(|_, row| {
-        let name = row.widget_name();
-        let result = if name == "back" {
-            row.activate_action("win.leave-settings", None)
-        } else {
-            row.activate_action("win.page", Some(&name.as_str().to_variant()))
-        };
-        if let Err(e) = result {
-            glib::g_warning!("fermix", "the settings list could not open {name}: {e}");
+    list.connect_row_selected(|list, row| {
+        if let Some(row) = row.filter(|_| crate::shell::follows_selection(list)) {
+            open_settings_row(row);
         }
     });
+    list.connect_row_activated(|_, row| open_settings_row(row));
     search.connect_search_changed(|entry| {
         let query = entry.text().to_string();
         if let Err(e) = entry.activate_action("win.settings-search", Some(&query.to_variant())) {
@@ -399,6 +398,18 @@ fn wire_sidebar(list: &gtk::ListBox, search: &gtk::SearchEntry) {
             }
         }
     });
+}
+
+fn open_settings_row(row: &gtk::ListBoxRow) {
+    let name = row.widget_name();
+    let result = if name == "back" {
+        row.activate_action("win.leave-settings", None)
+    } else {
+        row.activate_action("win.page", Some(&name.as_str().to_variant()))
+    };
+    if let Err(e) = result {
+        glib::g_warning!("fermix", "the settings list could not open {name}: {e}");
+    }
 }
 
 fn nav_row(name: &str, title: &str, icon: &str) -> gtk::ListBoxRow {

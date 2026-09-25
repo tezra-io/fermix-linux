@@ -177,7 +177,13 @@ fn pinned_list() -> gtk::ListBox {
     let line = gtk::Box::builder().spacing(12).build();
     line.append(&gtk::Image::from_icon_name("emblem-system-symbolic"));
     line.append(&gtk::Label::new(Some("Settings")));
-    list.append(&gtk::ListBoxRow::builder().child(&line).build());
+    // A way into Settings, not a page here: keyboard focus on it never
+    // selects it, so Tab through the sidebar never opens Settings.
+    let row = gtk::ListBoxRow::builder()
+        .child(&line)
+        .selectable(false)
+        .build();
+    list.append(&row);
     list.connect_row_activated(|_, row| {
         if let Err(e) = row.activate_action("win.open-settings", None) {
             glib::g_warning!("fermix", "Settings could not open: {e}");
@@ -211,13 +217,30 @@ fn sidebar_list() -> gtk::ListBox {
         let row = gtk::ListBoxRow::builder().child(&line).name(name).build();
         list.append(&row);
     }
-    list.connect_row_activated(|_, row| {
-        let name = row.widget_name();
-        if let Err(e) = row.activate_action("win.page", Some(&name.as_str().to_variant())) {
-            glib::g_warning!("fermix", "the sidebar could not open {name}: {e}");
+    list.connect_row_selected(|list, row| {
+        if let Some(row) = row.filter(|_| follows_selection(list)) {
+            open_page(row);
         }
     });
+    // A click on the row already selected: narrow, it shows the page again.
+    list.connect_row_activated(|_, row| open_page(row));
     list
+}
+
+fn open_page(row: &gtk::ListBoxRow) {
+    let name = row.widget_name();
+    if let Err(e) = row.activate_action("win.page", Some(&name.as_str().to_variant())) {
+        glib::g_warning!("fermix", "the sidebar could not open {name}: {e}");
+    }
+}
+
+/// Keyboard focus moves a sidebar's selection (GTK does), so in a wide window
+/// the page follows the selection and the highlighted row is always the page
+/// on show. Narrow, the sidebar is a page of its own: only activation leaves it.
+pub fn follows_selection(list: &gtk::ListBox) -> bool {
+    list.ancestor(adw::NavigationSplitView::static_type())
+        .and_downcast::<adw::NavigationSplitView>()
+        .is_some_and(|split| !split.is_collapsed())
 }
 
 fn primary_menu() -> gtk::MenuButton {
