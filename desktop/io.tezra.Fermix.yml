@@ -47,8 +47,11 @@ modules:
       - cargo build --release -p fermix-desktop
       - install -Dm755 target/release/fermix-desktop /app/bin/fermix-desktop
       - install -Dm644 data/io.tezra.Fermix.desktop /app/share/applications/io.tezra.Fermix.desktop
-      - install -Dm644 data/icons/io.tezra.Fermix.svg /app/share/icons/hicolor/scalable/apps/io.tezra.Fermix.svg
-      - install -Dm644 data/icons/io.tezra.Fermix-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.tezra.Fermix-symbolic.svg
+      # The macOS app icon, one downscale per size, and the macOS template mark as
+      # the symbolic icon, which GTK fills with the text colour (app/marks/PROVENANCE.json,
+      # keys app_icon and app_icon_symbolic).
+      - for size in 16 24 32 48 64 128 256 512; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix.png /app/share/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix.png; done
+      - for size in 16 24 32 48 64; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png /app/share/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png; done
     sources:
       - type: dir
         path: .

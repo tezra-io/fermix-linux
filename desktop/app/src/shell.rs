@@ -21,6 +21,10 @@ pub const PAGES: [(&str, &str, &str); 5] = [
 
 /// The pane Settings opens on when none was open before.
 const FIRST_PANE: &str = "providers";
+/// The wordmark's height at the head of the sidebar, its file's margin included.
+/// Its letters stand 22 pixels tall, which is what the two eye-dots need to
+/// still read as dots at 1x.
+const WORDMARK_HEIGHT: i32 = 26;
 
 pub struct Shell {
     pub window: adw::ApplicationWindow,
@@ -37,6 +41,10 @@ pub struct Shell {
     /// "main" or "settings": which list the sidebar shows.
     sidebars: gtk::Stack,
     sidebar_page: adw::NavigationPage,
+    /// The sidebar's header, which shows the wordmark over the pages and the
+    /// page's own title ("Settings") over the settings panes.
+    sidebar_header: adw::HeaderBar,
+    wordmark: gtk::Picture,
     pinned: gtk::ListBox,
     settings_panes: gtk::Stack,
     settings_list: gtk::ListBox,
@@ -62,7 +70,10 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
-    let sidebar_page = navigation_page("Fermix", &adw::HeaderBar::new(), &sidebars);
+    let wordmark = crate::wordmark::picture(WORDMARK_HEIGHT);
+    let sidebar_header = adw::HeaderBar::builder().title_widget(&wordmark).build();
+    // The title still names the page: for the back button when narrow, and in words.
+    let sidebar_page = navigation_page("Fermix", &sidebar_header, &sidebars);
 
     let split = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
@@ -85,6 +96,8 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         new_chat,
         sidebars,
         sidebar_page,
+        sidebar_header,
+        wordmark,
         pinned,
         settings_panes: settings.panes.clone(),
         settings_list: settings.list.clone(),
@@ -235,6 +248,7 @@ impl Shell {
         self.stack.set_visible_child_name(name);
         self.sidebars.set_visible_child_name("main");
         self.sidebar_page.set_title("Fermix");
+        self.sidebar_header.set_title_widget(Some(&self.wordmark));
         self.pinned.unselect_all();
         *self.last_page.borrow_mut() = name.to_owned();
         self.content.set_title(title);
@@ -256,6 +270,7 @@ impl Shell {
         self.settings_panes.set_visible_child_name(slug);
         self.sidebars.set_visible_child_name("settings");
         self.sidebar_page.set_title("Settings");
+        self.sidebar_header.set_title_widget(None::<&gtk::Widget>);
         self.content.set_title(title);
         self.new_chat.set_visible(false);
         *self.last_pane.borrow_mut() = slug.to_owned();

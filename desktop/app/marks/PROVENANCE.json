@@ -34,7 +34,7 @@
     "copied_on": "2026-09-25",
     "copied_from": "https://github.com/tezra-io/fermix-macos, Apps/Fermix/Sources/FermixAppCore/Resources/VendorMarks/PROVENANCE.json",
     "copied_from_sha256": "8beb1efbc6f3ef9c2ae786a19ccfa97787e78f8c64a1241cbae3db786e66e34e",
-    "scope": "Each vendor record here is the macOS record, word for word, for a mark the Linux app draws. Asset paths are relative to app/marks/, which mirrors the macOS VendorMarks directory, and every file there is byte for byte the macOS file with the sha256 its record gives. A Linux-only fact about a record is in its linux_note field. The pet record is the Linux app's own. roster_source describes the macOS ROSTER.json, which is not copied. app/src/marks.rs tests that its table, these records and these files agree.",
+    "scope": "Each vendor record here is the macOS record, word for word, for a mark the Linux app draws. Asset paths are relative to app/marks/, which mirrors the macOS VendorMarks directory, and every file there is byte for byte the macOS file with the sha256 its record gives. A Linux-only fact about a record is in its linux_note field. The pet, wordmark, app_icon and app_icon_symbolic records are the Linux app's own; an asset path that leaves app/marks/ (../) names a file elsewhere in the workspace. roster_source describes the macOS ROSTER.json, which is not copied. app/src/marks.rs tests that its table, these records and these files agree.",
     "omitted": {
       "computer_history": "Linux has no Computer history row: the Integrations page's Features filter lists computer_use and meetings only.",
       "computer_use_sidecar": "Not a plugin row on Linux: plugins.list does not list it, and the Computer pane heads it with its own switch. Its file, features/computer-use-color.svg, ships for the computer_use feature."
@@ -1030,6 +1030,195 @@
         }
       ],
       "notes": "The one record not shipped byte for byte: fifteen 1024 pixel layers decode to about 60 MB, and the mascot is drawn 108 points tall, 216 pixels at 2x, so each layer ships at 256 pixels. The command above is reproducible: run twice with this ImageMagick it gives the same bytes, which is what each sha256 pins, and source_sha256 pins the master it came from. Another ImageMagick version may resample differently, so a refresh re-records both. The masters are byte-identical from fermix commit 3dcce905, which added them, through fermix-macos commit 8852cc5, which added them at the path recorded here, to that repository's head on 2026-09-25. The pet is not a vendor mark and is drawn on no tile, so it has no plate. core/tests/mascot.rs fails when any layer is missing or is not a 256 pixel RGBA PNG."
+    },
+    {
+      "key": "wordmark",
+      "kind": "wordmark",
+      "origin": "first_party",
+      "display_name": "Fermix wordmark",
+      "accessibility_label": "Fermix",
+      "treatment": "first_party_artwork",
+      "plate": null,
+      "source_url": "https://github.com/tezra-io/fermix-macos",
+      "source_retrieved_on": "2026-09-25",
+      "usage_terms": "First party. MIT, copyright 2026 Tezra, per the fermix-macos LICENSE; the Linux workspace is MIT too.",
+      "permitted_treatment": "Shipped byte for byte and scaled uniformly. The letters are currentColor, so they take the text colour where they are drawn; the two eye-dots keep the file's own #2b5cff. Never redrawn, cropped, or recoloured in any other way.",
+      "dark_mode_policy": "One file in both appearances. macOS fills the letters with Palette.ink (#16161a light, #f4f5f7 dark) and the dots with Palette.accent (#2b5cff in both), in FermixWordmark.swift. The Linux app fills the letters with the text colour GTK gives the drawing, which follows light, dark and high contrast, and draws the dots as the file does.",
+      "assets": [
+        {
+          "role": "wordmark",
+          "path": "wordmark/fermix-wordmark.svg",
+          "sha256": "8b9b4d1a25bdc38a030fedf0a43461dc966f47e997fa7e60493b3302bafb07d0",
+          "source_sha256": "8b9b4d1a25bdc38a030fedf0a43461dc966f47e997fa7e60493b3302bafb07d0",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/Wordmark/fermix-wordmark.svg",
+          "retrieved_on": "2026-09-25"
+        }
+      ],
+      "fallback": null,
+      "notes": "The macOS file is the engine's fermix_wordmark/1 component saved as a file: the same viewBox, paths and dots as fermix apps/fermix_web/lib/fermix_web_web/components/core_components.ex, which has drawn it inline since fermix commit da36ce7c. fermix-macos added the file at commit 266f283 and it is unchanged to that repository's main, recorded above, on 2026-09-25. macOS draws a 1:1 path port of it (FermixWordmark.swift) because NSImage cannot tint a currentColor SVG, and ships the file as the reference the port is reviewed against; its welcome screen draws it 40 points tall.",
+      "linux_note": "app/src/wordmark.rs draws it at the head of the sidebar, 26 pixels tall with the file's own margin, so its letters stand 22 pixels tall. GTK's SVG renderer resolves currentColor to black, and a template fill would flatten the blue dots into the letters' colour, so the app sets the root element's color attribute to the text colour before GTK reads the file; the shipped bytes stay as recorded. GTK does not read the role and aria-label attributes, so the picture carries the accessible label Fermix itself."
+    },
+    {
+      "key": "app_icon",
+      "kind": "app_icon",
+      "origin": "first_party",
+      "display_name": "Fermix app icon",
+      "accessibility_label": "Fermix",
+      "treatment": "first_party_artwork",
+      "plate": null,
+      "source_url": "https://github.com/tezra-io/fermix-macos",
+      "source_retrieved_on": "2026-09-25",
+      "usage_terms": "First party. MIT, copyright 2026 Tezra, per the fermix-macos LICENSE; the Linux workspace is MIT too.",
+      "permitted_treatment": "Downscaled once per size from the 1024 pixel master and otherwise unedited: not redrawn, recoloured, cropped or re-padded. The master's margin, the macOS icon grid's 824 pixel rounded square on a 1024 canvas, is kept.",
+      "dark_mode_policy": "One icon in both appearances, as on macOS: the mascot in one light ink on its own dark ground.",
+      "derivation": {
+        "source_repository": "https://github.com/tezra-io/fermix-macos",
+        "source_commit": "9573b2b72d3d48148781a2914bfe01700c5ab4bb",
+        "source_path": "Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+        "source_format": "1024 by 1024, 8-bit RGBA PNG, sRGB",
+        "tool": "ImageMagick 6.9.11-60 Q16 x86_64 2021-01-25",
+        "command": "for size in 16 24 32 48 64 128 256 512; do mkdir -p \"data/icons/hicolor/${size}x${size}/apps\" && convert \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png\" -filter Lanczos -resize \"${size}x${size}\" -strip -define png:exclude-chunks=date,time PNG32:\"data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix.png\"; done",
+        "working_directory": "desktop",
+        "output_format": "8-bit RGBA PNG, untagged sRGB, no metadata chunks"
+      },
+      "assets": [
+        {
+          "role": "16x16",
+          "path": "../../data/icons/hicolor/16x16/apps/io.tezra.Fermix.png",
+          "sha256": "1458f3c5840f0136acdbf7b384f14b0998588f8a74991b2b2c57fb4ac9421669",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "24x24",
+          "path": "../../data/icons/hicolor/24x24/apps/io.tezra.Fermix.png",
+          "sha256": "70336d4eda2385d526c452185410217773b04ce180dc7524d71281e8ad5008a6",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "32x32",
+          "path": "../../data/icons/hicolor/32x32/apps/io.tezra.Fermix.png",
+          "sha256": "d25b9779d7ad3d481b4c173ed60d34d5467a360934d536eab555ea0da9394d13",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "48x48",
+          "path": "../../data/icons/hicolor/48x48/apps/io.tezra.Fermix.png",
+          "sha256": "c7761503468b44295eccba3f72cdd8f379fd6a891d874fbe111f4601697dc578",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "64x64",
+          "path": "../../data/icons/hicolor/64x64/apps/io.tezra.Fermix.png",
+          "sha256": "ed00c26a13d28391a59afcbf893283ea7db6ea461f90f7abb51e5a2d9a6ff25e",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "128x128",
+          "path": "../../data/icons/hicolor/128x128/apps/io.tezra.Fermix.png",
+          "sha256": "2480a59ce1b33f75bc0d093bdb06062f584030ad4a9a713f4213826af3bd5a57",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "256x256",
+          "path": "../../data/icons/hicolor/256x256/apps/io.tezra.Fermix.png",
+          "sha256": "00ef903a10c72a3ec34ad78ad44f9b9f503165f15a0c036e590af706a861c62a",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "512x512",
+          "path": "../../data/icons/hicolor/512x512/apps/io.tezra.Fermix.png",
+          "sha256": "6844f02ec7ea636eeb933a4ac65d4baac561f2b60bcb62cc3df55c16a79c910a",
+          "source_sha256": "737ddc5fb2d7404e03bd6b8a6051989520634267775f1077d110186fda8fbe9a",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/AppIcon/FermixMonochromeIcon.png",
+          "retrieved_on": "2026-09-25"
+        }
+      ],
+      "fallback": null,
+      "notes": "This is the icon the macOS app ships. Product.json's icon_file, Fermix, names Resources/Fermix.icns (CFBundleIconFile), which scripts/build_app_icon.sh builds from this master, and on 2026-09-25 the icns's 1024 pixel tier decoded to exactly the master's pixels. The master is generated in fermix-macos by scripts/build_mascot_mark.py from the pet's listening body and face, as the interim mark until there is a Fermix logo, so a refresh copies the new master from there rather than regenerating it here. Older art in the engine repository (artifacts/fermix_macos_companion_icon.png, the web favicon) is not what macOS ships. Every tier is one downsample of the one master, as on macOS, so at 16 pixels the face is gone and the icon is the silhouette. The command above is reproducible: run twice with this ImageMagick it gives the same bytes, which is what each sha256 pins, and source_sha256 pins the master.",
+      "linux_note": "Installed by io.tezra.Fermix.yml as /app/share/icons/hicolor/NxN/apps/io.tezra.Fermix.png, which Flatpak exports and the desktop entry's Icon=io.tezra.Fermix names. There is no scalable icon: macOS has no vector master. It replaces the blue F icon the Linux app shipped before."
+    },
+    {
+      "key": "app_icon_symbolic",
+      "kind": "app_icon",
+      "origin": "first_party",
+      "display_name": "Fermix symbolic icon",
+      "accessibility_label": "Fermix",
+      "treatment": "first_party_artwork",
+      "plate": null,
+      "source_url": "https://github.com/tezra-io/fermix-macos",
+      "source_retrieved_on": "2026-09-25",
+      "usage_terms": "First party. MIT, copyright 2026 Tezra, per the fermix-macos LICENSE; the Linux workspace is MIT too.",
+      "permitted_treatment": "Downscaled once per size and otherwise unedited. The master is the mark's alpha plane in black, and only its alpha is read: GTK fills a .symbolic.png with the text colour through its alpha, as macOS tints a template image from its alpha channel.",
+      "dark_mode_policy": "No variant: the icon theme fills it with the current text colour.",
+      "derivation": {
+        "source_repository": "https://github.com/tezra-io/fermix-macos",
+        "source_commit": "9573b2b72d3d48148781a2914bfe01700c5ab4bb",
+        "source_path": "Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+        "source_format": "813 by 813, 8-bit RGBA PNG, black with the mark in the alpha channel",
+        "tool": "ImageMagick 6.9.11-60 Q16 x86_64 2021-01-25",
+        "command": "for size in 16 24 32 48 64; do mkdir -p \"data/icons/hicolor/${size}x${size}/apps\" && convert \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png\" -filter Lanczos -resize \"${size}x${size}\" -strip -define png:exclude-chunks=date,time PNG32:\"data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png\"; done",
+        "working_directory": "desktop",
+        "output_format": "8-bit RGBA PNG, black with the mark in the alpha channel, no metadata chunks"
+      },
+      "assets": [
+        {
+          "role": "16x16",
+          "path": "../../data/icons/hicolor/16x16/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "b8ff56f3edfbed9fa523382bf28be23e4c25afeebc659794476a9afb95cfa653",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "24x24",
+          "path": "../../data/icons/hicolor/24x24/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "38541ec6f39fbe40efaff060a8d6d288701669fb4ad427ce4e50f8c2e0e4752a",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "32x32",
+          "path": "../../data/icons/hicolor/32x32/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "5cc73d7ee23466a62ea4d22fb37b16cd491e83198a49ec768af5d58c5eb0edfd",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "48x48",
+          "path": "../../data/icons/hicolor/48x48/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "426bb62ec3af303fb1b8162b3ccfdf4b8f1fff260f03fc5595b87892f7a687a6",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "64x64",
+          "path": "../../data/icons/hicolor/64x64/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "fdbfc49fc7163ebc82ab1e54c1786bb371aea562336756ee1b0e84f29c23e682",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-25"
+        }
+      ],
+      "fallback": null,
+      "notes": "macOS's one-ink mark: FermixMarkMaster.png, which scripts/build_mascot_mark.py derives from the pet artwork (the silhouette, the visor cut through it and the two eyes as ink inside it) and from which build_menu_bar_template.py rasterizes the menu bar templates. A GNOME symbolic icon is usually an SVG, but this mark exists only as a raster, and turning it into paths would be tracing, which this file's policy forbids; so it ships in GTK's raster symbolic format, name.symbolic.png, at the 16 to 64 pixel sizes symbolic icons are drawn at. At 16 pixels the eyes are about a pixel across and fade into the visor. macOS redraws them at a floor for its 18 point menu bar templates, which is a second drawing rule rather than a downscale, so it is not applied here.",
+      "linux_note": "Installed as /app/share/icons/hicolor/NxN/apps/io.tezra.Fermix-symbolic.symbolic.png. Checked on 2026-09-25 in the GNOME 50 runtime (GTK 4.22.5): the icon theme finds io.tezra.Fermix-symbolic at 16, 20 and 32 pixels, reports it symbolic and fills it with the colour it is given. Whether GNOME Shell's own icon loader reads a .symbolic.png was not checked."
     }
   ]
 }

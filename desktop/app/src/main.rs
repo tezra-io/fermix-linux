@@ -35,6 +35,7 @@ mod systemd;
 mod voice;
 mod voice_call;
 mod voice_flow;
+mod wordmark;
 
 use adw::prelude::*;
 use gtk::{gio, glib};

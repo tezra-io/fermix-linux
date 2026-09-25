@@ -518,7 +518,8 @@ mod tests {
         provenance["marks"].as_array().expect("records").clone()
     }
 
-    /// The record's name for a kind; `None` for a record that is not a vendor mark (the pet).
+    /// The record's name for a kind; `None` for a record that is not a vendor mark
+    /// (the pet, the wordmark, the app icons).
     fn kind_named(name: &str) -> Option<Kind> {
         let kind = match name {
             "provider" => Kind::Provider,
@@ -586,12 +587,12 @@ mod tests {
         }
     }
 
-    /// Nothing ships without a record, and every recorded file ships.
-    #[test]
-    fn each_shipped_file_is_recorded() {
-        let recorded: HashMap<String, String> = records()
+    /// Every recorded file as (path from `marks/`, sha256). A path that leaves
+    /// `marks/` (`../`) names a file elsewhere in the workspace: the pet's layers,
+    /// the app icons.
+    fn recorded_files() -> Vec<(String, String)> {
+        records()
             .iter()
-            .filter(|r| kind_named(r["kind"].as_str().unwrap_or_default()).is_some())
             .flat_map(|r| r["assets"].as_array().cloned().unwrap_or_default())
             .map(|a| {
                 (
@@ -599,6 +600,15 @@ mod tests {
                     a["sha256"].as_str().unwrap().to_owned(),
                 )
             })
+            .collect()
+    }
+
+    /// Nothing ships without a record, and every recorded file ships.
+    #[test]
+    fn each_shipped_file_is_recorded() {
+        let recorded: HashMap<String, String> = recorded_files()
+            .into_iter()
+            .filter(|(path, _)| !path.starts_with("../"))
             .collect();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("marks");
         let dirs = std::fs::read_dir(&root)
@@ -623,6 +633,24 @@ mod tests {
             recorded.len(),
             "a recorded file is missing from marks/"
         );
+    }
+
+    /// A recorded file outside `marks/` is there, with the bytes its record pins.
+    #[test]
+    fn each_recorded_file_outside_marks_is_its_record() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("marks");
+        let outside: Vec<(String, String)> = recorded_files()
+            .into_iter()
+            .filter(|(path, _)| path.starts_with("../"))
+            .collect();
+        assert!(
+            !outside.is_empty(),
+            "the pet and the app icons are recorded"
+        );
+        for (path, sha) in outside {
+            let bytes = std::fs::read(root.join(&path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+            assert_eq!(sha256(&bytes), sha, "{path}");
+        }
     }
 
     #[test]

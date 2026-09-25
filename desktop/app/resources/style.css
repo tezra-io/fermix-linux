@@ -51,19 +51,44 @@ listview.log-lines > row {
   border-radius: 8px;
 }
 
-/* The companion window: only its card shows. The window around the card is
-   see-through, and the card takes the window's own solid colour. */
+/* The companion window: the mascot floats with its own glow on a see-through
+   window. Its focus ring follows the mascot's ellipse. Only the call controls
+   have a ground, a small pill like the macOS pet's. */
 window.fermix-companion {
   background: none;
 }
 
-window.fermix-companion.opaque {
-  background-color: var(--window-bg-color);
+.fermix-companion-mascot {
+  border-radius: 50%;
 }
 
-window.fermix-companion .card {
+.fermix-companion-mascot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 50%, transparent);
+  outline-offset: -2px;
+}
+
+.fermix-companion-dock {
+  background-color: color-mix(in srgb, var(--window-bg-color) 92%, transparent);
+  border-radius: 999px;
+  padding: 3px 6px;
+  box-shadow: 0 0 0 1px var(--border-color), 0 2px 6px rgb(0 0 0 / 18%);
+}
+
+.fermix-companion-dock button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+/* Muted, as the macOS pet tints its mute control. */
+.fermix-companion-dock button.toggle:checked {
+  color: var(--warning-color);
+}
+
+/* Without a compositor: a plain tile in the window's colour, edged like a card. */
+window.fermix-companion.opaque {
   background-color: var(--window-bg-color);
-  border-radius: 18px;
+  box-shadow: inset 0 0 0 1px var(--border-color);
 }
 
 /* Chat: Fermix's replies sit in a bubble of their own, opposite the person's. */

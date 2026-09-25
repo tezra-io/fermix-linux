@@ -4,6 +4,7 @@
 pub mod acp;
 pub mod capabilities;
 pub mod chat;
+pub mod companion;
 pub mod doctor;
 pub mod frame;
 pub mod job;
