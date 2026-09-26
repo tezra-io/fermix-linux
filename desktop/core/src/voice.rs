@@ -1,7 +1,8 @@
 //! What the Voice page says before a call can begin (spec_voice §4.3): exactly
-//! one row, the first that applies, from what the daemon reports and what the
-//! last connection attempt found. Nothing is probed or inferred here. Also the
-//! call's word and the mascot's expression, from the session.
+//! one row, the first that applies, from what the daemon reports, what the last
+//! connection attempt found and which microphone the sound server offers.
+//! Nothing is probed or inferred here. Also the call's word and the mascot's
+//! expression, from the session.
 
 use crate::mascot::Expression;
 use crate::model::SetupState;
@@ -13,6 +14,9 @@ use crate::view::fixed_attention_copy;
 
 /// The readiness failure a missing OpenAI key raises.
 const KEY_FAILURE: &str = "realtime:openai";
+/// Said before a call when the sound server offers no microphone, and after one
+/// whose recording could find none.
+pub const NO_MICROPHONE: &str = "No microphone is connected.";
 
 /// What the last attempt to reach `realtime.sock` found.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +47,52 @@ impl Reach {
     }
 }
 
+/// One input the sound server lists, as the app's device watch reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub name: String,
+    /// A copy of an output (the sound server's "monitor" class), not a microphone.
+    pub monitor: bool,
+    /// The sound server's default input, which a call records from.
+    pub default: bool,
+}
+
+/// The microphone a call would record from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Microphone {
+    /// No list yet, or the sound server did not give one: nothing is claimed,
+    /// and a call's own attempt says what it finds.
+    #[default]
+    Unknown,
+    /// The sound server offers no input but copies of its outputs.
+    Missing,
+    /// The input a call records from, by the sound server's name for it.
+    Named(String),
+}
+
+impl Microphone {
+    /// From the whole list. A call records from the default input, even when that
+    /// is a copy of an output, so that one is named; a list without a default
+    /// names its first microphone.
+    pub fn from_sources(sources: &[Source]) -> Microphone {
+        let mut microphones = sources.iter().filter(|s| !s.monitor);
+        let Some(first) = microphones.next() else {
+            return Microphone::Missing;
+        };
+        let chosen = sources.iter().find(|s| s.default).unwrap_or(first);
+        Microphone::Named(chosen.name.clone())
+    }
+
+    /// The Voice page's Microphone row: the device, or plainly none or unknown.
+    pub fn label(&self) -> &str {
+        match self {
+            Microphone::Named(name) => name,
+            Microphone::Missing => "None",
+            Microphone::Unknown => "Unknown",
+        }
+    }
+}
+
 /// The one thing the page offers to fix what it says.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GateAction {
@@ -60,6 +110,7 @@ pub struct VoiceFacts<'a> {
     /// `overview.realtime`, when the overview answered and reported it.
     pub realtime: Option<&'a RealtimeFacts>,
     pub reach: Reach,
+    pub microphone: &'a Microphone,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,23 +161,27 @@ pub fn voice_gate(facts: &VoiceFacts<'_>) -> VoiceGate {
                       Fermix usually fixes this.";
         return blocked(closed, Some(GateAction::Restart));
     }
-    reach_gate(facts.reach)
+    if let Some(sentence) = reach_sentence(facts.reach) {
+        return blocked(sentence, None);
+    }
+    // Only the person can plug one in; the row updates when they do.
+    if *facts.microphone == Microphone::Missing {
+        return blocked(NO_MICROPHONE, None);
+    }
+    VoiceGate {
+        sentence: "Ready".into(),
+        action: None,
+        ready: true,
+    }
 }
 
-fn reach_gate(reach: Reach) -> VoiceGate {
-    let sentence = match reach {
-        Reach::ClientTooOld => "Update this app to talk to this version of Fermix.",
-        Reach::ClientTooNew => "Update Fermix to talk to this app.",
-        Reach::Busy => "Four other voice clients are already connected to Fermix.",
-        Reach::Untried | Reach::NoSocket => {
-            return VoiceGate {
-                sentence: "Ready".into(),
-                action: None,
-                ready: true,
-            }
-        }
-    };
-    blocked(sentence, None)
+fn reach_sentence(reach: Reach) -> Option<&'static str> {
+    match reach {
+        Reach::ClientTooOld => Some("Update this app to talk to this version of Fermix."),
+        Reach::ClientTooNew => Some("Update Fermix to talk to this app."),
+        Reach::Busy => Some("Four other voice clients are already connected to Fermix."),
+        Reach::Untried | Reach::NoSocket => None,
+    }
 }
 
 fn restart_for<'a>(state: &'a SetupState, section: &str) -> Option<&'a str> {

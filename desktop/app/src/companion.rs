@@ -139,18 +139,11 @@ impl Companion {
     }
 }
 
-/// What a click does, and while voice has failed, why first.
+/// What a click does, and first why voice cannot start or why it failed.
 fn tooltip(view: &VoiceView, error: bool) -> String {
-    let hint = if view.in_call {
-        "Click to end the call. Right-click for more."
-    } else {
-        "Click to begin a voice call. Right-click for more."
-    };
-    if error {
-        format!("{}\n{hint}", view.word)
-    } else {
-        hint.to_owned()
-    }
+    let blocked = (!view.can_begin).then_some(view.gate.sentence.as_str());
+    let failure = error.then_some(view.word.as_str());
+    companion::hint(view.in_call, blocked, failure)
 }
 
 /// The pill of call controls under the mascot (macOS `ControlDock`): begin or

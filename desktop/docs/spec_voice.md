@@ -384,9 +384,9 @@ Proposal:
      `gdk::Toplevel::show_window_menu(event)`, which opens GNOME's own window menu where
      **Always on Top** lives. If it returns `false`, the compositor offers no window menu and the
      item is hidden.
-   - Footer copy (new, replacing the macOS hint): "A small window you can leave open beside your
-     work. Fermix cannot keep it above other windows on Linux; GNOME can: press Alt+Space and choose
-     Always on Top."
+   - Footer copy (new, replacing the macOS hint): "A small window you can keep beside your work.
+     On GNOME, Alt+Space then Always on Top keeps it above other windows." (Shortened 2026-09-26 at
+     the owner's request for a cleaner Voice page; it still never claims Fermix can pin it.)
    - The window's position is the compositor's choice and is not restored. Do not claim otherwise.
    - A call keeps running while either window is open. Closing the last window ends the call:
      send `call_stop`, then release the microphone.
@@ -589,9 +589,14 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
 
 ### 4.3 What the Voice page says, top to bottom
 
-1. **Microphone statement** (M38 §6.5 row at line 2306, required by §7.5 lines 2789-2827 and §8.6
-   line 2972). Render it verbatim, **above** the "Talk to Fermix" switch and the Begin button, as
-   body text in sentence case:
+1. **Microphone, then the microphone statement** (M38 §6.5 row at line 2306, required by §7.5
+   lines 2789-2827 and §8.6 line 2972). First a property row, **Microphone**, naming the sound
+   server's default input as the server names it ("None" when it offers no input but copies of its
+   outputs, "Unknown" when the list cannot be read), kept current as devices come and go. Reading
+   the list never opens a device. Under it, the statement, verbatim and **above** the Begin button.
+   Amended 2026-09-26 (the owner found the page too wordy): the statement is an expander row whose
+   title is its first sentence, "Linux has no microphone permission", always in view, and whose
+   body is the rest, one click away. Settings → Voice still shows it whole:
    > "Linux has no microphone permission. Nothing asked you, nothing appears in your system settings,
    > and there is nothing to revoke. While Fermix is running it can open the microphone at any time,
    > and so can any other program you run. Your real controls are to not run it, to mute the
@@ -616,14 +621,15 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
 | handshake `client_too_old` / `client_too_new` | "Update this app to talk to this version of Fermix." / "Update Fermix to talk to this app." | none |
 | `max_clients_reached` | "Four other voice clients are already connected to Fermix." | none |
 | capture pipeline fails: pulse connection refused or access denied | "Fermix cannot reach the sound server, so it cannot hear or speak. If you removed its sound permission, voice will not work until you restore it." | none |
-| no default source | "No microphone is available." (M `Localizable.strings:336`) | none |
+| the sound server offers no input (before a call, from the device list; and after a call whose capture found none) | "No microphone is connected." | none |
 | ready | "Ready" | Begin voice call |
 
 3. Mascot, status word, controls, then the live-call block (caption line, task, "Voice so far: …").
 4. The Companion window switch with the honest footer (section 2.4).
 
 The M38 §8.6 row "The companion exists for macOS today, and there is no Linux companion yet."
-(M38 line ~2971) must be retired in the same change that ships the first call.
+(M38 line ~2971) must be retired in the same change that ships the first call. Retired 2026-09-26:
+Settings → Voice shows the microphone statement alone.
 
 ---
 

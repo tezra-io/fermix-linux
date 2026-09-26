@@ -4,11 +4,14 @@
 //! voice on never restarts Fermix by itself (spec R9).
 
 use crate::app::App;
+use crate::microphones::{MicrophoneWatch, SOUND_SERVER};
 use crate::state::Snapshot;
 use crate::voice::VoiceView;
 use adw::prelude::*;
 use fermix_client::realtime::session::{Input, Mode};
-use fermix_client::voice::{call_status, expression, voice_gate, GateAction, Reach, VoiceFacts};
+use fermix_client::voice::{
+    call_status, expression, voice_gate, GateAction, Microphone, Reach, Source, VoiceFacts,
+};
 use gtk::{gio, glib};
 use serde_json::Value;
 use std::rc::Rc;
@@ -24,9 +27,10 @@ impl App {
         let snapshot = state.snapshot();
         let call = self.call.borrow();
         let session = &call.session;
-        let gate = voice_gate(&facts(snapshot, call.reach));
+        let microphone = self.microphone.borrow();
+        let gate = voice_gate(&facts(snapshot, call.reach, &microphone));
         // What the last attempt found never stops another try.
-        let can_begin = voice_gate(&facts(snapshot, Reach::Untried)).ready;
+        let can_begin = voice_gate(&facts(snapshot, Reach::Untried, &microphone)).ready;
         let in_call = session.in_call();
         let status = call_status(session, gate.ready || in_call);
         VoiceView {
@@ -45,6 +49,7 @@ impl App {
             caption: session.caption_line(),
             task: session.task_line(),
             usage: session.usage_line(),
+            microphone: microphone.label().to_owned(),
         }
     }
 
@@ -59,6 +64,39 @@ impl App {
         mute.set_state(&view.muted.to_variant());
         self.voice.render(&view);
         self.companion.render(&view);
+    }
+
+    /// Starts following the sound server's inputs, the first time a voice surface
+    /// shows. A watch that cannot start leaves the microphone unknown, and the
+    /// next showing tries again; the call's own attempt still says what it finds.
+    pub fn watch_microphones(self: &Rc<Self>) {
+        if self.microphone_watch.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let on_change = move |sources: Vec<Source>| {
+            if let Some(app) = weak.upgrade() {
+                app.microphone_changed(&sources);
+            }
+        };
+        match MicrophoneWatch::start(SOUND_SERVER, on_change) {
+            Ok(watch) => {
+                let sources = watch.sources();
+                self.microphone_watch.replace(Some(watch));
+                self.microphone_changed(&sources);
+            }
+            Err(e) => glib::g_warning!("fermix", "the microphone list cannot be read: {e}"),
+        }
+    }
+
+    fn microphone_changed(&self, sources: &[Source]) {
+        let now = Microphone::from_sources(sources);
+        if *self.microphone.borrow() == now {
+            return;
+        }
+        glib::g_info!("fermix", "voice records from {now:?}");
+        self.microphone.replace(now);
+        self.render_voice();
     }
 
     /// The button beside what stands in the way.
@@ -80,13 +118,18 @@ impl App {
     }
 }
 
-fn facts(snapshot: Option<&Snapshot>, reach: Reach) -> VoiceFacts<'_> {
+fn facts<'a>(
+    snapshot: Option<&'a Snapshot>,
+    reach: Reach,
+    microphone: &'a Microphone,
+) -> VoiceFacts<'a> {
     VoiceFacts {
         state: snapshot.map(|s| &s.state),
         realtime: snapshot
             .and_then(|s| s.overview.as_ref())
             .and_then(|o| o.realtime.as_ref()),
         reach,
+        microphone,
     }
 }
 
@@ -174,7 +217,10 @@ pub fn install_companion(app: &Rc<App>) {
 impl App {
     /// Closing the companion never quits Fermix by surprise: with the main
     /// window hidden behind it, the main window comes back instead.
-    pub fn show_companion(&self, on: bool) {
+    pub fn show_companion(self: &Rc<Self>, on: bool) {
+        if on {
+            self.watch_microphones();
+        }
         self.companion.window.set_visible(on);
         // The switch's own notify calls back in here; only a change sets it.
         if self.voice.companion.is_active() != on {

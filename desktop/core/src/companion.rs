@@ -1,6 +1,7 @@
 //! The companion window's rules, as the macOS pet has them (`PetView.swift`): when
-//! its call controls show, and which parts of the see-through window take the
-//! pointer. Everywhere else a click reaches whatever is under the window.
+//! its call controls show, which parts of the see-through window take the
+//! pointer, and what its tooltip says. Everywhere else a click reaches whatever
+//! is under the window.
 
 use crate::mascot::Expression;
 
@@ -23,6 +24,24 @@ pub struct Rect {
 /// and while Fermix speaks (macOS `shouldShowControls`).
 pub fn controls_shown(hovered: bool, in_call: bool, expression: Expression) -> bool {
     hovered || in_call || expression == Expression::Speaking
+}
+
+/// The mascot's tooltip: why voice cannot start or why it failed, then what a
+/// click does. Something in the way (`blocked`, the Voice page's one row) stops
+/// only a new call, and a click then opens Voice, which says how to fix it.
+pub fn hint(in_call: bool, blocked: Option<&str>, failure: Option<&str>) -> String {
+    let (why, click) = match (in_call, blocked) {
+        (true, _) => (failure, "Click to end the call. Right-click for more."),
+        (false, Some(reason)) => (Some(reason), "Click to open Voice."),
+        (false, None) => (
+            failure,
+            "Click to begin a voice call. Right-click for more.",
+        ),
+    };
+    match why {
+        Some(why) => format!("{why}\n{click}"),
+        None => click.to_owned(),
+    }
 }
 
 /// The parts of the window that take the pointer: the ellipse inscribed in the

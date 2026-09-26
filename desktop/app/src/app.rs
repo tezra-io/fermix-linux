@@ -11,6 +11,7 @@ use crate::doctor::DoctorPage;
 use crate::home::HomePage;
 use crate::integrations::IntegrationsPane;
 use crate::logs::LogsPage;
+use crate::microphones::MicrophoneWatch;
 use crate::providers::ProvidersPage;
 use crate::settings::{SettingsData, SettingsPage};
 use crate::shell::{self, Shell};
@@ -22,6 +23,7 @@ use fermix_client::management::{CallError, PROTOCOL_VERSION};
 use fermix_client::model::{Hello, SetupState};
 use fermix_client::overview::Overview;
 use fermix_client::view::{daemon_problem, hello_problem, Activity, Recent};
+use fermix_client::voice::Microphone;
 use gtk::gio;
 use gtk::glib::{
     self,
@@ -54,6 +56,9 @@ pub struct App {
     pub companion: Companion,
     /// The voice connection and its call, if any.
     pub call: RefCell<Call>,
+    /// The input a call would record from, while a voice surface has asked.
+    pub microphone: RefCell<Microphone>,
+    pub microphone_watch: RefCell<Option<MicrophoneWatch>>,
     home: HomePage,
     providers: ProvidersPage,
 }
@@ -114,6 +119,8 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         voice,
         companion,
         call: RefCell::new(Call::new(audio_endpoints())),
+        microphone: RefCell::default(),
+        microphone_watch: RefCell::default(),
         home,
         providers,
     })
@@ -316,8 +323,9 @@ fn through_window(application: &adw::Application, action: &'static str) -> impl 
     }
 }
 
-/// Doctor runs its checks as it comes into view, and Logs reads only while in
-/// view. Following the stack catches every way in and out.
+/// Doctor runs its checks as it comes into view, Logs reads only while in view,
+/// and Voice starts following the microphones. Following the stack catches
+/// every way in and out.
 fn follow_visible_page(app: &Rc<App>) {
     let weak = Rc::downgrade(app);
     app.shell
@@ -325,10 +333,15 @@ fn follow_visible_page(app: &Rc<App>) {
         .connect_visible_child_name_notify(move |stack| {
             let Some(app) = weak.upgrade() else { return };
             let name = stack.visible_child_name();
+            // Logs polls only while in view, whichever page replaces it.
+            if name.as_deref() != Some("logs") {
+                app.logs.hidden();
+            }
             match name.as_deref() {
                 Some("doctor") => app.doctor.shown(),
                 Some("logs") => app.logs.shown(),
-                _ => app.logs.hidden(),
+                Some("companion") => app.watch_microphones(),
+                _ => {}
             }
         });
 }

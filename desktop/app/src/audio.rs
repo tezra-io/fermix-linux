@@ -8,6 +8,7 @@
 //! Nothing here touches GTK; only the bus watch runs on the main loop.
 
 use fermix_client::realtime::playback::{PlaybackQueue, SAMPLE_RATE};
+use fermix_client::voice::NO_MICROPHONE;
 use gst::prelude::*;
 use gtk::glib;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,7 +94,7 @@ impl AudioFailure {
                 "Fermix cannot reach the sound server, so it cannot hear or speak. If you \
                  removed its sound permission, voice will not work until you restore it."
             }
-            AudioFailure::NoMicrophone => "No microphone is available.",
+            AudioFailure::NoMicrophone => NO_MICROPHONE,
             AudioFailure::Other(_) => "Voice stopped unexpectedly.",
         }
         .to_owned()
@@ -879,10 +880,7 @@ mod tests {
             "Fermix cannot reach the sound server, so it cannot hear or speak. If you removed \
              its sound permission, voice will not work until you restore it."
         );
-        assert_eq!(
-            AudioFailure::NoMicrophone.sentence(),
-            "No microphone is available."
-        );
+        assert_eq!(AudioFailure::NoMicrophone.sentence(), NO_MICROPHONE);
         assert_eq!(
             AudioFailure::Other("Internal data stream error.".into()).sentence(),
             "Voice stopped unexpectedly."

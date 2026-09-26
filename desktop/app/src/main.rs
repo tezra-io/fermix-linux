@@ -23,6 +23,7 @@ mod integrations;
 mod logs;
 mod marks;
 mod mascot;
+mod microphones;
 mod portal;
 mod providers;
 mod service;

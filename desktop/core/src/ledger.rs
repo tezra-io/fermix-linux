@@ -70,15 +70,21 @@ pub const PLATFORM_FACT: &str = "On this platform a permission is something Ferm
     itself and keeps for itself, not something the operating system verifies and stores. Lose \
     what Fermix keeps and the consent is gone; copy it and the consent moves with it.";
 
-pub const MICROPHONE_STATEMENT: &str = "Linux has no microphone permission. Nothing asked you, \
-    nothing appears in your system settings, and there is nothing to revoke. While Fermix is \
-    running it can open the microphone at any time, and so can any other program you run. Your \
-    real controls are to not run it, to mute the microphone in your sound settings or in \
-    PipeWire, or to run it in a sandbox that withholds audio, which also stops it playing sound. \
-    On macOS the operating system asks first. On Linux it does not.";
+/// M38 §6.5's microphone statement opens with this. Where the statement folds
+/// away, this heads it; where it is shown whole, `microphone_statement` joins them.
+pub const MICROPHONE_HEADLINE: &str = "Linux has no microphone permission";
 
-pub const VOICE_COMPANION_STATEMENT: &str = "Voice is configured here and used from a companion \
-    application. The companion exists for macOS today, and there is no Linux companion yet.";
+pub const MICROPHONE_DETAIL: &str = "Nothing asked you, nothing appears in your system settings, \
+    and there is nothing to revoke. While Fermix is running it can open the microphone at any \
+    time, and so can any other program you run. Your real controls are to not run it, to mute \
+    the microphone in your sound settings or in PipeWire, or to run it in a sandbox that \
+    withholds audio, which also stops it playing sound. On macOS the operating system asks \
+    first. On Linux it does not.";
+
+/// The whole statement, word for word.
+pub fn microphone_statement() -> String {
+    format!("{MICROPHONE_HEADLINE}. {MICROPHONE_DETAIL}")
+}
 
 pub const MEETINGS_SLEEP_STATEMENT: &str = "Fermix cannot keep this computer awake during a \
     meeting. If the machine suspends, the recording stops. Adjust your power settings before a \

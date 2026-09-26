@@ -1,4 +1,4 @@
-use fermix_client::companion::{controls_shown, input_region, Rect, BAND, JOIN};
+use fermix_client::companion::{controls_shown, hint, input_region, Rect, BAND, JOIN};
 use fermix_client::mascot::Expression;
 
 /// The mascot's stage in the companion (the macOS pet's), at the window's corner margin.
@@ -121,5 +121,38 @@ fn an_empty_stage_is_a_bug() {
             height: 116,
         },
         None,
+    );
+}
+
+#[test]
+fn the_tooltip_says_what_a_click_does() {
+    assert_eq!(
+        hint(false, None, None),
+        "Click to begin a voice call. Right-click for more."
+    );
+    assert_eq!(
+        hint(true, None, None),
+        "Click to end the call. Right-click for more."
+    );
+}
+
+#[test]
+fn what_stands_in_the_way_comes_first_and_a_click_opens_voice() {
+    assert_eq!(
+        hint(false, Some("No microphone is connected."), None),
+        "No microphone is connected.\nClick to open Voice."
+    );
+}
+
+#[test]
+fn a_failure_says_why_before_what_a_click_does() {
+    assert_eq!(
+        hint(false, None, Some("Fermix did not start the call in time.")),
+        "Fermix did not start the call in time.\nClick to begin a voice call. Right-click for more."
+    );
+    // A call in progress is never blocked: what is in the way only stops a new one.
+    assert_eq!(
+        hint(true, Some("No microphone is connected."), None),
+        "Click to end the call. Right-click for more."
     );
 }

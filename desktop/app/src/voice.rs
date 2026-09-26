@@ -1,11 +1,12 @@
-//! The Voice page (spec_voice §4.3), top to bottom: the microphone statement,
-//! the mascot and its status, the call controls, the one row saying what stands
-//! between the person and a call, the live-call facts, and the companion window.
-//! It draws from `VoiceView` only; the controller decides everything.
+//! The Voice page (spec_voice §4.3), top to bottom: the microphone a call records
+//! from, with Linux's microphone statement folded under it; the one row saying
+//! what stands between the person and a call; the mascot, its status and the call
+//! controls; the live-call facts; and the companion window. It draws from
+//! `VoiceView` only; the controller decides everything.
 
 use crate::mascot::Mascot;
 use adw::prelude::*;
-use fermix_client::ledger::MICROPHONE_STATEMENT;
+use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE};
 use fermix_client::mascot::Expression;
 use fermix_client::realtime::session::Palette;
 use fermix_client::voice::{GateAction, VoiceGate};
@@ -34,6 +35,8 @@ pub struct VoiceView {
     pub caption: Option<String>,
     pub task: Option<String>,
     pub usage: Option<String>,
+    /// The Microphone row's value: the input a call records from, "None" or "Unknown".
+    pub microphone: String,
 }
 
 impl VoiceView {
@@ -64,6 +67,7 @@ pub struct VoicePage {
     task: adw::ActionRow,
     cancel_task: gtk::Button,
     usage: adw::ActionRow,
+    microphone: adw::ActionRow,
     /// What was drawn last, so a new output level alone redraws only the mascot.
     shown: RefCell<Option<VoiceView>>,
 }
@@ -95,10 +99,10 @@ impl VoicePage {
             .title("Companion window")
             .subtitle(COMPANION_NOTE)
             .build();
+        let (microphone_group, microphone) = microphone_group();
         let root = adw::PreferencesPage::new();
-        root.add(&statement_group());
         // What stands in the way comes before the controls it blocks (spec §4.3).
-        for group in [&gate_group, &call_group, &live] {
+        for group in [&microphone_group, &gate_group, &call_group, &live] {
             root.add(group);
         }
         root.add(&more_group(&companion));
@@ -120,6 +124,7 @@ impl VoicePage {
             task,
             cancel_task,
             usage,
+            microphone,
             shown: RefCell::default(),
         }
     }
@@ -143,6 +148,8 @@ impl VoicePage {
         self.render_controls(view);
         self.render_gate(&view.gate, gate_shown);
         self.render_live(view);
+        self.microphone
+            .set_subtitle(&glib::markup_escape_text(&view.microphone));
     }
 
     /// The word under the mascot. While the gate row says what is in the way,
@@ -220,9 +227,10 @@ impl VoicePage {
     }
 }
 
-/// The companion window's honest footer (spec_voice §2.4).
-const COMPANION_NOTE: &str = "A small window you can leave open beside your work. Fermix cannot \
-    keep it above other windows on Linux; GNOME can: press Alt+Space and choose Always on Top.";
+/// The companion window's honest footer (spec_voice §2.4): Fermix cannot keep it
+/// on top, so it names what can.
+const COMPANION_NOTE: &str = "A small window you can keep beside your work. On GNOME, Alt+Space \
+    then Always on Top keeps it above other windows.";
 
 /// Adwaita's status colours; each mode also has its word and icon.
 pub const TONES: [&str; 4] = ["accent", "warning", "success", "error"];
@@ -246,18 +254,34 @@ fn action_verb(action: GateAction) -> &'static str {
     }
 }
 
-/// M38 §6.5, verbatim and above every control that opens the microphone.
-fn statement_group() -> adw::PreferencesGroup {
-    let label = gtk::Label::builder()
-        .label(MICROPHONE_STATEMENT)
+/// The microphone a call records from, and under it M38 §6.5's statement, above
+/// every control that opens the microphone: its first sentence always in view,
+/// the rest one click away.
+fn microphone_group() -> (adw::PreferencesGroup, adw::ActionRow) {
+    let microphone = adw::ActionRow::builder()
+        .title("Microphone")
+        .subtitle_lines(1)
+        .css_classes(["property"])
+        .build();
+    let detail = gtk::Label::builder()
+        .label(MICROPHONE_DETAIL)
         .selectable(true)
         .wrap(true)
         .xalign(0.0)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
         .css_classes(["dim-label"])
         .build();
+    let statement = adw::ExpanderRow::builder()
+        .title(MICROPHONE_HEADLINE)
+        .build();
+    statement.add_row(&detail);
     let group = adw::PreferencesGroup::new();
-    group.add(&label);
-    group
+    group.add(&microphone);
+    group.add(&statement);
+    (group, microphone)
 }
 
 fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Box, gtk::Label, gtk::Image) {
@@ -303,7 +327,7 @@ fn controls() -> (gtk::Button, gtk::ToggleButton, gtk::Button) {
     mute.set_action_name(Some("app.voice-mute"));
     let stop = gtk::Button::builder()
         .icon_name("media-playback-stop-symbolic")
-        .tooltip_text("Stop the reply")
+        .tooltip_text("Stop the Reply")
         .css_classes(["circular"])
         .valign(gtk::Align::Center)
         .build();
