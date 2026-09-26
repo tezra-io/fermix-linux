@@ -173,3 +173,9 @@ window.fermix-companion.opaque {
     box-shadow: 0 0 12px 4px color-mix(in srgb, var(--accent-bg-color) 55%, transparent);
   }
 }
+
+/* The wordmark heads the sidebar on the left: pulled past the header bar's own
+   padding so its first letter lines up with the rows' icons below it. */
+.sidebar-wordmark {
+  margin-left: -7px;
+}

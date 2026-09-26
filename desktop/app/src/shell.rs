@@ -70,8 +70,11 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
+    // Left, where the sidebar's rows start, as a name above a list.
     let wordmark = crate::wordmark::picture(WORDMARK_HEIGHT);
-    let sidebar_header = adw::HeaderBar::builder().title_widget(&wordmark).build();
+    wordmark.add_css_class("sidebar-wordmark");
+    let sidebar_header = adw::HeaderBar::builder().show_title(false).build();
+    sidebar_header.pack_start(&wordmark);
     // The title still names the page: for the back button when narrow, and in words.
     let sidebar_page = navigation_page("Fermix", &sidebar_header, &sidebars);
 
@@ -271,7 +274,8 @@ impl Shell {
         self.stack.set_visible_child_name(name);
         self.sidebars.set_visible_child_name("main");
         self.sidebar_page.set_title("Fermix");
-        self.sidebar_header.set_title_widget(Some(&self.wordmark));
+        self.sidebar_header.set_show_title(false);
+        self.wordmark.set_visible(true);
         self.pinned.unselect_all();
         *self.last_page.borrow_mut() = name.to_owned();
         self.content.set_title(title);
@@ -293,7 +297,8 @@ impl Shell {
         self.settings_panes.set_visible_child_name(slug);
         self.sidebars.set_visible_child_name("settings");
         self.sidebar_page.set_title("Settings");
-        self.sidebar_header.set_title_widget(None::<&gtk::Widget>);
+        self.sidebar_header.set_show_title(true);
+        self.wordmark.set_visible(false);
         self.content.set_title(title);
         self.new_chat.set_visible(false);
         *self.last_pane.borrow_mut() = slug.to_owned();
