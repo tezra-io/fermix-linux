@@ -6,6 +6,9 @@
     <file>style.css</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-chat-symbolic.svg</file>
     <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-doctor-symbolic.svg</file>
+    <!-- The mark at the sizes Chat's empty state draws it (marks/PROVENANCE.json, key app_icon_symbolic). -->
+    <file>icons/128x128/apps/io.tezra.Fermix-symbolic.symbolic.png</file>
+    <file>icons/256x256/apps/io.tezra.Fermix-symbolic.symbolic.png</file>
     <!-- The voice mascot's layers, 256 px, from the macOS masters (marks/PROVENANCE.json, key pet). -->
     <file>pet/pet_ball.png</file>
     <file>pet/pet_idle_body.png</file>

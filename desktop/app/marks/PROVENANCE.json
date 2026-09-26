@@ -1170,7 +1170,7 @@
         "source_path": "Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
         "source_format": "813 by 813, 8-bit RGBA PNG, black with the mark in the alpha channel",
         "tool": "ImageMagick 6.9.11-60 Q16 x86_64 2021-01-25",
-        "command": "for size in 16 24 32 48 64; do mkdir -p \"data/icons/hicolor/${size}x${size}/apps\" && convert \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png\" -filter Lanczos -resize \"${size}x${size}\" -strip -define png:exclude-chunks=date,time PNG32:\"data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png\"; done",
+        "command": "for size in 16 24 32 48 64; do mkdir -p \"data/icons/hicolor/${size}x${size}/apps\" && convert \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png\" -filter Lanczos -resize \"${size}x${size}\" -strip -define png:exclude-chunks=date,time PNG32:\"data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png\"; done; for size in 128 256; do mkdir -p \"app/resources/icons/${size}x${size}/apps\" && convert \"$FERMIX_MACOS/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png\" -filter Lanczos -resize \"${size}x${size}\" -strip -define png:exclude-chunks=date,time PNG32:\"app/resources/icons/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png\"; done",
         "working_directory": "desktop",
         "output_format": "8-bit RGBA PNG, black with the mark in the alpha channel, no metadata chunks"
       },
@@ -1214,11 +1214,27 @@
           "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
           "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
           "retrieved_on": "2026-09-25"
+        },
+        {
+          "role": "128x128",
+          "path": "../resources/icons/128x128/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "1ca213244ca0d8be6beaa09590d3f8d22f369a91bbc37ee0f0588bec8848bac0",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-26"
+        },
+        {
+          "role": "256x256",
+          "path": "../resources/icons/256x256/apps/io.tezra.Fermix-symbolic.symbolic.png",
+          "sha256": "0eccd5623107d9057069f6fed3cfd4d85f1d43ac620dacd05dd939be446b73f1",
+          "source_sha256": "ac3d3bbfb0344293e0ae16bda5e5002adad2c486bc2325c4e7aa95ca245d04e3",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/9573b2b72d3d48148781a2914bfe01700c5ab4bb/Apps/Fermix/Sources/FermixAppCore/Resources/MenuBarTemplate/FermixMarkMaster.png",
+          "retrieved_on": "2026-09-26"
         }
       ],
       "fallback": null,
       "notes": "macOS's one-ink mark: FermixMarkMaster.png, which scripts/build_mascot_mark.py derives from the pet artwork (the silhouette, the visor cut through it and the two eyes as ink inside it) and from which build_menu_bar_template.py rasterizes the menu bar templates. A GNOME symbolic icon is usually an SVG, but this mark exists only as a raster, and turning it into paths would be tracing, which this file's policy forbids; so it ships in GTK's raster symbolic format, name.symbolic.png, at the 16 to 64 pixel sizes symbolic icons are drawn at. At 16 pixels the eyes are about a pixel across and fade into the visor. macOS redraws them at a floor for its 18 point menu bar templates, which is a second drawing rule rather than a downscale, so it is not applied here.",
-      "linux_note": "Installed as /app/share/icons/hicolor/NxN/apps/io.tezra.Fermix-symbolic.symbolic.png. Checked on 2026-09-25 in the GNOME 50 runtime (GTK 4.22.5): the icon theme finds io.tezra.Fermix-symbolic at 16, 20 and 32 pixels, reports it symbolic and fills it with the colour it is given. Whether GNOME Shell's own icon loader reads a .symbolic.png was not checked."
+      "linux_note": "Installed as /app/share/icons/hicolor/NxN/apps/io.tezra.Fermix-symbolic.symbolic.png. Checked on 2026-09-25 in the GNOME 50 runtime (GTK 4.22.5): the icon theme finds io.tezra.Fermix-symbolic at 16, 20 and 32 pixels, reports it symbolic and fills it with the colour it is given. Whether GNOME Shell's own icon loader reads a .symbolic.png was not checked. The 128 and 256 pixel sizes (added 2026-09-26) ship inside the app's resources, under the icon path GtkApplication adds to the theme, for Chat's empty state, which draws the mark at 128 pixels."
     }
   ]
 }

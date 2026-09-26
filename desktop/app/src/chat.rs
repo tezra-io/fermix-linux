@@ -5,11 +5,11 @@
 mod entries;
 
 use crate::state::{Connection, State};
-use crate::status::{down_view, waiting, DownPage};
+use crate::status::{down_view, waiting, DownPage, DownView};
 use adw::prelude::*;
 use entries::Drawn;
 use fermix_client::chat::{Phase, Transcript};
-use fermix_client::view::answers_with;
+use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
@@ -17,6 +17,20 @@ use std::rc::Rc;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
+/// What Chat cannot do without Fermix, on the down page.
+const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.";
+
+/// What the page says while Fermix is out of reach: its problem, or that it is
+/// starting. `None` while it answers, or before the first read.
+fn down_state(state: &State) -> Option<DownView> {
+    match &state.connection {
+        Connection::Down(problem) if !state.waking => {
+            Some(down_view(problem, state.wake_failed, NEEDS_FERMIX))
+        }
+        Connection::Down(_) => Some(waiting("Starting Fermix")),
+        Connection::Up(_) | Connection::Connecting => None,
+    }
+}
 
 pub struct ChatPage {
     pub root: gtk::Stack,
@@ -29,6 +43,7 @@ pub struct ChatPage {
     input: gtk::TextView,
     send: gtk::Button,
     down: DownPage,
+    banner: adw::Banner,
 }
 
 impl ChatPage {
@@ -43,6 +58,8 @@ impl ChatPage {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+        let banner = adw::Banner::new("");
+        body.append(&banner);
         body.append(&conversation);
         body.append(&composer);
         let down = DownPage::new();
@@ -62,37 +79,45 @@ impl ChatPage {
             input,
             send,
             down,
+            banner,
         }
     }
 
-    pub fn render(&self, transcript: &Transcript, state: &State) {
-        let problem = match &state.connection {
-            Connection::Down(problem) if !state.waking => Some(problem),
-            _ => None,
-        };
-        if let Some(problem) = problem.filter(|_| transcript.entries().is_empty()) {
-            let needs_it = "Chat needs Fermix running. Start it to ask anything.";
-            self.down
-                .show(down_view(problem, state.wake_failed, needs_it));
-            self.root.set_visible_child_name("down");
-            return;
-        }
-        if matches!(state.connection, Connection::Down(_)) && transcript.entries().is_empty() {
-            self.down.show(waiting("Starting Fermix"));
+    /// `name` is the first name About you holds, for the greeting.
+    pub fn render(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+        let down = down_state(state);
+        if let Some(view) = down.clone().filter(|_| transcript.entries().is_empty()) {
+            self.down.show(view);
             self.root.set_visible_child_name("down");
             return;
         }
         self.down.reset();
         self.root.set_visible_child_name("chat");
-        self.render_conversation(transcript, state);
+        self.show_banner(down.as_ref());
+        self.render_conversation(transcript, state, name);
     }
 
-    fn render_conversation(&self, transcript: &Transcript, state: &State) {
-        let answers = state.snapshot().map(|s| answers_with(&s.state));
-        self.empty.set_description(Some(&match answers {
-            Some(line) => format!("Replies come from {line}."),
-            None => String::new(),
-        }));
+    /// With a conversation on screen the page stays, and the banner says why the
+    /// composer waits and offers the way out the down page would.
+    fn show_banner(&self, down: Option<&DownView>) {
+        self.banner.set_revealed(down.is_some());
+        let Some(view) = down else { return };
+        self.banner.set_title(view.title());
+        let (label, action) = view.button().unzip();
+        self.banner.set_button_label(label);
+        self.banner.set_action_name(action);
+    }
+
+    fn render_conversation(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+        // The time of day on this computer's clock; each render follows it.
+        let time = match glib::DateTime::now_local() {
+            Ok(now) => Some(time_of_day(now.hour() as u32)),
+            Err(e) => {
+                glib::g_warning!("fermix", "the local time cannot be read: {e}");
+                None
+            }
+        };
+        self.empty.set_title(&greeting(time, name));
         let empty = transcript.entries().is_empty();
         self.conversation
             .set_visible_child_name(if empty { "empty" } else { "messages" });
@@ -220,9 +245,11 @@ fn conversation_area(list: &gtk::Box, orb: &gtk::Box) -> (Follow, gtk::Stack, ad
     let overlay = gtk::Overlay::builder().child(&scroller).build();
     overlay.add_overlay(&jump);
     let follow = Follow::new(&scroller, &jump);
+    // The mark and a greeting (plan §3.4); the page fills in the title.
     let empty = adw::StatusPage::builder()
-        .icon_name("fermix-chat-symbolic")
-        .title("Ask Fermix")
+        .icon_name("io.tezra.Fermix-symbolic")
+        .description(QUIET_LINE)
+        .css_classes(["chat-empty"])
         .vexpand(true)
         .build();
     let stack = gtk::Stack::builder()
@@ -376,8 +403,9 @@ fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
     (clamp, input, send)
 }
 
-/// Enter or Ctrl+Enter sends, Shift+Enter starts a new line, and the
-/// placeholder and Send button follow whether there is anything to send.
+/// Enter or Ctrl+Enter sends, Shift+Enter starts a new line, Escape stops a
+/// reply, and the placeholder and Send button follow whether there is anything
+/// to send.
 fn wire_composer(input: &gtk::TextView, placeholder: &gtk::Label, send: &gtk::Button) {
     let (hint, button) = (placeholder.clone(), send.clone());
     input.buffer().connect_changed(move |buffer| {
@@ -388,7 +416,17 @@ fn wire_composer(input: &gtk::TextView, placeholder: &gtk::Label, send: &gtk::Bu
         }
     });
     let keys = gtk::EventControllerKey::new();
-    keys.connect_key_pressed(|controller, key, _, modifiers| {
+    let stop = send.clone();
+    keys.connect_key_pressed(move |controller, key, _, modifiers| {
+        // Escape does what the Stop button does, while it is Stop.
+        if key == gdk::Key::Escape {
+            let stopping = stop.action_name().as_deref() == Some("win.stop-reply");
+            if stopping && stop.is_sensitive() {
+                stop.activate();
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        }
         let enter = matches!(key, gdk::Key::Return | gdk::Key::KP_Enter);
         let plain = !modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         if !(enter && plain) {

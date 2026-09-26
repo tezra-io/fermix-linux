@@ -19,6 +19,17 @@ pub struct DownView {
     button: Option<(&'static str, &'static str)>,
 }
 
+impl DownView {
+    pub fn title(&self) -> &'static str {
+        self.title
+    }
+
+    /// (label, action)
+    pub fn button(&self) -> Option<(&'static str, &'static str)> {
+        self.button
+    }
+}
+
 pub fn waiting(title: &'static str) -> DownView {
     DownView {
         icon: "network-offline-symbolic",

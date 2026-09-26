@@ -19,6 +19,7 @@ use crate::state::{Connection, Snapshot, State, RECENT_FOR};
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
+use fermix_client::greeting::{about_you_name, ABOUT_YOU};
 use fermix_client::management::{CallError, PROTOCOL_VERSION};
 use fermix_client::model::{Hello, SetupState};
 use fermix_client::overview::Overview;
@@ -167,8 +168,12 @@ fn start(app: &Rc<App>) {
 impl App {
     pub fn render(&self) {
         let state = self.state.borrow();
-        self.chat
-            .render(&self.conversation.borrow().transcript, &state);
+        let name = about_you_name(self.settings_data.borrow().rows.get(ABOUT_YOU));
+        self.chat.render(
+            &self.conversation.borrow().transcript,
+            &state,
+            name.as_deref(),
+        );
         self.home.render(&state);
         self.providers.render(&state, Instant::now());
         self.settings.render(&state, &self.settings_data.borrow());
@@ -211,6 +216,20 @@ impl App {
         self.render();
         if let Some(pid) = pid {
             self.follow_daemon_process(pid).await;
+            self.read_about_you().await;
+        }
+    }
+
+    /// Chat greets the person by the name About you holds. Read once per daemon
+    /// process (a restart empties the cache, a save there drops the section); a
+    /// failed read is logged and tried again on the next refresh.
+    async fn read_about_you(&self) {
+        let needed = {
+            let data = self.settings_data.borrow();
+            !data.rows.contains_key(ABOUT_YOU) && !data.reading.contains(ABOUT_YOU)
+        };
+        if needed {
+            self.read_section(ABOUT_YOU).await;
         }
     }
 

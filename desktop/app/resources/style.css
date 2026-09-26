@@ -39,6 +39,11 @@
   background: none;
 }
 
+/* Chat's empty state: the mark at low contrast above the greeting (plan §3.4). */
+statuspage.chat-empty .icon {
+  opacity: 0.5;
+}
+
 /* Logs: one dense monospace line per entry. */
 listview.log-lines > row {
   padding: 1px 12px;

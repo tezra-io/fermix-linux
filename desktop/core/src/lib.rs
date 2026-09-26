@@ -7,6 +7,7 @@ pub mod chat;
 pub mod companion;
 pub mod doctor;
 pub mod frame;
+pub mod greeting;
 pub mod job;
 pub mod ledger;
 pub mod logs;
