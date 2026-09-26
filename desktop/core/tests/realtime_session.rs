@@ -5,8 +5,8 @@
 
 use fermix_client::realtime::client::{CloseReason, ConnectError, Incoming};
 use fermix_client::realtime::protocol::{
-    CallReady, Caption, ClientEvent, DecodeError, Direction, ServerError, ServerEvent, Speaker,
-    Task, TaskStatus, ToolStatus, TurnState, Usage,
+    decode_line, CallReady, Caption, ClientEvent, DecodeError, Direction, ServerError, ServerEvent,
+    Speaker, Task, TaskStatus, ToolStatus, TurnState, Usage,
 };
 use fermix_client::realtime::session::{
     error_sentence, Effect, Input, Mode, Palette, Session, CALL_START_DEADLINE,
@@ -822,7 +822,7 @@ fn a_deadline_left_over_from_an_earlier_call_is_ignored() {
 #[test]
 fn an_audio_failure_ends_the_call_with_its_own_sentence() {
     let mut session = listening();
-    let sentence = "No microphone is available.";
+    let sentence = "No microphone is connected.";
     let effects = session.apply(Input::AudioFailed(sentence.into()));
     let mut expected = TEARDOWN.to_vec();
     expected.push(Effect::Send(ClientEvent::CallStop));
@@ -849,6 +849,24 @@ fn a_server_error_tears_the_call_down_in_the_daemons_words() {
         session.status().label,
         "This call reached the spending limit set in Voice settings."
     );
+}
+
+/// The daemon's frame when OpenAI refuses the key before the call is configured
+/// (engine fix of 2026-09-26): the start ends at once, in the daemon's sentence,
+/// instead of waiting out the start deadline.
+#[test]
+fn a_refused_key_ends_the_start_in_the_daemons_sentence() {
+    let mut session = calling();
+    let frame = br#"{"type":"error","reason":"provider_refused","kind":"provider_refused","detail":"OpenAI did not accept the API key (invalid_api_key)."}"#;
+    let refused = decode_line(frame).expect("the engine's refusal frame decodes");
+    event(&mut session, refused);
+    assert!(!session.in_call());
+    assert_eq!(session.mode(), Mode::Error);
+    assert_eq!(
+        session.status().label,
+        "OpenAI did not accept the API key (invalid_api_key)."
+    );
+    assert!(session.apply(Input::CallDeadline(1)).is_empty());
 }
 
 #[test]
