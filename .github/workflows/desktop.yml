@@ -1,0 +1,51 @@
+# The desktop app's gate, on every push to main or dev and on every pull request:
+# the same `scripts/dev.sh check` a developer runs (rustfmt, clippy with warnings
+# as errors, every test, all inside the GNOME 50 SDK), then the Flatpak built from
+# its manifest and kept as a bundle.
+name: desktop
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # GNOME 50 Platform and SDK preinstalled; flatpak needs the privileges for bubblewrap.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    env:
+      XDG_RUNTIME_DIR: /tmp/runtime
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the Rust SDK extension
+        run: |
+          mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+          flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Validate the desktop entry
+        run: flatpak run --filesystem="$PWD" --command=desktop-file-validate org.gnome.Sdk//50 "$PWD/data/io.tezra.Fermix.desktop"
+
+      - name: Format, lint and test
+        run: scripts/dev.sh check
+
+      - name: Build the Flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
+        with:
+          manifest-path: desktop/io.tezra.Fermix.yml
+          bundle: fermix-desktop.flatpak
+          cache-key: flatpak-builder-${{ hashFiles('desktop/Cargo.lock') }}
