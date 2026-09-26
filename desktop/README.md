@@ -1,11 +1,8 @@
-# Fermix for Linux (desktop app, fresh start)
+# Fermix for Linux: the desktop app
 
 A small GTK4 + libadwaita app, written in Rust and shipped as a Flatpak. It is a **client only**:
 the engine is the host's `fermix` package, running as the `fermix.service` user unit, and the app
 talks to it over `~/.fermix/daemon.sock` (management protocol v2). It holds no config and no secrets.
-
-It replaces the earlier `App/` client beside it in this repository. That code, its private GTK
-runtime and its packaging are left as they were, here and on `single-package`.
 
 ## Layout
 
@@ -14,8 +11,9 @@ core/        fermix-client: socket framing, management client, job polling rules
              sentence a screen shows (view.rs). No GTK, so it builds and tests on any host.
 app/         fermix-desktop: the window. Pages draw from State; app.rs/flows.rs/service.rs
              turn window actions into daemon calls.
-app/marks/   vendor marks, byte for byte, with PROVENANCE.json
+app/marks/   vendor marks and the Fermix brand files, byte for byte, with PROVENANCE.json
 data/        desktop entry and icons
+docs/        the design record the code cites: design_final.md, spec_voice.md
 io.tezra.Fermix.yml   the Flatpak recipe
 scripts/dev.sh        fast loop inside the GNOME 50 SDK
 ```

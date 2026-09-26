@@ -1,1 +1,0 @@
-The fake command line answers this state from its own code: it prints past the output ceiling.
