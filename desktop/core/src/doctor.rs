@@ -26,10 +26,15 @@ pub const SERVICE_STEPS_BODY: &str =
     "Run this in a terminal. It adopts the other service, or moves it over to this one.";
 pub const SERVICE_STEPS_COMMAND: &str = "fermix service install";
 
+/// What the network row says before anyone presses Run: the run reaches real
+/// services, so it starts only from that button, never on page entry.
+pub const NETWORK_BODY: &str =
+    "Tests your provider sign-in, channels and voice key with their services. Takes up to 30 seconds.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Local,
-    /// Probes providers and channels for real; one probe is a metered call.
+    /// Probes providers, channels and the voice key for real; one probe is a metered call.
     Network,
 }
 
@@ -38,6 +43,14 @@ impl Scope {
         match self {
             Scope::Local => "local",
             Scope::Network => "network",
+        }
+    }
+
+    /// The banner while a run of this scope starts or runs.
+    pub fn running(self) -> &'static str {
+        match self {
+            Scope::Local => "Running checks",
+            Scope::Network => "Running network checks",
         }
     }
 }
@@ -306,7 +319,7 @@ pub fn summary_sentence(summary: &Summary) -> String {
 
 pub fn headline(session: &Session) -> String {
     match session.status {
-        SessionStatus::Running => "Running checks".into(),
+        SessionStatus::Running => session_scope(session).running().into(),
         SessionStatus::Cancelled => "Checks cancelled".into(),
         SessionStatus::TimedOut => "The checks ran out of time".into(),
         SessionStatus::Failed => "The checks stopped early".into(),
@@ -323,11 +336,21 @@ pub fn detail(session: &Session) -> String {
             "{} of {} checks done",
             session.completed_count, session.total
         ),
-        SessionStatus::Completed | SessionStatus::Unknown => {
-            "Answers come from the running daemon, not from this app.".into()
-        }
+        SessionStatus::Completed | SessionStatus::Unknown => match session_scope(session) {
+            Scope::Local => "Answers come from the running daemon, not from this app.".into(),
+            Scope::Network => "Answers come from each service, asked by the running daemon.".into(),
+        },
         _ if problems > 0 => summary_sentence(&session.summary),
         _ => "Nothing that ran needs attention.".into(),
+    }
+}
+
+/// Only the network run reaches outside the machine; any other scope reads as local.
+fn session_scope(session: &Session) -> Scope {
+    if session.scope == Scope::Network.wire() {
+        Scope::Network
+    } else {
+        Scope::Local
     }
 }
 

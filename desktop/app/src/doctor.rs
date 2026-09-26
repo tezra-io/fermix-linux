@@ -1,14 +1,15 @@
 //! Doctor: runs the daemon's local checks and shows what they found, problems
-//! first. The page owns its session and makes its own daemon calls. A remediation
-//! that opens a Settings pane goes through the callback it was given; Restart
-//! opens the window's one Restart confirmation.
+//! first; the network checks run only from their own button. The page owns its
+//! session and makes its own daemon calls. A remediation that opens a Settings
+//! pane goes through the callback it was given; Restart opens the window's one
+//! Restart confirmation.
 
 use crate::daemon::Daemon;
 use adw::prelude::*;
 use fermix_client::doctor::{
     check_title, detail, grouped, headline, poll_cap, progress, Check, CheckStatus, Fix, Group,
-    Scope, Session, SessionStatus, Tone, POLL_MS, SERVICE_STEPS_BODY, SERVICE_STEPS_COMMAND,
-    STALLED,
+    Scope, Session, SessionStatus, Tone, NETWORK_BODY, POLL_MS, SERVICE_STEPS_BODY,
+    SERVICE_STEPS_COMMAND, STALLED,
 };
 use fermix_client::management::CallError;
 use fermix_client::view::{daemon_problem, DaemonProblem};
@@ -26,8 +27,8 @@ struct Run {
     session: Option<Session>,
     /// The running session being polled; `None` once it ends, stalls or is cancelled.
     following: Option<String>,
-    /// A `doctor.start` is on the wire.
-    starting: bool,
+    /// A `doctor.start` of this scope is on the wire.
+    starting: Option<Scope>,
     /// The last call did not reach the daemon; only an answer shows the checks again.
     down: bool,
 }
@@ -45,6 +46,8 @@ struct Banner {
     progress: gtk::ProgressBar,
     run: gtk::Button,
     cancel: gtk::Button,
+    /// Runs the network checks; its row sits under the banner.
+    network: gtk::Button,
     /// The support line: busy, a refusal, or a reload that did not land.
     note: gtk::Label,
 }
@@ -71,6 +74,7 @@ impl DoctorPage {
         top.add(&banner.progress);
         top.add(&banner.note);
         checks.add(&top);
+        checks.add(&network_group(&banner.network));
         let groups: Vec<adw::PreferencesGroup> = GROUPS
             .iter()
             .map(|g| {
@@ -109,16 +113,21 @@ impl DoctorPage {
     /// Page entry runs the local checks, as macOS does, unless a run this page
     /// started is still going: at most two run at once, so it is followed, not doubled.
     pub fn shown(self: &Rc<Self>) {
-        self.run_checks();
+        self.run_checks(Scope::Local);
     }
 
     fn wire_banner(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        self.banner.run.connect_clicked(move |_| {
-            if let Some(page) = weak.upgrade() {
-                page.run_checks();
-            }
-        });
+        for (button, scope) in [
+            (&self.banner.run, Scope::Local),
+            (&self.banner.network, Scope::Network),
+        ] {
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(page) = weak.upgrade() {
+                    page.run_checks(scope);
+                }
+            });
+        }
         let weak = Rc::downgrade(self);
         self.banner.cancel.connect_clicked(move |_| {
             if let Some(page) = weak.upgrade() {
@@ -127,21 +136,21 @@ impl DoctorPage {
         });
     }
 
-    fn run_checks(self: &Rc<Self>) {
+    fn run_checks(self: &Rc<Self>, scope: Scope) {
         let run = self.run.borrow();
-        if run.starting || run.following.is_some() {
+        if run.starting.is_some() || run.following.is_some() {
             return;
         }
         drop(run);
-        glib::spawn_future_local(self.clone().start());
+        glib::spawn_future_local(self.clone().start(scope));
     }
 
-    async fn start(self: Rc<Self>) {
-        self.run.borrow_mut().starting = true;
+    async fn start(self: Rc<Self>, scope: Scope) {
+        self.run.borrow_mut().starting = Some(scope);
         self.set_note(None);
         self.render();
-        let answer = self.daemon.call(|m| m.doctor_start(Scope::Local)).await;
-        self.run.borrow_mut().starting = false;
+        let answer = self.daemon.call(move |m| m.doctor_start(scope)).await;
+        self.run.borrow_mut().starting = None;
         let session = match answer {
             Ok(session) => session,
             Err(e) => return self.failed(e),
@@ -214,7 +223,7 @@ impl DoctorPage {
     async fn reload(self: Rc<Self>) {
         self.set_note(None);
         match self.daemon.call(|m| m.settings_reload()).await {
-            Ok(_) => self.run_checks(),
+            Ok(_) => self.run_checks(Scope::Local),
             Err(e) => self.failed(e),
         }
     }
@@ -269,14 +278,14 @@ impl DoctorPage {
         self.stack
             .set_visible_child_name(if run.down { "down" } else { "checks" });
         let running = run.following.is_some();
-        let (title, subtitle) = match &run.session {
-            _ if run.starting => ("Running checks".to_owned(), String::new()),
+        let (title, subtitle) = match (&run.session, run.starting) {
+            (_, Some(scope)) => (scope.running().to_owned(), String::new()),
             // Still running by its last view, but no longer followed: the polls ran out.
-            Some(s) if s.status == SessionStatus::Running && !running => {
+            (Some(s), None) if s.status == SessionStatus::Running && !running => {
                 (STALLED.to_owned(), detail(s))
             }
-            Some(s) => (headline(s), detail(s)),
-            None => ("No checks have run yet".to_owned(), String::new()),
+            (Some(s), None) => (headline(s), detail(s)),
+            (None, None) => ("No checks have run yet".to_owned(), String::new()),
         };
         self.banner.row.set_title(&title);
         self.banner.row.set_subtitle(&subtitle);
@@ -284,8 +293,10 @@ impl DoctorPage {
         self.banner
             .progress
             .set_fraction(done.map_or(0.0, fraction));
-        self.banner.progress.set_visible(running || run.starting);
-        self.banner.run.set_visible(!running && !run.starting);
+        let idle = !running && run.starting.is_none();
+        self.banner.progress.set_visible(!idle);
+        self.banner.run.set_visible(idle);
+        self.banner.network.set_sensitive(idle);
         self.banner.cancel.set_visible(running);
         let session = run.session.clone();
         drop(run);
@@ -390,13 +401,30 @@ fn banner() -> Banner {
         .margin_top(12)
         .visible(false)
         .build();
+    let network = gtk::Button::builder()
+        .label("Run")
+        .valign(gtk::Align::Center)
+        .build();
     Banner {
         row,
         progress,
         run,
         cancel,
+        network,
         note,
     }
+}
+
+/// The network checks' own row, under the banner: what they reach, and Run.
+fn network_group(run: &gtk::Button) -> adw::PreferencesGroup {
+    let row = adw::ActionRow::new();
+    row.set_use_markup(false);
+    row.set_title("Network checks");
+    row.set_subtitle(NETWORK_BODY);
+    row.add_suffix(run);
+    let group = adw::PreferencesGroup::new();
+    group.add(&row);
+    group
 }
 
 fn fraction((done, total): (u32, u32)) -> f64 {

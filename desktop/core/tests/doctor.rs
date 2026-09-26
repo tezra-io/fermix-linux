@@ -4,7 +4,7 @@
 use fermix_client::doctor::{
     check_title, detail, grouped, headline, poll_cap, progress, summary_sentence, ActionKind,
     Check, CheckStatus, Fix, Group, Scope, Session, SessionStatus, Severity, Summary, Tone,
-    MAX_POLLS, POLL_MS,
+    MAX_POLLS, NETWORK_BODY, POLL_MS,
 };
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::management::{decode_response, CallError, Management};
@@ -67,6 +67,13 @@ fn session(status: &str, summary: Value) -> Session {
         "summary": summary, "checks": []
     }))
     .unwrap()
+}
+
+fn network(status: &str, summary: Value) -> Session {
+    Session {
+        scope: Scope::Network.wire().to_owned(),
+        ..session(status, summary)
+    }
 }
 
 fn counts(failed: u32, warning: u32) -> Value {
@@ -283,6 +290,45 @@ fn the_detail_line_says_where_answers_come_from_or_what_a_cut_run_found() {
         detail(&session("timed_out", counts(0, 0))),
         "Nothing that ran needs attention."
     );
+}
+
+/// The page shows one session's rows at a time, so the banner says which kind
+/// of run they came from.
+#[test]
+fn a_network_run_says_so_while_it_runs_and_once_it_is_done() {
+    assert_eq!(Scope::Local.running(), "Running checks");
+    assert_eq!(Scope::Network.running(), "Running network checks");
+    assert_eq!(
+        headline(&session("running", counts(0, 0))),
+        "Running checks"
+    );
+    assert_eq!(
+        headline(&network("running", counts(0, 0))),
+        "Running network checks"
+    );
+    assert_eq!(
+        headline(&network("completed", counts(1, 0))),
+        "One check failed"
+    );
+    assert_eq!(
+        detail(&network("completed", counts(0, 0))),
+        "Answers come from each service, asked by the running daemon."
+    );
+}
+
+/// The network run costs real requests, so it starts only from a button whose
+/// row says what it reaches and how long it can take, as on macOS.
+#[test]
+fn the_network_row_says_what_it_reaches_and_how_long_it_takes() {
+    assert!(NETWORK_BODY.contains("voice key"));
+    assert!(NETWORK_BODY.contains("30 seconds"));
+}
+
+/// The engine sends a refused voice key to the Voice pane; this app has one.
+#[test]
+fn a_refused_voice_key_opens_the_voice_pane() {
+    let fix = remedied("settings_pane", json!("voice")).fix().unwrap();
+    assert_eq!(fix.label(), "Open Voice");
 }
 
 #[test]
