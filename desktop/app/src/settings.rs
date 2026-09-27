@@ -10,7 +10,7 @@ use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage};
 use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
-use fermix_client::ledger::{microphone_statement, PLATFORM_FACT, RIGHTS};
+use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
 use fermix_client::model::DetectRow;
 use fermix_client::settings::{pane, sections_for, Section, SectionRows, GROUPS, PANES};
 use gtk::glib::{self, variant::ToVariant};
@@ -278,12 +278,13 @@ impl SettingsPage {
 
 /// The words above a pane's controls, where the platform owes the reader something first.
 fn intro(slug: &str) -> Option<adw::PreferencesGroup> {
-    let text = match slug {
-        "voice" => microphone_statement(),
+    let (title, text) = match slug {
+        "voice" => (MICROPHONE_HEADLINE, MICROPHONE_DETAIL),
         _ => return None,
     };
     let group = adw::PreferencesGroup::new();
-    group.set_description(Some(&glib::markup_escape_text(&text)));
+    group.set_title(&glib::markup_escape_text(title));
+    group.set_description(Some(&glib::markup_escape_text(text)));
     Some(group)
 }
 

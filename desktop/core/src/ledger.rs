@@ -70,21 +70,18 @@ pub const PLATFORM_FACT: &str = "On this platform a permission is something Ferm
     itself and keeps for itself, not something the operating system verifies and stores. Lose \
     what Fermix keeps and the consent is gone; copy it and the consent moves with it.";
 
-/// M38 §6.5's microphone statement opens with this. Where the statement folds
-/// away, this heads it; where it is shown whole, `microphone_statement` joins them.
-pub const MICROPHONE_HEADLINE: &str = "Linux has no microphone permission";
+/// M38 §6.5's microphone statement: its title, then what it says. The owner
+/// replaced the first wording on 2026-09-26, which read as a warning nobody could
+/// act on, with what Linux does not do, what this app does, and the control that
+/// works. The Pet page folds it under this title; Settings → Voice shows both.
+pub const MICROPHONE_HEADLINE: &str = "How Fermix uses your microphone";
 
-pub const MICROPHONE_DETAIL: &str = "Nothing asked you, nothing appears in your system settings, \
-    and there is nothing to revoke. While Fermix is running it can open the microphone at any \
-    time, and so can any other program you run. Your real controls are to not run it, to mute \
-    the microphone in your sound settings or in PipeWire, or to run it in a sandbox that \
-    withholds audio, which also stops it playing sound. On macOS the operating system asks \
-    first. On Linux it does not.";
-
-/// The whole statement, word for word.
-pub fn microphone_statement() -> String {
-    format!("{MICROPHONE_HEADLINE}. {MICROPHONE_DETAIL}")
-}
+/// True of this app: only a call's pipeline opens the microphone, and reading the
+/// list of microphones never does.
+pub const MICROPHONE_DETAIL: &str = "Linux does not ask before an app uses the microphone, so \
+    you will not see a permission prompt. This app turns the microphone on only during a voice \
+    call and off when the call ends. To make sure nothing hears you, mute the microphone in \
+    your sound settings.";
 
 pub const MEETINGS_SLEEP_STATEMENT: &str = "Fermix cannot keep this computer awake during a \
     meeting. If the machine suspends, the recording stops. Adjust your power settings before a \

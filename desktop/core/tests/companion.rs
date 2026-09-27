@@ -140,7 +140,7 @@ fn the_tooltip_says_what_a_click_does() {
 fn what_stands_in_the_way_comes_first_and_a_click_opens_voice() {
     assert_eq!(
         hint(false, Some("No microphone is connected."), None),
-        "No microphone is connected.\nClick to open Voice."
+        "No microphone is connected.\nClick to open Pet."
     );
 }
 

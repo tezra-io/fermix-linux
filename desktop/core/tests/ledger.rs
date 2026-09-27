@@ -1,6 +1,6 @@
 //! The permission ledger and the platform statements: one source of each string (M38 §6.5, §7.4).
 
-use fermix_client::ledger::{microphone_statement, MICROPHONE_DETAIL, MICROPHONE_HEADLINE, RIGHTS};
+use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, RIGHTS};
 
 #[test]
 fn the_ledger_names_seven_rights_each_with_who_how_and_where() {
@@ -13,27 +13,18 @@ fn the_ledger_names_seven_rights_each_with_who_how_and_where() {
     assert_eq!(RIGHTS[0].title, "Microphone and voice");
 }
 
+/// The owner's plain wording (2026-09-26): what Linux does not do, what this app
+/// does with the microphone, and the one control that works.
 #[test]
-fn the_microphone_statement_says_all_four_things_it_has_to_say() {
-    let statement = microphone_statement();
-    assert!(statement.contains("Linux has no microphone permission"));
-    assert!(statement.contains("nothing to revoke"));
-    assert!(statement.contains("so can any other program you run"));
-    assert!(statement.contains("mute the microphone"));
-    assert!(statement.contains("On macOS the operating system asks first"));
-}
-
-#[test]
-fn the_folded_statement_is_its_headline_over_the_rest_word_for_word() {
-    assert_eq!(MICROPHONE_HEADLINE, "Linux has no microphone permission");
-    assert!(MICROPHONE_DETAIL.starts_with("Nothing asked you"));
+fn the_microphone_statement_says_three_things_plainly() {
+    assert_eq!(MICROPHONE_HEADLINE, "How Fermix uses your microphone");
+    assert!(MICROPHONE_DETAIL.contains("Linux does not ask before an app uses the microphone"));
+    assert!(MICROPHONE_DETAIL.contains("only during a voice call"));
+    assert!(MICROPHONE_DETAIL.contains("mute the microphone in your sound settings"));
     assert_eq!(
-        microphone_statement(),
-        "Linux has no microphone permission. Nothing asked you, nothing appears in your system \
-         settings, and there is nothing to revoke. While Fermix is running it can open the \
-         microphone at any time, and so can any other program you run. Your real controls are to \
-         not run it, to mute the microphone in your sound settings or in PipeWire, or to run it \
-         in a sandbox that withholds audio, which also stops it playing sound. On macOS the \
-         operating system asks first. On Linux it does not."
+        MICROPHONE_DETAIL,
+        "Linux does not ask before an app uses the microphone, so you will not see a permission \
+         prompt. This app turns the microphone on only during a voice call and off when the call \
+         ends. To make sure nothing hears you, mute the microphone in your sound settings."
     );
 }

@@ -371,7 +371,8 @@ Linux constraints:
 
 Proposal:
 1. **Voice page** in the main window. This is the equivalent of the macOS Pet page, and it is the
-   primary, always-reachable surface. It shows the mascot, the status line, the controls, the
+   primary, always-reachable surface. Its sidebar row is named **Pet**, as on macOS (the owner's
+   request, 2026-09-26); this spec keeps calling it the Voice page. It shows the mascot, the status line, the controls, the
    live-call block and the prerequisites (section 4).
 2. **Companion window** (optional, off by default, toggled from the Voice page as on macOS):
    - A second `gtk::Window` of the same `GtkApplication`: `decorated(false)`, `resizable(false)`,
@@ -595,14 +596,20 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
    outputs, "Unknown" when the list cannot be read), kept current as devices come and go. Reading
    the list never opens a device. Under it, the statement, verbatim and **above** the Begin button.
    Amended 2026-09-26 (the owner found the page too wordy): the statement is an expander row whose
-   title is its first sentence, "Linux has no microphone permission", always in view, and whose
-   body is the rest, one click away. Settings → Voice still shows it whole:
-   > "Linux has no microphone permission. Nothing asked you, nothing appears in your system settings,
-   > and there is nothing to revoke. While Fermix is running it can open the microphone at any time,
-   > and so can any other program you run. Your real controls are to not run it, to mute the
-   > microphone in your sound settings or in PipeWire, or to run it in a sandbox that withholds
-   > audio, which also stops it playing sound. On macOS the operating system asks first. On Linux it
-   > does not."
+   title is its headline, always in view, and whose body is the rest, one click away. Settings →
+   Voice shows the same headline and body as its group title and description. Amended again the
+   same day (the owner could not tell what "Linux has no microphone permission" meant): the
+   statement now says, in plain words, that there is no prompt, when the app uses the microphone,
+   and what the user can do about it:
+   > **How Fermix uses your microphone**
+   >
+   > "Linux does not ask before an app uses the microphone, so you will not see a permission
+   > prompt. This app turns the microphone on only during a voice call and off when the call ends.
+   > To make sure nothing hears you, mute the microphone in your sound settings."
+
+   The second sentence is a claim about this app's code, and holds: capture starts with a call and
+   stops when it ends (`app/src/voice_call.rs`, `app/src/audio.rs`). The M38 §6.5 catalogue row
+   still carries the earlier wording; amending it is an engine-repo change for the owner (D1).
 
    **No fake permission prompt.** Do not port macOS's "Fermix asks for the microphone the first time
    you begin a voice call" (M `Localizable.strings:361`) or its Permissions ledger "request"
@@ -651,7 +658,7 @@ Settings → Voice shows the microphone statement alone.
 | R10 | Voice tools that assume macOS: `screen_share` needs computer use, which is unavailable on Wayland (M38 §8.2) | The daemon refuses at tool level. The client shows `tool_event` `error` with its `reason` |
 | R11 | Bluetooth profile switch and device hot-plug mid-call | Bus error ends the call with a sentence. No auto-rebuild in v1 |
 | R12 | Stale plan doc: M38 §8.3 says protocol v1 and lists no v2 frames (line 2909) | Update M38 §8.3 and §8.6 when voice ships |
-| D1 | **Owner decision:** the §6.5 microphone string predates the Flatpak build. In a Flatpak, "run it in a sandbox that withholds audio" is literally `flatpak override --user --nosocket=pulseaudio io.tezra.Fermix` | Keep the string verbatim. Ask the owner whether to amend the one catalogue row, not add a variant. §6.5 forbids variants |
+| D1 | **Owner decision:** the §6.5 microphone string predates the Flatpak build. In a Flatpak, "run it in a sandbox that withholds audio" is literally `flatpak override --user --nosocket=pulseaudio io.tezra.Fermix` | Settled 2026-09-26: the owner replaced the string with the plain wording in 4.3, which drops the sandbox advice. The one §6.5 catalogue row in the engine repo is still to be amended to match; no variant is added |
 
 ### 5.2 Build order (each slice ends with a build the owner runs)
 

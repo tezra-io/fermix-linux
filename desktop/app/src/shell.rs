@@ -10,10 +10,10 @@ use gtk::glib::{self, variant::ToVariant};
 use std::cell::RefCell;
 
 /// (stack name, sidebar label, icon)
-/// The Voice page is "companion" in the stack: "voice" is the Settings pane's slug.
+/// The Pet page is "companion" in the stack: "voice" is the Settings pane's slug.
 pub const PAGES: [(&str, &str, &str); 5] = [
     ("chat", "Chat", "fermix-chat-symbolic"),
-    ("companion", "Voice", "audio-input-microphone-symbolic"),
+    ("companion", "Pet", "audio-input-microphone-symbolic"),
     ("home", "Home", "user-home-symbolic"),
     ("doctor", "Doctor", "fermix-doctor-symbolic"),
     ("logs", "Logs", "text-x-generic-symbolic"),

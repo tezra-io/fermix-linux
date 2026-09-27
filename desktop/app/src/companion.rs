@@ -252,7 +252,7 @@ fn companion_window(application: &adw::Application, stage: &gtk::Box) -> gtk::Wi
     let handle = gtk::WindowHandle::builder().child(stage).build();
     let window = gtk::Window::builder()
         .application(application)
-        .title("Fermix Voice")
+        .title("Fermix Pet")
         .decorated(false)
         .resizable(false)
         .child(&handle)

@@ -255,8 +255,8 @@ fn action_verb(action: GateAction) -> &'static str {
 }
 
 /// The microphone a call records from, and under it M38 §6.5's statement, above
-/// every control that opens the microphone: its first sentence always in view,
-/// the rest one click away.
+/// every control that opens the microphone: its title always in view, what it
+/// says one click away.
 fn microphone_group() -> (adw::PreferencesGroup, adw::ActionRow) {
     let microphone = adw::ActionRow::builder()
         .title("Microphone")
