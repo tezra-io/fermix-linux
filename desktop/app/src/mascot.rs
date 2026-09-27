@@ -6,7 +6,7 @@
 //! the mascot's one-ink mark, still, in the text colour.
 
 use fermix_client::mascot::{
-    self, level_to_write, plays, Expression, Pacing, LEVEL, MODE, STATE_MACHINE,
+    self, level_to_write, plays, Expression, Pacing, LEVEL, MODE, SETTLE_SECONDS, STATE_MACHINE,
 };
 use fermix_rive::{Frame, Scene, Stage};
 use gtk::prelude::*;
@@ -128,8 +128,8 @@ mod imp {
         type ParentType = gtk::Widget;
 
         fn class_init(klass: &mut Self::Class) {
-            // Decorative: the Voice page's status line and the companion's
-            // label and tooltip say the state in words.
+            // Decorative: the companion's label and tooltip say the state in
+            // words.
             klass.set_accessible_role(gtk::AccessibleRole::Presentation);
         }
     }
@@ -183,6 +183,12 @@ mod imp {
                 Ok(scene) => {
                     self.scene.replace(Some(scene));
                     self.write_pose(Expression::Idle);
+                    // A new scene draws the file's setup, every pose's parts at
+                    // once, until it has blended to its first pose: play that
+                    // out before anything is drawn.
+                    if let Some(scene) = self.scene.borrow_mut().as_mut() {
+                        scene.advance(SETTLE_SECONDS as f32);
+                    }
                 }
                 Err(error) => glib::g_warning!("fermix", "the mascot is drawn still: {error}"),
             }

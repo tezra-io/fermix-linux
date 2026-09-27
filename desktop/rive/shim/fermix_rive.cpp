@@ -8,6 +8,7 @@
 
 #include "rive/animation/state_machine_instance.hpp"
 #include "rive/artboard.hpp"
+#include "rive/assets/image_asset.hpp"
 #include "rive/file.hpp"
 #include "rive/renderer/gl/gles3.hpp"
 #include "rive/renderer/gl/render_context_gl_impl.hpp"
@@ -197,6 +198,20 @@ static bool create_context(FxStage* stage)
 }
 
 // With the stage's context current: GL, the renderer, then the file.
+// The first image in the file that did not decode, or null. The runtime skips
+// an image it cannot decode and draws the rest of the frame without it.
+static const rive::FileAsset* undecoded_image(const rive::File& file)
+{
+    for (const auto& asset : file.assets())
+    {
+        if (asset->is<rive::ImageAsset>() && asset->as<rive::ImageAsset>()->renderImage() == nullptr)
+        {
+            return asset.get();
+        }
+    }
+    return nullptr;
+}
+
 static bool fill_stage(FxStage* stage, char* error, size_t error_len)
 {
     if (!gladLoadCustomLoader(reinterpret_cast<GLADloadfunc>(eglGetProcAddress)))
@@ -221,6 +236,11 @@ static bool fill_stage(FxStage* stage, char* error, size_t error_len)
              error_len,
              "the animation file could not be read (import result " +
                  std::to_string(static_cast<int>(result)) + ")");
+        return false;
+    }
+    if (const rive::FileAsset* image = undecoded_image(*stage->file))
+    {
+        fail(error, error_len, "the animation's image '" + image->name() + "' could not be decoded");
         return false;
     }
     return true;

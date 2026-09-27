@@ -1,20 +1,18 @@
-//! The Voice page (spec_voice §4.3), top to bottom: the microphone a call records
-//! from, with Linux's microphone statement folded under it; the mascot, with one
-//! line under it and one button: before a call the line says what stands in the
-//! way, or why the last one failed, and the button is the one thing that fixes
-//! it, or Begin; the live-call facts; and the companion window. It draws from
-//! `VoiceView` only; the controller decides everything.
+//! The Pet page (spec_voice §4.3), top to bottom, as the macOS Pet tab: the pet's
+//! still mark, with one line under it and one button: before a call the line says
+//! what stands in the way, or why the last one failed, and the button is the one
+//! thing that fixes it, or Begin; the live-call facts; the microphone a call
+//! records from, with Linux's microphone statement folded under it; and the
+//! companion window, where the pet moves. It draws from `VoiceView` only; the
+//! controller decides everything.
 
-use crate::mascot::Mascot;
 use adw::prelude::*;
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE};
 use fermix_client::mascot::Expression;
 use fermix_client::realtime::session::Palette;
 use fermix_client::voice::{GateAction, StatusLine, VoiceGate};
-use fermix_rive::Stage;
 use gtk::glib::{self, variant::ToVariant};
 use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Everything the page shows, decided by the controller.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +51,6 @@ impl VoiceView {
 
 pub struct VoicePage {
     pub root: adw::PreferencesPage,
-    mascot: Mascot,
     pub companion: adw::SwitchRow,
     status: gtk::Label,
     status_icon: gtk::Image,
@@ -68,14 +65,14 @@ pub struct VoicePage {
     cancel_task: gtk::Button,
     usage: adw::ActionRow,
     microphone: adw::ActionRow,
-    /// What was drawn last, so a new output level alone redraws only the mascot.
+    /// What was drawn last, so a new output level alone redraws nothing: the
+    /// page shows the pet still, and only the companion follows the voice.
     shown: RefCell<Option<VoiceView>>,
 }
 
 impl VoicePage {
-    pub fn new(stage: Option<&Rc<Stage>>) -> VoicePage {
-        let mascot = Mascot::new(stage, 240, 220);
-        let (call_group, status, status_icon) = call_group(&mascot);
+    pub fn new() -> VoicePage {
+        let (call_group, status, status_icon) = call_group();
         let (call, mute, stop) = controls();
         let fix = gtk::Button::builder()
             .css_classes(["pill", "suggested-action"])
@@ -97,13 +94,12 @@ impl VoicePage {
             .build();
         let (microphone_group, microphone) = microphone_group();
         let root = adw::PreferencesPage::new();
-        for group in [&microphone_group, &call_group, &live] {
+        for group in [&call_group, &live, &microphone_group] {
             root.add(group);
         }
         root.add(&more_group(&companion));
         VoicePage {
             root,
-            mascot,
             companion,
             status,
             status_icon,
@@ -122,7 +118,6 @@ impl VoicePage {
     }
 
     pub fn render(&self, view: &VoiceView) {
-        self.mascot.set_level(view.level);
         let unchanged = self
             .shown
             .borrow()
@@ -132,7 +127,6 @@ impl VoicePage {
             return;
         }
         *self.shown.borrow_mut() = Some(view.clone());
-        self.mascot.set_expression(view.expression);
         self.render_status(&view.status);
         self.render_controls(view);
         self.render_live(view);
@@ -212,6 +206,9 @@ impl VoicePage {
 const COMPANION_NOTE: &str = "A small window you can keep beside your work. On GNOME, Alt+Space \
     then Always on Top keeps it above other windows.";
 
+/// The pet's still mark, in points, as the macOS Pet tab draws it (M `PetMark.size`).
+const PET_MARK_SIZE: i32 = 108;
+
 /// Adwaita's status colours; each mode also has its word and icon.
 pub const TONES: [&str; 4] = ["accent", "warning", "success", "error"];
 
@@ -272,14 +269,14 @@ fn microphone_group() -> (adw::PreferencesGroup, adw::ActionRow) {
     (group, microphone)
 }
 
-/// The mascot with its line under it: a word beside an icon, or a sentence
-/// that wraps to a few centred lines.
-fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Label, gtk::Image) {
+/// The pet's still mark with its line under it: a word beside an icon, or a
+/// sentence that wraps to a few centred lines.
+fn call_group() -> (adw::PreferencesGroup, gtk::Label, gtk::Image) {
     let stage = gtk::Box::builder()
         .halign(gtk::Align::Center)
         .margin_top(12)
         .build();
-    stage.append(&mascot.widget);
+    stage.append(&pet_mark());
     let status_icon = gtk::Image::new();
     let status = gtk::Label::builder()
         .css_classes(["title-4"])
@@ -302,6 +299,16 @@ fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Label, gtk::Image
     let group = adw::PreferencesGroup::new();
     group.add(&column);
     (group, status, status_icon)
+}
+
+/// The macOS Pet tab's preview (M `PetMark`): the one-ink pet, 108 points, in
+/// the text colour. Decorative: the line under it says the state in words.
+fn pet_mark() -> gtk::Image {
+    gtk::Image::builder()
+        .icon_name("io.tezra.Fermix-symbolic")
+        .pixel_size(PET_MARK_SIZE)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build()
 }
 
 fn controls() -> (gtk::Button, gtk::ToggleButton, gtk::Button) {

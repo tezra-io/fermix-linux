@@ -32,17 +32,48 @@ fn drawn(frame: &Frame) -> usize {
     pixels.iter().filter(|px| px[3] > 0).count()
 }
 
-/// Pixels drawn in the outer quarters of the frame, where only the speaking
-/// pose's sound waves reach.
-fn beside_the_body(frame: &Frame) -> usize {
+/// Light, nearly opaque pixels: the pet's white body. The body and the pearl
+/// on its head are PNG images inside the file; without them only the navy
+/// face is drawn.
+fn light(frame: &Frame) -> usize {
+    let (pixels, _) = frame.rgba.as_chunks::<4>();
+    pixels
+        .iter()
+        .filter(|px| px[3] > 200 && px[0] > 180 && px[1] > 180 && px[2] > 180)
+        .count()
+}
+
+/// Pixels drawn in the side bands at mid-height, where the idle body never
+/// reaches: the other poses bend the body out there, and speaking draws its
+/// sound waves there.
+fn beside_idle(frame: &Frame) -> usize {
     let width = frame.width as usize;
-    let band = width / 4;
+    let rows = frame.height as usize;
+    let band = width * 18 / 100;
     let (pixels, _) = frame.rgba.as_chunks::<4>();
     pixels
         .chunks(width)
+        .skip(rows * 35 / 100)
+        .take(rows * 30 / 100)
         .flat_map(|row| row[..band].iter().chain(&row[width - band..]))
         .filter(|px| px[3] > 8)
         .count()
+}
+
+/// The most idle draws in those bands over one loop of its animation (4.8 s in
+/// the file), once its first pose has landed.
+fn idle_at_most(stage: &Rc<Stage>) -> usize {
+    let mut scene = scene(stage);
+    scene.set_enum(MODE, Expression::Idle.mode()).expect("mode");
+    play(&mut scene, SETTLE_SECONDS as f32);
+    let frame = 1.0 / FRAMES_PER_SECOND as f32;
+    (0..FRAMES_PER_SECOND as usize * 5)
+        .map(|_| {
+            play(&mut scene, frame);
+            beside_idle(&scene.render(SIDE, SIDE).expect("a frame"))
+        })
+        .max()
+        .expect("frames")
 }
 
 #[test]
@@ -102,6 +133,7 @@ fn the_voice_level_moves_the_speaking_mouth() {
 #[test]
 fn a_pose_that_arrives_mid_blend_lands_before_a_parked_mascot_stops() {
     let stage = stage();
+    let idle = idle_at_most(&stage);
     let mut scene = scene(&stage);
     let frame = 1.0 / FRAMES_PER_SECOND as f32;
     scene
@@ -116,15 +148,38 @@ fn a_pose_that_arrives_mid_blend_lands_before_a_parked_mascot_stops() {
     play(&mut scene, 0.3);
     let waiting = scene.render(SIDE, SIDE).expect("a frame");
     assert!(
-        beside_the_body(&waiting) > 0,
+        beside_idle(&waiting) > idle,
         "idle did not wait for the blend to speaking"
     );
     play(&mut scene, SETTLE_SECONDS as f32 - 0.3 - 2.0 * frame);
     let parked = scene.render(SIDE, SIDE).expect("a frame");
-    assert_eq!(
-        beside_the_body(&parked),
-        0,
-        "idle had not landed when the mascot parked"
+    assert!(
+        beside_idle(&parked) <= idle,
+        "idle had not landed when the mascot parked: {} pixels beside it, idle draws at most {idle}",
+        beside_idle(&parked)
+    );
+}
+
+/// Until its state machine has blended to a pose, a new scene draws the
+/// file's setup, every pose's parts at once. One advance by the settle time
+/// lands the first pose, which is what the app does before its first frame.
+#[test]
+fn one_settle_lands_a_new_scenes_first_pose() {
+    let stage = stage();
+    let idle = idle_at_most(&stage);
+    let mut scene = scene(&stage);
+    let setup = scene.render(SIDE, SIDE).expect("a frame");
+    assert!(
+        beside_idle(&setup) > idle,
+        "a new scene no longer starts from the setup"
+    );
+    scene.set_enum(MODE, Expression::Idle.mode()).expect("mode");
+    scene.advance(SETTLE_SECONDS as f32);
+    let first = scene.render(SIDE, SIDE).expect("a frame");
+    assert!(
+        beside_idle(&first) <= idle,
+        "the first pose had not landed: {} pixels beside it, idle draws at most {idle}",
+        beside_idle(&first)
     );
 }
 
@@ -155,6 +210,31 @@ fn a_name_the_file_does_not_publish_is_an_error() {
     assert!(scene.set_enum(MODE, "dancing").is_err());
     assert!(scene.set_enum("colour", "idle").is_err());
     assert!(scene.set_number("volume", 0.5).is_err());
+}
+
+#[test]
+fn the_pets_body_is_drawn_from_the_image_inside_the_file() {
+    let stage = stage();
+    let mut scene = scene(&stage);
+    play(&mut scene, 0.5);
+    let frame = scene.render(SIDE, SIDE).expect("a frame");
+    let share = light(&frame) as f64 / f64::from(SIDE * SIDE);
+    assert!(
+        share > 0.1,
+        "only {share:.3} of the frame is the white body"
+    );
+}
+
+#[test]
+fn a_file_whose_image_does_not_decode_is_an_error() {
+    let mut broken = MASCOT.to_vec();
+    let png = broken
+        .windows(8)
+        .position(|bytes| bytes == b"\x89PNG\r\n\x1a\n")
+        .expect("the file embeds a PNG");
+    broken[png + 1] = b'X';
+    let refused = Stage::new(&broken).err().expect("refused");
+    assert!(refused.0.contains("pearl"), "{refused}");
 }
 
 #[test]

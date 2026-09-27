@@ -101,9 +101,10 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         Box::new(through_window(application, "win.page")),
     );
     let logs = LogsPage::new(Daemon::new());
-    // One renderer for every mascot; without it they are drawn still.
+    // The companion's pet moves; without a renderer it is drawn still. The Pet
+    // page shows the still mark, as macOS does.
     let stage = mascot::open_stage();
-    let voice = VoicePage::new(stage.as_ref());
+    let voice = VoicePage::new();
     let companion = Companion::new(application, stage.as_ref());
     let pages = [
         chat.root.upcast_ref::<gtk::Widget>(),

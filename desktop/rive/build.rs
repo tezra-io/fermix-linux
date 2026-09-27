@@ -125,6 +125,10 @@ fn renderer(root: &Path, runtime: &Path) {
         .include(runtime.join("renderer/src"))
         .include(runtime.join("decoders/include"))
         .include(root.join("vendor"))
+        // The pet's body and pearl are PNGs inside the file. The GL renderer
+        // decodes images only through these; without `RIVE_DECODERS` it drops
+        // every image silently and draws the face alone.
+        .define("RIVE_DECODERS", None)
         .define("RIVE_PNG", None)
         .flag("-include")
         .flag("rive/renderer/texture.hpp");

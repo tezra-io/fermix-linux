@@ -603,6 +603,12 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
 
 ### 4.3 What the Voice page says, top to bottom
 
+> **Amended 2026-09-26 (the owner):** the page (now "Pet") follows the macOS Pet tab's order. At
+> the top is the pet's still mark (M `PetMark`: the app's symbolic mark at 108 pt in the text
+> colour), with the line and the one button under it (point 2). Then come the live-call facts, the
+> microphone row and statement (point 1), and the companion window. The pet moves only in the
+> companion. The numbers below name the parts, not their order.
+
 1. **Microphone, then the microphone statement** (M38 §6.5 row at line 2306, required by §7.5
    lines 2789-2827 and §8.6 line 2972). First a property row, **Microphone**, naming the sound
    server's default input as the server names it ("None" when it offers no input but copies of its
@@ -611,7 +617,8 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
    change (it subscribes without the server's events, still so upstream), so a microphone plugged
    back in kept the default flag of whatever stood in for it. The page therefore reads the list
    again every 2 s while it is in view (`MicrophoneWatch::refresh`), about 5 to 12 ms on the main
-   thread in a debug build. Under it, the statement, verbatim and **above** the Begin button.
+   thread in a debug build. Under it, the statement, verbatim. It was first placed above the Begin
+button; since the reorder above it sits below it, as macOS's footer to the call's section does.
    Amended 2026-09-26 (the owner found the page too wordy): the statement is an expander row whose
    title is its headline, always in view, and whose body is the rest, one click away. Settings →
    Voice shows the same headline and body as its group title and description. Amended again the
@@ -638,8 +645,7 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
    call): it is not a row of its own. It is the one line under the mascot, plain body text in the
    faint palette with no icon, and its action is the one button under that line, in the place of
    Begin. A sentence only says what is so; its button says what to do, so no sentence repeats its
-   button. A failed call shows its sentence the same way, without red or a warning icon: the mascot
-   carries the error palette. The companion's tooltip repeats the sentence only there, where there is
+   button. A failed call shows its sentence the same way, without red or a warning icon. The companion's tooltip repeats the sentence only there, where there is
    no room for it on screen.
 
 | condition (source) | sentence | action |
