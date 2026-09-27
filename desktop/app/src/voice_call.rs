@@ -12,13 +12,21 @@ use fermix_client::realtime::protocol::{ClientEvent, ServerEvent};
 use fermix_client::realtime::session::{Effect, Input, Session, CALL_START_DEADLINE};
 use fermix_client::voice::Reach;
 use gtk::{gio, glib};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Inputs one user action or wire event may lead to, through effects that
 /// answer at once. The reducer's longest chain is two; past this it is a loop.
 const MAX_STEPS: usize = 8;
+
+/// How long playback must stay empty before it counts as the end of a reply
+/// (macOS `AudioOwner.drainGrace`). A reply arrives faster than it plays, but a
+/// network pause can empty the queue between two of its chunks, and that is not
+/// its end: the pet would turn from speaking to listening and back.
+const DRAIN_GRACE: Duration = Duration::from_millis(350);
 
 /// Everything one voice connection owns.
 pub struct Call {
@@ -200,17 +208,7 @@ impl App {
                 app.voice_input(Input::AudioFailed(failure.sentence()));
             }
         });
-        let weak = Rc::downgrade(self);
-        let queue = Arc::clone(&playback);
-        let on_drained = Box::new(move || {
-            // The next reply may already be queued: the drain is then stale.
-            if !lock(&queue).is_empty() {
-                return;
-            }
-            if let Some(app) = weak.upgrade() {
-                app.voice_input(Input::Drained);
-            }
-        });
+        let on_drained = drain_reporter(self, Arc::clone(&playback));
         match AudioCall::start(endpoints, gate, playback, on_mic, on_failure, on_drained) {
             Ok(audio) => {
                 self.call.borrow_mut().audio = Some(audio);
@@ -272,6 +270,27 @@ fn send(outbox: Option<&Outbox>, event: ClientEvent) {
             "the voice connection closed before a control frame"
         );
     }
+}
+
+/// Reports the end of a reply once playback has stayed empty for `DRAIN_GRACE`.
+/// A later drain supersedes a pending one, and audio still queued at the
+/// deadline means the emptying was a gap, not the end.
+fn drain_reporter(app: &Rc<App>, queue: Arc<Mutex<PlaybackQueue>>) -> Box<dyn Fn()> {
+    let weak = Rc::downgrade(app);
+    let drains = Rc::new(Cell::new(0_u64));
+    Box::new(move || {
+        let drain = drains.get() + 1;
+        drains.set(drain);
+        let (weak, queue, drains) = (weak.clone(), Arc::clone(&queue), Rc::clone(&drains));
+        glib::timeout_add_local_once(DRAIN_GRACE, move || {
+            if drains.get() != drain || !lock(&queue).is_empty() {
+                return;
+            }
+            if let Some(app) = weak.upgrade() {
+                app.voice_input(Input::Drained);
+            }
+        });
+    })
 }
 
 /// The playback queue's lock. A panic while holding it already ended the call's

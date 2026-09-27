@@ -361,6 +361,50 @@ fn the_speaking_tail_outlasts_the_daemon_until_playback_drains() {
     assert_eq!(session.level(), 0.0);
 }
 
+/// The Live engine publishes no end of a reply, so once its audio ran out nothing moved the mode
+/// off speaking, and the pet kept its speaking face until the user next spoke (macOS 2ee3413).
+/// Speaking was the session's own reading of arriving audio, so the drain ends it too, and
+/// leaving speaking resets the anchor as a state frame does.
+#[test]
+fn a_reply_that_finishes_playing_returns_the_pet_to_listening() {
+    let mut session = listening();
+    audio(&mut session, 0.5);
+    assert_eq!(session.mode(), Mode::Speaking);
+    assert_eq!(session.apply(Input::Drained), [Effect::ResetAnchor]);
+    assert_eq!(session.mode(), Mode::Listening);
+    assert_eq!(session.visual_mode(), Mode::Listening);
+    assert_eq!(session.status().label, "Listening");
+}
+
+#[test]
+fn a_drained_reply_on_a_muted_call_returns_the_pet_to_muted() {
+    let mut session = listening();
+    session.apply(Input::Mute(true));
+    audio(&mut session, 0.5);
+    session.apply(Input::Drained);
+    assert_eq!(session.mode(), Mode::Muted);
+}
+
+#[test]
+fn a_drained_reply_spoken_over_running_work_returns_the_pet_to_that_work() {
+    let mut session = listening();
+    event(
+        &mut session,
+        ServerEvent::Task(task(1, TaskStatus::Running)),
+    );
+    audio(&mut session, 0.5);
+    session.apply(Input::Drained);
+    assert_eq!(session.mode(), Mode::ToolUse);
+}
+
+#[test]
+fn a_drain_leaves_a_mode_the_daemon_set_alone() {
+    let mut session = listening();
+    state(&mut session, TurnState::Thinking);
+    assert!(session.apply(Input::Drained).is_empty());
+    assert_eq!(session.mode(), Mode::Thinking);
+}
+
 #[test]
 fn leaving_speaking_resets_the_utterance_anchor() {
     let mut session = listening();

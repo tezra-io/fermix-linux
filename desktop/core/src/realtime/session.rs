@@ -508,10 +508,23 @@ impl Session {
         effects
     }
 
+    /// The reply's audio has finished playing. Speaking was this session's own reading of
+    /// arriving audio, so its end is too: the Live engine publishes no end of a reply, and the
+    /// pet would keep its speaking face until the user next spoke (macOS 2ee3413). It returns
+    /// to backend work still running, or to the microphone. The daemon's next state still wins.
     fn drained(&mut self) -> Vec<Effect> {
         self.tail = false;
         self.level = 0.0;
-        Vec::new()
+        if !self.in_call || self.mode != Mode::Speaking {
+            return Vec::new();
+        }
+        let working = matches!(&self.task, Some(task) if !task.status.is_terminal());
+        self.mode = if working {
+            Mode::ToolUse
+        } else {
+            self.input_mode()
+        };
+        vec![Effect::ResetAnchor]
     }
 
     fn call_deadline(&mut self, call: u64) -> Vec<Effect> {
