@@ -31,8 +31,8 @@ fn an_hour_past_23_is_a_bug() {
 #[test]
 fn the_greeting_names_the_person_when_about_you_has_a_name() {
     assert_eq!(
-        greeting(Some(TimeOfDay::Morning), Some("Sujeeth")),
-        "Good morning, Sujeeth"
+        greeting(Some(TimeOfDay::Morning), Some("Grace")),
+        "Good morning, Grace"
     );
     assert_eq!(
         greeting(Some(TimeOfDay::Afternoon), Some("Ada")),
@@ -65,8 +65,8 @@ fn about_you(value: serde_json::Value) -> SectionRows {
 
 #[test]
 fn a_full_name_greets_by_its_first_word() {
-    let name = about_you_name(Some(&about_you(json!("Sujeeth Shetty"))));
-    assert_eq!(name.as_deref(), Some("Sujeeth"));
+    let name = about_you_name(Some(&about_you(json!("Grace Hopper"))));
+    assert_eq!(name.as_deref(), Some("Grace"));
     let spaced = about_you_name(Some(&about_you(json!("  ada   lovelace "))));
     assert_eq!(spaced.as_deref(), Some("ada"));
 }
