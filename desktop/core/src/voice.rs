@@ -201,7 +201,9 @@ fn key_sentence() -> String {
 
 /// The word under the mascot. Where the gate has the reason (`reachable` is
 /// false), the word stays short; before a call it rests on the session's ready.
-pub fn call_status(session: &Session, reachable: bool) -> Status {
+/// A call that ended for want of a microphone stops saying so once the list
+/// names one again, since the next call would record from it.
+pub fn call_status(session: &Session, reachable: bool, microphone: &Microphone) -> Status {
     if !reachable {
         // True of every gate row, and it does not compete with the row's sentence.
         return Status {
@@ -210,7 +212,9 @@ pub fn call_status(session: &Session, reachable: bool) -> Status {
             palette: Palette::Faint,
         };
     }
-    if session.mode() == Mode::Offline {
+    let microphone_back =
+        session.error() == Some(NO_MICROPHONE) && matches!(microphone, Microphone::Named(_));
+    if session.mode() == Mode::Offline || microphone_back {
         return Status {
             label: "Ready".into(),
             icon: "call-start-symbolic",

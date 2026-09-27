@@ -6,6 +6,7 @@
 use fermix_client::voice::Source;
 use gst::prelude::*;
 use gtk::glib;
+use std::cell::Cell;
 
 /// The device provider for the sound server the call records through.
 pub const SOUND_SERVER: &str = "pulsedeviceprovider";
@@ -15,6 +16,9 @@ const INPUT: &str = "Audio/Source";
 /// A running watch. Dropping it stops the provider and its bus watch.
 pub struct MicrophoneWatch {
     provider: gst::DeviceProvider,
+    /// False after a refresh that could not start the provider again, so that
+    /// nothing stops it twice.
+    started: Cell<bool>,
     _bus: gst::bus::BusWatchGuard,
 }
 
@@ -47,6 +51,7 @@ impl MicrophoneWatch {
         provider.start()?;
         Ok(MicrophoneWatch {
             provider,
+            started: Cell::new(true),
             _bus: bus,
         })
     }
@@ -54,11 +59,28 @@ impl MicrophoneWatch {
     pub fn sources(&self) -> Vec<Source> {
         inputs(&self.provider)
     }
+
+    /// Starts the provider again, so it asks the sound server for its list and
+    /// its default anew, and returns the list. GStreamer's pulse provider never
+    /// hears the default input change (it subscribes without the server's
+    /// events), so a microphone plugged back in keeps the flag the server had a
+    /// moment before it restored that microphone as the default. An error leaves
+    /// the provider stopped until a later refresh starts it.
+    pub fn refresh(&self) -> Result<Vec<Source>, glib::BoolError> {
+        if self.started.replace(false) {
+            self.provider.stop();
+        }
+        self.provider.start()?;
+        self.started.set(true);
+        Ok(inputs(&self.provider))
+    }
 }
 
 impl Drop for MicrophoneWatch {
     fn drop(&mut self) {
-        self.provider.stop();
+        if self.started.get() {
+            self.provider.stop();
+        }
     }
 }
 
@@ -99,11 +121,15 @@ mod tests {
 
     /// Registered once per process; no real device monitor ever picks it (rank none).
     const FAKE: &str = "fermixfakemicrophones";
+    /// A second fake that finds its devices when it starts, as the pulse provider does.
+    const PROBE: &str = "fermixfakeprobe";
     const PATIENCE: Duration = Duration::from_secs(5);
 
     mod imp {
+        use gst::prelude::*;
         use gst::subclass::prelude::*;
         use gtk::glib;
+        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::LazyLock;
 
         #[derive(Default)]
@@ -140,6 +166,50 @@ mod tests {
             fn stop(&self) {}
         }
 
+        /// Each start finds one microphone. The first start sees the default the server
+        /// had a moment before it restored this one, the third finds no server at all.
+        #[derive(Default)]
+        pub struct FakeProbe {
+            starts: AtomicU32,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for FakeProbe {
+            const NAME: &'static str = "FermixFakeProbe";
+            type Type = super::FakeProbe;
+            type ParentType = gst::DeviceProvider;
+        }
+
+        impl ObjectImpl for FakeProbe {}
+        impl GstObjectImpl for FakeProbe {}
+
+        impl DeviceProviderImpl for FakeProbe {
+            fn metadata() -> Option<&'static gst::subclass::DeviceProviderMetadata> {
+                static METADATA: LazyLock<gst::subclass::DeviceProviderMetadata> =
+                    LazyLock::new(|| {
+                        gst::subclass::DeviceProviderMetadata::new(
+                            "Fake probe",
+                            "Audio/Source",
+                            "Devices found anew on every start",
+                            "Fermix",
+                        )
+                    });
+                Some(&METADATA)
+            }
+
+            fn start(&self) -> Result<(), gst::LoggableError> {
+                let start = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
+                if start == 3 {
+                    return Err(gst::loggable_error!(gst::CAT_RUST, "no sound server"));
+                }
+                self.obj()
+                    .device_add(&super::microphone("USB Microphone", start > 1));
+                Ok(())
+            }
+
+            fn stop(&self) {}
+        }
+
         #[derive(Default)]
         pub struct FakeDevice;
 
@@ -161,6 +231,11 @@ mod tests {
     }
 
     glib::wrapper! {
+        pub struct FakeProbe(ObjectSubclass<imp::FakeProbe>)
+            @extends gst::DeviceProvider, gst::Object;
+    }
+
+    glib::wrapper! {
         pub struct FakeDevice(ObjectSubclass<imp::FakeDevice>)
             @extends gst::Device, gst::Object;
     }
@@ -173,6 +248,15 @@ mod tests {
                 .expect("the fake provider registers");
         });
         gst::DeviceProviderFactory::by_name(FAKE).expect("the fake provider is registered")
+    }
+
+    fn register_probe() {
+        static REGISTER: Once = Once::new();
+        gst::init().expect("GStreamer initialises");
+        REGISTER.call_once(|| {
+            gst::DeviceProvider::register(None, PROBE, gst::Rank::NONE, FakeProbe::static_type())
+                .expect("the fake probe registers");
+        });
     }
 
     fn device(name: &str, class: &str, properties: gst::Structure) -> gst::Device {
@@ -253,6 +337,23 @@ mod tests {
             context.iteration(false);
             assert_eq!(seen.borrow().len(), 5, "a dropped watch reports nothing");
             provider.device_remove(&after);
+        });
+    }
+
+    #[test]
+    fn a_refresh_asks_again_and_a_failed_one_is_tried_again() {
+        on_own_loop(|_| {
+            register_probe();
+            let watch = MicrophoneWatch::start(PROBE, |_| {}).expect("the first start works");
+            let usb = |default: bool| vec![("USB Microphone".to_owned(), default)];
+            assert_eq!(names(&watch.sources()), usb(false));
+            let fresh = watch.refresh().expect("the second start works");
+            assert_eq!(names(&fresh), usb(true));
+            assert!(watch.refresh().is_err(), "the third start finds no server");
+            assert!(watch.sources().is_empty());
+            let again = watch.refresh().expect("the fourth start works");
+            assert_eq!(names(&again), usb(true));
+            assert_eq!(names(&watch.sources()), usb(true));
         });
     }
 

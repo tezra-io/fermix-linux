@@ -10,6 +10,7 @@ use fermix_client::realtime::protocol::ServerError;
 use fermix_client::realtime::session::{Input, Mode, Palette, Session};
 use fermix_client::voice::{
     call_status, expression, voice_gate, GateAction, Microphone, Reach, Source, VoiceFacts,
+    NO_MICROPHONE,
 };
 use serde_json::json;
 
@@ -199,15 +200,19 @@ fn the_mascot_follows_what_voice_is_doing() {
     }
 }
 
+fn usb() -> Microphone {
+    Microphone::Named("USB Microphone".into())
+}
+
 #[test]
 fn before_a_call_the_word_rests_on_ready_unless_the_gate_has_the_reason() {
     let session = Session::new();
-    let ready = call_status(&session, true);
+    let ready = call_status(&session, true, &usb());
     assert_eq!(
         (ready.label.as_str(), ready.palette),
         ("Ready", Palette::Secondary)
     );
-    let blocked = call_status(&session, false);
+    let blocked = call_status(&session, false, &usb());
     assert_eq!(
         (blocked.label.as_str(), blocked.palette),
         ("Unavailable", Palette::Faint)
@@ -221,9 +226,31 @@ fn a_refusal_the_gate_does_not_cover_shows_as_the_sessions_sentence() {
     session.apply(Input::ConnectFailed(refusal(
         json!({"reason": "provider_refused"}),
     )));
-    let status = call_status(&session, true);
+    let status = call_status(&session, true, &usb());
     assert_eq!(status.palette, Palette::Error);
     assert_eq!(status.label, "OpenAI refused the voice call.");
+}
+
+#[test]
+fn a_call_that_found_no_microphone_says_so_until_one_is_back() {
+    let mut session = Session::new();
+    for input in [Input::Begin, Input::End, Input::Connected, Input::Begin] {
+        session.apply(input);
+    }
+    session.apply(Input::AudioFailed(NO_MICROPHONE.into()));
+    for unsure in [Microphone::Missing, Microphone::Unknown] {
+        let status = call_status(&session, true, &unsure);
+        assert_eq!(
+            (status.label.as_str(), status.palette),
+            (NO_MICROPHONE, Palette::Error),
+            "{unsure:?}"
+        );
+    }
+    let back = call_status(&session, true, &usb());
+    assert_eq!(
+        (back.label.as_str(), back.palette),
+        ("Ready", Palette::Secondary)
+    );
 }
 
 fn source(name: &str, monitor: bool, default: bool) -> Source {

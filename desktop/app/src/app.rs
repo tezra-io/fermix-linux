@@ -60,6 +60,8 @@ pub struct App {
     /// The input a call would record from, while a voice surface has asked.
     pub microphone: RefCell<Microphone>,
     pub microphone_watch: RefCell<Option<MicrophoneWatch>>,
+    /// Reads the list again while the Voice page is in view.
+    pub microphone_poll: RefCell<Option<glib::SourceId>>,
     home: HomePage,
     providers: ProvidersPage,
 }
@@ -122,6 +124,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         call: RefCell::new(Call::new(audio_endpoints())),
         microphone: RefCell::default(),
         microphone_watch: RefCell::default(),
+        microphone_poll: RefCell::default(),
         home,
         providers,
     })
@@ -342,9 +345,8 @@ fn through_window(application: &adw::Application, action: &'static str) -> impl 
     }
 }
 
-/// Doctor runs its checks as it comes into view, Logs reads only while in view,
-/// and Voice starts following the microphones. Following the stack catches
-/// every way in and out.
+/// Doctor runs its checks as it comes into view, while Logs and Voice read only
+/// while in view. Following the stack catches every way in and out.
 fn follow_visible_page(app: &Rc<App>) {
     let weak = Rc::downgrade(app);
     app.shell
@@ -356,10 +358,13 @@ fn follow_visible_page(app: &Rc<App>) {
             if name.as_deref() != Some("logs") {
                 app.logs.hidden();
             }
+            if name.as_deref() != Some("companion") {
+                app.voice_page_hidden();
+            }
             match name.as_deref() {
                 Some("doctor") => app.doctor.shown(),
                 Some("logs") => app.logs.shown(),
-                Some("companion") => app.watch_microphones(),
+                Some("companion") => app.voice_page_shown(),
                 _ => {}
             }
         });

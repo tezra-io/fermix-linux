@@ -594,7 +594,11 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
    lines 2789-2827 and §8.6 line 2972). First a property row, **Microphone**, naming the sound
    server's default input as the server names it ("None" when it offers no input but copies of its
    outputs, "Unknown" when the list cannot be read), kept current as devices come and go. Reading
-   the list never opens a device. Under it, the statement, verbatim and **above** the Begin button.
+   the list never opens a device. GStreamer's pulse device provider never hears the default input
+   change (it subscribes without the server's events, still so upstream), so a microphone plugged
+   back in kept the default flag of whatever stood in for it. The page therefore reads the list
+   again every 2 s while it is in view (`MicrophoneWatch::refresh`), about 5 to 12 ms on the main
+   thread in a debug build. Under it, the statement, verbatim and **above** the Begin button.
    Amended 2026-09-26 (the owner found the page too wordy): the statement is an expander row whose
    title is its headline, always in view, and whose body is the rest, one click away. Settings →
    Voice shows the same headline and body as its group title and description. Amended again the
@@ -628,7 +632,7 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
 | handshake `client_too_old` / `client_too_new` | "Update this app to talk to this version of Fermix." / "Update Fermix to talk to this app." | none |
 | `max_clients_reached` | "Four other voice clients are already connected to Fermix." | none |
 | capture pipeline fails: pulse connection refused or access denied | "Fermix cannot reach the sound server, so it cannot hear or speak. If you removed its sound permission, voice will not work until you restore it." | none |
-| the sound server offers no input (before a call, from the device list; and after a call whose capture found none) | "No microphone is connected." | none |
+| the sound server offers no input (before a call, from the device list; and after a call whose capture found none, until the list names a microphone again) | "No microphone is connected." | none |
 | ready | "Ready" | Begin voice call |
 
 3. Mascot, status word, controls, then the live-call block (caption line, task, "Voice so far: …").

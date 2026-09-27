@@ -11,14 +11,22 @@ use adw::prelude::*;
 use fermix_client::realtime::session::{Input, Mode};
 use fermix_client::voice::{
     call_status, expression, voice_gate, GateAction, Microphone, Reach, Source, VoiceFacts,
+    NO_MICROPHONE,
 };
 use gtk::{gio, glib};
 use serde_json::Value;
 use std::rc::Rc;
+use std::time::Duration;
 
 const SECTION: &str = "realtime";
 const ENABLED: &str = "realtime_enabled";
 const KEY: &str = "openai_api_key";
+/// How long the list may name no microphone during a call before the call ends:
+/// a headset changing profile drops its microphone for a moment and brings it back.
+const MICROPHONE_GRACE: Duration = Duration::from_secs(2);
+/// How often the Voice page reads the list again while in view, so the row
+/// follows a new default input (see `MicrophoneWatch::refresh`).
+const MICROPHONE_POLL: Duration = Duration::from_secs(2);
 
 impl App {
     /// The Voice page and the companion, from the daemon's facts and the call.
@@ -32,7 +40,7 @@ impl App {
         // What the last attempt found never stops another try.
         let can_begin = voice_gate(&facts(snapshot, Reach::Untried, &microphone)).ready;
         let in_call = session.in_call();
-        let status = call_status(session, gate.ready || in_call);
+        let status = call_status(session, gate.ready || in_call, &microphone);
         VoiceView {
             gate,
             can_begin,
@@ -89,14 +97,82 @@ impl App {
         }
     }
 
-    fn microphone_changed(&self, sources: &[Source]) {
-        let now = Microphone::from_sources(sources);
+    /// Follows the microphones and reads them again every 2 s until the page is
+    /// hidden. A second call while shown changes nothing.
+    pub fn voice_page_shown(self: &Rc<Self>) {
+        if self.microphone_poll.borrow().is_some() {
+            return;
+        }
+        self.watch_microphones();
+        let weak = Rc::downgrade(self);
+        let poll = glib::timeout_add_local(MICROPHONE_POLL, move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            app.refresh_microphones();
+            glib::ControlFlow::Continue
+        });
+        self.microphone_poll.replace(Some(poll));
+    }
+
+    /// Stops the poll; the watch goes on. Calling it while hidden changes nothing.
+    pub fn voice_page_hidden(&self) {
+        if let Some(poll) = self.microphone_poll.take() {
+            poll.remove();
+        }
+    }
+
+    /// Asks the sound server again. Without a watch there is nothing to ask; the
+    /// next showing tries to start one.
+    fn refresh_microphones(self: &Rc<Self>) {
+        let answer = self
+            .microphone_watch
+            .borrow()
+            .as_ref()
+            .map(MicrophoneWatch::refresh);
+        let Some(answer) = answer else {
+            return;
+        };
+        match answer {
+            Ok(sources) => self.microphone_changed(&sources),
+            Err(e) => {
+                // Once per spell, not on every poll.
+                if *self.microphone.borrow() != Microphone::Unknown {
+                    glib::g_warning!("fermix", "the microphone list cannot be read: {e}");
+                }
+                self.set_microphone(Microphone::Unknown);
+            }
+        }
+    }
+
+    fn microphone_changed(self: &Rc<Self>, sources: &[Source]) {
+        self.set_microphone(Microphone::from_sources(sources));
+    }
+
+    fn set_microphone(self: &Rc<Self>, now: Microphone) {
         if *self.microphone.borrow() == now {
             return;
         }
         glib::g_info!("fermix", "voice records from {now:?}");
+        let lost = now == Microphone::Missing;
         self.microphone.replace(now);
         self.render_voice();
+        if lost && self.call.borrow().session.in_call() {
+            self.end_call_if_microphone_stays_gone();
+        }
+    }
+
+    /// The sound server moves a call's recording to whatever is left, which can be a
+    /// copy of the speakers, so the call would go on hearing itself. Still no
+    /// microphone after the grace period ends it; between calls that input does nothing.
+    fn end_call_if_microphone_stays_gone(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(MICROPHONE_GRACE, move || {
+            let Some(app) = weak.upgrade() else { return };
+            if *app.microphone.borrow() == Microphone::Missing {
+                app.voice_input(Input::AudioFailed(NO_MICROPHONE.to_owned()));
+            }
+        });
     }
 
     /// The button beside what stands in the way.

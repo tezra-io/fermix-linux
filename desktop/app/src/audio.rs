@@ -526,14 +526,18 @@ fn failure_from(error: &gst::message::Error) -> AudioFailure {
 /// `pulsesink.c`, untranslated): "Failed to connect:" or "Failed to create
 /// context" when the sound server is unreachable or refuses the app,
 /// "Disconnected:" when it goes away mid-call, and "Failed to connect stream:"
-/// when it has no device to open.
+/// when it has no device to open. "Disconnected: Entity killed" is the server
+/// still there, ending the stream: for the microphone, its device went away
+/// with no other to move to.
 fn failure_of(source: &str, error: &glib::Error) -> AudioFailure {
     let text = error.message();
-    if text.starts_with("Failed to connect stream:") {
-        return match source {
-            MICROPHONE => AudioFailure::NoMicrophone,
-            _ => AudioFailure::Other(text.to_owned()),
-        };
+    let no_device = text.starts_with("Failed to connect stream:");
+    let killed = text == "Disconnected: Entity killed";
+    if source == MICROPHONE && (no_device || killed) {
+        return AudioFailure::NoMicrophone;
+    }
+    if no_device {
+        return AudioFailure::Other(text.to_owned());
     }
     let server = [
         "Failed to connect:",
@@ -846,6 +850,17 @@ mod tests {
             (
                 MICROPHONE,
                 "Failed to create context",
+                AudioFailure::NoSoundServer,
+            ),
+            // The server kills a recording stream whose device went away with nowhere to move it.
+            (
+                MICROPHONE,
+                "Disconnected: Entity killed",
+                AudioFailure::NoMicrophone,
+            ),
+            (
+                SPEAKER,
+                "Disconnected: Entity killed",
                 AudioFailure::NoSoundServer,
             ),
             (
