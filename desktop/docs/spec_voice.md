@@ -380,7 +380,9 @@ Linux constraints:
   coordinates. GTK4 removed `gtk_window_set_keep_above`. Mutter does not implement layer-shell.
   M38 records the same constraint (§8.3, lines 2903-2923).
 - **Windows are the presence model.** Closing the last window quits the GUI (M38 §5.2, 1532-1593),
-  so a call cannot outlive every window.
+  so a call cannot outlive every window. Where the desktop shows the tray icon (added 2026-09-27),
+  closing the last window leaves Fermix in the tray instead, and a call ends with it: the icon
+  shows no call, so none runs unseen (`main_window_close`, `MainWindowClose::ToTray`).
 
 Proposal:
 1. **Voice page** in the main window. This is the equivalent of the macOS Pet page, and it is the

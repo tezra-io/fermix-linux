@@ -23,5 +23,6 @@ pub mod providers;
 pub mod realtime;
 pub mod service;
 pub mod settings;
+pub mod tray;
 pub mod view;
 pub mod voice;

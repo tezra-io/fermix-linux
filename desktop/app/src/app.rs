@@ -17,6 +17,7 @@ use crate::providers::ProvidersPage;
 use crate::settings::{SettingsData, SettingsPage};
 use crate::shell::{self, Shell};
 use crate::state::{Connection, Snapshot, State, RECENT_FOR};
+use crate::tray::Tray;
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
@@ -68,9 +69,12 @@ pub struct App {
     /// The application this was built with. A window's link to it ends when the window is
     /// destroyed; what runs from main-loop callbacks reaches the application through this.
     pub application: adw::Application,
+    /// The tray icon, once it is on the session bus.
+    pub tray: RefCell<Option<Tray>>,
 }
 
-pub fn activate(application: &adw::Application) {
+/// `hidden`: started at login, so the window waits in the tray (see `start_tray`).
+pub fn activate(application: &adw::Application, hidden: bool) {
     // Launching again raises the main window, even from behind the companion.
     let main = application
         .windows()
@@ -81,7 +85,7 @@ pub fn activate(application: &adw::Application) {
         return;
     }
     let app = build_app(application);
-    start(&app);
+    start(&app, hidden);
 }
 
 /// Every page, the window around them, and the controller that owns both.
@@ -135,6 +139,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         home,
         providers,
         application: application.clone(),
+        tray: RefCell::default(),
     })
 }
 
@@ -147,8 +152,8 @@ fn audio_endpoints() -> Endpoints {
     }
 }
 
-/// Wires the controller in, shows the window, and makes the first read.
-fn start(app: &Rc<App>) {
+/// Wires the controller in, shows the window unless `hidden`, and makes the first read.
+fn start(app: &Rc<App>, hidden: bool) {
     app.state.borrow_mut().background.opens_at_login = crate::portal::opens_at_login();
     install_actions(app);
     follow_visible_page(app);
@@ -157,7 +162,10 @@ fn start(app: &Rc<App>) {
     crate::voice_flow::install_call_actions(app);
     app.shell.show_page("home");
     app.render();
-    app.shell.window.present();
+    if !hidden {
+        app.shell.window.present();
+    }
+    app.start_tray(hidden);
     let first = app.clone();
     glib::spawn_future_local(async move {
         first.refresh().await;
@@ -203,6 +211,7 @@ impl App {
         drop(state);
         self.render_voice();
         self.render_assistant();
+        self.show_tray();
     }
 
     /// Re-reads the daemon and redraws. A failure is a state, never an error dialog.

@@ -33,6 +33,8 @@ mod shell;
 mod state;
 mod status;
 mod systemd;
+mod tray;
+mod tray_flow;
 mod voice;
 mod voice_call;
 mod voice_flow;
@@ -40,6 +42,9 @@ mod wordmark;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use std::cell::Cell;
+use std::ops::ControlFlow;
+use std::rc::Rc;
 
 const APP_ID: &str = "io.tezra.Fermix";
 
@@ -47,7 +52,23 @@ fn main() -> glib::ExitCode {
     gio::resources_register_include!("fermix.gresource")
         .expect("the app's own resource bundle is built in");
     let application = adw::Application::builder().application_id(APP_ID).build();
-    application.connect_activate(app::activate);
+    // `--background` is how the desktop starts Fermix at login: in the tray,
+    // without the window. Only the first activation reads it.
+    application.add_main_option(
+        "background",
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Start in the tray, without the window",
+        None,
+    );
+    let hidden = Rc::new(Cell::new(false));
+    let asked = hidden.clone();
+    application.connect_handle_local_options(move |_, options| {
+        asked.set(options.contains("background"));
+        ControlFlow::Continue(())
+    });
+    application.connect_activate(move |application| app::activate(application, hidden.take()));
     install_app_actions(&application);
     application.run()
 }

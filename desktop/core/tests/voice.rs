@@ -448,9 +448,13 @@ fn a_daemon_gap_outranks_a_missing_microphone() {
 /// Windows are the presence model (spec_voice §1.6): a hidden companion never keeps Fermix,
 /// or a call, running out of sight.
 #[test]
-fn closing_the_main_window_quits_unless_the_companion_is_on_screen() {
-    assert_eq!(main_window_close(true), MainWindowClose::Hide);
-    assert_eq!(main_window_close(false), MainWindowClose::Quit);
+fn closing_the_main_window_quits_unless_the_companion_or_the_tray_is_on_screen() {
+    assert_eq!(main_window_close(true, false), MainWindowClose::Hide);
+    assert_eq!(main_window_close(true, true), MainWindowClose::Hide);
+    // Only the tray icon is left: nothing on screen would show a call, so one ends.
+    assert_eq!(main_window_close(false, true), MainWindowClose::ToTray);
+    // Nothing is left on screen at all, so Fermix quits rather than run unseen.
+    assert_eq!(main_window_close(false, false), MainWindowClose::Quit);
 }
 
 #[test]

@@ -294,8 +294,15 @@ pub fn install_companion(app: &Rc<App>) {
         let Some(app) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        match main_window_close(app.companion.window.is_visible()) {
+        match main_window_close(app.companion.window.is_visible(), app.in_tray()) {
             MainWindowClose::Hide => window.set_visible(false),
+            // Nothing on screen would show a call, so none is left running.
+            MainWindowClose::ToTray => {
+                if app.call.borrow().session.in_call() {
+                    app.hang_up();
+                }
+                window.set_visible(false);
+            }
             // Closing would leave Fermix running unseen behind the hidden companion window.
             // Shutdown hangs up any call while the window is still whole.
             MainWindowClose::Quit => app.application.quit(),
@@ -306,7 +313,8 @@ pub fn install_companion(app: &Rc<App>) {
 
 impl App {
     /// Closing the companion never quits Fermix by surprise: with the main
-    /// window hidden behind it, the main window comes back instead.
+    /// window hidden behind it, the main window comes back instead, unless the
+    /// tray icon keeps Fermix within reach.
     pub fn show_companion(self: &Rc<Self>, on: bool) {
         if on {
             self.watch_microphones();
@@ -316,9 +324,15 @@ impl App {
         if self.voice.companion.is_active() != on {
             self.voice.companion.set_active(on);
         }
-        if !on && !self.shell.window.is_visible() {
+        // With the main window closed too, the tray icon may be all that is left: a call
+        // then ends, since nothing on screen would show it. Without one the window returns.
+        let unseen = !on && !self.shell.window.is_visible();
+        if unseen && !self.in_tray() {
             self.shell.window.present();
+        } else if unseen && self.call.borrow().session.in_call() {
+            self.hang_up();
         }
+        self.show_tray();
     }
 }
 

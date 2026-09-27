@@ -122,16 +122,20 @@ pub fn lost_microphone_sentence(recorded: &Microphone, sources: &[Source]) -> Op
 pub enum MainWindowClose {
     /// The companion is on screen: the main window only hides, and a call carries on.
     Hide,
-    /// It was the last window on screen: Fermix quits, which ends any call. The companion's
+    /// Only the tray icon is left: the window hides, and a call ends, since nothing on screen
+    /// would show it.
+    ToTray,
+    /// It was the last thing on screen: Fermix quits, which ends any call. The companion's
     /// window is still there while hidden, so closing alone would leave Fermix running unseen.
     Quit,
 }
 
-pub fn main_window_close(companion_shown: bool) -> MainWindowClose {
-    if companion_shown {
-        MainWindowClose::Hide
-    } else {
-        MainWindowClose::Quit
+/// `in_tray`: the desktop shows Fermix's tray icon, so Fermix can be reached with no window.
+pub fn main_window_close(companion_shown: bool, in_tray: bool) -> MainWindowClose {
+    match (companion_shown, in_tray) {
+        (true, _) => MainWindowClose::Hide,
+        (false, true) => MainWindowClose::ToTray,
+        (false, false) => MainWindowClose::Quit,
     }
 }
 

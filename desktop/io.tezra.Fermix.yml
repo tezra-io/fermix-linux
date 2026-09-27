@@ -31,6 +31,9 @@ finish-args:
   # finer grant: this socket is both record and play (M38 §7.5). The
   # voice socket itself, realtime.sock, sits in ~/.fermix beside daemon.sock.
   - --socket=pulseaudio
+  # The tray icon: the app registers its StatusNotifierItem with the desktop's
+  # tray host under its own unique bus name, so it owns no well-known name.
+  - --talk-name=org.kde.StatusNotifierWatcher
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:
@@ -52,6 +55,8 @@ modules:
       # keys app_icon and app_icon_symbolic).
       - for size in 16 24 32 48 64 128 256 512; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix.png /app/share/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix.png; done
       - for size in 16 24 32 48 64; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png /app/share/icons/hicolor/${size}x${size}/apps/io.tezra.Fermix-symbolic.symbolic.png; done
+      # The macOS menu bar glyph in its three states, for the tray icon (key tray_glyph).
+      - for name in tray tray-starting tray-attention; do install -Dm644 data/icons/hicolor/symbolic/apps/io.tezra.Fermix-${name}-symbolic.symbolic.png /app/share/icons/hicolor/symbolic/apps/io.tezra.Fermix-${name}-symbolic.symbolic.png; done
     sources:
       - type: dir
         path: .

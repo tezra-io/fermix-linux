@@ -105,7 +105,8 @@ fn options(token: &str, autostart: bool) -> glib::Variant {
     options.insert("handle_token", token);
     options.insert("reason", "Open Fermix when you log in");
     options.insert("autostart", autostart);
-    options.insert("commandline", vec!["fermix-desktop"]);
+    // At login Fermix starts in the tray; the window opens only where there is none.
+    options.insert("commandline", vec!["fermix-desktop", "--background"]);
     options.insert("dbus-activatable", false);
     options.end()
 }

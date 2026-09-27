@@ -247,7 +247,7 @@ impl BackgroundRows {
         let service = switch_row("Run in the background", "win.run-in-background");
         service.set_subtitle_selectable(true);
         let login = switch_row("Open at login", "win.open-at-login");
-        login.set_subtitle("Opens this window when you log in.");
+        login.set_subtitle("Starts Fermix in the tray when you log in.");
         let group = adw::PreferencesGroup::builder().title("Background").build();
         group.add(&service);
         group.add(&login);
