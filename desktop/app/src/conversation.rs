@@ -111,7 +111,12 @@ impl App {
         let prompt_id = self.conversation.borrow().prompt_id;
         match incoming {
             Incoming::Update { session_id, update } if session_id == link.session_id => {
-                if !self.conversation.borrow_mut().transcript.apply(&update) {
+                if !self
+                    .conversation
+                    .borrow_mut()
+                    .transcript
+                    .apply(&update, now())
+                {
                     glib::g_debug!("fermix", "chat update not shown: {update:?}");
                 }
             }

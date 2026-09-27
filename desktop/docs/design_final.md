@@ -4,8 +4,9 @@
 > code cites its sections. Where the shipped app differs, the code is right. The main differences:
 > the sidebar is Chat, Pet, Home, Doctor and Logs, with Settings pinned below them and all of
 > Settings built; a provider row leads with one button and keeps the rest behind its ⋮ menu instead
-> of a split button; Chat renders Markdown, tool calls and pictures. The open questions at the end
-> were settled in the build.
+> of a split button; Chat renders Markdown and pictures, says in one live line what Fermix is doing
+> while it works, and folds a turn's tool calls and thoughts into lines that open. The open
+> questions at the end were settled in the build.
 
 Base: design B (setup-first control center). Grafted from A: the not-ready Chat page that routes to the
 fix, the "Start chatting" toast action, inline browser-fallback instead of a dialog, the `AdwBanner`

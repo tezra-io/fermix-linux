@@ -1,8 +1,8 @@
 //! The conversation the Chat page draws: what was asked, what streamed back,
 //! which tools ran, and whether a reply is still coming.
 
-use fermix_client::acp::{StopReason, ToolStatus, Update};
-use fermix_client::chat::{tool_label, Entry, Phase, Transcript};
+use fermix_client::acp::{StopReason, ToolKind, ToolStatus, Update};
+use fermix_client::chat::{Entry, Phase, RunState, ToolRun, Transcript};
 
 fn chunk(text: &str) -> Update {
     Update::MessageChunk(text.into())
@@ -45,30 +45,74 @@ fn a_blank_message_is_never_sent() {
 fn chunks_join_into_one_reply_until_a_tool_runs_between_them() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    t.apply(&chunk("Hel"));
+    t.apply(&chunk("Hel"), at(1));
     assert_eq!(t.phase(), Phase::Streaming);
-    t.apply(&chunk("lo."));
-    t.apply(&Update::ToolCall {
-        id: "t1".into(),
-        title: "web_search".into(),
-        status: ToolStatus::Running,
-    });
-    t.apply(&Update::ToolUpdate {
-        id: "t1".into(),
-        status: ToolStatus::Completed,
-    });
-    t.apply(&chunk("Found it."));
+    t.apply(&chunk("lo."), at(1));
+    t.apply(&call("t1", "web_search", ToolKind::Fetch), at(2));
+    t.apply(&ended("t1", ToolStatus::Completed), at(3));
+    t.apply(&chunk("Found it."), at(4));
     assert_eq!(
         t.entries(),
         [
             Entry::User("hi".into()),
             Entry::Assistant("Hello.".into()),
-            Entry::Tool {
-                id: "t1".into(),
-                title: "web_search".into(),
-                status: ToolStatus::Completed
-            },
+            Entry::Tools(vec![run(
+                "t1",
+                "web_search",
+                ToolKind::Fetch,
+                RunState::Done,
+                2,
+                Some(3)
+            )]),
             Entry::Assistant("Found it.".into()),
+        ]
+    );
+}
+
+#[test]
+fn tools_in_a_row_fold_into_one_group_until_text_comes() {
+    let mut t = Transcript::default();
+    t.send("plan my day", at(0));
+    t.apply(&call("t1", "web_search", ToolKind::Fetch), at(1));
+    t.apply(&call("t2", "shell", ToolKind::Execute), at(2));
+    t.apply(&ended("t1", ToolStatus::Completed), at(3));
+    assert!(
+        t.apply(&ended("t2", ToolStatus::Failed), at(5)),
+        "an update finds its run inside the group"
+    );
+    t.apply(&chunk("Here is your day."), at(6));
+    t.apply(&call("t3", "file_read", ToolKind::Read), at(7));
+    assert_eq!(
+        t.entries(),
+        [
+            Entry::User("plan my day".into()),
+            Entry::Tools(vec![
+                run(
+                    "t1",
+                    "web_search",
+                    ToolKind::Fetch,
+                    RunState::Done,
+                    1,
+                    Some(3)
+                ),
+                run(
+                    "t2",
+                    "shell",
+                    ToolKind::Execute,
+                    RunState::Failed,
+                    2,
+                    Some(5)
+                ),
+            ]),
+            Entry::Assistant("Here is your day.".into()),
+            Entry::Tools(vec![run(
+                "t3",
+                "file_read",
+                ToolKind::Read,
+                RunState::Running,
+                7,
+                None
+            )]),
         ]
     );
 }
@@ -77,10 +121,7 @@ fn chunks_join_into_one_reply_until_a_tool_runs_between_them() {
 fn an_update_for_a_tool_nobody_announced_changes_nothing() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    let shown = t.apply(&Update::ToolUpdate {
-        id: "ghost".into(),
-        status: ToolStatus::Failed,
-    });
+    let shown = t.apply(&ended("ghost", ToolStatus::Failed), at(1));
     assert!(!shown, "the page logs what it could not place");
     assert_eq!(t.entries(), [Entry::User("hi".into())]);
 }
@@ -89,12 +130,12 @@ fn an_update_for_a_tool_nobody_announced_changes_nothing() {
 fn an_update_this_app_does_not_know_is_reported_as_not_shown() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    assert!(!t.apply(&Update::Other("plan".into())));
+    assert!(!t.apply(&Update::Other("plan".into()), at(1)));
     assert!(
-        t.apply(&chunk("")),
+        t.apply(&chunk(""), at(1)),
         "an empty chunk is understood, only empty"
     );
-    assert!(t.apply(&chunk("Hello")));
+    assert!(t.apply(&chunk("Hello"), at(1)));
     assert_eq!(t.entries().len(), 2);
 }
 
@@ -107,7 +148,7 @@ fn a_reply_cut_short_says_why_in_a_note() {
     ] {
         let mut t = Transcript::default();
         t.send("essay", at(0));
-        t.apply(&chunk("Once"));
+        t.apply(&chunk("Once"), at(1));
         t.finish(&StopReason::Other(reason.into()), at(1));
         assert_eq!(
             t.entries().last(),
@@ -121,7 +162,7 @@ fn a_reply_cut_short_says_why_in_a_note() {
 fn a_finished_reply_frees_the_composer() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    t.apply(&chunk("Hello"));
+    t.apply(&chunk("Hello"), at(1));
     t.finish(&StopReason::EndTurn, at(1));
     assert_eq!(t.phase(), Phase::Idle);
     assert!(t.can_send());
@@ -132,7 +173,7 @@ fn a_finished_reply_frees_the_composer() {
 fn stopping_marks_the_reply_as_stopped() {
     let mut t = Transcript::default();
     t.send("write an essay", at(0));
-    t.apply(&chunk("Once"));
+    t.apply(&chunk("Once"), at(1));
     assert!(t.stop());
     assert_eq!(t.phase(), Phase::Stopping);
     assert!(!t.stop(), "a second stop sends nothing");
@@ -160,29 +201,36 @@ fn a_failed_reply_says_why_and_frees_the_composer() {
 }
 
 #[test]
-fn a_tool_still_running_when_the_reply_ends_is_left_as_it_was_last_seen() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.apply(&Update::ToolCall {
-        id: "t1".into(),
-        title: "shell".into(),
-        status: ToolStatus::Running,
-    });
-    t.finish(&StopReason::Cancelled, at(1));
-    assert!(matches!(
-        t.entries()[1],
-        Entry::Tool {
-            status: ToolStatus::Running,
-            ..
+fn a_tool_still_running_when_the_reply_ends_says_how_it_ended() {
+    let cases = [
+        (Some(StopReason::Cancelled), RunState::Stopped),
+        (Some(StopReason::EndTurn), RunState::Unfinished),
+        (None, RunState::Unfinished),
+    ];
+    for (reason, state) in cases {
+        let mut t = Transcript::default();
+        t.send("hi", at(0));
+        t.apply(&call("t1", "shell", ToolKind::Execute), at(1));
+        t.apply(&call("t2", "web_search", ToolKind::Fetch), at(2));
+        t.apply(&ended("t2", ToolStatus::Completed), at(3));
+        match &reason {
+            Some(reason) => t.finish(reason, at(4)),
+            None => t.fail("The chat connection to Fermix broke.", at(4)),
         }
-    ));
-}
-
-#[test]
-fn tool_names_read_as_words() {
-    assert_eq!(tool_label("web_search"), "Web search");
-    assert_eq!(tool_label("memory.recall"), "Memory recall");
-    assert_eq!(tool_label(""), "Tool");
+        let Entry::Tools(runs) = &t.entries()[1] else {
+            panic!("the tools are one group: {:?}", t.entries());
+        };
+        assert_eq!(
+            (runs[0].state, runs[0].ended),
+            (state, Some(at(4))),
+            "{reason:?}"
+        );
+        assert_eq!(
+            runs[1].state,
+            RunState::Done,
+            "a finished run keeps its end"
+        );
+    }
 }
 
 #[test]
@@ -249,11 +297,41 @@ fn picture() -> fermix_client::acp::Image {
     }
 }
 
-fn running(id: &str) -> Update {
+fn call(id: &str, name: &str, kind: ToolKind) -> Update {
     Update::ToolCall {
         id: id.into(),
-        title: "web_search".into(),
+        title: name.into(),
+        kind,
         status: ToolStatus::Running,
+    }
+}
+
+fn running(id: &str) -> Update {
+    call(id, "web_search", ToolKind::Fetch)
+}
+
+fn ended(id: &str, status: ToolStatus) -> Update {
+    Update::ToolUpdate {
+        id: id.into(),
+        status,
+    }
+}
+
+fn run(
+    id: &str,
+    name: &str,
+    kind: ToolKind,
+    state: RunState,
+    started: i64,
+    ended: Option<i64>,
+) -> ToolRun {
+    ToolRun {
+        id: id.into(),
+        name: name.into(),
+        kind,
+        state,
+        started: at(started),
+        ended: ended.map(at),
     }
 }
 
@@ -261,10 +339,10 @@ fn running(id: &str) -> Update {
 fn thoughts_gather_into_one_entry_ahead_of_the_reply() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    t.apply(&Update::ThoughtChunk("Look".into()));
-    t.apply(&Update::ThoughtChunk("ing it up.".into()));
+    t.apply(&Update::ThoughtChunk("Look".into()), at(1));
+    t.apply(&Update::ThoughtChunk("ing it up.".into()), at(1));
     assert_eq!(t.phase(), Phase::Streaming);
-    t.apply(&chunk("Found it."));
+    t.apply(&chunk("Found it."), at(1));
     assert_eq!(
         t.entries(),
         [
@@ -279,9 +357,9 @@ fn thoughts_gather_into_one_entry_ahead_of_the_reply() {
 fn a_picture_sits_between_the_text_around_it() {
     let mut t = Transcript::default();
     t.send("show me", at(0));
-    t.apply(&chunk("Here:"));
-    t.apply(&Update::Image(picture()));
-    t.apply(&chunk("Like it?"));
+    t.apply(&chunk("Here:"), at(1));
+    t.apply(&Update::Image(picture()), at(1));
+    t.apply(&chunk("Like it?"), at(1));
     assert_eq!(
         t.entries(),
         [
@@ -297,8 +375,8 @@ fn a_picture_sits_between_the_text_around_it() {
 fn a_file_that_could_not_come_through_is_named_in_its_own_entry() {
     let mut t = Transcript::default();
     t.send("screenshot please", at(0));
-    t.apply(&Update::Attachment("shot.png".into()));
-    t.apply(&chunk("Sent."));
+    t.apply(&Update::Attachment("shot.png".into()), at(1));
+    t.apply(&chunk("Sent."), at(1));
     assert_eq!(t.entries()[1], Entry::Attachment("shot.png".into()));
     assert_eq!(t.entries()[2], Entry::Assistant("Sent.".into()));
 }
@@ -309,21 +387,24 @@ fn the_orb_shows_while_fermix_works_and_nothing_else_on_screen_moves() {
     assert!(!t.thinking(), "nothing asked yet");
     t.send("hi", at(0));
     assert!(t.thinking(), "asked, nothing back");
-    t.apply(&Update::ThoughtChunk("Hmm".into()));
+    t.apply(&Update::ThoughtChunk("Hmm".into()), at(1));
     assert!(
         !t.thinking(),
         "a live thought carries the orb in its own title, so there is one signal"
     );
-    t.apply(&running("t1"));
-    assert!(!t.thinking(), "a running tool shows its own progress");
-    t.apply(&Update::ToolUpdate {
-        id: "t1".into(),
-        status: ToolStatus::Completed,
-    });
-    assert!(t.thinking(), "between a tool and the next text");
-    t.apply(&chunk("Hel"));
+    t.apply(&running("t1"), at(1));
+    assert!(
+        !t.thinking(),
+        "a running tool's group carries the live line"
+    );
+    t.apply(&ended("t1", ToolStatus::Completed), at(1));
+    assert!(
+        !t.thinking(),
+        "so does a group whose tools are done, until text comes"
+    );
+    t.apply(&chunk("Hel"), at(1));
     assert!(!t.thinking(), "the text streaming in shows the work");
-    t.apply(&Update::Image(picture()));
+    t.apply(&Update::Image(picture()), at(1));
     assert!(t.thinking(), "after a picture, before more text");
     assert!(t.stop());
     assert!(t.thinking(), "stopping still waits on Fermix");
@@ -336,27 +417,59 @@ fn each_question_and_each_finished_reply_carry_a_time() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
     assert_eq!(t.time(0), Some(at(0)));
-    t.apply(&chunk("Checking."));
-    t.apply(&running("t1"));
-    t.apply(&chunk("Done."));
+    t.apply(&chunk("Checking."), at(1));
+    t.apply(&running("t1"), at(1));
+    t.apply(&chunk("Done."), at(1));
     assert_eq!(t.time(1), None, "a reply is timed once it ends");
     assert_eq!(t.time(3), None);
-    t.finish(&StopReason::EndTurn, at(9));
+    t.finish(&StopReason::EndTurn, at(70));
     assert_eq!(t.time(1), None, "only the end of the reply");
     assert_eq!(t.time(2), None);
-    assert_eq!(t.time(3), Some(at(9)));
+    assert_eq!(t.time(3), Some(at(70)));
     assert_eq!(t.time(4), None, "past the end");
+}
+
+#[test]
+fn a_reply_in_the_same_minute_as_its_question_repeats_no_time() {
+    let mut t = Transcript::default();
+    // at(0) is 20 s into its minute: at(39) is the same minute, at(40) the next.
+    t.send("hi", at(0));
+    t.apply(&chunk("Hello."), at(1));
+    t.finish(&StopReason::EndTurn, at(39));
+    assert_eq!(t.time(1), None, "the question's time already says it");
+    t.send("and now?", at(40));
+    t.apply(&chunk("Still here."), at(41));
+    t.finish(&StopReason::EndTurn, at(100));
+    assert_eq!(t.time(3), Some(at(100)), "a minute on, the reply says when");
+}
+
+#[test]
+fn a_turn_counts_from_its_question_while_it_runs() {
+    let mut t = Transcript::default();
+    assert_eq!(t.turn_started(), None);
+    t.send("hi", at(5));
+    assert_eq!(t.turn_started(), Some(at(5)));
+    t.apply(&chunk("Hel"), at(6));
+    assert_eq!(t.turn_started(), Some(at(5)));
+    t.fail("Fermix could not answer.", at(7));
+    assert_eq!(t.turn_started(), None, "nothing runs");
+    t.retry();
+    assert_eq!(
+        t.turn_started(),
+        Some(at(5)),
+        "a retry is the same question"
+    );
 }
 
 #[test]
 fn a_stopped_reply_is_timed_above_its_note() {
     let mut t = Transcript::default();
     t.send("essay", at(0));
-    t.apply(&chunk("Once"));
+    t.apply(&chunk("Once"), at(1));
     t.stop();
-    t.finish(&StopReason::Cancelled, at(5));
+    t.finish(&StopReason::Cancelled, at(65));
     assert_eq!(t.entries()[2], Entry::Notice("Stopped".into()));
-    assert_eq!(t.time(1), Some(at(5)));
+    assert_eq!(t.time(1), Some(at(65)));
     assert_eq!(t.time(2), None);
 }
 
@@ -364,20 +477,20 @@ fn a_stopped_reply_is_timed_above_its_note() {
 fn only_a_bubble_carries_the_time_a_reply_ended() {
     let mut t = Transcript::default();
     t.send("think", at(0));
-    t.apply(&Update::ThoughtChunk("Hmm".into()));
+    t.apply(&Update::ThoughtChunk("Hmm".into()), at(1));
     t.stop();
     t.finish(&StopReason::Cancelled, at(4));
     assert_eq!(t.time(1), None, "a thought is a caption, not a bubble");
     let mut t = Transcript::default();
     t.send("search", at(0));
-    t.apply(&running("t1"));
+    t.apply(&running("t1"), at(1));
     t.finish(&StopReason::EndTurn, at(4));
     assert_eq!(t.time(1), None, "a tool row is a caption too");
     let mut t = Transcript::default();
     t.send("draw", at(0));
-    t.apply(&Update::Image(picture()));
-    t.finish(&StopReason::EndTurn, at(4));
-    assert_eq!(t.time(1), Some(at(4)), "a picture is a bubble");
+    t.apply(&Update::Image(picture()), at(1));
+    t.finish(&StopReason::EndTurn, at(64));
+    assert_eq!(t.time(1), Some(at(64)), "a picture is a bubble");
 }
 
 #[test]
@@ -394,7 +507,7 @@ fn a_reply_stopped_before_anything_came_keeps_only_the_question_time() {
 fn a_failed_reply_is_timed_and_retrying_asks_the_same_question_again() {
     let mut t = Transcript::default();
     t.send("hi", at(0));
-    t.apply(&chunk("Hal"));
+    t.apply(&chunk("Hal"), at(1));
     t.fail("The chat connection to Fermix broke.", at(4));
     assert_eq!(t.time(2), Some(at(4)));
     assert!(t.can_retry());
@@ -421,14 +534,6 @@ fn only_a_failure_that_ends_the_conversation_can_be_retried() {
     assert!(!t.can_retry(), "a newer question replaced it");
     t.finish(&StopReason::EndTurn, at(3));
     assert!(!t.can_retry());
-}
-
-#[test]
-fn tool_states_read_as_words() {
-    use fermix_client::chat::tool_state;
-    assert_eq!(tool_state(ToolStatus::Running), "running");
-    assert_eq!(tool_state(ToolStatus::Completed), "done");
-    assert_eq!(tool_state(ToolStatus::Failed), "failed");
 }
 
 #[test]

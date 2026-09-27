@@ -2,9 +2,10 @@
 //! the tools it ran, its collapsed thoughts, pictures, and failures. A streamed
 //! entry grows in place, so a chunk never redraws what is already on screen.
 
+use super::activity::{Group, Live, Thought};
 use adw::prelude::*;
-use fermix_client::acp::{Image, ToolStatus};
-use fermix_client::chat::{picture_file_name, picture_width, tool_label, tool_state, Entry};
+use fermix_client::acp::Image;
+use fermix_client::chat::{picture_file_name, picture_width, Entry};
 use fermix_client::markdown::{render, Block};
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
@@ -37,17 +38,9 @@ pub struct Drawn {
 enum Parts {
     Fixed,
     Reply(Reply),
-    Thought {
-        orb: gtk::Box,
-        title: gtk::Label,
-        text: gtk::Label,
-    },
-    /// A tool's line, whose marker and state follow its status in place.
-    Tool {
-        id: String,
-        marker: gtk::Box,
-        state: gtk::Label,
-    },
+    Thought(Thought),
+    /// Tools that ran in a row: live while the turn is on them, then one line.
+    Tools(Group),
     Failure {
         retry: gtk::Button,
     },
@@ -78,13 +71,12 @@ impl Drawn {
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
             (Parts::Reply(reply), Entry::Assistant(text)) => reply.grow(text),
-            (Parts::Thought { text: label, .. }, Entry::Thought(text)) => label.set_text(text),
-            (
-                Parts::Tool { id, marker, state },
-                Entry::Tool {
-                    id: new, status, ..
-                },
-            ) if id == new => set_tool_status(marker, state, *status),
+            (Parts::Thought(thought), Entry::Thought(text)) => thought.grow(text),
+            (Parts::Tools(group), Entry::Tools(runs)) => {
+                if !group.grow(runs) {
+                    return false;
+                }
+            }
             _ => return false,
         }
         self.entry = entry.clone();
@@ -92,17 +84,23 @@ impl Drawn {
     }
 
     /// What depends on the rest of the conversation: the time under the entry,
-    /// whether a failure offers Retry, and whether a thought is still coming.
-    pub fn decorate(&self, time: Option<&str>, retry: bool, live: bool) {
+    /// whether a failure offers Retry, and whether the turn is still on it.
+    pub fn decorate(&self, time: Option<&str>, retry: bool, live: Option<&Live>) {
         self.time.set_visible(time.is_some());
         self.time.set_text(time.unwrap_or_default());
-        match &self.parts {
-            Parts::Failure { retry: button } => button.set_visible(retry),
-            Parts::Thought { orb, title, .. } => {
-                orb.set_visible(live);
-                title.set_text(if live { "Thinking…" } else { "Thought" })
-            }
-            Parts::Fixed | Parts::Reply(_) | Parts::Tool { .. } => {}
+        if let Parts::Failure { retry: button } = &self.parts {
+            button.set_visible(retry);
+        }
+        self.set_live(live);
+    }
+
+    /// The parts that follow the running turn, which the page's clock also
+    /// updates every second.
+    pub fn set_live(&self, live: Option<&Live>) {
+        match (&self.parts, &self.entry) {
+            (Parts::Thought(thought), _) => thought.set_live(live),
+            (Parts::Tools(group), Entry::Tools(runs)) => group.set_live(runs, live),
+            _ => {}
         }
     }
 }
@@ -125,14 +123,19 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
             )
         }
         Entry::Thought(text) => {
-            let (widget, parts) = thought(text);
-            (Side::Fermix, widget, None, parts)
+            let thought = Thought::new(text);
+            (
+                Side::Fermix,
+                thought.widget(),
+                None,
+                Parts::Thought(thought),
+            )
         }
         Entry::Image(image) => (Side::Fermix, picture(image), None, Parts::Fixed),
         Entry::Attachment(name) => (Side::Fermix, attachment(name), None, Parts::Fixed),
-        Entry::Tool { id, title, status } => {
-            let (widget, parts) = tool_line(id, title, *status);
-            (Side::Fermix, widget, None, parts)
+        Entry::Tools(runs) => {
+            let group = Group::new(runs);
+            (Side::Fermix, group.widget(), None, Parts::Tools(group))
         }
         Entry::Notice(text) => (Side::Middle, notice_line(text), None, Parts::Fixed),
         Entry::Failure(text) => {
@@ -176,10 +179,15 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
         .margin_end(10)
         .visible(false)
         .build();
+    let side_class = match side {
+        Side::Person => "person",
+        Side::Fermix => "fermix",
+        Side::Middle => "middle",
+    };
     let row = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
-        .css_classes(["chat-row"])
+        .css_classes(["chat-row", side_class])
         .build();
     row.append(&line);
     row.append(&time);
@@ -387,48 +395,6 @@ fn code_block(text: &str) -> (gtk::Widget, Option<gtk::Label>) {
     (block.upcast(), Some(label))
 }
 
-/// Collapsed and dim: the reasoning is there for whoever wants it. While it
-/// comes in, the thinking orb sits in its title, the page's one sign of work.
-fn thought(text: &str) -> (gtk::Widget, Parts) {
-    let orb = orb();
-    orb.add_css_class("inline");
-    let title = gtk::Label::builder()
-        .label("Thinking…")
-        .css_classes(["dim-label", "caption"])
-        .build();
-    let heading = gtk::Box::builder().spacing(6).build();
-    heading.append(&orb);
-    heading.append(&title);
-    let body = gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .wrap_mode(gtk::pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .selectable(true)
-        .css_classes(["dim-label", "chat-thought-text"])
-        .build();
-    let expander = gtk::Expander::builder()
-        .label_widget(&heading)
-        .child(&body)
-        .css_classes(["chat-thought"])
-        .build();
-    let parts = Parts::Thought {
-        orb,
-        title,
-        text: body,
-    };
-    (expander.upcast(), parts)
-}
-
-/// The breathing accent orb. The motion is CSS, which GTK holds still when
-/// animations are off.
-pub fn orb() -> gtk::Box {
-    gtk::Box::builder()
-        .css_classes(["chat-orb"])
-        .valign(gtk::Align::Center)
-        .build()
-}
-
 fn picture(image: &Image) -> gtk::Widget {
     let bytes = glib::Bytes::from(&image.bytes[..]);
     match gdk::Texture::from_bytes(&bytes) {
@@ -592,52 +558,6 @@ fn attachment(name: &str) -> gtk::Widget {
     chip.append(&icon);
     chip.append(&text);
     chip.upcast()
-}
-
-fn tool_line(id: &str, title: &str, status: ToolStatus) -> (gtk::Widget, Parts) {
-    let row = gtk::Box::builder()
-        .spacing(8)
-        .css_classes(["chat-tool"])
-        .build();
-    let marker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.append(&marker);
-    let name = gtk::Label::builder()
-        .label(tool_label(title))
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .css_classes(["caption", "dim-label"])
-        .build();
-    row.append(&name);
-    let state = gtk::Label::builder()
-        .css_classes(["caption", "dim-label"])
-        .build();
-    row.append(&state);
-    set_tool_status(&marker, &state, status);
-    let parts = Parts::Tool {
-        id: id.to_owned(),
-        marker,
-        state,
-    };
-    (row.upcast(), parts)
-}
-
-/// A spinner while the tool runs, then a check or a warning, and the word.
-fn set_tool_status(slot: &gtk::Box, state: &gtk::Label, status: ToolStatus) {
-    // The slot holds the one marker drawn last.
-    if let Some(old) = slot.first_child() {
-        slot.remove(&old);
-    }
-    let marker: gtk::Widget = match status {
-        ToolStatus::Running => adw::Spinner::new().upcast(),
-        ToolStatus::Completed => gtk::Image::from_icon_name("object-select-symbolic").upcast(),
-        ToolStatus::Failed => gtk::Image::from_icon_name("dialog-warning-symbolic").upcast(),
-    };
-    marker.add_css_class(if status == ToolStatus::Failed {
-        "warning"
-    } else {
-        "dim-label"
-    });
-    slot.append(&marker);
-    state.set_text(tool_state(status));
 }
 
 fn quiet_line(icon: &str, text: &str) -> gtk::Widget {

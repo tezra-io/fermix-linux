@@ -2,6 +2,7 @@
 //! the app runs each call off the GTK main thread, and this crate tests on any host.
 
 pub mod acp;
+pub mod activity;
 pub mod capabilities;
 pub mod chat;
 pub mod companion;

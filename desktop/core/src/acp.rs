@@ -101,6 +101,16 @@ pub enum ToolStatus {
     Failed,
 }
 
+/// What a tool does, in the engine's coarse classes (its capability's policy
+/// class, `peer.ex`): only for the tool's icon, never for what the app allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Read,
+    Fetch,
+    Execute,
+    Other,
+}
+
 /// A picture in a reply, decoded from the wire but not yet into pixels.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Image {
@@ -129,6 +139,7 @@ pub enum Update {
     ToolCall {
         id: String,
         title: String,
+        kind: ToolKind,
         status: ToolStatus,
     },
     ToolUpdate {
@@ -252,6 +263,7 @@ fn decode_update(update: &Map<String, Value>) -> Result<Update, String> {
         "tool_call" => Update::ToolCall {
             id: text("toolCallId").ok_or("a tool_call without a toolCallId")?,
             title: text("title").unwrap_or_default(),
+            kind: tool_kind(update.get("kind")),
             status: tool_status(update.get("status")).unwrap_or(ToolStatus::Running),
         },
         "tool_call_update" => match tool_status(update.get("status")) {
@@ -326,6 +338,16 @@ fn decode_image(image: &Value) -> Result<Image, String> {
         mime: mime.to_owned(),
         bytes: bytes.into(),
     })
+}
+
+/// ACP's kinds folded into the engine's four; the engine sends only those.
+fn tool_kind(kind: Option<&Value>) -> ToolKind {
+    match kind.and_then(Value::as_str) {
+        Some("read" | "search") => ToolKind::Read,
+        Some("fetch") => ToolKind::Fetch,
+        Some("execute" | "edit" | "delete" | "move") => ToolKind::Execute,
+        _ => ToolKind::Other,
+    }
 }
 
 fn tool_status(status: Option<&Value>) -> Option<ToolStatus> {

@@ -1,7 +1,7 @@
 //! One conversation as the Chat page draws it: the questions, the replies as
 //! they stream, the tools the assistant ran, and whether a reply is coming.
 
-use crate::acp::{Image, StopReason, ToolStatus, Update};
+use crate::acp::{Image, StopReason, ToolKind, ToolStatus, Update};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -13,15 +13,50 @@ pub enum Entry {
     Image(Image),
     /// A file the assistant sent that cannot come through the chat, by name.
     Attachment(String),
-    Tool {
-        id: String,
-        title: String,
-        status: ToolStatus,
-    },
+    /// Tools that ran one after another, drawn as one group.
+    Tools(Vec<ToolRun>),
     /// A quiet line about the conversation itself ("Stopped").
     Notice(String),
     /// Why a reply did not come.
     Failure(String),
+}
+
+/// One tool's run. Times are wall-clock seconds, as the transcript's are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRun {
+    pub id: String,
+    /// The engine's name for the tool, as it came: "web_search".
+    pub name: String,
+    pub kind: ToolKind,
+    pub state: RunState,
+    pub started: i64,
+    pub ended: Option<i64>,
+}
+
+/// How a run ended, or that it has not. The wire says only the first three;
+/// the last two are what this app knows when the reply ended around a run.
+impl ToolRun {
+    /// Follows the wire's status; only an ending changes the run.
+    fn settle(&mut self, status: ToolStatus, at: i64) {
+        let state = match status {
+            ToolStatus::Running => return,
+            ToolStatus::Completed => RunState::Done,
+            ToolStatus::Failed => RunState::Failed,
+        };
+        self.state = state;
+        self.ended = Some(at);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    Running,
+    Done,
+    Failed,
+    /// The person stopped the reply while it ran.
+    Stopped,
+    /// The reply ended, or failed, before the run said how it went.
+    Unfinished,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,21 +99,26 @@ impl Transcript {
     }
 
     /// Fermix is working on a reply and nothing on screen shows it: no text is
-    /// streaming in, no tool is running, and no thought is coming in (a live
-    /// thought carries the orb in its own title). The page shows its thinking orb.
+    /// streaming in, no thought is coming in (it carries the orb in its title),
+    /// and the last entry is not a group of tools (it carries the live line).
+    /// The page shows its own live line.
     pub fn thinking(&self) -> bool {
         if self.phase == Phase::Idle {
             return false;
         }
         !matches!(
             self.entries.last(),
-            Some(Entry::Assistant(_))
-                | Some(Entry::Thought(_))
-                | Some(Entry::Tool {
-                    status: ToolStatus::Running,
-                    ..
-                })
+            Some(Entry::Assistant(_)) | Some(Entry::Thought(_)) | Some(Entry::Tools(_))
         )
+    }
+
+    /// When the question the running reply answers was asked; `None` while idle.
+    pub fn turn_started(&self) -> Option<i64> {
+        if self.phase == Phase::Idle {
+            return None;
+        }
+        let (index, _) = self.last_question()?;
+        self.time(index)
     }
 
     fn push(&mut self, entry: Entry, time: Option<i64>) {
@@ -97,9 +137,9 @@ impl Transcript {
         true
     }
 
-    /// Adds what the agent sent. False when it was not shown: a kind of update
-    /// this app does not know, or a tool no entry has; the caller logs those.
-    pub fn apply(&mut self, update: &Update) -> bool {
+    /// Adds what the agent sent at `at`. False when it was not shown: a kind of
+    /// update this app does not know, or a tool no entry has; the caller logs those.
+    pub fn apply(&mut self, update: &Update, at: i64) -> bool {
         match update {
             Update::MessageChunk(text) if text.is_empty() => return true,
             Update::ThoughtChunk(text) if text.is_empty() => return true,
@@ -107,15 +147,22 @@ impl Transcript {
             Update::ThoughtChunk(text) => self.append_thought(text),
             Update::Image(image) => self.push(Entry::Image(image.clone()), None),
             Update::Attachment(name) => self.push(Entry::Attachment(name.clone()), None),
-            Update::ToolCall { id, title, status } => {
-                let tool = Entry::Tool {
+            Update::ToolCall {
+                id,
+                title,
+                kind,
+                status,
+            } => self
+                .add_run(ToolRun {
                     id: id.clone(),
-                    title: title.clone(),
-                    status: *status,
-                };
-                self.push(tool, None);
-            }
-            Update::ToolUpdate { id, status } => return self.set_tool_status(id, *status),
+                    name: title.clone(),
+                    kind: *kind,
+                    state: RunState::Running,
+                    started: at,
+                    ended: None,
+                })
+                .settle(*status, at),
+            Update::ToolUpdate { id, status } => return self.set_tool_status(id, *status, at),
             Update::Other(_) => return false,
         }
         self.mark_streaming();
@@ -142,17 +189,43 @@ impl Transcript {
         }
     }
 
-    /// False when no tool entry has `tool_id`.
-    fn set_tool_status(&mut self, tool_id: &str, new: ToolStatus) -> bool {
-        let tool = self.entries.iter_mut().rev().find_map(|entry| match entry {
-            Entry::Tool { id, status, .. } if id == tool_id => Some(status),
-            _ => None,
-        });
-        let Some(status) = tool else {
+    /// Joins the group the reply is in, or starts one after whatever came last.
+    fn add_run(&mut self, run: ToolRun) -> &mut ToolRun {
+        if !matches!(self.entries.last(), Some(Entry::Tools(_))) {
+            self.push(Entry::Tools(Vec::new()), None);
+        }
+        let Some(Entry::Tools(runs)) = self.entries.last_mut() else {
+            unreachable!("the last entry is a group of tools");
+        };
+        runs.push(run);
+        runs.last_mut().expect("a run was just added")
+    }
+
+    fn runs_mut(&mut self) -> impl Iterator<Item = &mut ToolRun> {
+        self.entries
+            .iter_mut()
+            .filter_map(|entry| match entry {
+                Entry::Tools(runs) => Some(runs),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// False when no run has `tool_id`.
+    fn set_tool_status(&mut self, tool_id: &str, status: ToolStatus, at: i64) -> bool {
+        let Some(run) = self.runs_mut().filter(|run| run.id == tool_id).last() else {
             return false;
         };
-        *status = new;
+        run.settle(status, at);
         true
+    }
+
+    /// A run still going when its reply ends will never say how it went.
+    fn end_runs(&mut self, state: RunState, at: i64) {
+        for run in self.runs_mut().filter(|run| run.state == RunState::Running) {
+            run.state = state;
+            run.ended = Some(at);
+        }
     }
 
     /// Asks the reply to stop; false when there is nothing to stop.
@@ -166,6 +239,11 @@ impl Transcript {
 
     pub fn finish(&mut self, reason: &StopReason, at: i64) {
         self.phase = Phase::Idle;
+        let left = match reason {
+            StopReason::Cancelled => RunState::Stopped,
+            StopReason::EndTurn | StopReason::Other(_) => RunState::Unfinished,
+        };
+        self.end_runs(left, at);
         self.time_reply(at);
         match reason {
             StopReason::EndTurn => {}
@@ -175,8 +253,13 @@ impl Transcript {
     }
 
     /// Times the reply's last entry when it is a bubble; a reply that brought
-    /// nothing, or ended on a caption line (a thought, a tool), has none.
+    /// nothing, or ended on a caption line (a thought, a tool), has none. Nor
+    /// does a reply in the same minute as its question, whose time says it.
     fn time_reply(&mut self, at: i64) {
+        let asked = self.last_question().and_then(|(index, _)| self.time(index));
+        if asked.is_some_and(|asked| asked.div_euclid(60) == at.div_euclid(60)) {
+            return;
+        }
         if let (Some(last), Some(time)) = (self.entries.last(), self.times.last_mut()) {
             if matches!(
                 last,
@@ -199,6 +282,7 @@ impl Transcript {
 
     pub fn fail(&mut self, sentence: &str, at: i64) {
         self.phase = Phase::Idle;
+        self.end_runs(RunState::Unfinished, at);
         self.push(Entry::Failure(sentence.to_owned()), Some(at));
     }
 
@@ -246,15 +330,6 @@ fn cut_short(reason: &str) -> String {
     .into()
 }
 
-/// How a tool's state reads after its name: "Web search running".
-pub fn tool_state(status: ToolStatus) -> &'static str {
-    match status {
-        ToolStatus::Running => "running",
-        ToolStatus::Completed => "done",
-        ToolStatus::Failed => "failed",
-    }
-}
-
 /// The width to draw a `width` by `height` picture at so it fits a `bound`
 /// pixel square, never larger than itself and never zero wide.
 pub fn picture_width(width: i32, height: i32, bound: i32) -> i32 {
@@ -268,20 +343,6 @@ pub fn picture_width(width: i32, height: i32, bound: i32) -> i32 {
         .min(for_height)
         .max(1);
     i32::try_from(fitted).expect("no wider than the picture itself")
-}
-
-/// A tool's wire name as words: `web_search` reads "Web search".
-pub fn tool_label(name: &str) -> String {
-    let words: Vec<&str> = name
-        .split(|c: char| c == '_' || c == '.' || c == '-' || c.is_whitespace())
-        .filter(|w| !w.is_empty())
-        .collect();
-    let joined = words.join(" ");
-    let mut chars = joined.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => "Tool".into(),
-    }
 }
 
 /// The name a saved picture starts with: its type's usual extension, and none

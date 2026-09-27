@@ -3,7 +3,7 @@
 
 use fermix_client::acp::{
     cancel, handshake_line, initialize, new_session, parse_ack, parse_line, prompt,
-    reply_unsupported, AckError, Incoming, StopReason, ToolStatus, Update,
+    reply_unsupported, AckError, Incoming, StopReason, ToolKind, ToolStatus, Update,
 };
 use serde_json::{json, Value};
 
@@ -93,6 +93,7 @@ fn streamed_text_and_tool_steps_decode_as_updates() {
             update: Update::ToolCall {
                 id: "t1".into(),
                 title: "web_search".into(),
+                kind: ToolKind::Fetch,
                 status: ToolStatus::Running
             }
         }
@@ -109,6 +110,40 @@ fn streamed_text_and_tool_steps_decode_as_updates() {
             }
         }
     );
+}
+
+#[test]
+fn a_tool_calls_kind_is_the_engines_coarse_class() {
+    let kind_of = |kind: &str| {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{{"sessionUpdate":"tool_call","toolCallId":"t1","title":"x","kind":"{kind}","status":"in_progress"}}}}}}"#
+        );
+        match parse_line(&line).unwrap() {
+            Incoming::Update {
+                update: Update::ToolCall { kind, .. },
+                ..
+            } => kind,
+            other => panic!("not a tool call: {other:?}"),
+        }
+    };
+    assert_eq!(kind_of("read"), ToolKind::Read);
+    assert_eq!(kind_of("search"), ToolKind::Read);
+    assert_eq!(kind_of("fetch"), ToolKind::Fetch);
+    assert_eq!(kind_of("execute"), ToolKind::Execute);
+    assert_eq!(kind_of("edit"), ToolKind::Execute);
+    assert_eq!(kind_of("other"), ToolKind::Other);
+    assert_eq!(kind_of("switch_mode"), ToolKind::Other);
+    let bare = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"x"}}}"#;
+    assert!(matches!(
+        parse_line(bare).unwrap(),
+        Incoming::Update {
+            update: Update::ToolCall {
+                kind: ToolKind::Other,
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 #[test]

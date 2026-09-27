@@ -2,10 +2,12 @@
 //! The page never talks to Fermix; its buttons fire window actions and
 //! `conversation.rs` does the work.
 
+mod activity;
 mod entries;
 
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage, DownView};
+use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
 use fermix_client::chat::{Phase, Transcript};
@@ -37,8 +39,12 @@ pub struct ChatPage {
     conversation: gtk::Stack,
     empty: adw::StatusPage,
     list: gtk::Box,
-    orb: gtk::Box,
-    shown: RefCell<Vec<Drawn>>,
+    /// The live line for a turn with nothing else on screen showing the work.
+    thinking: LiveLine,
+    shown: Rc<RefCell<Vec<Drawn>>>,
+    /// The running turn, which the clock reads each second.
+    turn: Rc<Cell<Option<Turn>>>,
+    clock: Rc<RefCell<Option<glib::SourceId>>>,
     follow: Follow,
     input: gtk::TextView,
     send: gtk::Button,
@@ -48,12 +54,16 @@ pub struct ChatPage {
 
 impl ChatPage {
     pub fn new() -> Self {
+        // Close within a turn; a question opens the next with more room (CSS).
         let list = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+            .spacing(6)
             .build();
-        let orb = orb_row();
-        let (follow, conversation, empty) = conversation_area(&list, &orb);
+        let thinking = LiveLine::new();
+        thinking.row.set_halign(gtk::Align::Start);
+        thinking.row.add_css_class("standalone");
+        thinking.row.set_visible(false);
+        let (follow, conversation, empty) = conversation_area(&list, &thinking.row);
         let (composer, input, send) = composer();
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -73,8 +83,10 @@ impl ChatPage {
             conversation,
             empty,
             list,
-            orb,
-            shown: RefCell::default(),
+            thinking,
+            shown: Rc::default(),
+            turn: Rc::default(),
+            clock: Rc::default(),
             follow,
             input,
             send,
@@ -121,8 +133,15 @@ impl ChatPage {
         let empty = transcript.entries().is_empty();
         self.conversation
             .set_visible_child_name(if empty { "empty" } else { "messages" });
-        self.show_entries(transcript);
-        self.orb.set_visible(transcript.thinking());
+        let turn = Turn::of(transcript);
+        self.turn.set(turn);
+        let live = turn.map(Turn::live);
+        self.show_entries(transcript, live.as_ref());
+        self.thinking.row.set_visible(transcript.thinking());
+        if let Some(live) = &live {
+            self.thinking.thinking(live);
+        }
+        self.keep_time(turn.is_some());
         self.show_composer(transcript.phase(), state.snapshot().is_some());
     }
 
@@ -167,7 +186,7 @@ impl ChatPage {
     /// Draws what changed: entries already on screen stay, one that streamed
     /// more in or changed its status is updated in place, and everything from
     /// the first entry that cannot be is drawn anew.
-    fn show_entries(&self, transcript: &Transcript) {
+    fn show_entries(&self, transcript: &Transcript, live: Option<&Live>) {
         let entries = transcript.entries();
         let mut shown = self.shown.borrow_mut();
         let mut same = 0;
@@ -185,21 +204,67 @@ impl ChatPage {
             self.list.append(&drawn.row);
             shown.push(drawn);
         }
-        decorate(&shown, transcript);
+        decorate(&shown, transcript, live);
+    }
+
+    /// Every second while a reply runs, the live line's time moves on. The
+    /// clock stops itself at the first tick with no reply running.
+    fn keep_time(&self, running: bool) {
+        if !running || self.clock.borrow().is_some() {
+            return;
+        }
+        let (turn, shown) = (self.turn.clone(), self.shown.clone());
+        let (thinking, clock) = (self.thinking.clone(), self.clock.clone());
+        let source = glib::timeout_add_seconds_local(1, move || {
+            let Some(turn) = turn.get() else {
+                clock.take();
+                return glib::ControlFlow::Break;
+            };
+            let live = turn.live();
+            thinking.thinking(&live);
+            if let Some(last) = shown.borrow().last() {
+                last.set_live(Some(&live));
+            }
+            glib::ControlFlow::Continue
+        });
+        self.clock.replace(Some(source));
     }
 }
 
-/// The parts of each entry that follow the rest of the conversation.
-fn decorate(shown: &[Drawn], transcript: &Transcript) {
+/// The running turn: when its question was asked, and whether Stop was pressed.
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    started: i64,
+    stopping: bool,
+}
+
+impl Turn {
+    fn of(transcript: &Transcript) -> Option<Turn> {
+        Some(Turn {
+            started: transcript.turn_started()?,
+            stopping: transcript.phase() == Phase::Stopping,
+        })
+    }
+
+    fn live(self) -> Live {
+        Live {
+            stopping: self.stopping,
+            elapsed: glib::real_time() / 1_000_000 - self.started,
+        }
+    }
+}
+
+/// The parts of each entry that follow the rest of the conversation; only the
+/// last entry can be live.
+fn decorate(shown: &[Drawn], transcript: &Transcript, live: Option<&Live>) {
     let last = shown.len().checked_sub(1);
-    let replying = transcript.phase() != Phase::Idle;
     for (index, drawn) in shown.iter().enumerate() {
         let is_last = Some(index) == last;
         let time = transcript.time(index).and_then(clock);
         drawn.decorate(
             time.as_deref(),
             is_last && transcript.can_retry(),
-            is_last && replying,
+            live.filter(|_| is_last),
         );
     }
 }
@@ -215,17 +280,17 @@ fn clock(at: i64) -> Option<String> {
     }
 }
 
-fn conversation_area(list: &gtk::Box, orb: &gtk::Box) -> (Follow, gtk::Stack, adw::StatusPage) {
+fn conversation_area(list: &gtk::Box, live: &gtk::Box) -> (Follow, gtk::Stack, adw::StatusPage) {
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
+        .spacing(8)
         .margin_top(24)
         .margin_bottom(24)
         .margin_start(18)
         .margin_end(18)
         .build();
     column.append(list);
-    column.append(orb);
+    column.append(live);
     let clamp = adw::Clamp::builder()
         .maximum_size(760)
         .child(&column)
@@ -328,21 +393,6 @@ fn scroll_to_end_when_idle(adjustment: &gtk::Adjustment, stuck: &Rc<Cell<bool>>)
             a.set_value(a.upper() - a.page_size());
         }
     });
-}
-
-/// A small breathing orb in Fermix's place while it works with nothing else
-/// on screen moving.
-fn orb_row() -> gtk::Box {
-    let orb = entries::orb();
-    let row = gtk::Box::builder()
-        .accessible_role(gtk::AccessibleRole::Status)
-        .tooltip_text("Fermix is thinking")
-        .halign(gtk::Align::Start)
-        .visible(false)
-        .build();
-    row.update_property(&[gtk::accessible::Property::Label("Fermix is thinking")]);
-    row.append(&orb);
-    row
 }
 
 fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
