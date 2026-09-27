@@ -7,7 +7,7 @@ record is in its `linux_note` field, and the top-level `linux` object says what 
 
 `wordmark/` holds the Fermix wordmark, the macOS app's `Resources/Wordmark/fermix-wordmark.svg` byte
 for byte, which `app/src/wordmark.rs` draws at the head of the sidebar. `PROVENANCE.json` also
-records first-party art kept elsewhere (the pet's layers, the app icons in `data/icons/`), under
+records first-party art kept elsewhere (the pet's animation in `resources/pet/`, the app icons in `data/icons/`), under
 paths that start with `../`.
 
 `app/src/marks.rs` draws them and its tests check that its table, the records and these files agree.

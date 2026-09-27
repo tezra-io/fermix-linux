@@ -32,10 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install the Rust SDK extension
+      # Mesa's GL: the mascot's render tests draw offscreen with llvmpipe, as there is no GPU here.
+      - name: Install the Rust SDK extension and Mesa
         run: |
           mkdir -p -m 700 "$XDG_RUNTIME_DIR"
-          flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//25.08
+          flatpak install -y --noninteractive --or-update flathub \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08 org.freedesktop.Platform.GL.default//25.08
 
       - name: Validate the desktop entry
         run: flatpak run --filesystem="$PWD" --command=desktop-file-validate org.gnome.Sdk//50 "$PWD/data/io.tezra.Fermix.desktop"

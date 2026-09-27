@@ -118,6 +118,44 @@ fn the_anchor_counts_real_samples_only_and_resets() {
     assert_eq!(queue.played_since_anchor(), 10);
 }
 
+/// Realtime says `listening` at `response.done`, while the reply's tail is still queued. The
+/// anchor resets then, so a Stop early in the next reply must not count that tail: OpenAI
+/// refuses a truncate past the item's own audio.
+#[test]
+fn the_tail_still_queued_at_the_anchor_belongs_to_the_reply_before_it() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&pcm(&[1; 100]));
+    let mut out = [0i16; 40];
+    queue.pull(&mut out);
+    queue.reset_anchor();
+    queue.push_pcm16(&pcm(&[2; 30]));
+    queue.pull(&mut out);
+    assert_eq!(queue.played_since_anchor(), 0, "40 of the 60-sample tail");
+    queue.pull(&mut out);
+    assert_eq!(
+        queue.played_since_anchor(),
+        20,
+        "the tail's last 20, then 20 new"
+    );
+    queue.pull(&mut out);
+    assert_eq!(queue.played_since_anchor(), 30);
+}
+
+#[test]
+fn samples_dropped_at_capacity_come_off_the_tail_first() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&pcm(&vec![1; MAX_QUEUED_SAMPLES]));
+    queue.reset_anchor();
+    assert_eq!(queue.push_pcm16(&pcm(&[2; 3])), 3);
+    let mut tail = vec![0i16; MAX_QUEUED_SAMPLES - 3];
+    queue.pull(&mut tail);
+    assert_eq!(queue.played_since_anchor(), 0);
+    let mut next = [0i16; 3];
+    queue.pull(&mut next);
+    assert_eq!(next, [2; 3]);
+    assert_eq!(queue.played_since_anchor(), 3);
+}
+
 #[test]
 fn clear_empties_the_queue_and_resets_the_anchor() {
     let mut queue = PlaybackQueue::new();

@@ -1,0 +1,21 @@
+#ifndef _RIVE_GRADIENT_STOP_HPP_
+#define _RIVE_GRADIENT_STOP_HPP_
+#include "rive/generated/shapes/paint/gradient_stop_base.hpp"
+namespace rive
+{
+class GradientStop : public GradientStopBase
+{
+public:
+    StatusCode onAddedDirty(CoreContext* context) override;
+#ifdef WITH_RIVE_EDITOR
+    void editorParentChanged(ContainerComponent* from,
+                             ContainerComponent* to) override;
+#endif
+
+protected:
+    void colorValueChanged() override;
+    void positionChanged() override;
+};
+} // namespace rive
+
+#endif

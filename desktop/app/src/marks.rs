@@ -588,7 +588,7 @@ mod tests {
     }
 
     /// Every recorded file as (path from `marks/`, sha256). A path that leaves
-    /// `marks/` (`../`) names a file elsewhere in the workspace: the pet's layers,
+    /// `marks/` (`../`) names a file elsewhere in the workspace: the pet's animation,
     /// the app icons.
     fn recorded_files() -> Vec<(String, String)> {
         records()

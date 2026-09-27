@@ -2,9 +2,9 @@
 
 > **Status:** the implementer's spec written before voice was built (2026-09-24/25), kept because
 > the code cites its sections. Where the shipped app differs, the code is right. The main
-> difference: the companion floats as the mascot alone, with no card or frame, and its glow takes the
-> status colour as the macOS pet's does (§2.4 suggested a card). Paths such as `~/src/...` are the
-> author's checkouts.
+> differences: the companion floats as the mascot alone, with no card or frame (§2.4 suggested a
+> card), and the mascot is the macOS app's Rive animation, with no glow, as on macOS, not the PNG
+> layers §2.2 and §6 describe. Paths such as `~/src/...` are the author's checkouts.
 
 Target: the Rust GTK4/libadwaita app in `~/src/fermix-linux-desktop/desktop` (`io.tezra.Fermix`,
 GNOME 50 Flatpak runtime, gtk4-rs 0.11.5 / glib 0.22.10 / libadwaita 0.9.2 per `Cargo.lock`),
@@ -31,7 +31,7 @@ Repos cited:
 | Flatpak | Add exactly one finish-arg: `--socket=pulseaudio`. Keep `--filesystem=~/.fermix:ro` (the realtime socket sits beside `daemon.sock`, which already works through it) |
 | Portal | None. There is no microphone or audio portal; the Camera portal is irrelevant. No in-app "Allow microphone?" dialog |
 | Presence | A **Voice page** in the main window, plus an optional small **companion window**. On GNOME the app cannot pin itself on top; the user can, through the window menu (Alt+Space → Always on Top). Say so |
-| Pet art | Reuse the 15 macOS PNG layers as is (first-party, MIT). Downscale to 256 px at build time |
+| Pet art | The macOS app's Rive animation, `FermixMascot.riv`, byte for byte (first-party, MIT). It replaced the 15 PNG layers on 2026-09-26 (§2.2, §6) |
 | Prerequisites | Voice enabled in config, an OpenAI **Platform API key** (a ChatGPT/Codex sign-in does not count), then a daemon restart, because voice is boot-bound |
 
 ---
@@ -307,6 +307,19 @@ Rules to port exactly:
   (M `VoicePresentation.swift:288-336`).
 
 ### 2.2 Mascot rendering, to port as pure functions in `core`
+
+> **Superseded 2026-09-26.** macOS moved its pet to one Rive animation (fermix-macos `721f606`),
+> and this app followed. `FermixMascot.riv` publishes the `Pet` state machine, whose view model
+> takes the expression as the `mode` enum (idle, listening, thinking, speaking) and the reply's
+> output level as `level`, 0 to 1. The file blends one pose into the next over 0.45 s, and a
+> blend cannot be interrupted: a pose that arrives mid-blend waits for it. `desktop/rive` vendors
+> the Rive C++ runtime at the commit rive-ios 6.27.0 embeds (`scripts/vendor_rive.sh`) and draws
+> offscreen with its OpenGL renderer through EGL into a texture GTK shows. Without a working GL
+> driver the mascot is the still app mark. `core/src/mascot.rs` holds the contract and the play
+> rules: 30 fps, the level written only while listening or speaking, and with animations off a
+> mascot that plays 1.1 s after each pose change, so a pose queued behind a blend still lands,
+> then holds still. The layer, motion, blink, glow and GTK notes below describe the PNG mascot it
+> replaced.
 
 - **Layers per expression:** `ring` (drawn at **1.20×**, behind), `body`, `face`, and `decor`
   (at 0.75 opacity, only where present), then `pet_ball` on top at **y −15 pt**, shared across
@@ -620,22 +633,30 @@ settings renderer the Settings slice builds. Do not hand-code a voice form.
    action. There is nothing to request.
 
    See D1 in section 5.1 for the Flatpak wording question.
-2. **Prerequisite state.** Show exactly one of these rows, in this order:
+2. **Prerequisite state.** Exactly one of these, the first that applies, said once. Amended
+   2026-09-26 (the owner found the page showed too much error with no microphone or after a failed
+   call): it is not a row of its own. It is the one line under the mascot, plain body text in the
+   faint palette with no icon, and its action is the one button under that line, in the place of
+   Begin. A sentence only says what is so; its button says what to do, so no sentence repeats its
+   button. A failed call shows its sentence the same way, without red or a warning icon: the mascot
+   carries the error palette. The companion's tooltip repeats the sentence only there, where there is
+   no room for it on screen.
 
 | condition (source) | sentence | action |
 |---|---|---|
 | daemon not running (no `daemon.sock` answer) | existing "Fermix is not running." | Start Fermix |
-| `realtime.enabled == false` | "Voice is off. Turn it on to talk to Fermix from this app." | the `realtime_enabled` row |
-| readiness failure `realtime:openai` | daemon sentence verbatim + "A ChatGPT sign-in does not cover voice; it needs an OpenAI API key." | OpenAI key row (`secret.set openai_api_key`) |
+| `realtime.enabled == false` | "Voice is off." | Turn On Voice (`realtime_enabled`) |
+| readiness failure `realtime:openai` (the daemon publishes the key, not a sentence) | "Voice needs an OpenAI API key. A Codex or Claude sign-in does not cover it." | Add Key… (`secret.set openai_api_key`) |
 | restart reason for `realtime` or `providers` | daemon sentence verbatim | Restart Fermix |
-| `enabled` and `status == degraded`, or `realtime.sock` ENOENT or ECONNREFUSED | "Voice is on, but Fermix has not opened its voice connection. Restarting Fermix usually fixes this." | Restart Fermix |
+| `enabled` and `status == degraded`, or `realtime.sock` ENOENT or ECONNREFUSED | "Fermix has not opened its voice connection." | Restart Fermix |
 | handshake `client_too_old` / `client_too_new` | "Update this app to talk to this version of Fermix." / "Update Fermix to talk to this app." | none |
 | `max_clients_reached` | "Four other voice clients are already connected to Fermix." | none |
 | capture pipeline fails: pulse connection refused or access denied | "Fermix cannot reach the sound server, so it cannot hear or speak. If you removed its sound permission, voice will not work until you restore it." | none |
 | the sound server offers no input (before a call, from the device list; and after a call whose capture found none, until the list names a microphone again) | "No microphone is connected." | none |
+| during a call, the microphone it records from leaves the list and is not back within 2 s, while another input is left (the sound server would record from that one unasked) | "The microphone was disconnected, so the call ended." | none |
 | ready | "Ready" | Begin voice call |
 
-3. Mascot, status word, controls, then the live-call block (caption line, task, "Voice so far: …").
+3. Mascot, the line under it (a mode's word beside its icon, or the sentence above), the one button, then the live-call block (caption line, task, "Voice so far: …").
 4. The Companion window switch with the honest footer (section 2.4).
 
 The M38 §8.6 row "The companion exists for macOS today, and there is no Linux companion yet."
@@ -704,6 +725,11 @@ Settings → Voice shows the microphone statement alone.
 ---
 
 ## 6. Pet artwork
+
+> **Superseded 2026-09-26.** The app ships `app/resources/pet/FermixMascot.riv` (fermix-macos
+> `721f606`) instead of these PNGs. Its provenance is the `pet` record in
+> `app/marks/PROVENANCE.json`. `core/tests/mascot.rs` fails when the file stops publishing a name
+> the app writes, and `rive/tests/render.rs` draws every pose from it.
 
 - **Where:** M `Resources/PetExpressions/` holds 15 PNG files:
   - `pet_{idle,listening,thinking,speaking}_{body,face,ring}.png`

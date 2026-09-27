@@ -1,0 +1,96 @@
+#ifndef _RIVE_VERTEX_BASE_HPP_
+#define _RIVE_VERTEX_BASE_HPP_
+#include "rive/container_component.hpp"
+#include "rive/core/field_types/core_double_type.hpp"
+namespace rive
+{
+class VertexBase : public ContainerComponent
+{
+protected:
+    typedef ContainerComponent Super;
+
+public:
+    static const uint16_t typeKey = 107;
+
+    /// Helper to quickly determine if a core object extends another without
+    /// RTTI at runtime.
+    bool isTypeOf(uint16_t typeKey) const override
+    {
+        switch (typeKey)
+        {
+            case VertexBase::typeKey:
+            case ContainerComponentBase::typeKey:
+            case ComponentBase::typeKey:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    uint16_t coreType() const override { return typeKey; }
+
+    static const uint16_t xPropertyKey = 24;
+    static const uint16_t yPropertyKey = 25;
+
+protected:
+    float m_X = 0.0f;
+    float m_Y = 0.0f;
+
+public:
+    inline float x() const { return m_X; }
+    void x(float value)
+    {
+        if (m_X == value)
+        {
+            return;
+        }
+        RIVE_EDITOR_CHANGING(xPropertyKey, &m_X, &value);
+        m_X = value;
+        RIVE_EDITOR_CHANGED(xChanged());
+        notifyPropertyChanged(xPropertyKey);
+    }
+
+    inline float y() const { return m_Y; }
+    void y(float value)
+    {
+        if (m_Y == value)
+        {
+            return;
+        }
+        RIVE_EDITOR_CHANGING(yPropertyKey, &m_Y, &value);
+        m_Y = value;
+        RIVE_EDITOR_CHANGED(yChanged());
+        notifyPropertyChanged(yPropertyKey);
+    }
+
+    void copy(const VertexBase& object)
+    {
+        m_X = object.m_X;
+        m_Y = object.m_Y;
+        ContainerComponent::copy(object);
+    }
+
+    bool deserialize(uint16_t propertyKey, BinaryReader& reader) override
+    {
+        switch (propertyKey)
+        {
+            case xPropertyKey:
+                m_X = CoreDoubleType::deserialize(reader);
+                return true;
+            case yPropertyKey:
+                m_Y = CoreDoubleType::deserialize(reader);
+                return true;
+        }
+        return ContainerComponent::deserialize(propertyKey, reader);
+    }
+
+protected:
+    virtual void xChanged() {}
+    virtual void yChanged() {}
+#ifdef WITH_RIVE_EDITOR
+#include "editor_native/generated/shapes/vertex_ext.inl"
+#endif
+};
+} // namespace rive
+
+#endif

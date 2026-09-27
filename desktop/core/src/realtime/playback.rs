@@ -17,6 +17,9 @@ const SAMPLES_PER_MS: u64 = SAMPLE_RATE as u64 / 1_000;
 pub struct PlaybackQueue {
     samples: VecDeque<i16>,
     played: u64,
+    /// The front samples that were already queued when the anchor reset: the tail of the
+    /// utterance before it, so they are not counted when they play.
+    before_anchor: usize,
 }
 
 /// What one `pull` did.
@@ -40,6 +43,7 @@ impl PlaybackQueue {
         let dropped = (self.samples.len() + incoming).saturating_sub(MAX_QUEUED_SAMPLES);
         let from_queue = dropped.min(self.samples.len());
         self.samples.drain(..from_queue);
+        self.before_anchor = self.before_anchor.saturating_sub(from_queue);
         let (pairs, _odd) = bytes.as_chunks::<2>();
         let kept = pairs
             .iter()
@@ -58,7 +62,9 @@ impl PlaybackQueue {
             *slot = sample;
         }
         out[real..].fill(0);
-        self.played += real as u64;
+        let earlier = real.min(self.before_anchor);
+        self.before_anchor -= earlier;
+        self.played += (real - earlier) as u64;
         Pull {
             real,
             drained: had_audio && self.samples.is_empty(),
@@ -72,12 +78,14 @@ impl PlaybackQueue {
         self.reset_anchor();
     }
 
-    /// Starts counting a new utterance.
+    /// Starts counting a new utterance, from after what is queued now.
     pub fn reset_anchor(&mut self) {
         self.played = 0;
+        self.before_anchor = self.samples.len();
     }
 
-    /// Real samples pulled since the anchor; silence does not count.
+    /// Real samples pulled since the anchor; silence does not count, nor does the tail that
+    /// was still queued when the anchor reset.
     pub fn played_since_anchor(&self) -> u64 {
         self.played
     }

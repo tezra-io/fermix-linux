@@ -246,6 +246,11 @@ impl Session {
         self.call_id.as_deref()
     }
 
+    /// Which call this is, or was last: a timer set during one call checks it before it acts.
+    pub fn call_number(&self) -> u64 {
+        self.call_number
+    }
+
     pub fn task(&self) -> Option<&Task> {
         self.task.as_ref()
     }

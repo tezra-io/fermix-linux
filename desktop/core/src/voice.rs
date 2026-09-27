@@ -1,22 +1,24 @@
 //! What the Voice page says before a call can begin (spec_voice §4.3): exactly
-//! one row, the first that applies, from what the daemon reports, what the last
-//! connection attempt found and which microphone the sound server offers.
-//! Nothing is probed or inferred here. Also the call's word and the mascot's
-//! expression, from the session.
+//! one sentence, the first that applies, from what the daemon reports, what the
+//! last connection attempt found and which microphone the sound server offers.
+//! Nothing is probed or inferred here. Also the line under the mascot and the
+//! mascot's expression, from the session.
 
 use crate::mascot::Expression;
 use crate::model::SetupState;
 use crate::overview::RealtimeFacts;
 use crate::realtime::client::ConnectError;
 use crate::realtime::protocol::Direction;
-use crate::realtime::session::{Mode, Palette, Session, Status};
-use crate::view::fixed_attention_copy;
+use crate::realtime::session::{Mode, Palette, Session};
 
 /// The readiness failure a missing OpenAI key raises.
 const KEY_FAILURE: &str = "realtime:openai";
 /// Said before a call when the sound server offers no microphone, and after one
 /// whose recording could find none.
 pub const NO_MICROPHONE: &str = "No microphone is connected.";
+/// Said when the microphone a call records from went away and another input took its place:
+/// the call ends rather than record from an input nobody chose.
+pub const MICROPHONE_LOST: &str = "The microphone was disconnected, so the call ended.";
 
 /// What the last attempt to reach `realtime.sock` found.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,9 +93,50 @@ impl Microphone {
             Microphone::Unknown => "Unknown",
         }
     }
+
+    /// Whether a call recording from this microphone has lost it in `sources`: the named one
+    /// is no longer listed, even with another input left, or the list names none at all.
+    pub fn lost_in(&self, sources: &[Source]) -> bool {
+        match self {
+            Microphone::Named(name) => !sources.iter().any(|s| s.name == *name),
+            Microphone::Unknown => Microphone::from_sources(sources) == Microphone::Missing,
+            Microphone::Missing => false,
+        }
+    }
 }
 
-/// The one thing the page offers to fix what it says.
+/// How a call whose microphone was lost ends once the grace period is over: not at all when
+/// `sources` lists that microphone again; otherwise with why.
+pub fn lost_microphone_sentence(recorded: &Microphone, sources: &[Source]) -> Option<&'static str> {
+    if !recorded.lost_in(sources) {
+        return None;
+    }
+    match Microphone::from_sources(sources) {
+        Microphone::Missing => Some(NO_MICROPHONE),
+        Microphone::Named(_) | Microphone::Unknown => Some(MICROPHONE_LOST),
+    }
+}
+
+/// What closing the main window does. Windows are the presence model (spec_voice §1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainWindowClose {
+    /// The companion is on screen: the main window only hides, and a call carries on.
+    Hide,
+    /// It was the last window on screen: Fermix quits, which ends any call. The companion's
+    /// window is still there while hidden, so closing alone would leave Fermix running unseen.
+    Quit,
+}
+
+pub fn main_window_close(companion_shown: bool) -> MainWindowClose {
+    if companion_shown {
+        MainWindowClose::Hide
+    } else {
+        MainWindowClose::Quit
+    }
+}
+
+/// The one thing the page offers to fix what it says. Its button says what to
+/// do, so the sentence beside it only says what is so.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GateAction {
     StartFermix,
@@ -115,10 +158,21 @@ pub struct VoiceFacts<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceGate {
+    /// One short sentence, said once, under the mascot.
     pub sentence: String,
     pub action: Option<GateAction>,
     /// Whether "Begin voice call" may be pressed.
     pub ready: bool,
+}
+
+/// The line under the mascot: a mode's word beside its icon, or a sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLine {
+    pub text: String,
+    /// The mode's icon. A sentence (what stands in the way, or why the last
+    /// call failed) has none: its words say it.
+    pub icon: Option<&'static str>,
+    pub palette: Palette,
 }
 
 fn blocked(sentence: &str, action: Option<GateAction>) -> VoiceGate {
@@ -141,8 +195,7 @@ pub fn voice_gate(facts: &VoiceFacts<'_>) -> VoiceGate {
     }
     let enabled = facts.realtime.map_or(state.features.voice, |r| r.enabled);
     if !enabled {
-        let off = "Voice is off. Turn it on to talk to Fermix from this app.";
-        return blocked(off, Some(GateAction::TurnOn));
+        return blocked("Voice is off.", Some(GateAction::TurnOn));
     }
     if state
         .readiness
@@ -150,15 +203,14 @@ pub fn voice_gate(facts: &VoiceFacts<'_>) -> VoiceGate {
         .iter()
         .any(|f| f.component == KEY_FAILURE)
     {
-        return blocked(&key_sentence(), Some(GateAction::AddKey));
+        return blocked(KEY_SENTENCE, Some(GateAction::AddKey));
     }
     if let Some(sentence) = restart_for(state, "providers") {
         return blocked(sentence, Some(GateAction::Restart));
     }
     let degraded = facts.realtime.is_some_and(|r| r.status == "degraded");
     if degraded || facts.reach == Reach::NoSocket {
-        let closed = "Voice is on, but Fermix has not opened its voice connection. Restarting \
-                      Fermix usually fixes this.";
+        let closed = "Fermix has not opened its voice connection.";
         return blocked(closed, Some(GateAction::Restart));
     }
     if let Some(sentence) = reach_sentence(facts.reach) {
@@ -193,35 +245,42 @@ fn restart_for<'a>(state: &'a SetupState, section: &str) -> Option<&'a str> {
         .map(|r| r.sentence.as_str())
 }
 
-/// Home's words for the same failure, and what to do about it.
-fn key_sentence() -> String {
-    let (_, body) = fixed_attention_copy(KEY_FAILURE).expect("Home has copy for the key failure");
-    format!("{body} Add an OpenAI API key to talk to Fermix.")
-}
+/// What the key is for, in short; Home's attention row for the same failure
+/// explains at length. The caveat stays: a sign-in looks like it should cover voice.
+const KEY_SENTENCE: &str =
+    "Voice needs an OpenAI API key. A Codex or Claude sign-in does not cover it.";
 
-/// The word under the mascot. Where the gate has the reason (`reachable` is
-/// false), the word stays short; before a call it rests on the session's ready.
-/// A call that ended for want of a microphone stops saying so once the list
-/// names one again, since the next call would record from it.
-pub fn call_status(session: &Session, reachable: bool, microphone: &Microphone) -> Status {
-    if !reachable {
-        // True of every gate row, and it does not compete with the row's sentence.
-        return Status {
-            label: "Unavailable".into(),
-            icon: "action-unavailable-symbolic",
+/// The line under the mascot. Before a call, what stands in the way is said
+/// here and nowhere else, as a plain sentence in the faint palette: a setup
+/// state, not an alarm. A call that is up shows what it is doing, whatever the
+/// gate says; a failed one shows why, in the session's own sentence. A call
+/// that ended for want of a microphone stops saying so once the list names one
+/// again, since the next call would record from it.
+pub fn call_status(session: &Session, gate: &VoiceGate, microphone: &Microphone) -> StatusLine {
+    if !gate.ready && !session.in_call() {
+        return StatusLine {
+            text: gate.sentence.clone(),
+            icon: None,
             palette: Palette::Faint,
         };
     }
     let microphone_back =
         session.error() == Some(NO_MICROPHONE) && matches!(microphone, Microphone::Named(_));
     if session.mode() == Mode::Offline || microphone_back {
-        return Status {
-            label: "Ready".into(),
-            icon: "call-start-symbolic",
+        return StatusLine {
+            text: "Ready".into(),
+            icon: Some("call-start-symbolic"),
             palette: Palette::Secondary,
         };
     }
-    session.status()
+    let status = session.status();
+    // In the error mode the word is a whole sentence.
+    let icon = (status.palette != Palette::Error).then_some(status.icon);
+    StatusLine {
+        text: status.label,
+        icon,
+        palette: status.palette,
+    }
 }
 
 /// The mascot's face for what voice is doing.

@@ -1125,3 +1125,14 @@ fn a_live_error_is_read_by_its_kind_and_shows_the_providers_detail() {
         "Update this app to talk to this version of Fermix."
     );
 }
+
+/// A timer set during one call checks the number before it acts on a later one.
+#[test]
+fn each_call_has_its_own_number() {
+    let mut session = calling();
+    let first = session.call_number();
+    session.apply(Input::End);
+    assert_eq!(session.call_number(), first, "ending keeps the number");
+    session.apply(Input::Begin);
+    assert_ne!(session.call_number(), first);
+}

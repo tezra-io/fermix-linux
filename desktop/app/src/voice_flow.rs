@@ -10,8 +10,8 @@ use crate::voice::VoiceView;
 use adw::prelude::*;
 use fermix_client::realtime::session::{Input, Mode};
 use fermix_client::voice::{
-    call_status, expression, voice_gate, GateAction, Microphone, Reach, Source, VoiceFacts,
-    NO_MICROPHONE,
+    call_status, expression, lost_microphone_sentence, main_window_close, voice_gate, GateAction,
+    MainWindowClose, Microphone, Reach, Source, VoiceFacts,
 };
 use gtk::{gio, glib};
 use serde_json::Value;
@@ -21,7 +21,7 @@ use std::time::Duration;
 const SECTION: &str = "realtime";
 const ENABLED: &str = "realtime_enabled";
 const KEY: &str = "openai_api_key";
-/// How long the list may name no microphone during a call before the call ends:
+/// How long a call's microphone may be gone from the list before the call ends:
 /// a headset changing profile drops its microphone for a moment and brings it back.
 const MICROPHONE_GRACE: Duration = Duration::from_secs(2);
 /// How often the Voice page reads the list again while in view, so the row
@@ -40,13 +40,11 @@ impl App {
         // What the last attempt found never stops another try.
         let can_begin = voice_gate(&facts(snapshot, Reach::Untried, &microphone)).ready;
         let in_call = session.in_call();
-        let status = call_status(session, gate.ready || in_call, &microphone);
+        let status = call_status(session, &gate, &microphone);
         VoiceView {
             gate,
             can_begin,
-            word: status.label,
-            icon: status.icon,
-            palette: status.palette,
+            status,
             expression: expression(session.visual_mode()),
             level: session.level(),
             in_call,
@@ -64,7 +62,8 @@ impl App {
     /// Redraws only what the call changes, as often as the call changes.
     pub fn render_voice(&self) {
         let view = self.voice_view();
-        let mute = application(self)
+        let mute = self
+            .application
             .lookup_action("voice-mute")
             .and_downcast::<gio::SimpleAction>()
             .expect("the call's actions are installed before anything draws");
@@ -146,7 +145,11 @@ impl App {
     }
 
     fn microphone_changed(self: &Rc<Self>, sources: &[Source]) {
+        let recorded = self.microphone.borrow().clone();
         self.set_microphone(Microphone::from_sources(sources));
+        if recorded.lost_in(sources) && self.call.borrow().session.in_call() {
+            self.end_call_unless_microphone_returns(recorded);
+        }
     }
 
     fn set_microphone(self: &Rc<Self>, now: Microphone) {
@@ -154,23 +157,32 @@ impl App {
             return;
         }
         glib::g_info!("fermix", "voice records from {now:?}");
-        let lost = now == Microphone::Missing;
         self.microphone.replace(now);
         self.render_voice();
-        if lost && self.call.borrow().session.in_call() {
-            self.end_call_if_microphone_stays_gone();
-        }
     }
 
-    /// The sound server moves a call's recording to whatever is left, which can be a
-    /// copy of the speakers, so the call would go on hearing itself. Still no
-    /// microphone after the grace period ends it; between calls that input does nothing.
-    fn end_call_if_microphone_stays_gone(self: &Rc<Self>) {
+    /// The sound server moves a call's recording to whatever is left: another microphone
+    /// nobody chose, or a copy of the speakers, so the call would go on hearing the room or
+    /// itself. Unless the call's own microphone is back after the grace period, the call
+    /// ends and says why. A later call is not this one's to end.
+    fn end_call_unless_microphone_returns(self: &Rc<Self>, recorded: Microphone) {
+        let call = self.call.borrow().session.call_number();
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(MICROPHONE_GRACE, move || {
             let Some(app) = weak.upgrade() else { return };
-            if *app.microphone.borrow() == Microphone::Missing {
-                app.voice_input(Input::AudioFailed(NO_MICROPHONE.to_owned()));
+            if app.call.borrow().session.call_number() != call {
+                return;
+            }
+            // The list, not the row: the provider's default flag lags the server's, so the
+            // row can still name a stand-in after the microphone is back.
+            let sources = app
+                .microphone_watch
+                .borrow()
+                .as_ref()
+                .map(MicrophoneWatch::sources);
+            let Some(sources) = sources else { return };
+            if let Some(sentence) = lost_microphone_sentence(&recorded, &sources) {
+                app.voice_input(Input::AudioFailed(sentence.to_owned()));
             }
         });
     }
@@ -230,9 +242,9 @@ pub fn install_call_actions(app: &Rc<App>) {
         let wanted = wanted.expect("voice-mute holds a boolean");
         app.voice_input(Input::Mute(wanted));
     });
-    application(app).add_action(&mute);
+    app.application.add_action(&mute);
     let weak = Rc::downgrade(app);
-    application(app).connect_shutdown(move |_| {
+    app.application.connect_shutdown(move |_| {
         if let Some(app) = weak.upgrade() {
             app.hang_up();
         }
@@ -257,7 +269,7 @@ fn toggle_call(app: &Rc<App>) {
 /// The companion window's wiring: the Voice page's switch, its menu's way back
 /// to Fermix, and closing. Closing the main window while the companion is up
 /// only hides it, so the call carries on; closing the companion then brings
-/// the main window back.
+/// the main window back. Without the companion, closing the main window quits.
 pub fn install_companion(app: &Rc<App>) {
     app_action(app, "show-voice", |app| {
         app.shell.window.present();
@@ -279,13 +291,15 @@ pub fn install_companion(app: &Rc<App>) {
     });
     let weak = Rc::downgrade(app);
     app.shell.window.connect_close_request(move |window| {
-        let companion_up = weak
-            .upgrade()
-            .is_some_and(|app| app.companion.window.is_visible());
-        if !companion_up {
+        let Some(app) = weak.upgrade() else {
             return glib::Propagation::Proceed;
+        };
+        match main_window_close(app.companion.window.is_visible()) {
+            MainWindowClose::Hide => window.set_visible(false),
+            // Closing would leave Fermix running unseen behind the hidden companion window.
+            // Shutdown hangs up any call while the window is still whole.
+            MainWindowClose::Quit => app.application.quit(),
         }
-        window.set_visible(false);
         glib::Propagation::Stop
     });
 }
@@ -317,12 +331,5 @@ fn app_action(app: &Rc<App>, name: &str, handler: impl Fn(&Rc<App>) + 'static) {
             handler(&app);
         }
     });
-    application(app).add_action(&action);
-}
-
-fn application(app: &App) -> gtk::Application {
-    app.shell
-        .window
-        .application()
-        .expect("the window belongs to the application")
+    app.application.add_action(&action);
 }

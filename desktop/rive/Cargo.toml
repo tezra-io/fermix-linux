@@ -1,0 +1,17 @@
+[package]
+name = "fermix-rive"
+version = "0.1.0"
+description = "Plays a Rive animation offscreen with the Rive C++ runtime's GL renderer. No GTK."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "rive"
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
+
+[dev-dependencies]
+fermix-client = { path = "../core" }
+
+[lints]
+workspace = true

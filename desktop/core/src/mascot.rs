@@ -1,72 +1,39 @@
-//! The voice mascot's motion and layers, as pure functions of time (spec §2.2).
-//! Ported from the macOS pet: M `Pet/MascotMotion.swift`, `Pet/PetView.swift`,
-//! `Pet/PetExpression.swift`, `Pet/PetAssetCache.swift`. The widget in
-//! `app/src/mascot.rs` only draws what these return.
+//! The voice mascot is one Rive animation, as on macOS (M `Pet/MascotRendering.swift`,
+//! `FermixRive/RiveMascot.swift`; the M34 design record's decision 34). Its state
+//! machine takes the expression through the `mode` enum and the voice through the
+//! `level` number, 0 to 1: the poses blend into each other over 0.45 s, the body
+//! bends, the eyes morph, and the mouth follows the voice.
 //!
-//! Units: time in seconds. Lengths are points at the default size, where the
-//! square artwork is drawn [`ART`] points tall; the widget scales them.
-//!
-//! macOS keys motion off the voice mode; this keys it off the expression, each
-//! expression moving as the mode of the same name does. Offline, error and tool
-//! use therefore move as idle, idle and thinking do.
+//! This module is the contract between the file and the code, and the rules for
+//! when the animation plays and what it is told. `app/src/mascot.rs` plays it
+//! through `fermix-rive`, and draws only what these decide.
 
-use std::f64::consts::TAU;
+/// The file, in the app's resources (`app/resources/pet/FermixMascot.riv`).
+pub const RESOURCE: &str = "/io/tezra/Fermix/pet/FermixMascot.riv";
+/// The names the file publishes (M `MascotAnimation`).
+pub const STATE_MACHINE: &str = "Pet";
+pub const MODE: &str = "mode";
+pub const LEVEL: &str = "level";
 
-/// The stage and the mascot inside it, at the default size (M `PetFeatureModel.swift:8-9`).
-pub const STAGE: (f64, f64) = (132.0, 116.0);
-pub const MASCOT: (f64, f64) = (116.0, 108.0);
-/// The square artwork fits the mascot by height.
-pub const ART: f64 = MASCOT.1;
-/// Every layer is authored on one square canvas this many pixels wide.
-pub const CANVAS: f64 = 1024.0;
-
-/// An expression change crossfades (M `Motion.swift:155-156`, stepCrossfade),
-/// popping from this scale (M `PetView.swift:193`). Smoothstep stands in for
-/// SwiftUI's ease-in-out curve.
-pub const CROSSFADE_SECONDS: f64 = 0.24;
-pub const POP_SCALE: f64 = 0.97;
-/// Motion eases from the old expression's to the new one's (M `PetView.swift:126-133`).
-pub const BLEND_SECONDS: f64 = 0.5;
-
-/// Every layer file the app ships, by stem. There is no idle or listening decor (spec §6).
-pub const LAYERS: [&str; 15] = [
-    "pet_ball",
-    "pet_idle_body",
-    "pet_idle_face",
-    "pet_idle_ring",
-    "pet_listening_body",
-    "pet_listening_face",
-    "pet_listening_ring",
-    "pet_thinking_body",
-    "pet_thinking_decor",
-    "pet_thinking_face",
-    "pet_thinking_ring",
-    "pet_speaking_body",
-    "pet_speaking_decor",
-    "pet_speaking_face",
-    "pet_speaking_ring",
-];
-
-/// The shared head ball, on top of every expression and outside the crossfade
-/// so it stays put while the faces swap (M `PetView.swift:177-199`).
-pub const BALL: Plate = Plate {
-    layer: "pet_ball",
-    scale: 1.0,
-    opacity: 1.0,
-    dx: 0.0,
-    dy: -15.0,
-};
-
-/// The ring orbits behind the mascot, so it is drawn larger (M `PetView.swift:230-235`).
-const RING_SCALE: f64 = 1.20;
-const DECOR_OPACITY: f64 = 0.75;
-/// The speaking face is baked 12 px right and 24 px up on the canvas; this undoes it
-/// (M `PetView.swift:274-282`).
-const SPEAKING_FACE_SHIFT: (f64, f64) = (-12.0, 24.0);
-/// Every expression sways on this period (M `PetView.swift:172-174`).
-const SWAY_PERIOD: f64 = 4.2;
-/// Speaking swells by this much at full output level (M `PetView.swift:162`).
-const SPEAKING_PULSE: f64 = 0.06;
+/// How often a frame is drawn while the animation plays (M `framesPerSecond`).
+pub const FRAMES_PER_SECOND: f64 = 30.0;
+/// How long the file blends one pose into the next. A blend cannot be
+/// interrupted: a pose that arrives mid-blend waits for it to finish.
+const BLEND_SECONDS: f64 = 0.45;
+/// A parked mascot still takes a new pose: it plays this long, then holds
+/// still. That lands a pose that waited behind a blend just begun, with a
+/// margin for the frames lost at either end of the play. (macOS's `settle` is
+/// 0.6 s, which such a pose outlasts.)
+pub const SETTLE_SECONDS: f64 = 2.0 * BLEND_SECONDS + 0.2;
+/// A level change smaller than this is not written; the mouth cannot show it
+/// (M `levelStep`).
+pub const LEVEL_STEP: f32 = 0.01;
+/// The most one frame advances the animation, so a late frame resumes it
+/// rather than jumping ahead.
+pub const MAX_STEP_SECONDS: f64 = 0.1;
+/// A frame due this close to its time is drawn now: a 60 Hz clock ticks every
+/// 16.7 ms, and two ticks must make a 30 Hz frame.
+const FRAME_SLACK_SECONDS: f64 = 0.002;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Expression {
@@ -83,276 +50,81 @@ impl Expression {
         Expression::Thinking,
         Expression::Speaking,
     ];
-}
 
-/// The whole mascot's transform: scaled about its centre, moved down by `dy`,
-/// then turned clockwise about its centre (M `PetView.swift:101-103`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Pose {
-    pub scale: f64,
-    pub dy: f64,
-    pub rotation_deg: f64,
-}
+    /// The value of the file's `mode` enum (M `PetExpression.rawValue`).
+    pub fn mode(self) -> &'static str {
+        match self {
+            Expression::Idle => "idle",
+            Expression::Listening => "listening",
+            Expression::Thinking => "thinking",
+            Expression::Speaking => "speaking",
+        }
+    }
 
-impl Pose {
-    pub const REST: Pose = Pose {
-        scale: 1.0,
-        dy: 0.0,
-        rotation_deg: 0.0,
-    };
-}
-
-/// One layer: drawn [`ART`] square and centred, scaled about the centre, then
-/// moved by `(dx, dy)`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Plate {
-    pub layer: &'static str,
-    pub scale: f64,
-    pub opacity: f64,
-    pub dx: f64,
-    pub dy: f64,
-}
-
-/// One expression's share of a crossfade: its weight in the mix (the two
-/// weights sum to 1), and its plates scaled about the centre.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fade {
-    pub expression: Expression,
-    pub weight: f64,
-    pub scale: f64,
-}
-
-/// Sine amplitudes and periods per axis (M `MascotMotion.swift:11-58`).
-struct Motion {
-    breath_amp: f64,
-    breath_period: f64,
-    bob_amp: f64,
-    bob_period: f64,
-    sway_amp: f64,
-}
-
-fn motion(expression: Expression) -> Motion {
-    let (breath_amp, breath_period, bob_amp, bob_period, sway_amp) = match expression {
-        Expression::Idle => (0.012, 2.4, 2.0, 3.1, 0.0),
-        Expression::Listening => (0.025, 2.0, 2.0, 3.1, 0.0),
-        Expression::Thinking => (0.012, 2.2, 1.5, 2.8, 1.4),
-        Expression::Speaking => (0.020, 1.6, 3.0, 1.8, 0.0),
-    };
-    Motion {
-        breath_amp,
-        breath_period,
-        bob_amp,
-        bob_period,
-        sway_amp,
+    /// Only listening and speaking move with the voice; the other poses hold
+    /// the level at rest (M `listensToLevel`).
+    pub fn follows_level(self) -> bool {
+        matches!(self, Expression::Listening | Expression::Speaking)
     }
 }
 
-/// Where an expression is at time `t`. `level` is the smoothed output RMS, 0 to 1,
-/// and only swells the speaking face (M `PetView.swift:159-174`).
-pub fn pose(expression: Expression, t: f64, level: f32) -> Pose {
-    assert!(t.is_finite(), "mascot time must be finite, got {t}");
+/// What to write to the file's `level` for the voice at `level` in `expression`,
+/// when `written` was written last: `None` when the mouth could not show the
+/// difference. A return to rest is always written.
+pub fn level_to_write(expression: Expression, level: f32, written: f32) -> Option<f32> {
     assert!(
         (0.0..=1.0).contains(&level),
-        "output level must be 0 to 1, got {level}"
+        "the level must be 0 to 1, got {level}"
     );
-    let m = motion(expression);
-    let pulse = match expression {
-        Expression::Speaking => SPEAKING_PULSE * f64::from(level),
-        _ => 0.0,
+    let wanted = if expression.follows_level() {
+        level
+    } else {
+        0.0
     };
-    Pose {
-        scale: 1.0 + m.breath_amp * (TAU * t / m.breath_period).sin() + pulse,
-        dy: -m.bob_amp * (TAU * t / m.bob_period).sin(),
-        rotation_deg: m.sway_amp * (TAU * t / SWAY_PERIOD).sin(),
-    }
+    let at_rest = wanted == 0.0 && written != 0.0;
+    ((wanted - written).abs() >= LEVEL_STEP || at_rest).then_some(wanted)
 }
 
-/// How closed the eyes are at time `t`, 0 to 1: a jittered 2.8 s cadence with a
-/// fast close, a brief hold and a slower open. Deterministic in `t`
-/// (M `MascotMotion.swift:67-83`).
-pub fn blink(t: f64) -> f64 {
-    assert!(t.is_finite(), "mascot time must be finite, got {t}");
-    let (period, close, hold, open) = (2.8, 0.06, 0.05, 0.10);
-    let span = close + hold + open;
-    let bucket = (t / period).floor();
-    let jitter = fract((bucket * 12.9898).sin() * 43_758.545_3);
-    let age = t - (bucket * period + jitter * (period - span));
-    if !(0.0..span).contains(&age) {
-        return 0.0;
-    }
-    if age < close {
-        return smoothstep(age / close);
-    }
-    if age < close + hold {
-        return 1.0;
-    }
-    1.0 - smoothstep((age - close - hold) / open)
-}
-
-/// An expression's plates, back to front: ring, body, face, the closed-eye face
-/// at `blink` over the listening and thinking faces, then any decor. The ball is
-/// [`BALL`], drawn once above the crossfade (M `PetView.swift:230-262`).
-pub fn plates(expression: Expression, blink: f64) -> Vec<Plate> {
+/// Whether the animation plays at `now`: always while it `animates`; parked
+/// (the view is off screen, or animations are off), only until the pose
+/// changed at `pose_changed_at` has landed.
+pub fn plays(animates: bool, pose_changed_at: Option<f64>, now: f64) -> bool {
     assert!(
-        (0.0..=1.0).contains(&blink),
-        "blink must be 0 to 1, got {blink}"
+        now.is_finite(),
+        "the mascot's time must be finite, got {now}"
     );
-    let (ring, body, face, decor) = match expression {
-        Expression::Idle => ("pet_idle_ring", "pet_idle_body", "pet_idle_face", None),
-        Expression::Listening => (
-            "pet_listening_ring",
-            "pet_listening_body",
-            "pet_listening_face",
-            None,
-        ),
-        Expression::Thinking => (
-            "pet_thinking_ring",
-            "pet_thinking_body",
-            "pet_thinking_face",
-            Some("pet_thinking_decor"),
-        ),
-        Expression::Speaking => (
-            "pet_speaking_ring",
-            "pet_speaking_body",
-            "pet_speaking_face",
-            Some("pet_speaking_decor"),
-        ),
-    };
-    let (dx, dy) = face_shift(expression);
-    let mut stack = vec![
-        plate(ring, RING_SCALE, 1.0),
-        plate(body, 1.0, 1.0),
-        Plate {
-            dx,
-            dy,
-            ..plate(face, 1.0, 1.0)
-        },
-    ];
-    let blinks = matches!(expression, Expression::Listening | Expression::Thinking);
-    if blinks && blink > 0.0 {
-        stack.push(Plate {
-            dx,
-            dy,
-            ..plate("pet_idle_face", 1.0, blink)
-        });
-    }
-    if let Some(decor) = decor {
-        stack.push(plate(decor, 1.0, DECOR_OPACITY));
-    }
-    stack
+    animates || pose_changed_at.is_some_and(|at| now - at < SETTLE_SECONDS)
 }
 
-fn plate(layer: &'static str, scale: f64, opacity: f64) -> Plate {
-    Plate {
-        layer,
-        scale,
-        opacity,
-        dx: 0.0,
-        dy: 0.0,
-    }
+/// When frames are drawn, on a frame clock that may tick faster than
+/// [`FRAMES_PER_SECOND`], and how far each advances the animation.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Pacing {
+    last: Option<f64>,
 }
 
-/// The speaking face's registration fix, from canvas pixels to points.
-fn face_shift(expression: Expression) -> (f64, f64) {
-    match expression {
-        Expression::Speaking => (
-            SPEAKING_FACE_SHIFT.0 * ART / CANVAS,
-            SPEAKING_FACE_SHIFT.1 * ART / CANVAS,
-        ),
-        _ => (0.0, 0.0),
-    }
-}
-
-/// The expression on show and the one it is changing from. A change crossfades
-/// the faces and eases the motion across (M `PetView.swift:116-157`, `:188-200`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Transition {
-    pub from: Expression,
-    pub to: Expression,
-    pub changed_at: f64,
-}
-
-impl Transition {
-    /// An expression shown since forever, so nothing is fading.
-    pub fn settled(expression: Expression) -> Transition {
-        Transition {
-            from: expression,
-            to: expression,
-            changed_at: f64::NEG_INFINITY,
+impl Pacing {
+    /// At frame-clock time `now`, in seconds: the seconds to advance, when a
+    /// frame is due. The first frame after a start or a pause advances nothing.
+    pub fn frame(&mut self, now: f64) -> Option<f64> {
+        assert!(
+            now.is_finite(),
+            "the mascot's time must be finite, got {now}"
+        );
+        let Some(last) = self.last else {
+            self.last = Some(now);
+            return Some(0.0);
+        };
+        let elapsed = now - last;
+        if elapsed < 1.0 / FRAMES_PER_SECOND - FRAME_SLACK_SECONDS {
+            return None;
         }
+        self.last = Some(now);
+        Some(elapsed.min(MAX_STEP_SECONDS))
     }
 
-    /// Changes to `to` at `now`. Asking for the expression already on show
-    /// restarts nothing (M `PetView.swift:119-124`).
-    pub fn change(self, to: Expression, now: f64) -> Transition {
-        assert!(now.is_finite(), "mascot time must be finite, got {now}");
-        if to == self.to {
-            return self;
-        }
-        Transition {
-            from: self.to,
-            to,
-            changed_at: now,
-        }
+    /// The animation stopped: the next frame starts afresh.
+    pub fn pause(&mut self) {
+        self.last = None;
     }
-
-    /// The pose at `t`, eased from the old expression's to the new one's.
-    pub fn pose(self, t: f64, level: f32) -> Pose {
-        let target = pose(self.to, t, level);
-        let progress = eased(t - self.changed_at, BLEND_SECONDS);
-        if progress >= 1.0 {
-            return target;
-        }
-        let from = pose(self.from, t, level);
-        let lerp = |a: f64, b: f64| a + (b - a) * progress;
-        Pose {
-            scale: lerp(from.scale, target.scale),
-            dy: lerp(from.dy, target.dy),
-            rotation_deg: lerp(from.rotation_deg, target.rotation_deg),
-        }
-    }
-
-    /// What to draw at `t`, back to front: the old expression fading out and
-    /// shrinking to [`POP_SCALE`], under the new one fading in and growing from it.
-    pub fn fades(self, t: f64) -> Vec<Fade> {
-        let progress = eased(t - self.changed_at, CROSSFADE_SECONDS);
-        let pop = 1.0 - POP_SCALE;
-        if progress >= 1.0 || self.from == self.to {
-            return vec![Fade {
-                expression: self.to,
-                weight: 1.0,
-                scale: 1.0,
-            }];
-        }
-        vec![
-            Fade {
-                expression: self.from,
-                weight: 1.0 - progress,
-                scale: 1.0 - pop * progress,
-            },
-            Fade {
-                expression: self.to,
-                weight: progress,
-                scale: POP_SCALE + pop * progress,
-            },
-        ]
-    }
-}
-
-/// Smoothstep progress `age` seconds into a `duration`: 0 at the start, 1 once
-/// done. An age outside the window counts as done, as on macOS.
-fn eased(age: f64, duration: f64) -> f64 {
-    if !(0.0..duration).contains(&age) {
-        return 1.0;
-    }
-    smoothstep(age / duration)
-}
-
-fn smoothstep(x: f64) -> f64 {
-    let c = x.clamp(0.0, 1.0);
-    c * c * (3.0 - 2.0 * c)
-}
-
-fn fract(x: f64) -> f64 {
-    x - x.floor()
 }

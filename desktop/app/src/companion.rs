@@ -1,5 +1,5 @@
 //! The companion window (spec_voice §2.4), floating as the macOS pet does: no card
-//! and no window, only the mascot and its glow on whatever is below. The window is
+//! and no window, only the mascot and its shadow on whatever is below. The window is
 //! see-through, and it takes the pointer only over the mascot and, while they
 //! show, the call controls under it (`fermix_client::companion`); a click anywhere
 //! else reaches the desktop. It is dragged from anywhere it takes the pointer.
@@ -24,6 +24,7 @@ use adw::prelude::*;
 use fermix_client::companion::{self, Rect};
 use fermix_client::mascot::Expression;
 use fermix_client::realtime::session::Palette;
+use fermix_rive::Stage;
 use gtk::{cairo, gdk, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -45,9 +46,9 @@ pub struct Companion {
 }
 
 impl Companion {
-    pub fn new(application: &adw::Application) -> Companion {
+    pub fn new(application: &adw::Application, stage: Option<&Rc<Stage>>) -> Companion {
         // The macOS pet's own stage size.
-        let mascot = Mascot::new(132, 116);
+        let mascot = Mascot::new(stage, 132, 116);
         let button = MascotButton::new(&mascot.widget);
         let controls = Controls::new();
         let stage = gtk::Box::builder()
@@ -98,18 +99,20 @@ impl Companion {
             return;
         }
         self.mascot.set_expression(view.expression);
-        self.mascot.set_in_call(view.in_call);
-        self.mascot.set_palette(view.palette);
         // The error mode's word is a whole sentence: the label says that voice
         // failed, and the tooltip says why.
-        let error = view.palette == Palette::Error;
-        let word = if error { "Voice failed" } else { &view.word };
+        let error = view.status.palette == Palette::Error;
+        let word = if error {
+            "Voice failed"
+        } else {
+            &view.status.text
+        };
         let action = if view.in_call { "End" } else { "Begin" };
         self.button
             .update_property(&[gtk::accessible::Property::Label(&format!(
                 "{action} voice call. Fermix: {word}"
             ))]);
-        self.button.set_tooltip_text(Some(&tooltip(view, error)));
+        self.button.set_tooltip_text(Some(&tooltip(view)));
         self.render_menu(view);
         self.controls.render(view);
         *self.shown.borrow_mut() = Some(view.clone());
@@ -121,6 +124,16 @@ impl Companion {
     /// The call's items. Mute is the stateful `app.voice-mute`, so the menu
     /// shows it checked while the microphone is muted.
     fn render_menu(&self, view: &VoiceView) {
+        // Rebuilding the items under an open menu drops a click in flight, and a Live reply's
+        // captions render many times a second: rebuild only when the items change.
+        let same_items = self
+            .shown
+            .borrow()
+            .as_ref()
+            .is_some_and(|last| (last.in_call, last.can_stop) == (view.in_call, view.can_stop));
+        if same_items {
+            return;
+        }
         self.call_items.remove_all();
         let call = if view.in_call {
             "End Voice Call"
@@ -139,11 +152,17 @@ impl Companion {
     }
 }
 
-/// What a click does, and first why voice cannot start or why it failed.
-fn tooltip(view: &VoiceView, error: bool) -> String {
+/// What a click does, and first why voice cannot start or why it failed. The
+/// Voice page's sentence (never a mode's word) is the one place that says so;
+/// the tooltip only repeats it here, where there is no room for it on screen.
+fn tooltip(view: &VoiceView) -> String {
     let blocked = (!view.can_begin).then_some(view.gate.sentence.as_str());
-    let failure = error.then_some(view.word.as_str());
-    companion::hint(view.in_call, blocked, failure)
+    let sentence = view
+        .status
+        .icon
+        .is_none()
+        .then_some(view.status.text.as_str());
+    companion::hint(view.in_call, blocked, sentence)
 }
 
 /// The pill of call controls under the mascot (macOS `ControlDock`): begin or
@@ -206,7 +225,10 @@ impl Controls {
         }
         // A call that is starting or ending waits, as the Voice page's button does.
         self.call.set_sensitive(!view.busy);
-        self.stop.set_visible(view.can_stop);
+        // Stop keeps its place through a call, as on the Pet page, so nothing in the
+        // dock moves under the pointer as a reply starts and ends.
+        self.stop.set_visible(view.in_call);
+        self.stop.set_sensitive(view.can_stop);
         self.mute.set_visible(view.in_call);
     }
 }

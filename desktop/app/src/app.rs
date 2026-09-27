@@ -11,6 +11,7 @@ use crate::doctor::DoctorPage;
 use crate::home::HomePage;
 use crate::integrations::IntegrationsPane;
 use crate::logs::LogsPage;
+use crate::mascot;
 use crate::microphones::MicrophoneWatch;
 use crate::providers::ProvidersPage;
 use crate::settings::{SettingsData, SettingsPage};
@@ -64,6 +65,9 @@ pub struct App {
     pub microphone_poll: RefCell<Option<glib::SourceId>>,
     home: HomePage,
     providers: ProvidersPage,
+    /// The application this was built with. A window's link to it ends when the window is
+    /// destroyed; what runs from main-loop callbacks reaches the application through this.
+    pub application: adw::Application,
 }
 
 pub fn activate(application: &adw::Application) {
@@ -97,8 +101,10 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         Box::new(through_window(application, "win.page")),
     );
     let logs = LogsPage::new(Daemon::new());
-    let voice = VoicePage::new();
-    let companion = Companion::new(application);
+    // One renderer for every mascot; without it they are drawn still.
+    let stage = mascot::open_stage();
+    let voice = VoicePage::new(stage.as_ref());
+    let companion = Companion::new(application, stage.as_ref());
     let pages = [
         chat.root.upcast_ref::<gtk::Widget>(),
         voice.root.upcast_ref(),
@@ -127,6 +133,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         microphone_poll: RefCell::default(),
         home,
         providers,
+        application: application.clone(),
     })
 }
 

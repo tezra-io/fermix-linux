@@ -60,7 +60,7 @@ listview.log-lines > row {
   border-radius: 8px;
 }
 
-/* The companion window: the mascot floats with its own glow on a see-through
+/* The companion window: the mascot floats with its own shadow on a see-through
    window. Its focus ring follows the mascot's ellipse. Only the call controls
    have a ground, a small pill like the macOS pet's. */
 window.fermix-companion {

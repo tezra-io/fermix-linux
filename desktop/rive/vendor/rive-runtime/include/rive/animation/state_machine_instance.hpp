@@ -1,0 +1,497 @@
+#ifndef _RIVE_STATE_MACHINE_INSTANCE_HPP_
+#define _RIVE_STATE_MACHINE_INSTANCE_HPP_
+
+#include <string>
+#include <stddef.h>
+#include <vector>
+#include <unordered_map>
+#include "rive/animation/gamepad_listener_group.hpp"
+#include "rive/animation/keyboard_listener_group.hpp"
+#include "rive/animation/semantic_listener_group.hpp"
+#include "rive/animation/linear_animation_instance.hpp"
+#include "rive/animation/state_instance.hpp"
+#include "rive/animation/state_transition.hpp"
+#include "rive/core/field_types/core_callback_type.hpp"
+#include "rive/hit_result.hpp"
+#include "rive/listener_type.hpp"
+#include "rive/nested_animation.hpp"
+#include "rive/scene.hpp"
+#include "rive/data_bind/bindable_property_number.hpp"
+#include "rive/data_bind/data_bind_container.hpp"
+#include "rive/input/focusable.hpp"
+#include "rive/input/focus_manager.hpp"
+#include "rive/semantic/semantic_manager.hpp"
+#include "rive/sidecar.hpp"
+
+namespace rive
+{
+class FocusData;
+class FocusListenerGroup;
+class StateMachine;
+class LayerState;
+class SMIInput;
+class ArtboardInstance;
+class SMIBool;
+class SMINumber;
+class SMITrigger;
+class Shape;
+class StateMachineLayerInstance;
+class HitComponent;
+class HitShape;
+class ListenerGroup;
+class NestedArtboard;
+class NestedEventListener;
+class NestedEventNotifier;
+class Event;
+class KeyedProperty;
+class EventReport;
+class DataBind;
+class BindableProperty;
+class StateInstance;
+class HitDrawable;
+class ListenerViewModel;
+class ScriptedListenerAction;
+class ScriptedDrawable;
+// Cold state clusters, defined in state_machine_instance_clusters.hpp. Each is
+// reached through a Sidecar below and stays unallocated until the feature it
+// covers is actually used by the file. Left as forward declarations here so the
+// cluster header's includes stay out of this one.
+struct SMIReporting;
+struct SMIBindables;
+struct SMIInputExtras;
+struct SMIScripting;
+typedef void (*DataBindChanged)();
+
+#ifdef WITH_RIVE_TOOLS
+class StateMachineInstance;
+typedef void (*InputChanged)(StateMachineInstance*, uint64_t);
+#endif
+
+class StateMachineInstance : public Scene,
+                             public NestedEventNotifier,
+                             public NestedEventListener,
+                             public DataBindContainer
+{
+    friend class SMIInput;
+    friend class KeyedProperty;
+    friend class HitComponent;
+    friend class StateMachineLayerInstance;
+
+private:
+    /// Provide a hitListener if you want to process a down or an up for the
+    /// pointer position too.
+    HitResult updateListeners(Vec2D position,
+                              ListenerType hitListener,
+                              int pointerId = 0,
+                              float timeStamp = 0);
+
+    template <typename SMType, typename InstType>
+    InstType* getNamedInput(const std::string& name) const;
+    void notifyEventListeners(const std::vector<EventReport>& events,
+                              NestedArtboard* source);
+    void sortHitComponents();
+    double randomValue();
+    StateTransition* findRandomTransition(
+        StateInstance* stateFromInstance,
+        StateMachineLayerInstance* layerInstance);
+    StateTransition* findAllowedTransition(
+        StateInstance* stateFromInstance,
+        StateMachineLayerInstance* layerInstance);
+
+    // Ensures the current data context holds an instance for the artboard's
+    // main view model and for every global view model in the file, creating
+    // (completing) any that are missing before the context is applied.
+    void completeViewModelInstances();
+    void addToHitLookup(Component* target,
+                        bool isLayoutComponent,
+                        std::unordered_map<Component*, HitDrawable*>& hitLookup,
+                        ListenerGroup* listenerGroup,
+                        bool isOpaque);
+
+public:
+    StateMachineInstance(const StateMachine* machine,
+                         ArtboardInstance* instance);
+    StateMachineInstance(StateMachineInstance const&) = delete;
+    ~StateMachineInstance() override;
+
+    void markNeedsAdvance();
+    // Advance the state machine by the specified time. Returns true if the
+    // state machine will continue to animate after this advance.
+    bool advance(float seconds, bool newFrame);
+
+    bool advance(float seconds) { return advance(seconds, true); }
+
+    // Returns true when the StateMachineInstance has more data to process.
+    bool needsAdvance() const;
+
+    void resetState();
+
+    // Returns a pointer to the instance's stateMachine
+    const StateMachine* stateMachine() const { return m_machine; }
+
+    size_t inputCount() const override { return m_inputInstances.size(); }
+    SMIInput* input(size_t index) const override;
+    SMIBool* getBool(const std::string& name) const override;
+    SMINumber* getNumber(const std::string& name) const override;
+    SMITrigger* getTrigger(const std::string& name) const override;
+    void bindViewModelInstance(
+        rcp<ViewModelInstance> viewModelInstance) override;
+    // Sets the main (non-global) view model instance in the data context
+    // without rebinding. Call bind() to apply. A global instance is routed to
+    // setGlobalViewModelInstance.
+    void setViewModelInstance(rcp<ViewModelInstance> viewModelInstance);
+    // Sets/replaces the global view model instance bound under the given global
+    // view model name without rebinding, preserving the main instance and the
+    // other globals' order. Returns false if the name does not match the
+    // instance's global view model. Call bind() to apply.
+    bool setGlobalViewModelInstance(const std::string& name,
+                                    rcp<ViewModelInstance> viewModelInstance);
+    // Applies the current data context: rebinds artboard + state machine data
+    // binds in a single pass. No-op if nothing has been set.
+    void bind();
+    // @returns the global view model instance currently bound under the given
+    // name, or nullptr if none has been set. Never creates.
+    rcp<ViewModelInstance> globalViewModelInstance(const std::string& name);
+    void bindDataContext(rcp<DataContext> dataContext);
+    void inheritDataContext(rcp<DataContext> dataContext);
+    void dataContext(rcp<DataContext> dataContext);
+    rcp<DataContext> dataContext() const { return dataBindContext(); }
+    void rebind() override;
+
+    size_t currentAnimationCount() const;
+    const LinearAnimationInstance* currentAnimationByIndex(size_t index) const;
+
+    // The number of state changes that occurred across all layers on the
+    // previous advance.
+    std::size_t stateChangedCount() const;
+
+    // Returns the state name for states that changed in layers on the
+    // previously called advance. If the index of out of range, it returns
+    // the empty string.
+    const LayerState* stateChangedByIndex(size_t index) const;
+
+    bool advanceAndApply(float secs) override;
+    // When advanceViewModels is false, skips consuming/advancing the bound and
+    // detached view model instances (used when a script drives a nested
+    // scripted artboard, whose view models are advanced by the host frame
+    // instead). Animation and artboard component reset still run.
+    bool advanceAndApply(float secs, bool advanceViewModels);
+    void advancedDataContext();
+    void reset();
+    std::string name() const override;
+    HitResult pointerMove(Vec2D position,
+                          float timeStamp = 0,
+                          int pointerId = 0) override;
+    HitResult pointerDown(Vec2D position, int pointerId = 0) override;
+    HitResult pointerUp(Vec2D position, int pointerId = 0) override;
+    HitResult pointerExit(Vec2D position, int pointerId = 0) override;
+    HitResult dragStart(Vec2D position,
+                        float timeStamp = 0,
+                        bool disablePointer = true,
+                        int pointerId = 0);
+    HitResult dragEnd(Vec2D position, float timeStamp = 0, int pointerId = 0);
+
+    bool tryChangeState();
+    bool hitTest(Vec2D position) const;
+    /// hitTest, except that a scripted layout counts only inside its own
+    /// box. Scripts are handed every pointer event and bounds-check
+    /// themselves, so hitTest has to say yes everywhere once one listens;
+    /// a host deciding whether a press is the scene's at all (or the
+    /// window's, say) wants the box. A scripted drawable with no box still
+    /// counts everywhere.
+    bool hitTestBounded(Vec2D position) const;
+
+private:
+    bool hitTestInternal(Vec2D position, bool bounded) const;
+
+public:
+    float durationSeconds() const override { return -1; }
+    Loop loop() const override { return Loop::oneShot; }
+    bool isTranslucent() const override { return true; }
+
+    /// Allow anything referencing a concrete StateMachineInstace access to
+    /// the backing artboard (explicitly not allowed on Scenes).
+    Artboard* artboard() const { return m_artboardInstance; }
+
+    void setParentStateMachineInstance(StateMachineInstance* instance)
+    {
+        m_parentStateMachineInstance = instance;
+    }
+    StateMachineInstance* parentStateMachineInstance()
+    {
+        return m_parentStateMachineInstance;
+    }
+
+    void setParentNestedArtboard(NestedArtboard* artboard)
+    {
+        m_parentNestedArtboard = artboard;
+    }
+    NestedArtboard* parentNestedArtboard() { return m_parentNestedArtboard; }
+    void notify(const std::vector<EventReport>& events,
+                NestedArtboard* context) override;
+    void notifyListenerViewModels(
+        const std::vector<ListenerViewModel*>& events);
+
+    /// Tracks an event that reported, will be cleared at the end of the next
+    /// advance.
+    void reportEvent(Event* event, float secondsDelay = 0.0f) override;
+
+    void applyEvents();
+
+    void reportListenerViewModel(ListenerViewModel*);
+
+    /// Gets the number of events that reported since the last advance.
+    std::size_t reportedEventCount() const;
+
+    /// Gets a reported event at an index < reportedEventCount().
+    const EventReport reportedEventAt(std::size_t index) const;
+    bool playsAudio() override { return true; }
+    BindableProperty* bindablePropertyInstance(
+        BindableProperty* bindableProperty) const;
+    DataBind* bindableDataBindToSource(
+        BindableProperty* bindableProperty) const;
+    DataBind* bindableDataBindToTarget(
+        BindableProperty* bindableProperty) const;
+
+    /// Find the per-instance BindablePropertyNumber for the given shared
+    /// StateTransition and property key (e.g. durationPropertyKey).
+    /// Returns nullptr if no binding exists.
+    BindablePropertyNumber* findTransitionPropertyInstance(
+        const StateTransition* transition,
+        uint32_t propertyKey) const;
+
+    bool hasListeners() { return m_hitComponents.size() > 0; }
+    bool hasFocusNodes();
+    bool focusNext();
+    bool focusPrevious();
+    void clearFocus();
+
+    /// Route a key event to the focused element via the active focus manager.
+    /// Returns true if the event was handled.
+    bool keyInput(Key key,
+                  KeyModifiers modifiers,
+                  bool isPressed,
+                  bool isRepeat);
+
+    /// Route committed text (a typed character, an Input Method Editor (IME)
+    /// commit, a paste) to the focused element via the active focus manager.
+    /// Returns true if the text was handled.
+    bool textInput(const std::string& text);
+
+    void clearDataContext();
+    void relinkDataContext() override;
+    void rebuildDataBind(DataBind*) override;
+    // The artboard bound through this machine is not a dependent of the
+    // context itself, so context hooks reach it from here.
+    void mainViewModelInstanceChanged() override;
+    void dropInstanceValueBindsTargeting(Core* target) override;
+    void internalDataContext(rcp<DataContext> dataContext);
+    ScriptedObject* scriptedObject(const ScriptedObject*) const;
+
+    /// Queue a focus event for deferred execution during advance().
+    void queueFocusEvent(FocusListenerGroup* group, bool isFocus);
+
+    /// Queue a semantic event for deferred execution during advance().
+    void queueSemanticEvent(SemanticListenerGroup* group,
+                            SemanticActionType actionType);
+
+    /// Fire a semantic action on the SemanticData with the given node ID.
+    void fireSemanticAction(uint32_t semanticNodeId,
+                            SemanticActionType actionType);
+
+    FocusManager* focusManager();
+
+    /// Const overload of [focusManager], used by read-only consumers such as
+    /// condition evaluation.
+    const FocusManager* focusManager() const;
+
+    /// Parses embedder gamepad batch bytes (same format as JS
+    /// `GAMEPAD_BATCH_VERSION` in `registerGamepadInteractions`). Invokes
+    /// `focusManager()->gamepadDispatch` for each record. Returns false if the
+    /// buffer is invalid or truncated.
+    bool submitGamepadsFromBuffer(const uint8_t* data, size_t length);
+
+    /// Forward `invocation` to every `ScriptedDrawable` in this state machine
+    /// whose script declares a gamepad handler (`wantsGamePad()`), skipping
+    /// `alreadyDispatched` (typically the focus-tree recipient) so a script
+    /// is never invoked twice for the same event. Used by gamepad dispatch
+    /// after the focus bubble so non-focused scripts can still react.
+    HitResult broadcastGamepadToScriptedDrawables(
+        const ListenerInvocation& invocation,
+        ScriptedDrawable* alreadyDispatched);
+
+    /// Set an external focus manager to use instead of the internal one.
+    /// This is used when a nested artboard should share focus with its parent.
+    /// If the focus tree was already built with a different manager, it will
+    /// be rebuilt with the new manager.
+    void setExternalFocusManager(FocusManager* manager);
+
+    /// Set focus to a specific FocusData's node.
+    void setFocus(FocusData* focusData);
+
+    /// Queue a focus change requested by a FocusAction, to be applied once the
+    /// artboard's components are up to date for the frame. See
+    /// FocusManager::PendingFocusRequest for why this is deferred rather than
+    /// applied where the action runs.
+    void queueFocusTarget(FocusData* focusData);
+    void queueClearFocus();
+    /// [traversalKind]: 0=next, 1=previous, 2=up, 3=down, 4=left, 5=right
+    /// (sync with FocusActionTraversal's traversalKind property).
+    void queueFocusTraversal(uint32_t traversalKind);
+
+    /// Snapshot of the current focus state. Designed for host polling (e.g.
+    /// deciding whether to show a soft keyboard / IME). Cheap to query;
+    /// future fields (e.g. keyboard type) will be added additively.
+    struct FocusState
+    {
+        /// True if any element currently holds focus in this state machine's
+        /// active focus manager (internal or external).
+        bool hasFocus = false;
+        /// True if the focused element accepts keyboard input — i.e. a
+        /// TextInput, or a FocusData target with registered key/text-input
+        /// listeners. False when nothing is focused.
+        bool expectsKeyboardInput = false;
+    };
+    FocusState focusState() const;
+
+    /// Get the semantic manager for this state machine instance.
+    /// Returns the external manager if set, otherwise the internal one.
+    /// Returns nullptr if semantics has not been enabled. Out of line because
+    /// both managers live in the SMIInputExtras cluster.
+    SemanticManager* semanticManager() const;
+
+    /// Enable semantics for this state machine instance. Creates the
+    /// internal SemanticManager (if no external one was set) and builds
+    /// the semantic tree. This is a no-op if semantics is already enabled.
+    void enableSemantics();
+
+    /// Set an external semantic manager to use instead of the internal one.
+    /// Used when a nested artboard should share the parent's semantic tree.
+    /// Rebuilds the semantic tree with the new manager if already built.
+    /// @param parentNode If provided, the rebuilt tree is attached under it;
+    /// nullptr attaches at the manager root.
+    void setExternalSemanticManager(SemanticManager* manager,
+                                    rcp<SemanticNode> parentNode = nullptr);
+
+#ifdef TESTING
+    size_t hitComponentsCount() { return m_hitComponents.size(); };
+    HitComponent* hitComponent(size_t index)
+    {
+        if (index < m_hitComponents.size())
+        {
+            return m_hitComponents[index].get();
+        }
+        return nullptr;
+    }
+    const LayerState* layerState(size_t index);
+#endif
+    void enablePointerEvents(int pointerId = 0);
+    void disablePointerEvents(int pointerId = 0);
+    void dispose();
+
+private:
+    const StateMachine* m_machine;
+    std::vector<SMIInput*> m_inputInstances; // we own each pointer
+    StateMachineLayerInstance* m_layers;
+    // Set once from machine->layerCount() and never mutated, so a uint32_t is
+    // ample. Kept adjacent to the other scalars so they share one 8 B slot
+    // instead of opening three.
+    uint32_t m_layerCount = 0;
+    uint8_t m_drawOrderChangeCounter = 0;
+    bool m_needsAdvance = false;
+    std::vector<std::unique_ptr<HitComponent>> m_hitComponents;
+    std::vector<std::unique_ptr<ListenerGroup>> m_listenerGroups;
+    StateMachineInstance* m_parentStateMachineInstance = nullptr;
+    NestedArtboard* m_parentNestedArtboard = nullptr;
+
+    void unbind();
+    void removeEventListeners();
+    void initScriptedObjects();
+
+    // Cold clusters. See state_machine_instance_clusters.hpp.
+    Sidecar<SMIReporting> m_reporting;
+    Sidecar<SMIBindables> m_bindables;
+    Sidecar<SMIInputExtras> m_inputExtras;
+    Sidecar<SMIScripting> m_scripting;
+
+    // Read accessors — null when the cluster's feature is unused, which every
+    // caller must handle. The ensure...() variants allocate and are defined in
+    // the .cpp, where the cluster types are complete.
+    const SMIReporting* reporting() const { return m_reporting.get(); }
+    SMIReporting* reporting() { return m_reporting.get(); }
+    SMIReporting& ensureReporting();
+    const SMIBindables* bindables() const { return m_bindables.get(); }
+    SMIBindables& ensureBindables();
+    const SMIInputExtras* inputExtras() const { return m_inputExtras.get(); }
+    SMIInputExtras* inputExtras() { return m_inputExtras.get(); }
+    SMIInputExtras& ensureInputExtras();
+    const SMIScripting* scripting() const { return m_scripting.get(); }
+    SMIScripting& ensureScripting();
+
+    // True while any reported event or viewModel listener is still waiting to
+    // be delivered — the "keep advancing" condition for advance() and
+    // advanceAndApply(). One null check on the cold cluster replaces two
+    // .empty() probes on containers that were inline for every instance.
+    bool hasPendingReports() const;
+
+    void processFocusEvents();
+
+    // Root artboard of this instance's tree, used to tag deferred focus
+    // requests so a manager shared across independent roots drains each root's
+    // requests only after that root has updated. See
+    // FocusManager::PendingFocusRequest.
+    const Artboard* rootArtboard() const;
+
+    void processSemanticEvents();
+
+#ifdef WITH_RIVE_TOOLS
+public:
+    void onInputChanged(InputChanged callback)
+    {
+        m_inputChangedCallback = callback;
+    }
+    void onDataBindChanged(DataBindChanged callback);
+    InputChanged m_inputChangedCallback = nullptr;
+#endif
+};
+
+class HitComponent
+{
+public:
+    Component* component() const { return m_component; }
+    HitComponent(Component* component,
+                 StateMachineInstance* stateMachineInstance) :
+        m_component(component), m_stateMachineInstance(stateMachineInstance)
+    {}
+    virtual ~HitComponent() {}
+    virtual HitResult processEvent(Vec2D position,
+                                   ListenerType hitType,
+                                   bool canHit,
+                                   float timeStamp = 0,
+                                   int pointerId = 0) = 0;
+    virtual HitResult processGamepadInvocation(
+        const ListenerInvocation& invocation,
+        ScriptedDrawable* alreadyDispatched) = 0;
+    virtual void prepareEvent(Vec2D position,
+                              ListenerType hitType,
+                              int pointerId) = 0;
+    virtual bool hitTest(Vec2D position) const = 0;
+    /// See StateMachineInstance::hitTestBounded; the same as hitTest for
+    /// everything but scripted drawables.
+    virtual bool hitTestBounded(Vec2D position) const
+    {
+        return hitTest(position);
+    }
+    virtual void enablePointerEvents(int pointerId = 0) {}
+    virtual void disablePointerEvents(int pointerId = 0) {}
+#ifdef TESTING
+    int earlyOutCount = 0;
+#endif
+
+protected:
+    Component* m_component;
+    StateMachineInstance* m_stateMachineInstance;
+};
+
+} // namespace rive
+#endif

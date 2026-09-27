@@ -1,7 +1,8 @@
 //! The Voice page (spec_voice §4.3), top to bottom: the microphone a call records
-//! from, with Linux's microphone statement folded under it; the one row saying
-//! what stands between the person and a call; the mascot, its status and the call
-//! controls; the live-call facts; and the companion window. It draws from
+//! from, with Linux's microphone statement folded under it; the mascot, with one
+//! line under it and one button: before a call the line says what stands in the
+//! way, or why the last one failed, and the button is the one thing that fixes
+//! it, or Begin; the live-call facts; and the companion window. It draws from
 //! `VoiceView` only; the controller decides everything.
 
 use crate::mascot::Mascot;
@@ -9,9 +10,11 @@ use adw::prelude::*;
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE};
 use fermix_client::mascot::Expression;
 use fermix_client::realtime::session::Palette;
-use fermix_client::voice::{GateAction, VoiceGate};
+use fermix_client::voice::{GateAction, StatusLine, VoiceGate};
+use fermix_rive::Stage;
 use gtk::glib::{self, variant::ToVariant};
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Everything the page shows, decided by the controller.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,9 +22,8 @@ pub struct VoiceView {
     pub gate: VoiceGate,
     /// Begin is offered: nothing but the last attempt's answer is in the way.
     pub can_begin: bool,
-    pub word: String,
-    pub icon: &'static str,
-    pub palette: Palette,
+    /// The line under the mascot; the mascot draws in its palette.
+    pub status: StatusLine,
     pub expression: Expression,
     /// The smoothed output level, 0 to 1, while Fermix speaks.
     pub level: f32,
@@ -53,15 +55,13 @@ pub struct VoicePage {
     pub root: adw::PreferencesPage,
     mascot: Mascot,
     pub companion: adw::SwitchRow,
-    status_line: gtk::Box,
     status: gtk::Label,
     status_icon: gtk::Image,
     call: gtk::Button,
     mute: gtk::ToggleButton,
     stop: gtk::Button,
-    gate_group: adw::PreferencesGroup,
-    gate_row: adw::ActionRow,
-    gate_button: gtk::Button,
+    /// Takes the call button's place while the gate has a fix to offer.
+    fix: gtk::Button,
     live: adw::PreferencesGroup,
     caption: adw::ActionRow,
     task: adw::ActionRow,
@@ -73,20 +73,16 @@ pub struct VoicePage {
 }
 
 impl VoicePage {
-    pub fn new() -> VoicePage {
-        let mascot = Mascot::new(200, 176);
-        let (call_group, status_line, status, status_icon) = call_group(&mascot);
+    pub fn new(stage: Option<&Rc<Stage>>) -> VoicePage {
+        let mascot = Mascot::new(stage, 240, 220);
+        let (call_group, status, status_icon) = call_group(&mascot);
         let (call, mute, stop) = controls();
-        call_group.add(&controls_bar(&call, &mute, &stop));
-        let gate_row = adw::ActionRow::new();
-        let gate_button = gtk::Button::builder()
-            .valign(gtk::Align::Center)
-            .css_classes(["suggested-action"])
+        let fix = gtk::Button::builder()
+            .css_classes(["pill", "suggested-action"])
+            .visible(false)
             .build();
-        gate_button.set_action_name(Some("win.voice-fix"));
-        gate_row.add_suffix(&gate_button);
-        let gate_group = adw::PreferencesGroup::new();
-        gate_group.add(&gate_row);
+        fix.set_action_name(Some("win.voice-fix"));
+        call_group.add(&controls_bar(&call, &fix, &mute, &stop));
         let (live, caption, task, usage) = live_group();
         let cancel_task = gtk::Button::builder()
             .label("Cancel Task")
@@ -101,8 +97,7 @@ impl VoicePage {
             .build();
         let (microphone_group, microphone) = microphone_group();
         let root = adw::PreferencesPage::new();
-        // What stands in the way comes before the controls it blocks (spec §4.3).
-        for group in [&microphone_group, &gate_group, &call_group, &live] {
+        for group in [&microphone_group, &call_group, &live] {
             root.add(group);
         }
         root.add(&more_group(&companion));
@@ -110,15 +105,12 @@ impl VoicePage {
             root,
             mascot,
             companion,
-            status_line,
             status,
             status_icon,
             call,
             mute,
             stop,
-            gate_group,
-            gate_row,
-            gate_button,
+            fix,
             live,
             caption,
             task,
@@ -141,44 +133,43 @@ impl VoicePage {
         }
         *self.shown.borrow_mut() = Some(view.clone());
         self.mascot.set_expression(view.expression);
-        self.mascot.set_in_call(view.in_call);
-        self.mascot.set_palette(view.palette);
-        let gate_shown = !view.gate.ready && !view.in_call;
-        self.render_status(view, !gate_shown);
+        self.render_status(&view.status);
         self.render_controls(view);
-        self.render_gate(&view.gate, gate_shown);
         self.render_live(view);
         self.microphone
             .set_subtitle(&glib::markup_escape_text(&view.microphone));
     }
 
-    /// The word under the mascot. While the gate row says what is in the way,
-    /// the word would only repeat it, so it steps aside.
-    fn render_status(&self, view: &VoiceView, shown: bool) {
-        self.status_line.set_visible(shown);
-        self.status.set_text(&view.word);
-        // A word is a heading; the error mode's sentence reads as body text.
-        if view.palette == Palette::Error {
-            self.status.remove_css_class("title-4");
-        } else {
-            self.status.add_css_class("title-4");
-        }
-        self.status_icon.set_icon_name(Some(view.icon));
-        let tone = tone(view.palette);
+    /// The line under the mascot: a mode's word as a heading beside its icon,
+    /// in the mode's colour; a sentence as quiet body text, its words enough.
+    fn render_status(&self, line: &StatusLine) {
+        self.status.set_text(&line.text);
+        self.status_icon.set_visible(line.icon.is_some());
+        self.status_icon.set_icon_name(line.icon);
+        let (heading, tone) = match line.icon {
+            Some(_) => (true, tone(line.palette)),
+            None => (false, None),
+        };
+        set_class(&self.status, "title-4", heading);
+        set_class(&self.status, "dim-label", !heading);
         for widget in [
             self.status.upcast_ref::<gtk::Widget>(),
             self.status_icon.upcast_ref(),
         ] {
             for class in TONES {
-                widget.remove_css_class(class);
-            }
-            if let Some(class) = tone {
-                widget.add_css_class(class);
+                set_class(widget, class, tone == Some(class));
             }
         }
     }
 
+    /// One button under the line: what fixes what the line says, or the call.
     fn render_controls(&self, view: &VoiceView) {
+        let fix = (!view.in_call).then_some(view.gate.action).flatten();
+        self.fix.set_visible(fix.is_some());
+        if let Some(action) = fix {
+            self.fix.set_label(action_verb(action));
+        }
+        self.call.set_visible(fix.is_none());
         // Begin is the page's main action only when nothing else has to happen first.
         let (label, classes): (&str, &[&str]) = if view.in_call {
             ("End Voice Call", &["pill", "destructive-action"])
@@ -197,17 +188,6 @@ impl VoicePage {
         // Stop stays in place through the call, so End never moves under the pointer.
         self.stop.set_visible(view.in_call);
         self.stop.set_sensitive(view.can_stop);
-    }
-
-    fn render_gate(&self, gate: &VoiceGate, shown: bool) {
-        self.gate_group.set_visible(shown);
-        self.gate_row
-            .set_title(&glib::markup_escape_text(&gate.sentence));
-        let verb = gate.action.map(action_verb);
-        self.gate_button.set_visible(verb.is_some());
-        if let Some(verb) = verb {
-            self.gate_button.set_label(verb);
-        }
     }
 
     fn render_live(&self, view: &VoiceView) {
@@ -242,6 +222,14 @@ pub fn tone(palette: Palette) -> Option<&'static str> {
         Palette::Success => Some("success"),
         Palette::Error => Some("error"),
         Palette::Faint | Palette::Secondary => None,
+    }
+}
+
+fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
+    if on {
+        widget.add_css_class(class);
+    } else {
+        widget.remove_css_class(class);
     }
 }
 
@@ -284,19 +272,20 @@ fn microphone_group() -> (adw::PreferencesGroup, adw::ActionRow) {
     (group, microphone)
 }
 
-fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Box, gtk::Label, gtk::Image) {
+/// The mascot with its line under it: a word beside an icon, or a sentence
+/// that wraps to a few centred lines.
+fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Label, gtk::Image) {
     let stage = gtk::Box::builder()
         .halign(gtk::Align::Center)
         .margin_top(12)
         .build();
     stage.append(&mascot.widget);
     let status_icon = gtk::Image::new();
-    // In the error mode the word is a sentence.
     let status = gtk::Label::builder()
         .css_classes(["title-4"])
         .wrap(true)
         .justify(gtk::Justification::Center)
-        .max_width_chars(40)
+        .max_width_chars(48)
         .build();
     let line = gtk::Box::builder()
         .spacing(8)
@@ -312,7 +301,7 @@ fn call_group(mascot: &Mascot) -> (adw::PreferencesGroup, gtk::Box, gtk::Label, 
     column.append(&line);
     let group = adw::PreferencesGroup::new();
     group.add(&column);
-    (group, line, status, status_icon)
+    (group, status, status_icon)
 }
 
 fn controls() -> (gtk::Button, gtk::ToggleButton, gtk::Button) {
@@ -335,7 +324,13 @@ fn controls() -> (gtk::Button, gtk::ToggleButton, gtk::Button) {
     (call, mute, stop)
 }
 
-fn controls_bar(call: &gtk::Button, mute: &gtk::ToggleButton, stop: &gtk::Button) -> gtk::Box {
+/// The call button and the fix share one place: only one of them shows.
+fn controls_bar(
+    call: &gtk::Button,
+    fix: &gtk::Button,
+    mute: &gtk::ToggleButton,
+    stop: &gtk::Button,
+) -> gtk::Box {
     let bar = gtk::Box::builder()
         .spacing(12)
         .halign(gtk::Align::Center)
@@ -344,6 +339,7 @@ fn controls_bar(call: &gtk::Button, mute: &gtk::ToggleButton, stop: &gtk::Button
         .build();
     bar.append(mute);
     bar.append(call);
+    bar.append(fix);
     bar.append(stop);
     bar
 }
