@@ -560,6 +560,9 @@ fn install_settings_actions(app: &Rc<App>) {
     on_plain(app, "settings-reload", |app| async move {
         app.reload_settings().await
     });
+    on(app, "section-read", |app, section| async move {
+        app.read_section(&section).await
+    });
     on_value(
         app,
         "setting-apply",

@@ -22,6 +22,8 @@ const NUMBER_SETTLE: Duration = Duration::from_millis(700);
 pub struct Drawn {
     /// `None` until the section has been read once.
     pub rows: Option<SectionRows>,
+    /// Why the section has no rows yet, once a read of it failed.
+    pub unread: Option<String>,
     /// The daemon's refusal sentence, by row key.
     pub errors: Vec<(String, String)>,
     /// Set while the settings file changed outside Fermix: nothing may be written.
@@ -66,9 +68,10 @@ impl SectionView {
         for old in self.widgets.borrow_mut().drain(..) {
             self.group.remove(&old);
         }
-        let fresh = match &drawn.rows {
-            None => vec![loading_row()],
-            Some(section) => self.row_widgets(section, &drawn.errors),
+        let fresh = match (&drawn.rows, &drawn.unread) {
+            (Some(section), _) => self.row_widgets(section, &drawn.errors),
+            (None, Some(sentence)) => vec![unread_row(&self.id, sentence)],
+            (None, None) => vec![loading_row()],
         };
         for widget in &fresh {
             self.group.add(widget);
@@ -100,6 +103,23 @@ fn loading_row() -> gtk::Widget {
         .title("Reading from Fermix…")
         .build();
     row.add_suffix(&adw::Spinner::new());
+    row.upcast()
+}
+
+/// Stands in for a section whose read failed, with one way to read it again.
+fn unread_row(section: &str, sentence: &str) -> gtk::Widget {
+    let row = adw::ActionRow::builder()
+        .title("These settings did not load")
+        .subtitle(glib::markup_escape_text(sentence))
+        .build();
+    let again = gtk::Button::builder()
+        .label("Try again")
+        .valign(gtk::Align::Center)
+        .action_name("win.section-read")
+        .action_target(&section.to_variant())
+        .build();
+    row.add_suffix(&again);
+    row.add_css_class("setting-refused");
     row.upcast()
 }
 

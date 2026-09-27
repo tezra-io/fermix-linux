@@ -1,15 +1,16 @@
 //! Settings: the daemon's rows decoded from its own fixtures, and the pure rules
 //! that turn a row into what a control shows and what a control sends back.
 
-use fermix_client::management::decode_response;
+use fermix_client::management::{decode_response, CallError, Refusal};
 use fermix_client::settings::{
     channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, pane, placeholder, sections_for, text_answer, ApplyResult, Kind, ReloadResult,
-    Row, SectionRows, Sections, GROUPS, PANES,
+    number_view, pane, placeholder, read_failure, sections_for, text_answer, ApplyResult, Kind,
+    ReloadResult, Row, SectionRows, Sections, GROUPS, PANES,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::ErrorKind;
 
 const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
 
@@ -280,4 +281,29 @@ fn apply_and_reload_answers_decode() {
     assert!(applied.side_effects.is_empty());
     let reloaded: ReloadResult = decode("settings_reload");
     assert_eq!(reloaded.config_state, "clear");
+}
+
+#[test]
+fn a_section_that_could_not_be_read_says_why() {
+    let refused = CallError::Refused(Refusal {
+        code: "unknown_section".into(),
+        sentence: "Fermix has no settings section called voices.".into(),
+        field: None,
+    });
+    assert_eq!(
+        read_failure(&refused),
+        "Fermix has no settings section called voices."
+    );
+    assert_eq!(
+        read_failure(&CallError::Timeout),
+        "Fermix is not responding."
+    );
+    assert_eq!(
+        read_failure(&CallError::DaemonDown(ErrorKind::NotFound)),
+        "Fermix is not running."
+    );
+    assert_eq!(
+        read_failure(&CallError::Protocol("no rows".into())),
+        "Fermix answered in a way this app does not understand."
+    );
 }

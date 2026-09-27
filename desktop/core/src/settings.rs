@@ -3,7 +3,9 @@
 //! control shows and a control's value back into what `settings.apply` takes.
 //! Rows decode tolerantly, so a newer daemon's fields and kinds never break it.
 
+use crate::management::CallError;
 use crate::model::RestartState;
+use crate::view::daemon_problem;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -152,6 +154,15 @@ pub struct ReloadResult {
 }
 
 /// The sections a pane draws, in the daemon's order, minus those this platform lacks.
+/// Why a section's rows could not be read, for the row that stands in for them:
+/// the daemon's own sentence when it refused, else what became of the daemon.
+pub fn read_failure(err: &CallError) -> String {
+    match err {
+        CallError::Refused(refusal) => refusal.sentence.clone(),
+        other => daemon_problem(other).sentence(),
+    }
+}
+
 pub fn sections_for<'a>(pane: &str, sections: &'a [Section]) -> Vec<&'a Section> {
     sections
         .iter()

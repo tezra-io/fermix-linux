@@ -8,7 +8,7 @@ use crate::descriptor::{Keep, SectionView};
 use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
 use adw::prelude::*;
 use fermix_client::management::CallError;
-use fermix_client::settings::{matching_panes, pane, sections_for, Kind};
+use fermix_client::settings::{matching_panes, pane, read_failure, sections_for, Kind};
 use gtk::glib;
 use serde_json::{Map, Value};
 use std::rc::Rc;
@@ -29,11 +29,14 @@ impl App {
             sections_for(&pane, sections)
                 .into_iter()
                 .map(|s| s.id.clone())
-                .filter(|id| !data.rows.contains_key(id) && !data.reading.contains(id))
+                .filter(|id| data.needs_read(id))
                 .collect()
         };
         for id in unread {
-            self.read_section(&id).await;
+            // Another opening of this pane may have started the read meanwhile.
+            if self.settings_data.borrow().needs_read(&id) {
+                self.read_section(&id).await;
+            }
         }
         // What the daemon reports about a helper is read as its pane opens (M38 §5.7).
         match pane.as_str() {
@@ -62,22 +65,18 @@ impl App {
         }
     }
 
+    /// Reads one section. A failure is logged and takes the spinner's place with
+    /// its reason and a Try again button; nothing here retries on its own.
     pub async fn read_section(&self, id: &str) {
-        self.settings_data
-            .borrow_mut()
-            .reading
-            .insert(id.to_owned());
+        self.settings_data.borrow_mut().reading_started(id);
+        self.render();
         let section = id.to_owned();
         let answer = self.daemon.call(move |m| m.settings_get(&section)).await;
-        let mut data = self.settings_data.borrow_mut();
-        data.reading.remove(id);
-        match answer {
-            Ok(rows) => {
-                data.rows.insert(id.to_owned(), rows);
-            }
-            Err(e) => glib::g_warning!("fermix", "settings.get {id} failed: {e:?}"),
-        }
-        drop(data);
+        let answer = answer.map_err(|e| {
+            glib::g_warning!("fermix", "settings.get {id} failed: {e:?}");
+            read_failure(&e)
+        });
+        self.settings_data.borrow_mut().reading_ended(id, answer);
         self.render();
     }
 
@@ -232,6 +231,7 @@ impl App {
         let mut data = self.settings_data.borrow_mut();
         data.sections = None;
         data.rows.clear();
+        data.unread.clear();
         data.errors.clear();
         data.unreadable = None;
     }

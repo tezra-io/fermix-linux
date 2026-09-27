@@ -38,6 +38,8 @@ pub struct SettingsData {
     pub errors: HashMap<(String, String), String>,
     /// Sections being read now, so a pane opened twice reads them once.
     pub reading: HashSet<String>,
+    /// Why a section's last read brought no rows, by section.
+    pub unread: HashMap<String, String>,
     /// The daemon process the cache was read from; a restart empties it.
     pub pid: Option<String>,
     /// The parser's sentence, known only once a write was refused for it.
@@ -53,6 +55,33 @@ pub struct SettingsData {
 }
 
 impl SettingsData {
+    /// Whether opening a pane should read `section`: not while another read of
+    /// it is out, and not once its rows are here.
+    pub fn needs_read(&self, section: &str) -> bool {
+        !self.rows.contains_key(section) && !self.reading.contains(section)
+    }
+
+    /// A read of `section` begins: it is not started twice, and a failed read's
+    /// row gives way to the spinner again.
+    pub fn reading_started(&mut self, section: &str) {
+        self.reading.insert(section.to_owned());
+        self.unread.remove(section);
+    }
+
+    /// A read of `section` ended with its rows, or with why there are none.
+    /// Rows already on screen stay when a later read fails.
+    pub fn reading_ended(&mut self, section: &str, answer: Result<SectionRows, String>) {
+        self.reading.remove(section);
+        match answer {
+            Ok(rows) => {
+                self.rows.insert(section.to_owned(), rows);
+            }
+            Err(sentence) => {
+                self.unread.insert(section.to_owned(), sentence);
+            }
+        }
+    }
+
     pub fn drawn(&self, section: &str, locked: bool) -> Drawn {
         let mut errors: Vec<(String, String)> = self
             .errors
@@ -61,8 +90,14 @@ impl SettingsData {
             .map(|((_, key), sentence)| (key.clone(), sentence.clone()))
             .collect();
         errors.sort();
+        let rows = self.rows.get(section).cloned();
+        let unread = match rows {
+            Some(_) => None,
+            None => self.unread.get(section).cloned(),
+        };
         Drawn {
-            rows: self.rows.get(section).cloned(),
+            rows,
+            unread,
             errors,
             locked,
         }
@@ -431,4 +466,75 @@ fn heading_row(group: &str) -> gtk::ListBoxRow {
         .activatable(false)
         .selectable(false)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(id: &str) -> SectionRows {
+        SectionRows {
+            id: id.into(),
+            title: "Voice".into(),
+            rows: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_section_whose_read_failed_says_why_instead_of_spinning() {
+        let mut data = SettingsData::default();
+        data.reading_started("voice");
+        assert!(data.reading.contains("voice"));
+        assert_eq!(
+            data.drawn("voice", false).unread,
+            None,
+            "a first read spins"
+        );
+        data.reading_ended("voice", Err("Fermix is not responding.".into()));
+        assert!(!data.reading.contains("voice"));
+        let failed = data.drawn("voice", false);
+        assert_eq!(failed.rows, None);
+        assert_eq!(failed.unread.as_deref(), Some("Fermix is not responding."));
+        data.reading_started("voice");
+        assert_eq!(
+            data.drawn("voice", false).unread,
+            None,
+            "trying again spins"
+        );
+        data.reading_ended("voice", Ok(rows("voice")));
+        let read = data.drawn("voice", false);
+        assert_eq!(read.rows, Some(rows("voice")));
+        assert_eq!(read.unread, None);
+    }
+
+    #[test]
+    fn a_section_is_read_once_at_a_time_and_again_only_while_it_has_no_rows() {
+        let mut data = SettingsData::default();
+        assert!(data.needs_read("voice"));
+        data.reading_started("voice");
+        assert!(
+            !data.needs_read("voice"),
+            "a second opening waits for the first"
+        );
+        data.reading_ended("voice", Err("Fermix is not responding.".into()));
+        assert!(
+            data.needs_read("voice"),
+            "opening the pane again tries again"
+        );
+        data.reading_started("voice");
+        data.reading_ended("voice", Ok(rows("voice")));
+        assert!(!data.needs_read("voice"));
+    }
+
+    #[test]
+    fn a_failed_read_again_keeps_the_rows_on_screen() {
+        let mut data = SettingsData::default();
+        data.reading_started("voice");
+        data.reading_ended("voice", Ok(rows("voice")));
+        data.reading_started("voice");
+        data.reading_ended("voice", Err("Fermix is not responding.".into()));
+        let drawn = data.drawn("voice", false);
+        assert_eq!(drawn.rows, Some(rows("voice")));
+        assert_eq!(drawn.unread, None);
+    }
 }
