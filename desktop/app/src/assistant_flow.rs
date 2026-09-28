@@ -186,7 +186,10 @@ impl App {
 
     /// Closes the assistant and opens where the person chose to go next.
     pub fn assistant_finish(self: &Rc<Self>, target: &str) {
-        if let Some(assistant) = self.assistant.borrow_mut().take() {
+        // Out of the cell first: closing emits `closed` at once, and its
+        // handler borrows the cell again.
+        let assistant = self.assistant.borrow_mut().take();
+        if let Some(assistant) = assistant {
             assistant.dialog.close();
         }
         self.show_page(target);
