@@ -6,7 +6,7 @@
 //! every write and every job, and re-attaches to plugin jobs that outlived it.
 
 use crate::daemon::Daemon;
-use crate::dialogs::confirm;
+use crate::dialogs::{confirm, form_dialog, keep_with, leave};
 use crate::fields::{field_row, let_go, resume, secret_row, typing_in, Live, Slot};
 use crate::marks::{mark, Kind};
 use crate::secret_save::set_secret;
@@ -1773,40 +1773,7 @@ fn dialog_with(title: &str, nav: &adw::NavigationView) -> adw::Dialog {
 }
 
 fn present_alone(parent: &adw::PreferencesPage, page: &adw::NavigationPage) {
-    let nav = adw::NavigationView::new();
-    nav.add(page);
-    dialog_with(&page.title(), &nav).present(Some(parent));
-}
-
-/// The page owns its form. The form's own widgets hold it only weakly, so
-/// when the page goes, its handlers go, and the form with them.
-fn keep_with<T: 'static>(page: &adw::NavigationPage, form: Rc<T>) {
-    page.connect_destroy(move |_| {
-        let _ = &form;
-    });
-}
-
-/// Goes back from the page holding `widget`, or closes the dialog it is the
-/// only page of. A page already left stays left.
-fn leave(widget: &impl IsA<gtk::Widget>) {
-    let page = widget
-        .ancestor(adw::NavigationPage::static_type())
-        .and_downcast::<adw::NavigationPage>();
-    let nav = widget
-        .ancestor(adw::NavigationView::static_type())
-        .and_downcast::<adw::NavigationView>();
-    let (Some(page), Some(nav)) = (page, nav) else {
-        return;
-    };
-    if nav.visible_page().as_ref() != Some(&page) || nav.pop() {
-        return;
-    }
-    let dialog = nav
-        .ancestor(adw::Dialog::static_type())
-        .and_downcast::<adw::Dialog>();
-    if let Some(dialog) = dialog {
-        dialog.close();
-    }
+    form_dialog(page, DIALOG_WIDTH, Some(DIALOG_HEIGHT)).present(Some(parent));
 }
 
 /// What a job that did not complete leaves to say. A cancelled job has no

@@ -3,6 +3,7 @@
 
 use crate::app::App;
 use crate::assistant::{Assistant, Mark};
+use crate::dialogs::form_dialog;
 use adw::prelude::*;
 use fermix_client::management::CallError;
 use fermix_client::onboarding::{finish_gate, landing, personalization_answer, Stage};
@@ -196,6 +197,31 @@ impl App {
         if target == "chat" {
             self.chat.focus_input();
         }
+    }
+
+    /// Shows a form: as the setup assistant's next page while it is open, so a
+    /// popup never raises a second one, and otherwise in a dialog of its own.
+    /// A second press while a form slides in finds one up already (the
+    /// assistant's own stages are tagged, forms are not) and opens nothing.
+    pub fn present_form(&self, page: &adw::NavigationPage, width: i32, height: Option<i32>) {
+        let nav = self.assistant.borrow().as_ref().map(|a| a.nav.clone());
+        let Some(nav) = nav else {
+            return form_dialog(page, width, height).present(Some(&self.shell.window));
+        };
+        if nav.visible_page().is_some_and(|p| p.tag().is_none()) {
+            glib::g_debug!(
+                "fermix",
+                "a form is up in the assistant; {} waits",
+                page.title()
+            );
+            return;
+        }
+        nav.push(page);
+    }
+
+    /// Whether the setup assistant is on screen.
+    pub fn assisting(&self) -> bool {
+        self.assistant.borrow().is_some()
     }
 
     fn with_assistant(&self, f: impl FnOnce(&Assistant)) {

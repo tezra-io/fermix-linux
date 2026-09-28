@@ -5,7 +5,7 @@
 use crate::app::App;
 use crate::channels::{section_id, switch_key};
 use crate::descriptor::{Keep, SectionView};
-use crate::dialogs::{secret_dialog, SecretPrompt};
+use crate::dialogs::{leave, secret_dialog, SecretPrompt};
 use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::management::CallError;
@@ -17,6 +17,36 @@ use std::rc::Rc;
 
 /// What a row shows when its write never reached a verdict.
 const NOT_SAVED: &str = "Fermix did not answer, so this was not saved.";
+const SECTION_WIDTH: i32 = 560;
+const SECTION_HEIGHT: i32 = 560;
+
+/// A section as a form page: what it is for, its rows, and Done. Done, as on
+/// macOS: every field has saved by the time the page goes, since clicking it
+/// takes the focus from the field still being typed in.
+fn section_page(title: &str, view: &SectionView, intro: &str) -> adw::NavigationPage {
+    let content = adw::PreferencesPage::new();
+    let lead = adw::PreferencesGroup::new();
+    lead.set_description(Some(&glib::markup_escape_text(intro)));
+    content.add(&lead);
+    content.add(&view.group);
+    let done = gtk::Button::builder()
+        .label("Done")
+        .css_classes(["suggested-action"])
+        .build();
+    done.connect_clicked(leave);
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .show_back_button(false)
+        .build();
+    header.pack_end(&done);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    adw::NavigationPage::builder()
+        .title(title)
+        .child(&toolbar)
+        .build()
+}
 
 impl App {
     /// Reads every section of `pane` not read yet. Sections already on screen
@@ -284,45 +314,17 @@ impl App {
         self.settings.filter(matches);
     }
 
-    /// Opens one daemon section in a dialog. The dialog's rows follow the
-    /// section like any pane's and stop when the dialog closes.
+    /// Opens one daemon section as a form: the setup assistant's next page
+    /// while it is open, else a dialog. Its rows follow the section like any
+    /// pane's and stop when the page goes.
     pub fn section_dialog(self: &Rc<Self>, title: &str, section: &str, keep: Keep, intro: &str) {
         let view = SectionView::keeping(section, None, keep);
-        let page = adw::PreferencesPage::new();
-        let lead = adw::PreferencesGroup::new();
-        lead.set_description(Some(&glib::markup_escape_text(intro)));
-        page.add(&lead);
-        page.add(&view.group);
-        // Done, as on macOS: every field has saved by the time it closes, since
-        // clicking it takes the focus from the field still being typed in.
-        let done = gtk::Button::builder()
-            .label("Done")
-            .css_classes(["suggested-action"])
-            .build();
-        let header = adw::HeaderBar::builder()
-            .show_end_title_buttons(false)
-            .build();
-        header.pack_end(&done);
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&header);
-        toolbar.set_content(Some(&page));
-        let dialog = adw::Dialog::builder()
-            .title(title)
-            .content_width(560)
-            .content_height(560)
-            .child(&toolbar)
-            .build();
-        let closing = dialog.downgrade();
-        done.connect_clicked(move |_| {
-            if let Some(dialog) = closing.upgrade() {
-                dialog.close();
-            }
-        });
+        let page = section_page(title, &view, intro);
         self.settings.dialog_views.borrow_mut().push(view.clone());
         let views = self.settings.dialog_views.clone();
-        dialog.connect_closed(move |_| views.borrow_mut().retain(|v| !Rc::ptr_eq(v, &view)));
+        page.connect_destroy(move |_| views.borrow_mut().retain(|v| !Rc::ptr_eq(v, &view)));
         self.render();
-        dialog.present(Some(&self.shell.window));
+        self.present_form(&page, SECTION_WIDTH, Some(SECTION_HEIGHT));
         glib::spawn_future_local({
             let (app, section) = (self.clone(), section.to_owned());
             async move { app.read_section(&section).await }

@@ -3,7 +3,7 @@
 //! progress on the provider's own row and ends by re-reading the daemon.
 
 use crate::app::App;
-use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
+use crate::dialogs::{confirm, secret_page, SecretPrompt, SECRET_WIDTH};
 use crate::secret_save::set_secret;
 use crate::state::Link;
 use fermix_client::job::{adoptable_sign_in, outcome, poll_cap, Outcome};
@@ -36,8 +36,11 @@ impl App {
             glib::g_warning!("fermix", "unknown way in: {target}");
             return;
         };
-        // Home's attention buttons start a way in too; its progress shows on the row.
-        self.show_page("providers");
+        // Home's attention buttons start a way in too; its progress shows on the
+        // row. The assistant draws the same rows, so the window stays put behind it.
+        if !self.assisting() {
+            self.show_page("providers");
+        }
         match door {
             Door::BrowserSignIn => self.browser_sign_in(provider).await,
             Door::Import(source) => self.import_login(provider, source).await,
@@ -302,10 +305,11 @@ impl App {
             entry_title,
         };
         let app = self.clone();
-        secret_dialog(&self.shell.window, prompt, move |value| {
+        let page = secret_page(prompt, move |value| {
             app.clone()
                 .save_secret(provider.clone(), id.clone(), door, value)
         });
+        self.present_form(&page, SECRET_WIDTH, None);
     }
 
     async fn save_secret(
