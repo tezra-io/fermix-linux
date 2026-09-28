@@ -34,8 +34,16 @@ fn decode<T: DeserializeOwned>(name: &str) -> T {
 #[test]
 fn setup_state_decodes_providers_readiness_and_restart() {
     let state: SetupState = decode("setup_state_get");
-    assert_eq!(state.readiness.status, "setup_required");
-    assert!(state.readiness.failures.iter().any(|f| f.gating));
+    // The first boot seeds personalization, so it only advises (engine d9309720).
+    assert_eq!(state.readiness.status, "ready");
+    assert!(state.readiness.failures.iter().all(|f| !f.gating));
+    let about = state
+        .readiness
+        .failures
+        .iter()
+        .find(|f| f.detail_key == "personalization")
+        .unwrap();
+    assert_eq!(about.pane.as_deref(), Some("personality"));
     assert!(state.restart.required);
     assert_eq!(
         state.restart.reasons[0].sentence,

@@ -35,6 +35,9 @@ fn starting_lands_on_the_first_gap_that_has_a_screen() {
     assert_eq!(landing(&state(json!([]), true)), Stage::Applying);
     let advisory = gap("channels", "channel:whatsapp", false);
     assert_eq!(landing(&state(json!([advisory]), false)), Stage::Ready);
+    // A home the first boot seeded still names personalization, as advice.
+    let seeded = gap("personality", "personalization", false);
+    assert_eq!(landing(&state(json!([seeded]), false)), Stage::Ready);
 }
 
 #[test]
