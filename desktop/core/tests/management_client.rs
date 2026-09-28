@@ -214,6 +214,23 @@ fn a_refused_secret_never_appears_in_the_error() {
 }
 
 #[test]
+fn a_refusal_carries_the_daemons_reason_word() {
+    let daemon = FakeDaemon::start(vec![Reply::Envelope(
+        json!({"request_id": "$id", "error": {
+        "code": "secret_store_failed", "message": "The secret could not be stored.",
+        "details": {"id": "telegram_bot_token", "reason": "locked"}}}),
+    )]);
+    let err = daemon
+        .client()
+        .secret_set("telegram_bot_token", "123:abc")
+        .unwrap_err();
+    let CallError::Refused(refusal) = err else {
+        panic!("expected a refusal, got {err:?}")
+    };
+    assert_eq!(refusal.reason.as_deref(), Some("locked"));
+}
+
+#[test]
 fn a_result_that_does_not_fit_the_model_is_a_protocol_error() {
     let daemon = FakeDaemon::start(vec![Reply::Envelope(
         json!({"request_id": "$id", "result": {"providers": "nope"}}),

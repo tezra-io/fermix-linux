@@ -26,6 +26,7 @@ mod mascot;
 mod microphones;
 mod portal;
 mod providers;
+mod secret_save;
 mod service;
 mod settings;
 mod settings_flow;

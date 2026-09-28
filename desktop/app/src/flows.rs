@@ -4,11 +4,13 @@
 
 use crate::app::App;
 use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
+use crate::secret_save::set_secret;
 use crate::state::Link;
 use fermix_client::job::{adoptable_sign_in, outcome, poll_cap, Outcome};
 use fermix_client::management::CallError;
 use fermix_client::model::JobView;
 use fermix_client::providers::{Door, ImportSource};
+use fermix_client::secrets::refused_sentence;
 use fermix_client::view::{daemon_problem, Activity, DaemonProblem, Recent};
 use gtk::glib;
 use gtk::prelude::*;
@@ -289,7 +291,7 @@ impl App {
         } else {
             (
                 format!("{label} API key"),
-                "Stored in your keyring. Fermix never shows it again.",
+                "Fermix stores it and never shows it again.",
                 "API key",
                 Door::api_key_secret_id(&provider),
             )
@@ -315,12 +317,12 @@ impl App {
     ) -> Result<(), String> {
         let was_ready = self.is_ready();
         self.set_activity(&provider, Activity::Saving);
-        let answer = self.daemon.call(move |m| m.secret_set(&id, &value)).await;
+        let answer = set_secret(&self.daemon, &self.shell.window, id, value).await;
         self.clear_activity(&provider);
         if let Err(e) = answer {
             self.refresh().await;
             return Err(match e {
-                CallError::Refused(refusal) => refusal.sentence,
+                CallError::Refused(refusal) => refused_sentence(&refusal),
                 other => daemon_problem(&other).sentence(),
             });
         }
@@ -360,7 +362,7 @@ impl App {
 
     pub async fn remove_key(self: Rc<Self>, provider: &str) {
         let label = self.state.borrow().label(provider);
-        let body = "Fermix deletes the key from your keyring. You can add it again at any time.";
+        let body = "Fermix deletes the stored key. You can add it again at any time.";
         if !confirm(
             &self.shell.window,
             &format!("Remove the {label} key?"),

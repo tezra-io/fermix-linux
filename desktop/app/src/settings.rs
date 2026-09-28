@@ -19,13 +19,14 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Panes drawn entirely from the daemon's sections, plus any intro above them.
-const DESCRIPTOR_PANES: [&str; 7] = [
+const DESCRIPTOR_PANES: [&str; 8] = [
     "personality",
     "memory",
     "voice",
     "coding",
     "search",
     "images",
+    "secrets",
     "sandbox",
 ];
 

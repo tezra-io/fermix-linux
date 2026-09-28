@@ -26,7 +26,7 @@ pub struct Pane {
     pub icon: &'static str,
 }
 
-pub const PANES: [Pane; 13] = [
+pub const PANES: [Pane; 14] = [
     pane_of("providers", "Providers", "dialog-password-symbolic"),
     pane_of("personality", "Personality", "avatar-default-symbolic"),
     pane_of("memory", "Memory", "document-open-recent-symbolic"),
@@ -42,6 +42,7 @@ pub const PANES: [Pane; 13] = [
     pane_of("coding", "Coding agents", "utilities-terminal-symbolic"),
     pane_of("search", "Search", "system-search-symbolic"),
     pane_of("images", "Images", "image-x-generic-symbolic"),
+    pane_of("secrets", "Secrets", "channel-secure-symbolic"),
     pane_of("sandbox", "Sandbox", "security-medium-symbolic"),
     pane_of("permissions", "Permissions", "security-high-symbolic"),
 ];
@@ -59,7 +60,7 @@ pub const GROUPS: [(&str, &[&str]); 4] = [
             "voice", "meetings", "computer", "coding", "search", "images",
         ],
     ),
-    ("System", &["sandbox", "permissions"]),
+    ("System", &["secrets", "sandbox", "permissions"]),
 ];
 
 pub fn pane(slug: &str) -> Option<&'static Pane> {

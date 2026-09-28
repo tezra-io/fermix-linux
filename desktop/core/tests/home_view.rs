@@ -197,6 +197,7 @@ fn refused(code: &str) -> CallError {
         code: code.into(),
         sentence: "The daemon's words.".into(),
         field: None,
+        reason: None,
     })
 }
 

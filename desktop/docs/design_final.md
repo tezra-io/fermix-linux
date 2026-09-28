@@ -96,9 +96,17 @@ No detail page and no primary combo row in slice 1: every action is on its row, 
 from the subtitle and from Home. Dialogs (`AdwDialog` [1.5], content-sized, Escape cancels, the entry
 is cleared on close):
 - **Key dialog**: title "<Label> API key", `AdwPreferencesGroup` with `AdwPasswordEntryRow` [1.2] "API
-  key", description "Stored in your keyring. Fermix never shows it again." Buttons Cancel / Add
+  key", description "Fermix stores it and never shows it again." Buttons Cancel / Add
   (suggested, default, insensitive while empty). The same dialog titled "Anthropic setup token" with
   description "Run claude setup-token in a terminal and paste what it prints."
+- **Keyring refused** (amended 2026-09-27): a fingerprint or automatic login leaves the login keyring
+  locked. When a save of any secret (provider key, channel token, plugin token, settings secret)
+  comes back `secret_store_failed` and the `secrets` section names the keyring, an `AdwAlertDialog`
+  "Keep secrets in a file?" offers the engine's file store (one private file per secret in the
+  Fermix home, readable only by the account, not encrypted). That is the same one question the
+  terminal setup asks. A yes applies `secrets.secret_store = file` and tries the same save once more.
+  A no leaves the dialog open, saying what the keyring did. Nothing switches without a yes. The
+  choice lives in Settings, System, Secrets; secrets already saved stay in their store.
 - **Sign-out confirm**: `AdwAlertDialog` (§3 D).
 - `AdwShortcutsDialog` [1.8] for Ctrl+question, `AdwAboutDialog` [1.5]. Both verified present.
 - Browser launch: `gtk::UriLauncher` [GTK 4.10], which goes through the OpenURI portal inside the

@@ -39,6 +39,8 @@ pub struct Refusal {
     pub sentence: String,
     /// The parameter or row key the refusal is about, where the daemon names one.
     pub field: Option<String>,
+    /// The daemon's reason word (`details.reason`), where the code has several.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,10 +255,12 @@ fn refusal(error: &Value) -> Result<Refusal, CallError> {
     // sentence, where the daemon has one, travels in `details.sentence`.
     let specific = error.pointer("/details/sentence").and_then(Value::as_str);
     let field = error.pointer("/details/field").and_then(Value::as_str);
+    let reason = error.pointer("/details/reason").and_then(Value::as_str);
     Ok(Refusal {
         code: code.to_owned(),
         sentence: specific.unwrap_or(message).to_owned(),
         field: field.map(str::to_owned),
+        reason: reason.map(str::to_owned),
     })
 }
 

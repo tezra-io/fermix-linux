@@ -82,17 +82,23 @@ fn sections_keep_the_daemons_order_and_linux_drops_computer_history() {
 }
 
 #[test]
-fn the_thirteen_panes_sit_in_four_groups() {
-    assert_eq!(PANES.len(), 13);
+fn the_fourteen_panes_sit_in_four_groups() {
+    assert_eq!(PANES.len(), 14);
     assert_eq!(GROUPS.len(), 4);
     let grouped: usize = GROUPS.iter().map(|(_, panes)| panes.len()).sum();
-    assert_eq!(grouped, 13);
+    assert_eq!(grouped, 14);
     for (_, panes) in GROUPS {
         for slug in panes {
             assert!(pane(slug).is_some(), "{slug} is a pane");
         }
     }
     assert_eq!(pane("coding").unwrap().title, "Coding agents");
+    // Where secrets are kept leads the System group.
+    assert_eq!(
+        GROUPS[3],
+        ("System", &["secrets", "sandbox", "permissions"][..])
+    );
+    assert_eq!(pane("secrets").unwrap().title, "Secrets");
 }
 
 #[test]
@@ -262,7 +268,7 @@ fn search_finds_panes_by_title_and_by_rows_already_read() {
         matching_panes("TELEGRAM", &sections.sections, &loaded),
         ["channels"]
     );
-    assert!(matching_panes("  ", &sections.sections, &loaded).len() == 13);
+    assert!(matching_panes("  ", &sections.sections, &loaded).len() == PANES.len());
     assert!(matching_panes("zzz", &sections.sections, &loaded).is_empty());
 }
 
@@ -289,6 +295,7 @@ fn a_section_that_could_not_be_read_says_why() {
         code: "unknown_section".into(),
         sentence: "Fermix has no settings section called voices.".into(),
         field: None,
+        reason: None,
     });
     assert_eq!(
         read_failure(&refused),

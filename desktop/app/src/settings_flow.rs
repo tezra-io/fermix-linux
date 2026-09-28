@@ -6,8 +6,10 @@ use crate::app::App;
 use crate::channels::{section_id, switch_key};
 use crate::descriptor::{Keep, SectionView};
 use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
+use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::management::CallError;
+use fermix_client::secrets::refused_sentence;
 use fermix_client::settings::{matching_panes, pane, read_failure, sections_for, Kind};
 use gtk::glib;
 use serde_json::{Map, Value};
@@ -146,8 +148,7 @@ impl App {
         key: String,
         value: String,
     ) -> Result<(), String> {
-        let id = key.clone();
-        let answer = self.daemon.call(move |m| m.secret_set(&id, &value)).await;
+        let answer = set_secret(&self.daemon, &self.shell.window, key.clone(), value).await;
         match answer {
             Ok(_) => {
                 self.settings_data
@@ -157,7 +158,7 @@ impl App {
                 self.secret_changed(&key).await;
                 Ok(())
             }
-            Err(CallError::Refused(r)) => Err(r.sentence),
+            Err(CallError::Refused(r)) => Err(refused_sentence(&r)),
             Err(e) => {
                 glib::g_warning!("fermix", "secret.set {key} failed: {e:?}");
                 Err(NOT_SAVED.to_owned())

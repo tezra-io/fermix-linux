@@ -8,6 +8,7 @@
 use crate::daemon::Daemon;
 use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
 use crate::marks::{mark, Kind};
+use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::job::{outcome, poll_cap, Outcome};
 use fermix_client::management::CallError;
@@ -19,6 +20,7 @@ use fermix_client::plugins::{
     PluginAction, PluginList, PluginRow, PluginSetting, Region, SettingKind, Verb, Workspace,
     FEATURES,
 };
+use fermix_client::secrets::refused_sentence;
 use fermix_client::settings::UNKNOWN_KIND;
 use fermix_client::view::daemon_problem;
 use gtk::glib::{self, variant::ToVariant};
@@ -52,7 +54,7 @@ const CLIENT_NOTE: &str = "Store the client secret first, then the client ID. Le
 const REGION_NOTE: &str =
     "Pick the region the account belongs to. Its sign-in goes to that region's host.";
 const REGION_PROMPT: &str = "Choose a region";
-const KEYRING_NOTE: &str = "Stored in your keyring. Fermix never shows it again.";
+const STORED_NOTE: &str = "Fermix stores it and never shows it again.";
 
 /// A job the pane is following.
 #[derive(Debug, Clone, PartialEq)]
@@ -713,7 +715,7 @@ impl IntegrationsPane {
         let title = format!("{} token", row.title);
         let prompt = SecretPrompt {
             title: &title,
-            description: KEYRING_NOTE,
+            description: STORED_NOTE,
             entry_title: "Token",
         };
         let (pane, id) = (self.clone(), plugin_secret_id(&row.name));
@@ -727,7 +729,7 @@ impl IntegrationsPane {
         let title = format!("{} client secret", form.title);
         let prompt = SecretPrompt {
             title: &title,
-            description: KEYRING_NOTE,
+            description: STORED_NOTE,
             entry_title: "Client secret",
         };
         let (pane, id, form) = (
@@ -750,7 +752,7 @@ impl IntegrationsPane {
         stored: &'static str,
         form: Weak<ClientForm>,
     ) -> Result<(), String> {
-        let answer = self.daemon.call(move |m| m.secret_set(&id, &value)).await;
+        let answer = set_secret(&self.daemon, &self.page, id, value).await;
         self.refresh().await;
         answer.map_err(|e| sentence_for(e, "secret.set"))?;
         if let Some(form) = form.upgrade() {
@@ -1715,11 +1717,11 @@ fn failure_sentence(ended: Outcome) -> Option<String> {
     }
 }
 
-/// The daemon's own sentence for a refusal. Losing the daemon is logged, and
-/// says what became of it.
+/// The daemon's own sentence for a refusal, or what a store refusal meant.
+/// Losing the daemon is logged, and says what became of it.
 fn sentence_for(e: CallError, what: &str) -> String {
     match e {
-        CallError::Refused(refusal) => refusal.sentence,
+        CallError::Refused(refusal) => refused_sentence(&refusal),
         other => {
             glib::g_warning!("fermix", "an integrations call ({what}) failed: {other:?}");
             daemon_problem(&other).sentence()

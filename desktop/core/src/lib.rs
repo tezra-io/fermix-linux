@@ -21,6 +21,7 @@ pub mod overview;
 pub mod plugins;
 pub mod providers;
 pub mod realtime;
+pub mod secrets;
 pub mod service;
 pub mod settings;
 pub mod tray;
