@@ -17,6 +17,7 @@ mod daemon;
 mod descriptor;
 mod dialogs;
 mod doctor;
+mod fields;
 mod flows;
 mod home;
 mod integrations;

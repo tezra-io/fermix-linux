@@ -6,7 +6,8 @@
 //! every write and every job, and re-attaches to plugin jobs that outlived it.
 
 use crate::daemon::Daemon;
-use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
+use crate::dialogs::confirm;
+use crate::fields::{field_row, let_go, resume, secret_row, typing_in, Live, Slot};
 use crate::marks::{mark, Kind};
 use crate::secret_save::set_secret;
 use adw::prelude::*;
@@ -16,17 +17,17 @@ use fermix_client::model::{Features, JobView};
 use fermix_client::plugins::{
     client_answer, client_for, client_secret_id, client_state, client_title, consent_body, count,
     feature_state, job_words, line, needs_operator, plugin_secret_id, reattachable,
-    sign_in_provider, verbs, visible, visible_features, AccessProfile, Filter, OAuthClient,
-    PluginAction, PluginList, PluginRow, PluginSetting, Region, SettingKind, Verb, Workspace,
-    FEATURES,
+    sign_in_provider, token_slot, verbs, visible, visible_features, AccessProfile, Filter,
+    OAuthClient, PluginAction, PluginList, PluginRow, PluginSetting, Region, SettingKind,
+    TokenSlot, Verb, Workspace, FEATURES,
 };
 use fermix_client::secrets::refused_sentence;
 use fermix_client::settings::UNKNOWN_KIND;
 use fermix_client::view::daemon_problem;
 use gtk::glib::{self, variant::ToVariant};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::time::Duration;
 
 /// Jobs are polled twice a second, within the cap their own budget sets.
@@ -49,12 +50,13 @@ const WRITE_WARNING: &str = "This access level can change data in the workspace.
 const NO_WORKSPACES: &str = "No workspaces have been found yet.";
 const PICK_WORKSPACE: &str = "Find workspaces, then choose one.";
 const CLIENTS_NOTE: &str = "The app registrations plugins sign in through.";
-const CLIENT_NOTE: &str = "Store the client secret first, then the client ID. Leave the port \
-    blank to use the default.";
+const CLIENT_NOTE: &str = "Paste the client secret and the client ID, then choose Save. Leave \
+    the port blank to use the default.";
 const REGION_NOTE: &str =
     "Pick the region the account belongs to. Its sign-in goes to that region's host.";
 const REGION_PROMPT: &str = "Choose a region";
-const STORED_NOTE: &str = "Fermix stores it and never shows it again.";
+const TOKEN_NOTE: &str = "Fermix stores it as you leave the field and never shows it again.";
+const TOKEN_ELSEWHERE: &str = "Or use a token";
 
 /// A job the pane is following.
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +152,9 @@ struct Detail {
     nav: adw::NavigationView,
     holder: adw::Bin,
     shown: RefCell<Option<DetailView>>,
+    /// The token row, by key, so a redraw keeps the place of someone typing in it.
+    fields: RefCell<Vec<(String, gtk::Widget)>>,
+    live: RefCell<Live>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -555,7 +560,8 @@ impl IntegrationsPane {
             PluginAction::SignIn => self.sign_in(&row.name).await,
             PluginAction::Check => self.check(&row.name).await,
             PluginAction::Disconnect => self.disconnect(row).await,
-            PluginAction::AddToken | PluginAction::ReplaceToken => self.ask_token(row),
+            // A token is typed in its row on the detail, which draws no button for it.
+            PluginAction::AddToken | PluginAction::ReplaceToken => self.open_detail(&row.name),
             PluginAction::SetUpClient => self.push_client(row),
             PluginAction::ChooseWorkspace => self.push_workspace(row),
         }
@@ -711,55 +717,41 @@ impl IntegrationsPane {
 
     // ---- secrets ----
 
-    fn ask_token(self: &Rc<Self>, row: &PluginRow) {
-        let title = format!("{} token", row.title);
-        let prompt = SecretPrompt {
-            title: &title,
-            description: STORED_NOTE,
-            entry_title: "Token",
-        };
-        let (pane, id) = (self.clone(), plugin_secret_id(&row.name));
-        secret_dialog(&self.page, prompt, move |value| {
-            pane.clone()
-                .store_secret(id.clone(), value, "Token stored", Weak::new())
+    /// Stores what was typed in the token row. A refusal is the plugin's line
+    /// in the detail, as any action's is.
+    fn store_token(self: &Rc<Self>, name: String, value: String) {
+        let pane = self.clone();
+        glib::spawn_future_local(async move {
+            pane.data.borrow_mut().errors.remove(&name);
+            match pane.store_secret(plugin_secret_id(&name), value).await {
+                Ok(()) => (pane.toast)("Token stored"),
+                Err(sentence) => {
+                    pane.data.borrow_mut().errors.insert(name, sentence);
+                    pane.render();
+                }
+            }
         });
     }
 
-    fn ask_client_secret(self: &Rc<Self>, form: &Rc<ClientForm>) {
-        let title = format!("{} client secret", form.title);
-        let prompt = SecretPrompt {
-            title: &title,
-            description: STORED_NOTE,
-            entry_title: "Client secret",
-        };
-        let (pane, id, form) = (
-            self.clone(),
-            client_secret_id(&form.provider),
-            Rc::downgrade(form),
-        );
-        secret_dialog(&self.page, prompt, move |value| {
-            pane.clone()
-                .store_secret(id.clone(), value, "Client secret stored", form.clone())
+    fn remove_token(self: &Rc<Self>, name: String) {
+        let pane = self.clone();
+        glib::spawn_future_local(async move {
+            let id = plugin_secret_id(&name);
+            match pane.daemon.call(move |m| m.secret_clear(&id)).await {
+                Ok(_) => pane.refresh().await,
+                Err(e) => pane.refused(&name, e).await,
+            }
         });
     }
 
     /// Stores a plugin token or a client secret, then reads the list again.
     /// The value goes to the daemon and nowhere else.
-    async fn store_secret(
-        self: Rc<Self>,
-        id: String,
-        value: String,
-        stored: &'static str,
-        form: Weak<ClientForm>,
-    ) -> Result<(), String> {
+    async fn store_secret(self: &Rc<Self>, id: String, value: String) -> Result<(), String> {
         let answer = set_secret(&self.daemon, &self.page, id, value).await;
         self.refresh().await;
-        answer.map_err(|e| sentence_for(e, "secret.set"))?;
-        if let Some(form) = form.upgrade() {
-            form.secret_stored();
-        }
-        (self.toast)(stored);
-        Ok(())
+        answer
+            .map(|_| ())
+            .map_err(|e| sentence_for(e, "secret.set"))
     }
 
     // ---- the detail dialog ----
@@ -790,6 +782,8 @@ impl IntegrationsPane {
             nav,
             holder,
             shown: RefCell::default(),
+            fields: RefCell::default(),
+            live: RefCell::new(Rc::new(Cell::new(true))),
         });
         let weak = Rc::downgrade(self);
         dialog.connect_closed(move |dialog| {
@@ -816,7 +810,19 @@ impl IntegrationsPane {
         if detail.shown.borrow().as_ref() == Some(&view) {
             return;
         }
-        detail.holder.set_child(Some(&self.detail_content(&view)));
+        detail.live.borrow().set(false);
+        let typing = typing_in(&detail.fields.borrow());
+        if typing.is_some() {
+            let_go(&detail.fields.borrow());
+        }
+        let live: Live = Rc::new(Cell::new(true));
+        let (content, fields) = self.detail_content(&view, &live);
+        detail.holder.set_child(Some(&content));
+        if let Some(typing) = typing {
+            resume(&fields, &typing);
+        }
+        *detail.fields.borrow_mut() = fields;
+        *detail.live.borrow_mut() = live;
         *detail.shown.borrow_mut() = Some(view);
     }
 
@@ -836,11 +842,18 @@ impl IntegrationsPane {
         }
     }
 
-    fn detail_content(self: &Rc<Self>, view: &DetailView) -> adw::PreferencesPage {
+    /// The detail's page, and its token row by key when it has one. A token
+    /// the plugin leads with sits under its buttons; one beside a sign-in the
+    /// daemon leads with comes after the settings.
+    fn detail_content(
+        self: &Rc<Self>,
+        view: &DetailView,
+        live: &Live,
+    ) -> (adw::PreferencesPage, Vec<(String, gtk::Widget)>) {
         let page = adw::PreferencesPage::new();
         let Some(row) = &view.row else {
             page.add(&adw::PreferencesGroup::builder().description(GONE).build());
-            return page;
+            return (page, Vec::new());
         };
         let blocked = view.locked || view.running.is_some();
         page.add(&self.about_group(row, view));
@@ -848,8 +861,16 @@ impl IntegrationsPane {
         if !drawn.is_empty() {
             page.add(&self.verbs_group(&row.name, &drawn, blocked));
         }
+        let slot = token_slot(row);
+        let token = (slot != TokenSlot::None).then(|| self.token_group(row, slot, blocked, live));
+        if let Some((group, _)) = token.as_ref().filter(|_| slot == TokenSlot::Leading) {
+            page.add(group);
+        }
         if !row.settings.is_empty() {
             page.add(&self.settings_group(row, blocked));
+        }
+        if let Some((group, _)) = token.as_ref().filter(|_| slot == TokenSlot::Secondary) {
+            page.add(group);
         }
         if !row.access_profiles.is_empty() {
             page.add(&self.workspace_group(row, blocked));
@@ -857,7 +878,45 @@ impl IntegrationsPane {
         if let Some((client, title)) = &view.client {
             page.add(&self.client_group(row, client, title, view.locked));
         }
-        page
+        let fields = token.map(|(_, row)| vec![("token".to_owned(), row.upcast())]);
+        (page, fields.unwrap_or_default())
+    }
+
+    /// The plugin's token, typed in its own row as every secret is.
+    fn token_group(
+        self: &Rc<Self>,
+        row: &PluginRow,
+        slot: TokenSlot,
+        blocked: bool,
+        live: &Live,
+    ) -> (adw::PreferencesGroup, adw::ActionRow) {
+        let action = adw::ActionRow::builder().title("Token").build();
+        let (weak, name) = (Rc::downgrade(self), row.name.clone());
+        let (on_store, on_remove) = ((weak.clone(), name.clone()), (weak, name));
+        let token = Slot {
+            label: format!("{} token", row.title),
+            present: row.credential_present,
+            store: Rc::new(move |_, value| {
+                if let Some(pane) = on_store.0.upgrade() {
+                    pane.store_token(on_store.1.clone(), value);
+                }
+            }),
+            remove: Rc::new(move |_| {
+                if let Some(pane) = on_remove.0.upgrade() {
+                    pane.remove_token(on_remove.1.clone());
+                }
+            }),
+        };
+        secret_row(&action, token, live);
+        action.set_sensitive(!blocked);
+        let group = adw::PreferencesGroup::builder()
+            .description(TOKEN_NOTE)
+            .build();
+        if slot == TokenSlot::Secondary {
+            group.set_title(TOKEN_ELSEWHERE);
+        }
+        group.add(&action);
+        (group, action)
     }
 
     /// Where the plugin stands, in the daemon's words, the account it uses,
@@ -1115,13 +1174,11 @@ impl IntegrationsPane {
             &form.page(),
             Some(&form.save),
         );
-        let (weak, weak_form) = (Rc::downgrade(self), Rc::downgrade(&form));
-        form.secret_button.connect_clicked(move |_| {
-            let (Some(pane), Some(form)) = (weak.upgrade(), weak_form.upgrade()) else {
-                return;
-            };
-            pane.ask_client_secret(&form);
-        });
+        // Enter in any of its fields is Save, as the form's one answer.
+        form.secret.connect_activate(press_save(&form.save));
+        form.client_id
+            .connect_entry_activated(press_save(&form.save));
+        form.port.connect_entry_activated(press_save(&form.save));
         let (weak, weak_form) = (Rc::downgrade(self), Rc::downgrade(&form));
         form.save.connect_clicked(move |button| {
             let (Some(pane), Some(form)) = (weak.upgrade(), weak_form.upgrade()) else {
@@ -1133,8 +1190,9 @@ impl IntegrationsPane {
         page
     }
 
-    /// Checks the editor, then registers the client. The secret must be stored
-    /// first, a blank port is left out, and a region goes only where one is offered.
+    /// Checks the editor, stores a secret typed in it, then registers the
+    /// client: the daemon takes no client without its secret. A blank port is
+    /// left out, and a region goes only where one is offered.
     fn save_client(self: &Rc<Self>, form: &Rc<ClientForm>, button: &gtk::Button) {
         let client = {
             let data = self.data.borrow();
@@ -1148,14 +1206,20 @@ impl IntegrationsPane {
             return form.refuse("This sign-in client is no longer listed.");
         };
         let region = form.region_choice();
+        let secret = form.secret.text().trim().to_owned();
         let typed = (form.client_id.text(), form.port.text());
-        let answer = match client_answer(&client, &typed.0, &typed.1, region.as_deref()) {
+        let answer = client_answer(&client, &secret, &typed.0, &typed.1, region.as_deref());
+        let answer = match answer {
             Ok(answer) => answer,
             Err(sentence) => return form.refuse(sentence),
         };
         button.set_sensitive(false);
         let (pane, form, button) = (self.clone(), form.clone(), button.clone());
         glib::spawn_future_local(async move {
+            if let Err(sentence) = pane.store_typed_secret(&form, secret).await {
+                button.set_sensitive(true);
+                return form.refuse(&sentence);
+            }
             let set = pane
                 .daemon
                 .call(move |m| m.plugins_oauth_client_set(&answer))
@@ -1168,6 +1232,23 @@ impl IntegrationsPane {
             (pane.toast)("Sign-in client saved");
             leave(&button);
         });
+    }
+
+    /// Stores the client secret typed in the form, when there is one.
+    async fn store_typed_secret(
+        self: &Rc<Self>,
+        form: &ClientForm,
+        secret: String,
+    ) -> Result<(), String> {
+        if secret.is_empty() {
+            return Ok(());
+        }
+        // Kept until it lands, so a refusal does not mean typing it again;
+        // Save stays insensitive meanwhile, so it cannot go twice.
+        self.store_secret(client_secret_id(&form.provider), secret)
+            .await?;
+        form.secret_stored();
+        Ok(())
     }
 
     // ---- choosing a workspace ----
@@ -1263,13 +1344,12 @@ impl IntegrationsPane {
     }
 }
 
-/// The sign-in client editor's fields. The secret is stored through its own
-/// dialog; the rest stay here until Save.
+/// The sign-in client editor's fields, all saved by its one Save: the secret
+/// is typed here with the rest, as on macOS, and stored before the client.
 struct ClientForm {
     provider: String,
-    title: String,
-    secret: adw::ActionRow,
-    secret_button: gtk::Button,
+    secret_row: adw::ActionRow,
+    secret: gtk::PasswordEntry,
     client_id: adw::EntryRow,
     port: adw::EntryRow,
     /// Present only where the provider offers regions; index 0 is the prompt.
@@ -1280,29 +1360,27 @@ struct ClientForm {
 
 impl ClientForm {
     fn new(client: &OAuthClient, title: &str, locked: bool) -> ClientForm {
-        let secret = fact_row("Client secret", stored_word(client.secret_present));
-        let secret_button = gtk::Button::builder()
-            .label(if client.secret_present {
-                "Replace…"
-            } else {
-                "Add…"
-            })
+        let secret_row = fact_row("Client secret", stored_word(client.secret_present));
+        let secret = gtk::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .placeholder_text(secret_placeholder(client.secret_present))
             .valign(gtk::Align::Center)
+            .width_chars(18)
             .sensitive(!locked)
             .build();
-        secret_button.update_property(&[gtk::accessible::Property::Label(&format!(
-            "Store the {title} client secret"
+        secret.update_property(&[gtk::accessible::Property::Label(&format!(
+            "The {title} client secret"
         ))]);
-        secret.add_suffix(&secret_button);
+        secret_row.add_suffix(&secret);
+        field_row(&secret_row, &secret);
         let port = client
             .redirect_port
             .map(|p| p.to_string())
             .unwrap_or_default();
         ClientForm {
             provider: client.provider.clone(),
-            title: title.to_owned(),
+            secret_row,
             secret,
-            secret_button,
             client_id: adw::EntryRow::builder()
                 .title("Client ID")
                 .text(client.client_id.clone().unwrap_or_default())
@@ -1326,7 +1404,7 @@ impl ClientForm {
         let fields = adw::PreferencesGroup::builder()
             .description(CLIENT_NOTE)
             .build();
-        fields.add(&self.secret);
+        fields.add(&self.secret_row);
         fields.add(&self.client_id);
         fields.add(&self.port);
         let page = adw::PreferencesPage::new();
@@ -1351,8 +1429,10 @@ impl ClientForm {
     }
 
     fn secret_stored(&self) {
-        self.secret.set_subtitle(stored_word(true));
-        self.secret_button.set_label("Replace…");
+        self.secret.set_text("");
+        self.secret_row.set_subtitle(stored_word(true));
+        self.secret
+            .set_placeholder_text(Some(secret_placeholder(true)));
         self.error.set_visible(false);
     }
 
@@ -1621,6 +1701,28 @@ fn stored_word(present: bool) -> &'static str {
         "Stored"
     } else {
         "Not stored"
+    }
+}
+
+/// Enter in a field is Save, while Save can be pressed.
+fn press_save<W>(save: &gtk::Button) -> impl Fn(&W) + 'static {
+    let save = save.downgrade();
+    move |_| {
+        let Some(save) = save.upgrade() else {
+            return;
+        };
+        if save.is_sensitive() {
+            save.emit_clicked();
+        }
+    }
+}
+
+/// A stored secret is kept unless something is typed over it.
+fn secret_placeholder(present: bool) -> &'static str {
+    if present {
+        "Paste to replace"
+    } else {
+        "Paste the value"
     }
 }
 

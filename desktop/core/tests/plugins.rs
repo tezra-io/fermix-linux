@@ -7,9 +7,9 @@ use fermix_client::model::{Features, JobStatus, JobView};
 use fermix_client::plugins::{
     client_answer, client_for, client_secret_id, client_state, client_title, consent_body, count,
     feature_state, job_words, line, matches, needs_operator, plugin_secret_id, reattachable,
-    sign_in_provider, verbs, visible, visible_features, ClientAnswer, Filter, OAuthClient,
-    PluginAction, PluginList, PluginRow, SettingKind, Verb, CLIENT_ID_MISSING, FEATURES,
-    PORT_INVALID, REGION_MISSING, SECRET_FIRST,
+    sign_in_provider, token_slot, verbs, visible, visible_features, ClientAnswer, Filter,
+    OAuthClient, PluginAction, PluginList, PluginRow, SettingKind, TokenSlot, Verb,
+    CLIENT_ID_MISSING, FEATURES, PORT_INVALID, REGION_MISSING, SECRET_FIRST,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -231,6 +231,34 @@ fn a_row_with_no_verbs_draws_no_buttons() {
 }
 
 #[test]
+fn a_token_is_typed_in_its_row_and_never_draws_a_button() {
+    let r = row(json!({
+        "verbs": ["Add token", "Replace token", "Check again"],
+        "actions": ["add_token", "replace_token", "check"],
+        "primary_verb": "Add token", "primary_action": "add_token"
+    }));
+    let actions: Vec<PluginAction> = verbs(&r).iter().map(|v| v.action).collect();
+    assert_eq!(actions, [PluginAction::Check]);
+}
+
+#[test]
+fn a_token_leads_unless_a_sign_in_the_daemon_leads_with_sits_beside_it() {
+    assert_eq!(token_slot(&plugin("google_calendar")), TokenSlot::None);
+    assert_eq!(token_slot(&plugin("acme")), TokenSlot::Leading);
+    let both = |primary: &str| {
+        row(json!({
+            "auth_kind": "api_key",
+            "verbs": ["Sign in", "Add token"],
+            "actions": ["sign_in", "add_token"],
+            "primary_verb": "x", "primary_action": primary
+        }))
+    };
+    assert_eq!(token_slot(&both("sign_in")), TokenSlot::Secondary);
+    assert_eq!(token_slot(&both("add_token")), TokenSlot::Leading);
+    assert_eq!(token_slot(&both("replace_token")), TokenSlot::Leading);
+}
+
+#[test]
 fn every_published_action_id_is_known() {
     let ids = [
         ("install", PluginAction::Install),
@@ -394,16 +422,16 @@ fn a_plugin_is_addressed_by_its_name_and_a_client_by_its_provider() {
 
 #[test]
 fn a_blank_port_is_left_out_and_never_sent_as_zero() {
-    let answer = client_answer(&client(json!({})), " id-1 ", " ", None).unwrap();
+    let answer = client_answer(&client(json!({})), "", " id-1 ", " ", None).unwrap();
     assert_eq!(
         serde_json::to_value(&answer).unwrap(),
         json!({"provider": "tesla", "client_id": "id-1"})
     );
-    let answer = client_answer(&client(json!({})), "id-1", "8123", None).unwrap();
+    let answer = client_answer(&client(json!({})), "", "id-1", "8123", None).unwrap();
     assert_eq!(answer.redirect_port, Some(8123));
     for bad in ["0", "65536", "-1", "80a"] {
         assert_eq!(
-            client_answer(&client(json!({})), "id-1", bad, None),
+            client_answer(&client(json!({})), "", "id-1", bad, None),
             Err(PORT_INVALID),
             "{bad}"
         );
@@ -415,28 +443,41 @@ fn a_region_is_sent_exactly_when_the_provider_offers_regions() {
     let regions = json!([{"id": "na", "label": "North America"}, {"id": "eu", "label": "Europe"}]);
     let regional = client(json!({ "regions": regions }));
     assert_eq!(
-        client_answer(&regional, "id", "", None),
+        client_answer(&regional, "", "id", "", None),
         Err(REGION_MISSING)
     );
     assert_eq!(
-        client_answer(&regional, "id", "", Some("mars")),
+        client_answer(&regional, "", "id", "", Some("mars")),
         Err(REGION_MISSING)
     );
-    let answer = client_answer(&regional, "id", "", Some("eu")).unwrap();
+    let answer = client_answer(&regional, "", "id", "", Some("eu")).unwrap();
     assert_eq!(
         serde_json::to_value(&answer).unwrap(),
         json!({"provider": "tesla", "client_id": "id", "region": "eu"})
     );
-    let single = client_answer(&client(json!({})), "id", "", Some("eu")).unwrap();
+    let single = client_answer(&client(json!({})), "", "id", "", Some("eu")).unwrap();
     assert_eq!(single.region, None);
 }
 
 #[test]
-fn a_client_needs_its_secret_stored_first_and_an_identifier() {
+fn a_client_needs_its_secret_stored_or_typed_and_an_identifier() {
     let no_secret = client(json!({"secret_present": false}));
-    assert_eq!(client_answer(&no_secret, "id", "", None), Err(SECRET_FIRST));
     assert_eq!(
-        client_answer(&client(json!({})), "  ", "", None),
+        client_answer(&no_secret, "", "id", "", None),
+        Err(SECRET_FIRST)
+    );
+    assert_eq!(
+        client_answer(&no_secret, "  ", "id", "", None),
+        Err(SECRET_FIRST)
+    );
+    let typed = client_answer(&no_secret, "s3cret", "id", "", None).unwrap();
+    // The secret travels by secret.set alone: the answer never carries it.
+    assert_eq!(
+        serde_json::to_value(&typed).unwrap(),
+        json!({"provider": "tesla", "client_id": "id"})
+    );
+    assert_eq!(
+        client_answer(&client(json!({})), "", "  ", "", None),
         Err(CLIENT_ID_MISSING)
     );
 }

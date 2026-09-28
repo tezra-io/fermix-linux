@@ -24,7 +24,7 @@ pub const PORT_INVALID: &str =
     "Enter a port from 1 to 65535, or leave it blank to use the default.";
 pub const REGION_MISSING: &str = "Choose the account's region.";
 pub const CLIENT_ID_MISSING: &str = "Enter the client ID.";
-pub const SECRET_FIRST: &str = "Add the client secret first.";
+pub const SECRET_FIRST: &str = "Paste the client secret.";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PluginList {
@@ -206,13 +206,17 @@ pub struct Verb {
 }
 
 /// The row's buttons in the daemon's order: `verbs[i]` painted, `actions[i]`
-/// routed. An action this build does not know draws no button.
+/// routed. An action this build does not know draws no button, and neither does
+/// a token's: it is typed in its own row (`token_slot`), as on macOS.
 pub fn verbs(row: &PluginRow) -> Vec<Verb> {
     row.verbs
         .iter()
         .zip(&row.actions)
         .filter_map(|(label, wire)| {
             let action = PluginAction::parse(wire)?;
+            if matches!(action, PluginAction::AddToken | PluginAction::ReplaceToken) {
+                return None;
+            }
             let primary = row.primary_action.as_deref() == Some(wire.as_str())
                 && row.primary_verb.as_deref() == Some(label.as_str());
             Some(Verb {
@@ -222,6 +226,32 @@ pub fn verbs(row: &PluginRow) -> Vec<Verb> {
             })
         })
         .collect()
+}
+
+/// Where a plugin's token is typed, beside its other way in. A sign-in the
+/// daemon leads with keeps the token out of its way; otherwise the token is
+/// the way in and leads (macOS `IntegrationTokenSlot`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenSlot {
+    /// The plugin takes no token.
+    None,
+    Leading,
+    Secondary,
+}
+
+pub fn token_slot(row: &PluginRow) -> TokenSlot {
+    if row.auth_kind.as_deref() != Some("api_key") {
+        return TokenSlot::None;
+    }
+    let signs_in = row.actions.iter().any(|a| a == "sign_in");
+    let leads_with_token = matches!(
+        row.primary_action.as_deref(),
+        Some("add_token" | "replace_token")
+    );
+    if signs_in && !leads_with_token {
+        return TokenSlot::Secondary;
+    }
+    TokenSlot::Leading
 }
 
 /// The four counted filters over the one list.
@@ -350,15 +380,18 @@ pub fn client_secret_id(provider: &str) -> String {
 }
 
 /// Checks what the client editor holds and turns it into what the daemon takes.
-/// The secret must already be stored; a blank port is left out; a region is
-/// sent exactly when the provider offers regions, and must be one of them.
+/// The secret is stored already or typed in the editor, which stores it first
+/// (the daemon refuses a client without one) and never puts it in the answer; a
+/// blank port is left out; a region is sent exactly when the provider offers
+/// regions, and must be one of them.
 pub fn client_answer(
     client: &OAuthClient,
+    secret: &str,
     client_id: &str,
     port: &str,
     region: Option<&str>,
 ) -> Result<ClientAnswer, &'static str> {
-    if !client.secret_present {
+    if !client.secret_present && secret.trim().is_empty() {
         return Err(SECRET_FIRST);
     }
     let client_id = client_id.trim();
