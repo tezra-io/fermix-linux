@@ -5,7 +5,7 @@
 use crate::app::App;
 use crate::channels::{section_id, switch_key};
 use crate::descriptor::{Keep, SectionView};
-use crate::dialogs::{confirm, secret_dialog, SecretPrompt};
+use crate::dialogs::{secret_dialog, SecretPrompt};
 use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::management::CallError;
@@ -142,6 +142,23 @@ impl App {
         });
     }
 
+    /// Stores what was typed into a secret row. A refusal shows under the row,
+    /// as a text row's does; the row itself stays a field to type into again.
+    pub async fn set_secret_row(self: Rc<Self>, section: String, key: String, value: String) {
+        if value.is_empty() {
+            glib::g_warning!("fermix", "a blank value for {section}/{key} was not sent");
+            return;
+        }
+        let Err(sentence) = self.store_secret(section.clone(), key.clone(), value).await else {
+            return;
+        };
+        self.settings_data
+            .borrow_mut()
+            .errors
+            .insert((section, key), sentence);
+        self.render();
+    }
+
     async fn store_secret(
         &self,
         section: String,
@@ -166,14 +183,9 @@ impl App {
         }
     }
 
+    /// Forgets a stored secret at once, as on macOS: the row it sits in is often
+    /// inside a dialog already, and a popup never raises a second popup.
     pub async fn remove_secret(self: Rc<Self>, section: String, key: String) {
-        let label = self.row_label(&section, &key);
-        let heading = format!("Remove {label}?");
-        let body =
-            "Fermix forgets it. Anything that needs it stops working until you add it again.";
-        if !confirm(&self.shell.window, &heading, body, "Remove", true).await {
-            return;
-        }
         let id = key.clone();
         match self.daemon.call(move |m| m.secret_clear(&id)).await {
             Ok(_) => self.secret_changed(&key).await,
@@ -281,8 +293,18 @@ impl App {
         lead.set_description(Some(&glib::markup_escape_text(intro)));
         page.add(&lead);
         page.add(&view.group);
+        // Done, as on macOS: every field has saved by the time it closes, since
+        // clicking it takes the focus from the field still being typed in.
+        let done = gtk::Button::builder()
+            .label("Done")
+            .css_classes(["suggested-action"])
+            .build();
+        let header = adw::HeaderBar::builder()
+            .show_end_title_buttons(false)
+            .build();
+        header.pack_end(&done);
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&page));
         let dialog = adw::Dialog::builder()
             .title(title)
@@ -290,6 +312,12 @@ impl App {
             .content_height(560)
             .child(&toolbar)
             .build();
+        let closing = dialog.downgrade();
+        done.connect_clicked(move |_| {
+            if let Some(dialog) = closing.upgrade() {
+                dialog.close();
+            }
+        });
         self.settings.dialog_views.borrow_mut().push(view.clone());
         let views = self.settings.dialog_views.clone();
         dialog.connect_closed(move |_| views.borrow_mut().retain(|v| !Rc::ptr_eq(v, &view)));
@@ -314,8 +342,8 @@ impl App {
         drop(data);
         // The list row's switch owns the channel's on/off key; the dialog draws the rest.
         let keep: Keep = Box::new(move |key| Some(key) != switch.as_deref());
-        let intro = "Each field saves when you press Enter or leave it. Turn the channel on \
-                     with the switch beside it when you are done.";
+        let intro = "Fill these in and choose Done; each one saves as you go. Then turn the \
+                     channel on with its switch in the list.";
         self.section_dialog(&title, &section, keep, intro);
     }
 

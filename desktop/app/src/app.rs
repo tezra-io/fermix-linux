@@ -586,8 +586,10 @@ fn install_settings_actions(app: &Rc<App>) {
     );
     on_value(
         app,
-        "secret-add",
-        |app, (section, key): (String, String)| async move { app.add_secret(section, key) },
+        "secret-set",
+        |app, (section, key, value): (String, String, String)| async move {
+            app.set_secret_row(section, key, value).await
+        },
     );
     on_value(
         app,
