@@ -526,7 +526,7 @@ impl IntegrationsPane {
             };
             pane.data.borrow_mut().errors.remove(&name);
             match (on, row.installed) {
-                (true, false) => pane.install(&row).await,
+                (true, false) => pane.consent_and_install(&row).await,
                 (true, true) => pane.enable(&name).await,
                 (false, _) => pane.disable(&name).await,
             }
@@ -567,13 +567,20 @@ impl IntegrationsPane {
         }
     }
 
-    /// Consent first: the daemon asks none of its own. Then the install job,
-    /// and only a completed one goes on to the enable the switch asked for.
-    async fn install(self: &Rc<Self>, row: &PluginRow) {
+    /// The list's switch on a plugin not installed yet: consent first, in the
+    /// one popup the list raises, since the daemon asks none of its own.
+    async fn consent_and_install(self: &Rc<Self>, row: &PluginRow) {
         let heading = format!("Install {}?", row.title);
         if !confirm(&self.page, &heading, &consent_body(row), "Install", false).await {
             return;
         }
+        self.install(row).await;
+    }
+
+    /// The install job, and only a completed one goes on to the enable. Its
+    /// consent is the switch's question, or the detail's Install pressed under
+    /// the consent the detail shows: the detail raises no popup over itself.
+    async fn install(self: &Rc<Self>, row: &PluginRow) {
         let name = row.name.clone();
         let started = self
             .daemon
@@ -622,15 +629,9 @@ impl IntegrationsPane {
         }
     }
 
+    /// Disconnect is pressed in the detail, which raises no popup over itself;
+    /// what it does is its button's tooltip, and signing in again undoes it.
     async fn disconnect(self: &Rc<Self>, row: &PluginRow) {
-        let heading = format!("Disconnect {}?", row.title);
-        let body = format!(
-            "Fermix forgets this plugin's credential on this computer. Nothing is revoked at {}.",
-            row.title
-        );
-        if !confirm(&self.page, &heading, &body, "Disconnect", true).await {
-            return;
-        }
         let name = row.name.clone();
         match self.daemon.call(move |m| m.plugins_disconnect(&name)).await {
             Ok(_) => self.refresh().await,
@@ -859,7 +860,7 @@ impl IntegrationsPane {
         page.add(&self.about_group(row, view));
         let drawn = verbs(row);
         if !drawn.is_empty() {
-            page.add(&self.verbs_group(&row.name, &drawn, blocked));
+            page.add(&self.verbs_group(row, &drawn, blocked));
         }
         let slot = token_slot(row);
         let token = (slot != TokenSlot::None).then(|| self.token_group(row, slot, blocked, live));
@@ -979,9 +980,11 @@ impl IntegrationsPane {
     }
 
     /// The daemon's buttons: its word on each, its action id behind each.
+    /// A plugin not installed yet says above them what installing it agrees to,
+    /// so its Install is the consent and nothing asks again.
     fn verbs_group(
         self: &Rc<Self>,
-        name: &str,
+        row: &PluginRow,
         drawn: &[Verb],
         blocked: bool,
     ) -> adw::PreferencesGroup {
@@ -997,7 +1000,14 @@ impl IntegrationsPane {
             if verb.primary {
                 button.add_css_class("suggested-action");
             }
-            let (weak, name, action) = (Rc::downgrade(self), name.to_owned(), verb.action);
+            if verb.action == PluginAction::Disconnect {
+                button.set_tooltip_text(Some(&format!(
+                    "Fermix forgets this plugin's credential on this computer. Nothing is \
+                     revoked at {}.",
+                    row.title
+                )));
+            }
+            let (weak, name, action) = (Rc::downgrade(self), row.name.clone(), verb.action);
             button.connect_clicked(move |_| {
                 if let Some(pane) = weak.upgrade() {
                     pane.act(name.clone(), action);
@@ -1006,6 +1016,9 @@ impl IntegrationsPane {
             buttons.append(&button);
         }
         let group = adw::PreferencesGroup::new();
+        if !row.installed {
+            group.set_description(Some(&glib::markup_escape_text(&consent_body(row))));
+        }
         group.add(&buttons);
         group
     }
