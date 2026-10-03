@@ -39,7 +39,7 @@ impl LiveLine {
             .css_classes(["chat-live-phrase"])
             .build();
         let meta = gtk::Label::builder()
-            .css_classes(["caption", "numeric", "dim-label"])
+            .css_classes(["caption", "numeric", "dimmed"])
             .visible(false)
             .build();
         let row = gtk::Box::builder()
@@ -245,7 +245,7 @@ impl Thought {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .xalign(0.0)
             .selectable(true)
-            .css_classes(["dim-label", "chat-thought-text"])
+            .css_classes(["dimmed", "caption"])
             .build();
         Thought {
             disclosure: Disclosure::new(&label),
@@ -280,7 +280,7 @@ impl Thought {
 fn folded_line() -> (gtk::Box, gtk::Label, gtk::Label, gtk::Label) {
     let chevron = gtk::Image::builder()
         .icon_name("pan-end-symbolic")
-        .css_classes(["chat-chevron", "dim-label"])
+        .css_classes(["chat-chevron", "dimmed"])
         .build();
     let used = gtk::Label::builder()
         .css_classes(["chat-live-phrase", "still"])
@@ -290,7 +290,7 @@ fn folded_line() -> (gtk::Box, gtk::Label, gtk::Label, gtk::Label) {
         .visible(false)
         .build();
     let ended = gtk::Label::builder()
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .visible(false)
         .build();
     let line = gtk::Box::builder().spacing(6).build();
@@ -326,7 +326,7 @@ fn run_row(run: &ToolRun) -> (gtk::Box, RunRow) {
         .build();
     let icon = gtk::Image::builder()
         .icon_name(words.icon)
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .build();
     row.append(&icon);
     let name = gtk::Label::builder()
@@ -338,7 +338,7 @@ fn run_row(run: &ToolRun) -> (gtk::Box, RunRow) {
         let detail = gtk::Label::builder()
             .label(detail)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["dim-label"])
+            .css_classes(["dimmed"])
             .build();
         row.append(&detail);
     }
@@ -363,11 +363,11 @@ fn set_state(slot: &gtk::Box, word: &gtk::Label, state: RunState) {
         slot.remove(&old);
     }
     let (icon, text, class) = match state {
-        RunState::Running => (None, "", "dim-label"),
-        RunState::Done => (Some("object-select-symbolic"), "", "dim-label"),
+        RunState::Running => (None, "", "dimmed"),
+        RunState::Done => (Some("object-select-symbolic"), "", "dimmed"),
         RunState::Failed => (Some("dialog-warning-symbolic"), "Failed", "warning"),
-        RunState::Stopped => (Some("media-playback-stop-symbolic"), "Stopped", "dim-label"),
-        RunState::Unfinished => (None, "Didn't finish", "dim-label"),
+        RunState::Stopped => (Some("media-playback-stop-symbolic"), "Stopped", "dimmed"),
+        RunState::Unfinished => (None, "Didn't finish", "dimmed"),
     };
     let marker: Option<gtk::Widget> = match (state, icon) {
         (RunState::Running, _) => Some(adw::Spinner::new().upcast()),

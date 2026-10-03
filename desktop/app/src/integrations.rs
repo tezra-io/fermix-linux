@@ -1659,7 +1659,7 @@ fn feature_row(id: &str, state: &str) -> adw::ActionRow {
     row.add_prefix(&mark(Kind::Feature, feature.id));
     let words = gtk::Label::builder()
         .label(state)
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .build();
     row.add_suffix(&words);
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));

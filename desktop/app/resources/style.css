@@ -8,10 +8,6 @@
   padding: 8px 14px;
 }
 
-.chat-user link {
-  color: var(--accent-fg-color);
-}
-
 .chat-code {
   background-color: color-mix(in srgb, currentColor 7%, transparent);
   border-radius: 8px;
@@ -32,11 +28,6 @@
 
 .chat-composer:focus-within {
   box-shadow: 0 0 0 2px var(--accent-bg-color);
-}
-
-.chat-composer textview,
-.chat-composer textview text {
-  background: none;
 }
 
 /* Chat's empty state: the mark at low contrast above the greeting (plan §3.4). */
@@ -252,10 +243,6 @@ window.fermix-companion.opaque {
   margin-left: 14px;
   padding: 2px 0 4px 16px;
   border-left: 2px solid var(--border-color);
-}
-
-.chat-thought-text {
-  font-size: smaller;
 }
 
 .chat-tool-row {

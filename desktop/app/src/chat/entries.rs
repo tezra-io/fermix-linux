@@ -173,7 +173,7 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
         None => line.append(body),
     }
     let time = gtk::Label::builder()
-        .css_classes(["dim-label", "caption", "numeric"])
+        .css_classes(["dimmed", "caption", "numeric"])
         .halign(align)
         .margin_start(10)
         .margin_end(10)
@@ -350,7 +350,7 @@ fn block_widget(block: &Block) -> (gtk::Widget, Option<gtk::Label>) {
         Block::Quote(markup) => {
             let label = text_label(markup);
             label.add_css_class("chat-quote");
-            label.add_css_class("dim-label");
+            label.add_css_class("dimmed");
             (label.clone().upcast(), Some(label))
         }
         Block::Code(text) => code_block(text),
@@ -543,7 +543,7 @@ fn attachment(name: &str) -> gtk::Widget {
         .label("Fermix has this file but cannot send it here yet.")
         .xalign(0.0)
         .wrap(true)
-        .css_classes(["dim-label", "caption"])
+        .css_classes(["dimmed", "caption"])
         .build();
     let text = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -563,13 +563,13 @@ fn attachment(name: &str) -> gtk::Widget {
 fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
     let row = gtk::Box::builder().spacing(8).build();
     let image = gtk::Image::from_icon_name(icon);
-    image.add_css_class("dim-label");
+    image.add_css_class("dimmed");
     row.append(&image);
     let label = gtk::Label::builder()
         .label(text)
         .wrap(true)
         .xalign(0.0)
-        .css_classes(["dim-label", "caption"])
+        .css_classes(["dimmed", "caption"])
         .build();
     row.append(&label);
     row.upcast()
@@ -580,7 +580,7 @@ fn notice_line(text: &str) -> gtk::Widget {
         .label(text)
         .wrap(true)
         .justify(gtk::Justification::Center)
-        .css_classes(["dim-label", "caption"])
+        .css_classes(["dimmed", "caption"])
         .build()
         .upcast()
 }

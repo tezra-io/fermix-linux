@@ -459,7 +459,7 @@ fn heading_row(group: &str) -> gtk::ListBoxRow {
         .label(group)
         .xalign(0.0)
         .margin_top(12)
-        .css_classes(["heading", "dim-label"])
+        .css_classes(["heading", "dimmed"])
         .build();
     gtk::ListBoxRow::builder()
         .child(&label)

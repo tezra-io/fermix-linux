@@ -447,7 +447,7 @@ fn verdict_label(status: CheckStatus) -> gtk::Label {
         Tone::Good => "success",
         Tone::Warn => "warning",
         Tone::Bad => "error",
-        Tone::Quiet => "dim-label",
+        Tone::Quiet => "dimmed",
     };
     gtk::Label::builder()
         .label(status.verdict())

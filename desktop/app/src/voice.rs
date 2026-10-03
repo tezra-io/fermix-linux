@@ -145,7 +145,7 @@ impl VoicePage {
             None => (false, None),
         };
         set_class(&self.status, "title-4", heading);
-        set_class(&self.status, "dim-label", !heading);
+        set_class(&self.status, "dimmed", !heading);
         for widget in [
             self.status.upcast_ref::<gtk::Widget>(),
             self.status_icon.upcast_ref(),
@@ -257,7 +257,7 @@ fn microphone_group() -> (adw::PreferencesGroup, adw::ActionRow) {
         .margin_bottom(12)
         .margin_start(12)
         .margin_end(12)
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .build();
     let statement = adw::ExpanderRow::builder()
         .title(MICROPHONE_HEADLINE)

@@ -350,7 +350,7 @@ fn paint(image: &gtk::Image, kind: Kind, key: &str, dark: bool) {
         Ink::Template(_) => TemplateMark::new(&paintable).upcast(),
         Ink::File(_) | Ink::Pair { .. } => paintable,
     };
-    image.remove_css_class("dim-label");
+    image.remove_css_class("dimmed");
     if mark.plate == Plate::Bleed {
         image.add_css_class(BLEED_CLASS);
     } else {
@@ -362,7 +362,7 @@ fn paint(image: &gtk::Image, kind: Kind, key: &str, dark: bool) {
 
 fn paint_neutral(image: &gtk::Image, kind: Kind) {
     image.remove_css_class(BLEED_CLASS);
-    image.add_css_class("dim-label");
+    image.add_css_class("dimmed");
     image.set_pixel_size(NEUTRAL_SIZE);
     image.set_icon_name(Some(kind.neutral_icon()));
 }

@@ -91,7 +91,7 @@ impl LogsPage {
             .margin_start(12)
             .margin_end(12)
             .margin_bottom(6)
-            .css_classes(["dim-label"])
+            .css_classes(["dimmed"])
             .visible(false)
             .build();
         let content = gtk::Box::builder()
@@ -538,7 +538,7 @@ fn line_widget() -> gtk::Box {
     let time = gtk::Label::builder()
         .xalign(0.0)
         .valign(gtk::Align::Start)
-        .css_classes(["monospace", "dim-label"])
+        .css_classes(["monospace", "dimmed"])
         .build();
     let level = gtk::Label::builder()
         .xalign(0.0)
@@ -584,7 +584,7 @@ fn show_line(line: &gtk::Box, entry: &LogEntry) {
     let (level_tone, message_tone) = match emphasis(&entry.level) {
         Emphasis::Alarm => (Some("error"), None),
         Emphasis::Warn => (Some("warning"), None),
-        Emphasis::Quiet => (Some("dim-label"), Some("dim-label")),
+        Emphasis::Quiet => (Some("dimmed"), Some("dimmed")),
         Emphasis::Plain => (None, None),
     };
     let mut level_classes = vec!["monospace"];

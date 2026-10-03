@@ -397,6 +397,7 @@ fn scroll_to_end_when_idle(adjustment: &gtk::Adjustment, stuck: &Rc<Cell<bool>>)
 
 fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
     let input = gtk::TextView::builder()
+        .css_classes(["inline"])
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)
         .top_margin(8)
@@ -406,7 +407,7 @@ fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
     input.update_property(&[gtk::accessible::Property::Label("Message Fermix")]);
     let placeholder = gtk::Label::builder()
         .label("Message Fermix")
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Start)
         .margin_top(8)

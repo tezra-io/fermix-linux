@@ -177,7 +177,7 @@ pub fn secret_row(action: &adw::ActionRow, slot: Slot, live: &Live) {
 fn stored_controls(slot: &Rc<Slot>, swap: &gtk::Stack, entry: &gtk::PasswordEntry) -> gtk::Box {
     let status = gtk::Label::builder()
         .label("Stored")
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .build();
     let replace = gtk::Button::builder()
         .label("Replace…")

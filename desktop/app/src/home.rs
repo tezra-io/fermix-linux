@@ -50,7 +50,7 @@ pub struct HomePage {
 
 fn value_label() -> gtk::Label {
     gtk::Label::builder()
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .valign(gtk::Align::Center)
         .build()
 }

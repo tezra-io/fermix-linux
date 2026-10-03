@@ -299,7 +299,7 @@ fn option_factory(items: Rc<Vec<ChoiceItem>>) -> gtk::SignalListItemFactory {
         let label = gtk::Label::builder().xalign(0.0).build();
         let hint = gtk::Label::builder()
             .xalign(0.0)
-            .css_classes(["dim-label", "caption"])
+            .css_classes(["dimmed", "caption"])
             .build();
         let lines = gtk::Box::new(gtk::Orientation::Vertical, 2);
         lines.append(&label);
@@ -593,7 +593,7 @@ fn fact_row(row: &Row) -> adw::ActionRow {
     let label = gtk::Label::builder()
         .label(value)
         .selectable(true)
-        .css_classes(["dim-label"])
+        .css_classes(["dimmed"])
         .build();
     action.add_suffix(&label);
     action
