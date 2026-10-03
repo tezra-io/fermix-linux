@@ -21,6 +21,8 @@ const STICK_DISTANCE: f64 = 48.0;
 /// Pages "Load older" may follow in one click past pages that brought only
 /// lines already held (lines appended since its cursor shift the window).
 const OLDER_HOPS: u32 = 5;
+/// The longest level's width, "emergency", so every message starts in one column.
+const LEVEL_CHARS: i32 = 9;
 const WHERE_LOGS_ARE: &str = "Fermix writes its log to ~/.fermix/logs/fermix.log. \
     To see what the service printed, run this in a terminal:";
 const JOURNAL_COMMAND: &str = "journalctl --user -u fermix";
@@ -522,7 +524,6 @@ fn log_list(store: &gio::ListStore) -> (gtk::ScrolledWindow, gtk::ListView) {
     let list = gtk::ListView::builder()
         .model(&gtk::NoSelection::new(Some(store.clone())))
         .factory(&factory)
-        .css_classes(["log-lines"])
         .build();
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -532,11 +533,17 @@ fn log_list(store: &gio::ListStore) -> (gtk::ScrolledWindow, gtk::ListView) {
     (scroller, list)
 }
 
-/// The time and level, then the message, which wraps under itself.
+/// The time, the level and the message, which wraps under itself.
 fn line_widget() -> gtk::Box {
-    let meta = gtk::Label::builder()
+    let time = gtk::Label::builder()
         .xalign(0.0)
         .valign(gtk::Align::Start)
+        .css_classes(["monospace", "dim-label"])
+        .build();
+    let level = gtk::Label::builder()
+        .xalign(0.0)
+        .valign(gtk::Align::Start)
+        .width_chars(LEVEL_CHARS)
         .build();
     let message = gtk::Label::builder()
         .wrap(true)
@@ -545,33 +552,47 @@ fn line_widget() -> gtk::Box {
         .hexpand(true)
         .selectable(true)
         .build();
-    let line = gtk::Box::builder().spacing(12).build();
-    line.append(&meta);
+    let line = gtk::Box::builder()
+        .spacing(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    line.append(&time);
+    line.append(&level);
     line.append(&message);
     line
 }
 
+/// Only the level wears its colour, so a page of errors still reads as text;
+/// a debug line is dimmed whole.
 fn show_line(line: &gtk::Box, entry: &LogEntry) {
-    let meta = line
+    let time = line
         .first_child()
         .and_downcast::<gtk::Label>()
-        .expect("a line starts with its time and level");
+        .expect("a line starts with its time");
+    let level = time
+        .next_sibling()
+        .and_downcast::<gtk::Label>()
+        .expect("the level follows the time");
     let message = line
         .last_child()
         .and_downcast::<gtk::Label>()
         .expect("a line ends with its message");
-    meta.set_text(&format!("{}  {:<9}", shown_time(&entry.time), entry.level));
+    time.set_text(&shown_time(&entry.time));
+    level.set_text(&entry.level);
     message.set_text(&entry.message);
-    let tone = match emphasis(&entry.level) {
-        Emphasis::Alarm => Some("error"),
-        Emphasis::Warn => Some("warning"),
-        Emphasis::Quiet => Some("dim-label"),
-        Emphasis::Plain => None,
+    let (level_tone, message_tone) = match emphasis(&entry.level) {
+        Emphasis::Alarm => (Some("error"), None),
+        Emphasis::Warn => (Some("warning"), None),
+        Emphasis::Quiet => (Some("dim-label"), Some("dim-label")),
+        Emphasis::Plain => (None, None),
     };
-    let mut classes = vec!["monospace"];
-    classes.extend(tone);
-    meta.set_css_classes(&classes);
-    message.set_css_classes(&classes);
+    let mut level_classes = vec!["monospace"];
+    level_classes.extend(level_tone);
+    level.set_css_classes(&level_classes);
+    let mut message_classes = vec!["monospace"];
+    message_classes.extend(message_tone);
+    message.set_css_classes(&message_classes);
 }
 
 /// Tracks whether the reader is within `STICK_DISTANCE` of the bottom; once

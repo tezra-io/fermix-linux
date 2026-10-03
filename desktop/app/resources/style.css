@@ -44,11 +44,6 @@ statuspage.chat-empty .icon {
   opacity: 0.5;
 }
 
-/* Logs: one dense monospace line per entry. */
-listview.log-lines > row {
-  padding: 1px 12px;
-}
-
 /* A settings row whose last write the daemon refused: its sentence replaces the footer. */
 .setting-refused .subtitle {
   color: var(--error-color);
