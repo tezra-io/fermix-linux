@@ -17,13 +17,17 @@ This is the repo's only agent-instruction file. Never add a `CLAUDE.md`, `.claud
 desktop/core/       fermix-client: the wire, the state rules and every sentence a screen shows; no GTK
 desktop/app/        fermix-desktop: the window, which draws what core decides
 desktop/app/marks/  vendor marks and the Fermix brand files, byte for byte, with PROVENANCE.json
-desktop/docs/       the design record the code cites (design_final.md, spec_voice.md)
+desktop/docs        a link into the private design repo (below): the design record the code cites
 desktop/data/       desktop entry and icons
 desktop/io.tezra.Fermix.yml   the Flatpak recipe
 desktop/scripts/dev.sh        build, run and check inside the GNOME 50 SDK
 ```
 
 ## Working rules
+- Design docs do not live in this repo. They live in the private repo `tezra-io/fermix-design-docs`,
+  checked out beside this one, in its `fermix-linux/` folder; `desktop/docs` is only a link there, made by
+  that repo's `scripts/link.sh`. Every design doc or spec you are asked for is written there; commit only
+  its files in that repo and push to `origin main`. Never commit a design doc here.
 - The daemon decides and the app renders. A state the daemon publishes is never derived here, and
   its sentences are shown as it wrote them.
 - Pure logic lives in `core` with its tests in `core/tests/`, written first. `app` only draws.

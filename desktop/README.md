@@ -13,7 +13,7 @@ app/         fermix-desktop: the window. Pages draw from State; app.rs/flows.rs/
              turn window actions into daemon calls.
 app/marks/   vendor marks and the Fermix brand files, byte for byte, with PROVENANCE.json
 data/        desktop entry and icons
-docs/        the design record the code cites: design_final.md, spec_voice.md
+docs/        the design record the code cites, kept in a private design repo (docs is a link to it)
 io.tezra.Fermix.yml   the Flatpak recipe
 scripts/dev.sh        fast loop inside the GNOME 50 SDK
 ```

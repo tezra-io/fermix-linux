@@ -1,5 +1,8 @@
 # Build outputs of the app are listed in desktop/.gitignore.
 
+# Design docs: a link into the private fermix-design-docs repo
+/desktop/docs
+
 # Editors and OS
 .DS_Store
 .idea/
