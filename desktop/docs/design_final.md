@@ -3,7 +3,8 @@
 > **Status:** the design record written before the app was built (2026-09-24), kept because the
 > code cites its sections. Where the shipped app differs, the code is right. The main differences:
 > the sidebar is Chat, Pet, Home, Doctor and Logs, with Settings pinned below them and all of
-> Settings built; a provider row leads with one button and keeps the rest behind its ⋮ menu instead
+> Settings built; in a wide window that sidebar is a 56-pixel rail of icons named in their
+> tooltips (2026-10-02), and narrow it names its rows under the wordmark; a provider row leads with one button and keeps the rest behind its ⋮ menu instead
 > of a split button; Chat renders Markdown and pictures, says in one live line what Fermix is doing
 > while it works, and folds a turn's tool calls and thoughts into lines that open; and a tray icon
 > carries the macOS status item (its glyph in three states and its menu), so closing the window

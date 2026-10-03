@@ -1,6 +1,10 @@
 //! The window: a sidebar of pages over one stack, a toast overlay, and a header
 //! with at most two trailing buttons (design_final §1). Settings is pinned at
 //! the sidebar's foot; opening it swaps the sidebar for the pane list.
+//!
+//! In a wide window the pages' sidebar is a rail of icons, as on macOS, each
+//! named in its tooltip. Narrow, the sidebar is a page of its own and names
+//! its rows under the wordmark. The settings pane list is always named.
 
 use crate::settings::SettingsPage;
 use adw::prelude::*;
@@ -21,6 +25,10 @@ pub const PAGES: [(&str, &str, &str); 5] = [
 
 /// The pane Settings opens on when none was open before.
 const FIRST_PANE: &str = "providers";
+/// The rail's width: one column of the sidebar's own rows, an icon each.
+const RAIL_WIDTH: f64 = 56.0;
+/// The settings pane list's narrowest and widest: thirteen panes need names.
+const PANE_LIST_WIDTH: (f64, f64) = (200.0, 240.0);
 /// The wordmark's height at the head of the sidebar, its file's margin included.
 /// Its letters stand 22 pixels tall, which is what the two eye-dots need to
 /// still read as dots at 1x.
@@ -38,13 +46,8 @@ pub struct Shell {
     pub continue_setup: gtk::Button,
     /// "New conversation", shown only on Chat.
     pub new_chat: gtk::Button,
-    /// "main" or "settings": which list the sidebar shows.
-    sidebars: gtk::Stack,
     sidebar_page: adw::NavigationPage,
-    /// The sidebar's header, which shows the wordmark over the pages and the
-    /// page's own title ("Settings") over the settings panes.
-    sidebar_header: adw::HeaderBar,
-    wordmark: gtk::Picture,
+    shape: SidebarShape,
     pinned: gtk::ListBox,
     settings_panes: gtk::Stack,
     settings_list: gtk::ListBox,
@@ -60,8 +63,9 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         stack.add_titled(*page, Some(name), title);
     }
     stack.add_titled(&settings.root, Some("settings"), "Settings");
-    let sidebar = sidebar_list();
-    let pinned = pinned_list();
+    let (sidebar, mut rail) = sidebar_list();
+    let (pinned, settings_row) = pinned_list();
+    rail.push(settings_row);
     let (restart, continue_setup, new_chat) = header_buttons();
     let content_header = adw::HeaderBar::new();
     content_header.pack_start(&new_chat);
@@ -70,20 +74,19 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
-    // Left, where the sidebar's rows start, as a name above a list.
-    let wordmark = crate::wordmark::picture(WORDMARK_HEIGHT);
-    wordmark.add_css_class("sidebar-wordmark");
-    let sidebar_header = adw::HeaderBar::builder().show_title(false).build();
-    sidebar_header.pack_start(&wordmark);
-    // The title still names the page: for the back button when narrow, and in words.
-    let sidebar_page = navigation_page("Fermix", &sidebar_header, &sidebars);
-
+    let (sidebar_page, header, wordmark) = sidebar_navigation(&sidebars);
     let split = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
         .content(&content)
-        .min_sidebar_width(200.0)
-        .max_sidebar_width(240.0)
         .build();
+    let shape = SidebarShape {
+        split: split.clone(),
+        sidebars,
+        header,
+        wordmark,
+        rail,
+    };
+    shape.follow_window();
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&split));
     let window = main_window(app, &toasts, &split);
@@ -97,16 +100,28 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         restart,
         continue_setup,
         new_chat,
-        sidebars,
         sidebar_page,
-        sidebar_header,
-        wordmark,
+        shape,
         pinned,
         settings_panes: settings.panes.clone(),
         settings_list: settings.list.clone(),
         last_page: RefCell::new("home".into()),
         last_pane: RefCell::new(FIRST_PANE.into()),
     }
+}
+
+/// The sidebar's page and its head. The wordmark starts on the left, where the
+/// rows start, as a name above a list. The title still names the page: for the
+/// back button when narrow, and in words.
+fn sidebar_navigation(
+    sidebars: &gtk::Stack,
+) -> (adw::NavigationPage, adw::HeaderBar, gtk::Picture) {
+    let wordmark = crate::wordmark::picture(WORDMARK_HEIGHT);
+    wordmark.add_css_class("sidebar-wordmark");
+    let header = adw::HeaderBar::builder().show_title(false).build();
+    header.pack_start(&wordmark);
+    let page = navigation_page("Fermix", &header, sidebars);
+    (page, header, wordmark)
 }
 
 /// The header's trailing actions and New conversation, all hidden until wanted.
@@ -165,34 +180,99 @@ fn sidebar_stack(pages: &gtk::ListBox, pinned: &gtk::ListBox, settings: &gtk::Bo
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.append(&scroller);
     main.append(pinned);
+    // Sized by the list on show, so the rail is not as wide as the pane list.
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::SlideLeftRight)
+        .hhomogeneous(false)
         .build();
     stack.add_named(&main, Some("main"));
     stack.add_named(settings, Some("settings"));
     stack
 }
 
-fn pinned_list() -> gtk::ListBox {
+fn pinned_list() -> (gtk::ListBox, RailRow) {
     let list = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
-    let line = gtk::Box::builder().spacing(12).build();
-    line.append(&gtk::Image::from_icon_name("emblem-system-symbolic"));
-    line.append(&gtk::Label::new(Some("Settings")));
+    let settings = rail_row("Settings", "emblem-system-symbolic");
     // A way into Settings, not a page here: keyboard focus on it never
     // selects it, so Tab through the sidebar never opens Settings.
-    let row = gtk::ListBoxRow::builder()
-        .child(&line)
-        .selectable(false)
-        .build();
-    list.append(&row);
+    settings.row.set_selectable(false);
+    list.append(&settings.row);
     list.connect_row_activated(|_, row| {
         if let Err(e) = row.activate_action("win.open-settings", None) {
             glib::g_warning!("fermix", "Settings could not open: {e}");
         }
     });
-    list
+    (list, settings)
+}
+
+/// One row of the pages' sidebar: its icon, and its name beside it, which only
+/// a narrow window shows. Screen readers always have the name.
+#[derive(Clone)]
+struct RailRow {
+    row: gtk::ListBoxRow,
+    line: gtk::Box,
+    name: gtk::Label,
+}
+
+fn rail_row(title: &str, icon: &str) -> RailRow {
+    let name = gtk::Label::new(Some(title));
+    let line = gtk::Box::builder().spacing(12).build();
+    line.append(&gtk::Image::from_icon_name(icon));
+    line.append(&name);
+    let row = gtk::ListBoxRow::builder().child(&line).build();
+    row.update_property(&[gtk::accessible::Property::Label(title)]);
+    RailRow { row, line, name }
+}
+
+/// What the sidebar's look depends on: which list it shows, and whether the
+/// window is narrow enough that the sidebar is a page of its own.
+#[derive(Clone)]
+struct SidebarShape {
+    split: adw::NavigationSplitView,
+    /// "main" or "settings": which list the sidebar shows.
+    sidebars: gtk::Stack,
+    /// Shows the page's own title ("Settings") over the settings panes, the
+    /// wordmark over the pages when narrow, and nothing over the rail.
+    header: adw::HeaderBar,
+    wordmark: gtk::Picture,
+    rail: Vec<RailRow>,
+}
+
+impl SidebarShape {
+    /// Fits the sidebar now, and again whenever the window folds or unfolds it.
+    fn follow_window(&self) {
+        self.fit();
+        let refit = self.clone();
+        self.split.connect_collapsed_notify(move |_| refit.fit());
+    }
+
+    /// Sizes and dresses the sidebar for the list it shows and the window's width.
+    fn fit(&self) {
+        let on_pages = self.sidebars.visible_child_name().as_deref() == Some("main");
+        let narrow = self.split.is_collapsed();
+        let (min, max) = if on_pages {
+            (RAIL_WIDTH, RAIL_WIDTH)
+        } else {
+            PANE_LIST_WIDTH
+        };
+        self.split.set_min_sidebar_width(min);
+        self.split.set_max_sidebar_width(max);
+        self.header.set_show_title(!on_pages);
+        self.wordmark.set_visible(on_pages && narrow);
+        let (align, tooltip) = if narrow {
+            (gtk::Align::Fill, false)
+        } else {
+            (gtk::Align::Center, true)
+        };
+        for rail in &self.rail {
+            rail.name.set_visible(narrow);
+            rail.line.set_halign(align);
+            let name = tooltip.then(|| rail.name.text());
+            rail.row.set_tooltip_text(name.as_deref());
+        }
+    }
 }
 
 fn navigation_page(
@@ -209,16 +289,16 @@ fn navigation_page(
         .build()
 }
 
-fn sidebar_list() -> gtk::ListBox {
+fn sidebar_list() -> (gtk::ListBox, Vec<RailRow>) {
     let list = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
+    let mut rail = Vec::with_capacity(PAGES.len());
     for (name, title, icon) in PAGES {
-        let line = gtk::Box::builder().spacing(12).build();
-        line.append(&gtk::Image::from_icon_name(icon));
-        line.append(&gtk::Label::new(Some(title)));
-        let row = gtk::ListBoxRow::builder().child(&line).name(name).build();
-        list.append(&row);
+        let page = rail_row(title, icon);
+        page.row.set_widget_name(name);
+        list.append(&page.row);
+        rail.push(page);
     }
     list.connect_row_selected(|list, row| {
         if let Some(row) = row.filter(|_| follows_selection(list)) {
@@ -227,7 +307,7 @@ fn sidebar_list() -> gtk::ListBox {
     });
     // A click on the row already selected: narrow, it shows the page again.
     list.connect_row_activated(|_, row| open_page(row));
-    list
+    (list, rail)
 }
 
 fn open_page(row: &gtk::ListBoxRow) {
@@ -272,10 +352,9 @@ impl Shell {
             return;
         };
         self.stack.set_visible_child_name(name);
-        self.sidebars.set_visible_child_name("main");
+        self.shape.sidebars.set_visible_child_name("main");
         self.sidebar_page.set_title("Fermix");
-        self.sidebar_header.set_show_title(false);
-        self.wordmark.set_visible(true);
+        self.shape.fit();
         self.pinned.unselect_all();
         *self.last_page.borrow_mut() = name.to_owned();
         self.content.set_title(title);
@@ -295,10 +374,9 @@ impl Shell {
         let title = pane(slug).expect("checked by the caller").title;
         self.stack.set_visible_child_name("settings");
         self.settings_panes.set_visible_child_name(slug);
-        self.sidebars.set_visible_child_name("settings");
+        self.shape.sidebars.set_visible_child_name("settings");
         self.sidebar_page.set_title("Settings");
-        self.sidebar_header.set_show_title(true);
-        self.wordmark.set_visible(false);
+        self.shape.fit();
         self.content.set_title(title);
         self.new_chat.set_visible(false);
         *self.last_pane.borrow_mut() = slug.to_owned();
