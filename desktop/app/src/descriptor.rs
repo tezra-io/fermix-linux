@@ -9,7 +9,8 @@ use crate::fields::{
 use adw::prelude::*;
 use fermix_client::settings::{
     choice_items, list_items, list_with, list_without, number_answer, number_view, placeholder,
-    text_answer, text_value, ChoiceItem, Kind, Row, SectionRows, NOT_SET, UNKNOWN_KIND,
+    text_answer, text_value, value_width, ChoiceItem, Kind, Row, SectionRows, FIELD_CHARS, NOT_SET,
+    UNKNOWN_KIND, WIDEST_VALUE_CHARS,
 };
 use gtk::glib::{self, variant::ToVariant};
 use serde_json::Value;
@@ -223,6 +224,7 @@ fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
         combo.set_subtitle(&glib::markup_escape_text(footer));
     }
     let items = Rc::new(items);
+    combo.set_factory(Some(&value_factory()));
     combo.set_list_factory(Some(&option_factory(items.clone())));
     let (section, key) = (section.to_owned(), row.key.clone());
     let last = Cell::new(combo.selected());
@@ -243,6 +245,50 @@ fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
         apply(combo, &section, &key, &value);
     });
     combo
+}
+
+/// Draws the chosen option in the row. The row's own label stops at 20
+/// characters; this one shows the whole value when the row has room, and
+/// a value too long to be kept whole says the rest in its tooltip.
+fn value_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("a list item");
+        let label = gtk::Label::builder()
+            .xalign(0.0)
+            .max_width_chars(WIDEST_VALUE_CHARS)
+            .build();
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("a list item");
+        let label = item
+            .child()
+            .and_downcast::<gtk::Label>()
+            .expect("set up above");
+        let text = item
+            .item()
+            .and_downcast::<gtk::StringObject>()
+            .expect("a choice model holds strings")
+            .string();
+        // Counted characters only approximate drawn ones, so a value kept
+        // whole is never ellipsized: its minimum is its own drawn width.
+        let width = value_width(&text, 1);
+        let (ellipsize, min_chars, tooltip) = if width.whole() {
+            (gtk::pango::EllipsizeMode::None, -1, None)
+        } else {
+            (
+                gtk::pango::EllipsizeMode::End,
+                width.min_chars,
+                Some(text.as_str()),
+            )
+        };
+        label.set_ellipsize(ellipsize);
+        label.set_width_chars(min_chars);
+        label.set_tooltip_text(tooltip);
+        label.set_text(&text);
+    });
+    factory
 }
 
 /// Draws each option in the open list as its label over its hint.
@@ -284,13 +330,17 @@ fn option_factory(items: Rc<Vec<ChoiceItem>>) -> gtk::SignalListItemFactory {
 }
 
 /// A field for a text value: commits on Enter or when focus leaves, and only
-/// when the text changed; Escape puts the daemon's value back.
+/// when the text changed; Escape puts the daemon's value back. It is as wide as
+/// the value it opens with, within `value_width`'s bounds.
 fn text_field(section: &str, row: &Row, live: &Live) -> gtk::Entry {
+    let (text, empty) = (text_value(row), placeholder(row));
+    let width = value_width(if text.is_empty() { &empty } else { &text }, FIELD_CHARS);
     let entry = gtk::Entry::builder()
-        .text(text_value(row))
-        .placeholder_text(placeholder(row))
+        .text(&text)
+        .placeholder_text(&empty)
         .valign(gtk::Align::Center)
-        .width_chars(18)
+        .width_chars(width.min_chars)
+        .max_width_chars(width.natural_chars)
         .build();
     entry.update_property(&[gtk::accessible::Property::Label(&row.label)]);
     let commit = {

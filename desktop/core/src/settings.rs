@@ -16,6 +16,15 @@ const HIDDEN_ON_LINUX: [&str; 1] = ["computer_history"];
 /// Stands in for an upper bound the daemon leaves open.
 const NO_CEILING: f64 = 1.0e12;
 
+/// Characters a text field keeps for typing, however short its value.
+pub const FIELD_CHARS: i32 = 18;
+/// A value up to this long is never cut, however long the description beside
+/// it. Any wider and a 360-pixel window could not hold the row.
+pub const KEPT_VALUE_CHARS: i32 = 24;
+/// The most a value asks for. Past it a field scrolls and a choice ends in an ellipsis.
+pub const WIDEST_VALUE_CHARS: i32 = 64;
+const _: () = assert!(FIELD_CHARS <= KEPT_VALUE_CHARS && KEPT_VALUE_CHARS < WIDEST_VALUE_CHARS);
+
 pub const NOT_SET: &str = "Not set";
 pub const UNKNOWN_KIND: &str = "This copy of Fermix is older than the daemon and has no control \
     for this setting. Update Fermix to change it here.";
@@ -340,6 +349,35 @@ pub fn text_value(row: &Row) -> String {
 pub fn text_answer(row: &Row, typed: &str) -> Option<Value> {
     let typed = typed.trim();
     (typed != text_value(row).trim()).then(|| json!(typed))
+}
+
+/// How wide a control showing a value asks to be, in characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueWidth {
+    /// What the row's description can never take from it.
+    pub min_chars: i32,
+    /// What it takes when the row has room: the whole value, within reason.
+    pub natural_chars: i32,
+}
+
+impl ValueWidth {
+    /// Whether the minimum already holds the whole value, so nothing ever cuts it.
+    pub fn whole(&self) -> bool {
+        self.min_chars == self.natural_chars
+    }
+}
+
+/// The widths for a control showing `text`, never narrower than `floor`.
+pub fn value_width(text: &str, floor: i32) -> ValueWidth {
+    assert!(
+        (0..=KEPT_VALUE_CHARS).contains(&floor),
+        "a value's floor is at most {KEPT_VALUE_CHARS} characters, got {floor}"
+    );
+    let chars = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    ValueWidth {
+        min_chars: chars.clamp(floor, KEPT_VALUE_CHARS),
+        natural_chars: chars.clamp(floor, WIDEST_VALUE_CHARS),
+    }
 }
 
 pub fn list_items(row: &Row) -> Vec<String> {

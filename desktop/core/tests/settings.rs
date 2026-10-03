@@ -4,8 +4,9 @@
 use fermix_client::management::{decode_response, CallError, Refusal};
 use fermix_client::settings::{
     channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, pane, placeholder, read_failure, sections_for, text_answer, ApplyResult, Kind,
-    ReloadResult, Row, SectionRows, Sections, GROUPS, PANES,
+    number_view, pane, placeholder, read_failure, sections_for, text_answer, value_width,
+    ApplyResult, Kind, ReloadResult, Row, SectionRows, Sections, FIELD_CHARS, GROUPS,
+    KEPT_VALUE_CHARS, PANES, WIDEST_VALUE_CHARS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -226,6 +227,54 @@ fn text_is_sent_only_when_it_changed_and_blank_clears_it() {
         None,
         "blank over unset changes nothing"
     );
+}
+
+#[test]
+fn a_value_keeps_its_whole_text_up_to_the_kept_width_and_asks_for_the_rest() {
+    let model = "gpt-realtime-2 · Realtime, integrated tools";
+    let width = value_width(model, 1);
+    assert_eq!(width.min_chars, KEPT_VALUE_CHARS);
+    assert_eq!(
+        width.natural_chars, 43,
+        "the whole value, counted in characters"
+    );
+    assert!(!width.whole());
+
+    let short = value_width("Low", 1);
+    assert_eq!((short.min_chars, short.natural_chars), (3, 3));
+    assert!(short.whole());
+    let kept = value_width(&"x".repeat(KEPT_VALUE_CHARS as usize), 1);
+    assert!(
+        kept.whole(),
+        "a value of exactly the kept width is never cut"
+    );
+
+    let style = "Answer in a few sentences, and go longer when the question needs it. ".repeat(2);
+    let long = value_width(&style, 1);
+    assert_eq!(long.natural_chars, WIDEST_VALUE_CHARS);
+    assert!(long.min_chars < long.natural_chars);
+}
+
+#[test]
+fn a_field_keeps_room_to_type_however_short_its_value() {
+    let empty = value_width("", FIELD_CHARS);
+    assert_eq!(
+        (empty.min_chars, empty.natural_chars),
+        (FIELD_CHARS, FIELD_CHARS)
+    );
+    let name = value_width("Fermix", FIELD_CHARS);
+    assert_eq!(
+        (name.min_chars, name.natural_chars),
+        (FIELD_CHARS, FIELD_CHARS)
+    );
+    let zone = value_width("America/Argentina/Buenos_Aires", FIELD_CHARS);
+    assert_eq!((zone.min_chars, zone.natural_chars), (KEPT_VALUE_CHARS, 30));
+}
+
+#[test]
+#[should_panic(expected = "floor")]
+fn a_floor_wider_than_the_kept_width_is_a_bug() {
+    value_width("", KEPT_VALUE_CHARS + 1);
 }
 
 #[test]

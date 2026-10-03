@@ -3,6 +3,7 @@
 //! place in a field while the rows around it are drawn again.
 
 use adw::prelude::*;
+use fermix_client::settings::FIELD_CHARS;
 use gtk::glib;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -221,7 +222,7 @@ fn secret_entry(slot: &Rc<Slot>, back: Option<Rc<dyn Fn()>>, live: &Live) -> gtk
         .show_peek_icon(true)
         .placeholder_text("Paste the value")
         .valign(gtk::Align::Center)
-        .width_chars(18)
+        .width_chars(FIELD_CHARS)
         .build();
     entry.update_property(&[gtk::accessible::Property::Label(&slot.label)]);
     let on_enter = slot.clone();

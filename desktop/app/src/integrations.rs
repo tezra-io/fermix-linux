@@ -22,7 +22,7 @@ use fermix_client::plugins::{
     TokenSlot, Verb, Workspace, FEATURES,
 };
 use fermix_client::secrets::refused_sentence;
-use fermix_client::settings::UNKNOWN_KIND;
+use fermix_client::settings::{FIELD_CHARS, UNKNOWN_KIND};
 use fermix_client::view::daemon_problem;
 use gtk::glib::{self, variant::ToVariant};
 use std::cell::{Cell, RefCell};
@@ -1378,7 +1378,7 @@ impl ClientForm {
             .show_peek_icon(true)
             .placeholder_text(secret_placeholder(client.secret_present))
             .valign(gtk::Align::Center)
-            .width_chars(18)
+            .width_chars(FIELD_CHARS)
             .sensitive(!locked)
             .build();
         secret.update_property(&[gtk::accessible::Property::Label(&format!(
