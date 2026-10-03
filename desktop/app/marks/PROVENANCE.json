@@ -890,21 +890,21 @@
       "treatment": "first_party_artwork",
       "plate": null,
       "source_url": "https://github.com/tezra-io/fermix-macos",
-      "source_retrieved_on": "2026-09-26",
+      "source_retrieved_on": "2026-09-30",
       "usage_terms": "First party. MIT, copyright 2026 Tezra, per the fermix-macos LICENSE; the Linux workspace is MIT too. The file is the runtime export of the owner's Rive file fermix, the mascot's only editable source (M34 design decision 34).",
-      "permitted_treatment": "Shipped byte for byte and played as authored, by the Rive runtime the macOS app embeds (rive/vendor/COMMIT): the app writes the state machine's mode and level and nothing else, and draws the artboard fitted inside its frame.",
+      "permitted_treatment": "Shipped byte for byte and played as authored, by the Rive runtime the macOS app embeds (rive/vendor/COMMIT): the app writes the view model's skipIntro before the state machine's first advance, then its mode and level, and nothing else, and draws the artboard fitted inside its frame.",
       "dark_mode_policy": "One file in both appearances, as on macOS: the body carries its own soft navy edge and cool rim, so it holds its silhouette on light grounds and is unchanged on dark ones.",
       "assets": [
         {
           "role": "animation",
           "path": "../resources/pet/FermixMascot.riv",
-          "sha256": "5810078e1bf4def4060bcccf126082db73cc802c276072ac12d9cf03a22ebe8a",
-          "source_sha256": "5810078e1bf4def4060bcccf126082db73cc802c276072ac12d9cf03a22ebe8a",
-          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/721f6066cb6e4a65468b44dcae8ac715afc1c2d5/Apps/Fermix/Sources/FermixAppCore/Resources/Mascot/FermixMascot.riv",
-          "retrieved_on": "2026-09-26"
+          "sha256": "0a13370acff6ff367a15524d0048f69b63bb0b3f694c7310582b79493292a6ed",
+          "source_sha256": "0a13370acff6ff367a15524d0048f69b63bb0b3f694c7310582b79493292a6ed",
+          "asset_url": "https://github.com/tezra-io/fermix-macos/blob/59989d6260a727b31d596c076462469e6c7d0bb6/Apps/Fermix/Sources/FermixAppCore/Resources/Mascot/FermixMascot.riv",
+          "retrieved_on": "2026-09-30"
         }
       ],
-      "notes": "fermix-macos added the file at commit 721f606 (\"the mascot is one Rive animation\"), which retired the fifteen painted layers this record used to hold, and it is unchanged to that repository's dev head on 2026-09-26 (d4274d7). It publishes the state machine Pet, whose view model takes mode (idle, listening, thinking, speaking) and level (0 to 1). The pet is not a vendor mark and is drawn on no tile, so it has no plate. core/tests/mascot.rs fails when the file stops publishing a name the app writes, and rive/tests/render.rs loads it into the runtime and draws every pose."
+      "notes": "fermix-macos added the file at commit 721f606 (\"the mascot is one Rive animation\"), which retired the fifteen painted layers this record used to hold, and replaced it at eeaaffb (\"the pet swells out of a jelly sphere each time it appears\"), which added a two second intro and the view model's skipIntro, and again at 59989d6 (\"reactions for every voice mode, and a livelier idle\"), which gave each mode its own reactions inside the file; it is unchanged from there to that repository's dev head on 2026-09-30 (3102bd6). It publishes the state machine Pet, whose view model takes mode (idle, listening, thinking, speaking), level (0 to 1) and skipIntro. The pet is not a vendor mark and is drawn on no tile, so it has no plate. core/tests/mascot.rs fails when the file stops publishing a name the app writes, and rive/tests/render.rs loads it into the runtime, plays the intro and draws every pose."
     },
     {
       "key": "wordmark",

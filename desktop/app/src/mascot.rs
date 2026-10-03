@@ -1,12 +1,16 @@
 //! The voice mascot: the macOS app's Rive animation (`fermix_client::mascot`),
-//! played offscreen by `fermix-rive` and drawn as a texture. A frame-clock tick
-//! draws it 30 times a second only while it plays: while the widget is mapped
-//! with animations on, and, with animations off, just long enough for a new
-//! pose to land. Without the renderer (no EGL, or a frame that failed) it is
-//! the mascot's one-ink mark, still, in the text colour.
+//! played offscreen by `fermix-rive` and drawn as a texture. Each time the
+//! widget is mapped it starts a fresh scene, as macOS makes a new player each
+//! time the pet appears: with animations on it swells out of the file's intro,
+//! with them off it shows its pose at once. A frame-clock tick draws it 30
+//! times a second only while it plays: while the widget is mapped with
+//! animations on, and, with animations off, just long enough for what it
+//! started to land. Without the renderer (no EGL, or a frame that failed) it
+//! is the mascot's one-ink mark, still, in the text colour.
 
 use fermix_client::mascot::{
-    self, level_to_write, plays, Expression, Pacing, LEVEL, MODE, SETTLE_SECONDS, STATE_MACHINE,
+    self, level_to_write, plays, Expression, Pacing, LEVEL, MODE, SETTLE_SECONDS, SKIP_INTRO,
+    STATE_MACHINE,
 };
 use fermix_rive::{Frame, Scene, Stage};
 use gtk::prelude::*;
@@ -60,7 +64,7 @@ impl Mascot {
         }
     }
 
-    /// Blends to `expression`; the expression already on show changes nothing.
+    /// Moves to `expression`; the expression already on show changes nothing.
     pub fn set_expression(&self, expression: Expression) {
         self.canvas.imp().set_expression(expression);
     }
@@ -92,13 +96,16 @@ mod imp {
 
     pub struct Canvas {
         /// None when the animation cannot be drawn: the still mark is.
+        stage: RefCell<Option<Rc<Stage>>>,
+        /// The scene on screen: opened on map, dropped on unmap.
         scene: RefCell<Option<Scene>>,
         expression: Cell<Expression>,
         /// The level wanted, and the last written to the animation.
         pub level: Cell<f32>,
         written_level: Cell<f32>,
-        /// When the pose last changed, in `glib::monotonic_time` seconds.
-        pose_changed_at: Cell<Option<f64>>,
+        /// When what the mascot started (the intro, a new pose) has landed,
+        /// in `glib::monotonic_time` seconds: a parked mascot plays until then.
+        lands_at: Cell<Option<f64>>,
         pacing: Cell<Pacing>,
         frame: RefCell<Option<gdk::Texture>>,
         tick: RefCell<Option<gtk::TickCallbackId>>,
@@ -108,11 +115,12 @@ mod imp {
     impl Default for Canvas {
         fn default() -> Canvas {
             Canvas {
+                stage: RefCell::default(),
                 scene: RefCell::default(),
                 expression: Cell::new(Expression::Idle),
                 level: Cell::new(0.0),
                 written_level: Cell::new(0.0),
-                pose_changed_at: Cell::new(None),
+                lands_at: Cell::new(None),
                 pacing: Cell::default(),
                 frame: RefCell::default(),
                 tick: RefCell::default(),
@@ -139,12 +147,14 @@ mod imp {
             self.unwatch();
             self.stop_ticking();
             self.scene.take();
+            self.stage.take();
         }
     }
 
     impl WidgetImpl for Canvas {
         fn map(&self) {
             self.parent_map();
+            self.open_scene();
             self.watch();
             self.follow();
         }
@@ -152,6 +162,9 @@ mod imp {
         fn unmap(&self) {
             self.unwatch();
             self.stop_ticking();
+            // The next appearance starts afresh; its GL target is freed now.
+            self.scene.take();
+            self.frame.take();
             self.parent_unmap();
         }
 
@@ -176,22 +189,42 @@ mod imp {
     }
 
     impl Canvas {
-        /// A scene of its own on the shared stage; none without a stage.
+        /// The shared stage its scenes play on; none draws the still mark.
         pub fn load(&self, stage: Option<&Rc<Stage>>) {
-            let Some(stage) = stage else { return };
-            match Scene::new(stage, STATE_MACHINE) {
-                Ok(scene) => {
-                    self.scene.replace(Some(scene));
-                    self.write_pose(Expression::Idle);
-                    // A new scene draws the file's setup, every pose's parts at
-                    // once, until it has blended to its first pose: play that
-                    // out before anything is drawn.
-                    if let Some(scene) = self.scene.borrow_mut().as_mut() {
-                        scene.advance(SETTLE_SECONDS as f32);
-                    }
+            self.stage.replace(stage.cloned());
+        }
+
+        /// A fresh scene for this appearance (`mascot::opening`): the intro is
+        /// decided now, and written with the pose before the scene's first
+        /// advance, which is when the file reads it. A scene that does not
+        /// open leaves the still mark from then on, and the log says why.
+        fn open_scene(&self) {
+            let Some(stage) = self.stage.borrow().clone() else {
+                return;
+            };
+            let scene = match Scene::new(&stage, STATE_MACHINE) {
+                Ok(scene) => scene,
+                Err(error) => {
+                    glib::g_warning!("fermix", "the mascot is drawn still: {error}");
+                    self.stage.take();
+                    return;
                 }
-                Err(error) => glib::g_warning!("fermix", "the mascot is drawn still: {error}"),
+            };
+            let start = mascot::opening(self.obj().settings().is_gtk_enable_animations());
+            self.scene.replace(Some(scene));
+            self.frame.take();
+            self.written_level.set(0.0);
+            self.write_skip_intro(start.skip_intro);
+            self.write_pose(self.expression.get());
+            if let Some(scene) = self.scene.borrow_mut().as_mut() {
+                scene.start(start.lead_seconds as f32);
             }
+            let now = monotonic_seconds();
+            self.lands_at.set(
+                start
+                    .landing_seconds
+                    .map(|seconds| mascot::lands_at(None, now, seconds)),
+            );
         }
 
         pub fn set_expression(&self, expression: Expression) {
@@ -200,8 +233,21 @@ mod imp {
             }
             self.expression.set(expression);
             self.write_pose(expression);
-            self.pose_changed_at.set(Some(monotonic_seconds()));
+            let now = monotonic_seconds();
+            self.lands_at.set(Some(mascot::lands_at(
+                self.lands_at.get(),
+                now,
+                SETTLE_SECONDS,
+            )));
             self.follow();
+        }
+
+        fn write_skip_intro(&self, skip: bool) {
+            let mut scene = self.scene.borrow_mut();
+            let Some(scene) = scene.as_mut() else { return };
+            if let Err(error) = scene.set_boolean(SKIP_INTRO, skip) {
+                glib::g_critical!("fermix", "the mascot did not take skipIntro: {error}");
+            }
         }
 
         fn write_pose(&self, expression: Expression) {
@@ -251,7 +297,7 @@ mod imp {
 
         fn playing(&self) -> bool {
             let animates = self.obj().settings().is_gtk_enable_animations();
-            plays(animates, self.pose_changed_at.get(), monotonic_seconds())
+            plays(animates, self.lands_at.get(), monotonic_seconds())
         }
 
         fn on_tick(&self, clock: &gdk::FrameClock) -> glib::ControlFlow {
@@ -295,6 +341,7 @@ mod imp {
                     glib::g_warning!("fermix", "the mascot is drawn still: {error}");
                     self.stop_ticking();
                     self.scene.take();
+                    self.stage.take();
                     self.frame.take();
                 }
             }

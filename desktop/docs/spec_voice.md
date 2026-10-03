@@ -31,7 +31,7 @@ Repos cited:
 | Flatpak | Add exactly one finish-arg: `--socket=pulseaudio`. Keep `--filesystem=~/.fermix:ro` (the realtime socket sits beside `daemon.sock`, which already works through it) |
 | Portal | None. There is no microphone or audio portal; the Camera portal is irrelevant. No in-app "Allow microphone?" dialog |
 | Presence | A **Voice page** in the main window, plus an optional small **companion window**. On GNOME the app cannot pin itself on top; the user can, through the window menu (Alt+Space → Always on Top). Say so |
-| Pet art | The macOS app's Rive animation, `FermixMascot.riv`, byte for byte (first-party, MIT). It replaced the 15 PNG layers on 2026-09-26 (§2.2, §6) |
+| Pet art | The macOS app's Rive animation, `FermixMascot.riv`, byte for byte (first-party, MIT). It replaced the 15 PNG layers on 2026-09-26, gained its jelly-sphere intro on 2026-09-28, and each mode's reactions on 2026-09-30 (§2.2, §6) |
 | Prerequisites | Voice enabled in config, an OpenAI **Platform API key** (a ChatGPT/Codex sign-in does not count), then a daemon restart, because voice is boot-bound |
 
 ---
@@ -317,9 +317,27 @@ Rules to port exactly:
 > offscreen with its OpenGL renderer through EGL into a texture GTK shows. Without a working GL
 > driver the mascot is the still app mark. `core/src/mascot.rs` holds the contract and the play
 > rules: 30 fps, the level written only while listening or speaking, and with animations off a
-> mascot that plays 1.1 s after each pose change, so a pose queued behind a blend still lands,
+> mascot that plays after each pose change long enough that a pose queued behind one still lands,
 > then holds still. The layer, motion, blink, glow and GTK notes below describe the PNG mascot it
 > replaced.
+>
+> **Intro, 2026-09-28.** fermix-macos `eeaaffb` replaced the file: each time its state machine
+> starts, a jelly sphere swells into the pet over 2 s (the owner: "the pet start as a sphere then
+> transform into its shape"), unless the view model's `skipIntro` is true. The file reads it on the
+> state machine's first advance, so a scene is created unadvanced and the app writes `skipIntro`
+> and the pose first. As on macOS, the intro is decided each time the pet appears: the widget opens
+> a fresh scene on every map and drops it on unmap. With animations on it plays the intro; with
+> them off it skips it and plays the pose in before the first frame. An intro cannot be skipped
+> once started and lands only frame by frame, so if animations turn off mid-intro the mascot plays
+> 2.2 s from the start before it parks (`INTRO_SETTLE_SECONDS`), and a pose change never cuts that
+> short.
+>
+> **Reactions, 2026-09-30.** fermix-macos `59989d6` replaced the file again: listening puts on
+> headphones, thinking puts on glasses and turns the pearl into a flickering bulb, speaking smiles
+> and talks with the level, and idle picks random actions. Mode changes are choreographed and land
+> in about 0.6 s (measured frame by frame), and one cannot interrupt another, so a parked mascot
+> plays 1.4 s after each change (`SETTLE_SECONDS`, twice 0.6 s plus a margin). The app still
+> writes only `skipIntro`, `mode` and `level`.
 
 - **Layers per expression:** `ring` (drawn at **1.20×**, behind), `body`, `face`, and `decor`
   (at 0.75 opacity, only where present), then `pet_ball` on top at **y −15 pt**, shared across

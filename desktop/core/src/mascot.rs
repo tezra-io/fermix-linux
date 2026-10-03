@@ -1,8 +1,13 @@
 //! The voice mascot is one Rive animation, as on macOS (M `Pet/MascotRendering.swift`,
 //! `FermixRive/RiveMascot.swift`; the M34 design record's decision 34). Its state
 //! machine takes the expression through the `mode` enum and the voice through the
-//! `level` number, 0 to 1: the poses blend into each other over 0.45 s, the body
-//! bends, the eyes morph, and the mouth follows the voice.
+//! `level` number, 0 to 1. Each mode has its own reactions inside the file (M
+//! 59989d6): headphones while listening, glasses and a pearl that becomes a
+//! bulb while thinking, a smiling face and a talking mouth while speaking, and
+//! idle actions picked at random. A change of mode lands in about 0.6 s,
+//! choreographed rather than cross-faded. Each time the state machine starts,
+//! a jelly sphere swells into the pet over two seconds (M eeaaffb), unless
+//! `skipIntro` is written before its first advance.
 //!
 //! This module is the contract between the file and the code, and the rules for
 //! when the animation plays and what it is told. `app/src/mascot.rs` plays it
@@ -14,17 +19,25 @@ pub const RESOURCE: &str = "/io/tezra/Fermix/pet/FermixMascot.riv";
 pub const STATE_MACHINE: &str = "Pet";
 pub const MODE: &str = "mode";
 pub const LEVEL: &str = "level";
+pub const SKIP_INTRO: &str = "skipIntro";
 
 /// How often a frame is drawn while the animation plays (M `framesPerSecond`).
 pub const FRAMES_PER_SECOND: f64 = 30.0;
-/// How long the file blends one pose into the next. A blend cannot be
-/// interrupted: a pose that arrives mid-blend waits for it to finish.
-const BLEND_SECONDS: f64 = 0.45;
+/// How long a change of pose takes to land in the file, measured frame by
+/// frame. A change cannot be interrupted: a pose that arrives mid-change
+/// waits for it to finish.
+const BLEND_SECONDS: f64 = 0.6;
 /// A parked mascot still takes a new pose: it plays this long, then holds
 /// still. That lands a pose that waited behind a blend just begun, with a
 /// margin for the frames lost at either end of the play. (macOS's `settle` is
 /// 0.6 s, which such a pose outlasts.)
 pub const SETTLE_SECONDS: f64 = 2.0 * BLEND_SECONDS + 0.2;
+/// How long the file's intro plays. Once started it cannot be skipped, and it
+/// lands only when played frame by frame.
+const INTRO_SECONDS: f64 = 2.0;
+/// A parked mascot lets an intro it started finish: it plays this long from
+/// the start, with the same margin as a pose.
+pub const INTRO_SETTLE_SECONDS: f64 = INTRO_SECONDS + 0.2;
 /// A level change smaller than this is not written; the mouth cannot show it
 /// (M `levelStep`).
 pub const LEVEL_STEP: f32 = 0.01;
@@ -68,6 +81,41 @@ impl Expression {
     }
 }
 
+/// How a mascot's scene starts. Every time the mascot appears its scene is new,
+/// so the intro is decided again (M `RiveMascot`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Opening {
+    /// Written to the file's `skipIntro` before the scene's first advance,
+    /// which is when the file reads it.
+    pub skip_intro: bool,
+    /// Played in one advance as the scene starts, before the first frame is
+    /// drawn.
+    pub lead_seconds: f64,
+    /// How long, from the start, a mascot that parks keeps playing, so that
+    /// what the scene started lands.
+    pub landing_seconds: Option<f64>,
+}
+
+/// An animating mascot plays the intro, which starts from nothing, so it
+/// draws from the first frame. A parked one (animations off) skips it and
+/// takes its pose at once: without the intro, a new scene draws the file's
+/// setup, every pose's parts at once, until its first pose has blended in, so
+/// that plays out before the first frame.
+pub fn opening(animates: bool) -> Opening {
+    if animates {
+        return Opening {
+            skip_intro: false,
+            lead_seconds: 0.0,
+            landing_seconds: Some(INTRO_SETTLE_SECONDS),
+        };
+    }
+    Opening {
+        skip_intro: true,
+        lead_seconds: SETTLE_SECONDS,
+        landing_seconds: None,
+    }
+}
+
 /// What to write to the file's `level` for the voice at `level` in `expression`,
 /// when `written` was written last: `None` when the mouth could not show the
 /// difference. A return to rest is always written.
@@ -86,14 +134,26 @@ pub fn level_to_write(expression: Expression, level: f32, written: f32) -> Optio
 }
 
 /// Whether the animation plays at `now`: always while it `animates`; parked
-/// (the view is off screen, or animations are off), only until the pose
-/// changed at `pose_changed_at` has landed.
-pub fn plays(animates: bool, pose_changed_at: Option<f64>, now: f64) -> bool {
+/// (the view is off screen, or animations are off), only until what it shows
+/// has landed at `lands_at`: a new pose, or an intro it started.
+pub fn plays(animates: bool, lands_at: Option<f64>, now: f64) -> bool {
     assert!(
         now.is_finite(),
         "the mascot's time must be finite, got {now}"
     );
-    animates || pose_changed_at.is_some_and(|at| now - at < SETTLE_SECONDS)
+    animates || lands_at.is_some_and(|at| now < at)
+}
+
+/// When a parked mascot may stop, once something that takes `seconds` to land
+/// starts at `now`: never before what it was already landing, so a pose that
+/// arrives mid-intro does not cut the intro short.
+pub fn lands_at(landing: Option<f64>, now: f64, seconds: f64) -> f64 {
+    assert!(
+        now.is_finite() && seconds >= 0.0,
+        "a landing needs a finite time and a duration, got {now} and {seconds}"
+    );
+    let at = now + seconds;
+    landing.map_or(at, |landing| landing.max(at))
 }
 
 /// When frames are drawn, on a frame clock that may tick faster than

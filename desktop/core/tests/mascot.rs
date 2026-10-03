@@ -1,11 +1,12 @@
 //! The mascot is one Rive animation, as on macOS: the file the app ships
 //! publishes every name the code writes, it is the only pet artwork that ships,
-//! and the rules for writing the level and for playing and parking hold.
+//! and the rules for starting it, writing the level, and playing and parking hold.
 //! Loading and drawing the file is tested in `rive/tests/render.rs`.
 
 use fermix_client::mascot::{
-    level_to_write, plays, Expression, Pacing, FRAMES_PER_SECOND, LEVEL, MAX_STEP_SECONDS, MODE,
-    RESOURCE, SETTLE_SECONDS, STATE_MACHINE,
+    lands_at, level_to_write, opening, plays, Expression, Opening, Pacing, FRAMES_PER_SECOND,
+    INTRO_SETTLE_SECONDS, LEVEL, MAX_STEP_SECONDS, MODE, RESOURCE, SETTLE_SECONDS, SKIP_INTRO,
+    STATE_MACHINE,
 };
 use std::path::Path;
 
@@ -32,7 +33,10 @@ fn the_shipped_animation_publishes_every_name_the_code_writes() {
         "the mascot is not a Rive runtime file"
     );
     let modes = Expression::ALL.map(Expression::mode);
-    for name in [STATE_MACHINE, MODE, LEVEL].iter().chain(modes.iter()) {
+    for name in [STATE_MACHINE, MODE, LEVEL, SKIP_INTRO]
+        .iter()
+        .chain(modes.iter())
+    {
         assert!(
             contains(&file, name),
             "the animation does not publish {name}"
@@ -67,6 +71,32 @@ fn the_animation_is_the_only_pet_artwork_that_ships() {
     assert!(
         !bundle.contains("pet/pet_"),
         "a painted pose is still bundled"
+    );
+}
+
+// Starting.
+
+#[test]
+fn an_animating_mascot_opens_with_the_intro() {
+    assert_eq!(
+        opening(true),
+        Opening {
+            skip_intro: false,
+            lead_seconds: 0.0,
+            landing_seconds: Some(INTRO_SETTLE_SECONDS),
+        }
+    );
+}
+
+#[test]
+fn a_parked_mascot_skips_the_intro_and_lands_its_pose_before_the_first_frame() {
+    assert_eq!(
+        opening(false),
+        Opening {
+            skip_intro: true,
+            lead_seconds: SETTLE_SECONDS,
+            landing_seconds: None,
+        }
     );
 }
 
@@ -115,10 +145,25 @@ fn an_animating_mascot_plays() {
 }
 
 #[test]
-fn a_parked_mascot_plays_only_until_a_new_pose_lands() {
+fn a_parked_mascot_plays_only_until_what_it_shows_has_landed() {
     assert!(!plays(false, None, 10.0));
-    assert!(plays(false, Some(10.0), 10.0 + SETTLE_SECONDS - 0.01));
-    assert!(!plays(false, Some(10.0), 10.0 + SETTLE_SECONDS + 0.01));
+    assert!(plays(false, Some(10.0), 9.99));
+    assert!(!plays(false, Some(10.0), 10.01));
+}
+
+#[test]
+fn a_new_pose_lands_after_the_settle() {
+    assert_eq!(lands_at(None, 10.0, SETTLE_SECONDS), 10.0 + SETTLE_SECONDS);
+    assert_eq!(
+        lands_at(Some(9.0), 10.0, SETTLE_SECONDS),
+        10.0 + SETTLE_SECONDS
+    );
+}
+
+#[test]
+fn a_new_pose_does_not_cut_a_started_intro_short() {
+    let intro = 10.0 + INTRO_SETTLE_SECONDS;
+    assert_eq!(lands_at(Some(intro), 10.5, SETTLE_SECONDS), intro);
 }
 
 // Frames.

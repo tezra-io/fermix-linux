@@ -14,6 +14,7 @@
 #include "rive/renderer/gl/render_context_gl_impl.hpp"
 #include "rive/renderer/gl/render_target_gl.hpp"
 #include "rive/renderer/rive_renderer.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_boolean_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_enum_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_number_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_runtime.hpp"
@@ -349,7 +350,6 @@ static bool fill_scene(FxStage* stage,
         return false;
     }
     scene->machine->bindViewModelInstance(scene->model->instance());
-    scene->machine->advanceAndApply(0.0f);
     return true;
 }
 
@@ -426,6 +426,18 @@ extern "C" bool fx_scene_set_number(FxScene* scene, const char* property, float 
 {
     FX_REQUIRE(scene != nullptr && property != nullptr);
     rive::ViewModelInstanceNumberRuntime* field = scene->model->propertyNumber(property);
+    if (field == nullptr)
+    {
+        return false;
+    }
+    field->value(value);
+    return true;
+}
+
+extern "C" bool fx_scene_set_boolean(FxScene* scene, const char* property, bool value)
+{
+    FX_REQUIRE(scene != nullptr && property != nullptr);
+    rive::ViewModelInstanceBooleanRuntime* field = scene->model->propertyBoolean(property);
     if (field == nullptr)
     {
         return false;

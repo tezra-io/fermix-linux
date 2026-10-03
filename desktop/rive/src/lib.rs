@@ -54,6 +54,11 @@ mod ffi {
             property: *const c_char,
             value: f32,
         ) -> bool;
+        pub fn fx_scene_set_boolean(
+            scene: *mut FxScene,
+            property: *const c_char,
+            value: bool,
+        ) -> bool;
         pub fn fx_scene_advance(scene: *mut FxScene, seconds: f32);
         pub fn fx_scene_render(
             stage: *mut FxStage,
@@ -140,7 +145,8 @@ impl Frame {
 
 impl Scene {
     /// The file's default artboard, playing `state_machine`, bound to the
-    /// artboard's default view model instance.
+    /// artboard's default view model instance. The state machine has not run:
+    /// write what it reads at its start, then [`Scene::start`] it.
     pub fn new(stage: &Rc<Stage>, state_machine: &str) -> Result<Scene, Error> {
         let name = c_string(state_machine);
         let mut error = [0 as c_char; ERROR_LEN];
@@ -187,6 +193,32 @@ impl Scene {
             return Ok(());
         }
         Err(Error(format!("the animation has no number {property}")))
+    }
+
+    /// Writes a boolean property of the view model instance.
+    pub fn set_boolean(&mut self, property: &str, value: bool) -> Result<(), Error> {
+        let name = c_string(property);
+        // SAFETY: the scene is alive and the name is NUL-terminated.
+        let written = unsafe { ffi::fx_scene_set_boolean(self.raw.as_ptr(), name.as_ptr(), value) };
+        if written {
+            return Ok(());
+        }
+        Err(Error(format!("the animation has no boolean {property}")))
+    }
+
+    /// Starts the state machine: one advance of nothing, in which it reads the
+    /// properties written so far and enters its first states, then `lead`
+    /// seconds in one advance. A first advance longer than nothing lands
+    /// elsewhere than the same time played frame by frame.
+    pub fn start(&mut self, lead: f32) {
+        assert!(
+            lead.is_finite() && lead >= 0.0,
+            "a scene starts with a finite, non-negative lead, got {lead}"
+        );
+        self.advance(0.0);
+        if lead > 0.0 {
+            self.advance(lead);
+        }
     }
 
     /// Advances the state machine by `seconds` and applies it to the artboard.

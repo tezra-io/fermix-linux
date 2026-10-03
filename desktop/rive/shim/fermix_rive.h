@@ -27,6 +27,8 @@ typedef struct FxScene FxScene;
 FxStage* fx_stage_new(const uint8_t* riv, size_t riv_len, char* error, size_t error_len);
 void fx_stage_free(FxStage* stage);
 
+// The state machine has not run yet: the caller writes what it reads at its
+// start (a view model property), then advances it.
 FxScene* fx_scene_new(FxStage* stage, const char* state_machine, char* error, size_t error_len);
 void fx_scene_free(FxStage* stage, FxScene* scene);
 
@@ -35,6 +37,8 @@ void fx_scene_free(FxStage* stage, FxScene* scene);
 bool fx_scene_set_enum(FxScene* scene, const char* property, const char* value);
 // Writes a number property. False when the instance has no such property.
 bool fx_scene_set_number(FxScene* scene, const char* property, float value);
+// Writes a boolean property. False when the instance has no such property.
+bool fx_scene_set_boolean(FxScene* scene, const char* property, bool value);
 // Advances the state machine and applies it to the artboard.
 void fx_scene_advance(FxScene* scene, float seconds);
 
