@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# A stand-in for sleep in the offline engine tests, put first on PATH by the test, so a retry's
+# pause costs nothing. FIXTURE_SLEEP_LOG, when set, receives one line per pause.
+set -euo pipefail
+
+if [ -n "${FIXTURE_SLEEP_LOG:-}" ]; then
+  printf 'sleep %s\n' "${1:?stub sleep: a duration is required}" >> "$FIXTURE_SLEEP_LOG"
+fi

@@ -1,0 +1,8 @@
+{
+  "build_id": "release-1",
+  "distribution_identity": "linux_package",
+  "engine_id": "fermix-core",
+  "product_version": "0.0.1",
+  "schema_version": 1,
+  "source_commit": "0123456789abcdef0123456789abcdef01234567"
+}
