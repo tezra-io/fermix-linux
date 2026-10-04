@@ -209,7 +209,16 @@ impl App {
             }
         });
         let on_drained = drain_reporter(self, Arc::clone(&playback));
-        match AudioCall::start(endpoints, gate, playback, on_mic, on_failure, on_drained) {
+        let weak = Rc::downgrade(self);
+        let on_level = Box::new(move |rms: f32| {
+            if let Some(app) = weak.upgrade() {
+                app.voice_input(Input::MicLevel(rms));
+            }
+        });
+        let started = AudioCall::start(
+            endpoints, gate, playback, on_mic, on_failure, on_drained, on_level,
+        );
+        match started {
             Ok(audio) => {
                 self.call.borrow_mut().audio = Some(audio);
                 Ok(())

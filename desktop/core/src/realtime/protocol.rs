@@ -24,12 +24,13 @@ pub const MAX_LINE_BYTES: usize = 65_536;
 pub const MAX_CHUNK_BYTES: usize = 16_384;
 
 /// The server event types this build decodes; any other `type` is `ServerEvent::Unknown`.
-const KNOWN_TYPES: [&str; 12] = [
+const KNOWN_TYPES: [&str; 13] = [
     "server_hello",
     "state",
     "audio_delta",
     "transcript_delta",
     "assistant_text_delta",
+    "assistant_text_done",
     "tool_event",
     "usage",
     "error",
@@ -108,8 +109,12 @@ pub enum ServerEvent {
         text: String,
         role: Option<String>,
     },
-    /// Realtime only: deltas, then the full text again (spec R6). Not shown in v1.
+    /// Realtime only: the reply's words as they stream. The transcript waits for the done event.
     AssistantTextDelta {
+        text: String,
+    },
+    /// Realtime only: the reply's whole text, once its words are done.
+    AssistantTextDone {
         text: String,
     },
     ToolEvent {

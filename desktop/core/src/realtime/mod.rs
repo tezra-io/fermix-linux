@@ -4,3 +4,4 @@ pub mod client;
 pub mod playback;
 pub mod protocol;
 pub mod session;
+pub mod speech;

@@ -94,7 +94,7 @@ impl Companion {
             .shown
             .borrow()
             .as_ref()
-            .is_some_and(|last| last.same_apart_from_level(view));
+            .is_some_and(|last| last.same_apart_from_levels(view));
         if unchanged {
             return;
         }

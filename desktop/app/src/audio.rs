@@ -2,22 +2,23 @@
 //! on Begin and taken to Null on End, on error and on quit. Null is what
 //! closes the microphone. The capture branch runs the microphone through
 //! webrtcdsp's echo canceller at 48 kHz (it takes no rate nearer 24 kHz),
-//! then down to the wire's 24 kHz in 100 ms blocks. The playback branch feeds
+//! then through the core's speech gate (`speech::Uplink`), which takes it down
+//! to the wire's 24 kHz in 100 ms blocks and sends every frame no voice is near
+//! as silence. The playback branch feeds
 //! the reply from the core's `PlaybackQueue` through the echo probe, and
 //! silence when there is none, so the canceller always has its reference.
 //! Nothing here touches GTK; only the bus watch runs on the main loop.
 
-use fermix_client::realtime::playback::{PlaybackQueue, SAMPLE_RATE};
+use fermix_client::realtime::playback::{rms, PlaybackQueue, SAMPLE_RATE};
+use fermix_client::realtime::speech::{Uplink, CAPTURE_RATE};
 use fermix_client::voice::NO_MICROPHONE;
 use gst::prelude::*;
 use gtk::glib;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// 100 ms of the wire's PCM16 at 24 kHz: one uplink block (spec §1.5).
-pub const CHUNK_BYTES: usize = 4_800;
-/// webrtcdsp takes 8, 16, 32 or 48 kHz only.
-const DSP_RATE: i32 = 48_000;
+/// webrtcdsp takes 8, 16, 32 or 48 kHz only, and the speech gate takes 48.
+const DSP_RATE: i32 = CAPTURE_RATE as i32;
 /// 20 ms at 24 kHz: what one need-data pulls from the queue.
 const BLOCK_SAMPLES: usize = 480;
 /// appsrc queues about 40 ms of 24 kHz PCM16 at most (spec §3.3), and reports
@@ -42,6 +43,10 @@ const DOWNLINK: &str = "downlink";
 const SPEAKER: &str = "speaker";
 /// The bus message the playback thread posts when the queue runs dry.
 const DRAINED: &str = "fermix-playback-drained";
+/// The bus message the capture thread posts with each block it sends, and its one field: the
+/// block's linear RMS.
+const MIC_LEVEL: &str = "fermix-mic-level";
+const RMS: &str = "rms";
 
 /// The two-stage uplink gate (spec §3.3): open only while streaming is armed,
 /// on the daemon's `listening`, and the microphone is not muted.
@@ -112,9 +117,9 @@ pub struct AudioCall {
 impl AudioCall {
     /// Builds and plays the pipeline, warm, with the gate closed (it panics on an open one: audio
     /// must not reach the socket before the daemon says `listening`). `on_mic` runs on a GStreamer
-    /// streaming thread with each full CHUNK_BYTES block, only while `gate.open()`; it must not
-    /// wait on the main loop, because `stop` joins that thread. `on_failure` and `on_drained`
-    /// run on the GTK main loop.
+    /// streaming thread with each `speech::CHUNK_BYTES` block, only while `gate.open()`; it must
+    /// not wait on the main loop, because `stop` joins that thread. `on_failure`, `on_drained`
+    /// and `on_level` (each sent block's linear RMS, for the meter) run on the GTK main loop.
     pub fn start(
         endpoints: Endpoints,
         gate: Gate,
@@ -122,6 +127,7 @@ impl AudioCall {
         on_mic: Box<dyn Fn(Vec<u8>) + Send + Sync>,
         on_failure: Box<dyn Fn(AudioFailure)>,
         on_drained: Box<dyn Fn()>,
+        on_level: Box<dyn Fn(f32)>,
     ) -> Result<AudioCall, AudioFailure> {
         assert!(!gate.open(), "a call starts with its gate closed");
         let pipeline = gst::Pipeline::new();
@@ -139,7 +145,12 @@ impl AudioCall {
             let failure = first_error(&call.pipeline);
             return Err(failure.unwrap_or_else(|| AudioFailure::Other(e.to_string())));
         }
-        call.watch = Some(watch_bus(&call.pipeline, on_failure, on_drained)?);
+        let callbacks = MainLoopCallbacks {
+            on_failure,
+            on_drained,
+            on_level,
+        };
+        call.watch = Some(watch_bus(&call.pipeline, callbacks)?);
         Ok(call)
     }
 
@@ -256,8 +267,8 @@ fn speaker(endpoints: Endpoints) -> Result<gst::Element, AudioFailure> {
         .map_err(|e| broken("make the speaker", e))
 }
 
-/// microphone → 48 kHz mono → webrtcdsp → 24 kHz mono → appsink, which hands
-/// whole blocks to `on_mic` while the gate is open.
+/// microphone → 48 kHz mono → webrtcdsp → appsink, whose callback runs the
+/// speech gate and hands its whole 24 kHz blocks to `on_mic` while the gate is open.
 fn add_capture(
     pipeline: &gst::Pipeline,
     endpoints: Endpoints,
@@ -277,15 +288,15 @@ fn add_capture(
         .map_err(|e| broken("make webrtcdsp", e))?;
     let uplink = gst_app::AppSink::builder()
         .name(UPLINK)
-        .caps(&pcm_caps(SAMPLE_RATE as i32))
+        .caps(&pcm_caps(DSP_RATE))
         .sync(false)
         .max_buffers(8)
         .drop(true)
         .build();
-    let mut pending = Vec::with_capacity(2 * CHUNK_BYTES);
+    let mut speech = Uplink::new();
     uplink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |appsink| take_mic(appsink, &mut pending, &gate, &on_mic))
+            .new_sample(move |appsink| take_mic(appsink, &mut speech, &gate, &on_mic))
             .build(),
     );
     let chain = [
@@ -294,28 +305,25 @@ fn add_capture(
         make("audioresample")?,
         capsfilter(DSP_RATE)?,
         dsp,
-        make("audioconvert")?,
-        make("audioresample")?,
         uplink.upcast(),
     ];
     link(pipeline, &chain)
 }
 
-/// Takes one appsink buffer and hands on each whole block. A closed gate drops
-/// the buffer and any partial block, so the first block after opening is all
-/// new sound. An unreadable buffer is an error, which ends the call.
+/// Takes one appsink buffer of 48 kHz PCM16 through the speech gate and, while
+/// the gate is open, hands on each whole block it lets out and posts its level.
+/// While the gate is closed the detector still hears the room, so it is warm
+/// when the gate opens, but the wire gets silence and nothing is handed on:
+/// nothing captured while it was closed, not even the pre-roll, is ever sent.
+/// An unreadable buffer is an error, which ends the call.
 fn take_mic(
     appsink: &gst_app::AppSink,
-    pending: &mut Vec<u8>,
+    speech: &mut Uplink,
     gate: &Gate,
     on_mic: &(dyn Fn(Vec<u8>) + Send + Sync),
 ) -> Result<gst::FlowSuccess, gst::FlowError> {
     // It fails only at EOS or while flushing, with nothing left to hand on.
     let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-    if !gate.open() {
-        pending.clear();
-        return Ok(gst::FlowSuccess::Ok);
-    }
     let map = sample
         .buffer()
         .and_then(|buffer| buffer.map_readable().ok());
@@ -323,12 +331,33 @@ fn take_mic(
         glib::g_warning!("fermix", "a microphone sample had no readable buffer");
         return Err(gst::FlowError::Error);
     };
-    pending.extend_from_slice(map.as_slice());
-    let whole = pending.len() / CHUNK_BYTES;
-    for _ in 0..whole {
-        on_mic(pending.drain(..CHUNK_BYTES).collect());
+    let (pairs, odd) = map.as_slice().as_chunks::<2>();
+    if !odd.is_empty() {
+        glib::g_warning!("fermix", "a microphone sample split a PCM16 sample");
+        return Err(gst::FlowError::Error);
+    }
+    let capture: Vec<i16> = pairs.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+    let open = gate.open();
+    let blocks = speech.push(&capture, open);
+    if !open {
+        return Ok(gst::FlowSuccess::Ok);
+    }
+    for block in blocks {
+        post_level(appsink, rms(&block));
+        on_mic(block);
     }
     Ok(gst::FlowSuccess::Ok)
+}
+
+/// The meter's bridge to the main loop, as `post_drained` is playback's.
+fn post_level(appsink: &gst_app::AppSink, level: f32) {
+    let structure = gst::Structure::builder(MIC_LEVEL).field(RMS, level).build();
+    let notice = gst::message::Application::builder(structure)
+        .src(appsink)
+        .build();
+    if let Err(e) = appsink.post_message(notice) {
+        glib::g_warning!("fermix", "the microphone level was not posted: {e}");
+    }
 }
 
 /// appsrc → 48 kHz mono → echo probe → speaker. Each need-data pulls the next
@@ -426,15 +455,20 @@ fn post_drained(appsrc: &gst_app::AppSrc) {
     }
 }
 
-fn watch_bus(
-    pipeline: &gst::Pipeline,
+/// What the bus watch calls, on the main loop.
+struct MainLoopCallbacks {
     on_failure: Box<dyn Fn(AudioFailure)>,
     on_drained: Box<dyn Fn()>,
+    on_level: Box<dyn Fn(f32)>,
+}
+
+fn watch_bus(
+    pipeline: &gst::Pipeline,
+    callbacks: MainLoopCallbacks,
 ) -> Result<gst::bus::BusWatchGuard, AudioFailure> {
     let mut watcher = Watcher {
         pipeline: pipeline.downgrade(),
-        on_failure,
-        on_drained,
+        callbacks,
         failed: false,
     };
     let bus = pipeline.bus().expect("a pipeline has a bus");
@@ -448,8 +482,7 @@ fn watch_bus(
 /// The bus watch's state. It runs on the main loop only.
 struct Watcher {
     pipeline: glib::WeakRef<gst::Pipeline>,
-    on_failure: Box<dyn Fn(AudioFailure)>,
-    on_drained: Box<dyn Fn()>,
+    callbacks: MainLoopCallbacks,
     failed: bool,
 }
 
@@ -464,12 +497,23 @@ impl Watcher {
                 warning.debug()
             ),
             gst::MessageView::Latency(_) => self.recalculate_latency(),
-            gst::MessageView::Application(notice)
-                if notice.structure().is_some_and(|s| s.has_name(DRAINED)) =>
-            {
-                (self.on_drained)()
-            }
+            gst::MessageView::Application(notice) => self.notice(notice),
             _ => {}
+        }
+    }
+
+    /// One of the streaming threads' own notices.
+    fn notice(&self, notice: &gst::message::Application) {
+        let Some(structure) = notice.structure() else {
+            return;
+        };
+        if structure.has_name(DRAINED) {
+            (self.callbacks.on_drained)();
+        } else if structure.has_name(MIC_LEVEL) {
+            let level = structure
+                .get::<f32>(RMS)
+                .expect("the capture thread posts its level as an f32");
+            (self.callbacks.on_level)(level);
         }
     }
 
@@ -484,7 +528,7 @@ impl Watcher {
         if let Some(pipeline) = self.pipeline.upgrade() {
             close(&pipeline);
         }
-        (self.on_failure)(failure);
+        (self.callbacks.on_failure)(failure);
     }
 
     fn recalculate_latency(&self) {
@@ -553,26 +597,32 @@ fn failure_of(source: &str, error: &glib::Error) -> AudioFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fermix_client::realtime::speech::CHUNK_BYTES;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     const PATIENCE: Duration = Duration::from_secs(5);
 
-    /// What the three callbacks saw.
+    /// What the four callbacks saw.
     #[derive(Default)]
     struct Seen {
-        blocks: Arc<Mutex<Vec<usize>>>,
+        blocks: Arc<Mutex<Vec<Vec<u8>>>>,
         failures: Rc<RefCell<Vec<AudioFailure>>>,
         drained: Rc<Cell<u32>>,
+        levels: Rc<RefCell<Vec<f32>>>,
     }
 
     impl Seen {
-        fn blocks(&self) -> Vec<usize> {
+        fn sent(&self) -> Vec<Vec<u8>> {
             self.blocks
                 .lock()
                 .expect("no test panics holding it")
                 .clone()
+        }
+
+        fn blocks(&self) -> Vec<usize> {
+            self.sent().iter().map(Vec::len).collect()
         }
     }
 
@@ -587,13 +637,15 @@ mod tests {
         let blocks = seen.blocks.clone();
         let failures = seen.failures.clone();
         let drained = seen.drained.clone();
+        let levels = seen.levels.clone();
         let call = AudioCall::start(
             Endpoints::Test,
             gate.clone(),
             playback.clone(),
-            Box::new(move |block| blocks.lock().expect("unpoisoned").push(block.len())),
+            Box::new(move |block| blocks.lock().expect("unpoisoned").push(block)),
             Box::new(move |failure| failures.borrow_mut().push(failure)),
             Box::new(move || drained.set(drained.get() + 1)),
+            Box::new(move |level| levels.borrow_mut().push(level)),
         )
         .expect("the test pipeline starts");
         (call, seen)
@@ -658,7 +710,8 @@ mod tests {
             assert_eq!(rate(&dsp, "sink"), Some(48_000));
             assert_eq!(rate(&dsp, "src"), Some(48_000));
             assert_eq!(rate(&probe, "sink"), Some(48_000));
-            assert_eq!(rate(&uplink, "sink"), Some(24_000));
+            // The speech gate takes 48 kHz and decimates to the wire's 24 kHz itself.
+            assert_eq!(rate(&uplink, "sink"), Some(48_000));
             assert!(seen.failures.borrow().is_empty());
             call.stop();
         });
@@ -699,6 +752,25 @@ mod tests {
             let at_mute = seen.blocks().len();
             run_for(context, Duration::from_millis(600));
             assert_eq!(seen.blocks().len(), at_mute, "blocks while muted");
+            call.stop();
+        });
+    }
+
+    /// The meter hears of every block sent, on the main loop, in order, as its RMS. (The test
+    /// microphone's loud steady sine passes the speech gate after webrtcdsp; what the gate
+    /// lets through is the core's to test, with real speech and noise.)
+    #[test]
+    fn each_block_sent_reports_its_level_on_the_main_loop() {
+        on_own_loop(|context| {
+            let gate = Gate::default();
+            let (call, seen) = start_test(&gate, &queue_with(0));
+            assert_playing(&call);
+            gate.arm(true);
+            assert!(run_until(context, PATIENCE, || seen.levels.borrow().len() >= 3));
+            gate.mute(true);
+            run_for(context, Duration::from_millis(300));
+            let expected: Vec<f32> = seen.sent().iter().map(|block| rms(block)).collect();
+            assert_eq!(*seen.levels.borrow(), expected);
             call.stop();
         });
     }

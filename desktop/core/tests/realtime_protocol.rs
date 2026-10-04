@@ -118,6 +118,17 @@ fn a_realtime_transcript_keeps_its_unlisted_role() {
     );
 }
 
+/// The reply's streamed deltas, then its whole text once, as its own event.
+#[test]
+fn a_realtime_reply_ends_with_its_whole_text() {
+    assert_eq!(
+        decode(r#"{"type":"assistant_text_done","text":"It is noon."}"#),
+        ServerEvent::AssistantTextDone {
+            text: "It is noon.".into()
+        }
+    );
+}
+
 #[test]
 fn the_realtime_estimated_usage_shape_decodes() {
     let line = r#"{"type":"usage","status":"estimated","estimated":{"input_audio_ms":1200,"input_audio_tokens":0,"cost_cents":0.12,"transcription_ms":1200,"transcription_cost_cents":0.01},"reported":{"cost_cents":0.0}}"#;

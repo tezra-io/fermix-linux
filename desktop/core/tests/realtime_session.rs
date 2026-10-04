@@ -9,7 +9,8 @@ use fermix_client::realtime::protocol::{
     Speaker, Task, TaskStatus, ToolStatus, TurnState, Usage,
 };
 use fermix_client::realtime::session::{
-    error_sentence, Effect, Input, Mode, Palette, Session, CALL_START_DEADLINE,
+    error_sentence, Effect, Input, Mode, Palette, Session, CALL_START_DEADLINE, METER_CEILING_DB,
+    METER_FLOOR_DB, TRANSCRIPT_LINES,
 };
 use std::time::Duration;
 
@@ -587,7 +588,7 @@ fn cancel_is_sent_only_for_a_running_task_on_the_live_engine() {
     assert!(!session.can_cancel_task(), "nothing to call off yet");
 }
 
-// Call facts: call_ready, captions, usage
+// Call facts: call_ready, the transcript, usage
 
 #[test]
 fn call_ready_records_the_engine_and_call_without_moving_the_mode() {
@@ -598,36 +599,189 @@ fn call_ready_records_the_engine_and_call_without_moving_the_mode() {
     assert_eq!(session.mode(), Mode::Listening);
 }
 
-#[test]
-fn the_last_caption_is_kept_verbatim_with_who_said_it() {
-    let mut session = listening();
-    assert_eq!(session.caption_line(), None);
-    let user = Caption {
-        speaker: Speaker::User,
-        delta: "what is ".into(),
+fn caption(speaker: Speaker, delta: &str) -> ServerEvent {
+    ServerEvent::Caption(Caption {
+        speaker,
+        delta: delta.into(),
         start_ms: 0,
         end_ms: 440,
-    };
-    assert!(event(&mut session, ServerEvent::Caption(user)).is_empty());
-    assert_eq!(session.caption_line().as_deref(), Some("You: what is "));
+    })
+}
 
-    let fermix = Caption {
-        speaker: Speaker::Assistant,
-        delta: "the ".into(),
-        start_ms: 300,
-        end_ms: 520,
-    };
-    event(&mut session, ServerEvent::Caption(fermix));
-    assert_eq!(session.caption_line().as_deref(), Some("Fermix: the "));
+fn said(text: &str) -> ServerEvent {
+    ServerEvent::TranscriptDelta {
+        text: text.into(),
+        role: Some("user".into()),
+    }
+}
 
-    let other = Caption {
-        speaker: Speaker::Other("narrator".into()),
-        delta: "so".into(),
-        start_ms: 0,
-        end_ms: 1,
+fn answered(text: &str) -> ServerEvent {
+    ServerEvent::AssistantTextDone { text: text.into() }
+}
+
+fn lines(session: &Session) -> Vec<(&str, &str)> {
+    session
+        .transcript()
+        .iter()
+        .map(|line| (line.who(), line.text.as_str()))
+        .collect()
+}
+
+#[test]
+fn what_you_said_and_what_fermix_answered_are_kept_in_order() {
+    let mut session = listening();
+    assert!(session.transcript().is_empty());
+    assert!(event(&mut session, said("what time is it")).is_empty());
+    assert!(event(&mut session, answered("It is noon.")).is_empty());
+    assert_eq!(
+        lines(&session),
+        [("You", "what time is it"), ("Fermix", "It is noon.")]
+    );
+    assert_eq!(session.mode(), Mode::Listening);
+}
+
+/// The reply's streamed deltas are the same words as its final text, which ends the turn.
+#[test]
+fn a_reply_is_a_line_once_it_is_done_and_its_deltas_add_nothing() {
+    let mut session = listening();
+    event(
+        &mut session,
+        ServerEvent::AssistantTextDelta { text: "It ".into() },
+    );
+    event(
+        &mut session,
+        ServerEvent::AssistantTextDelta { text: "is".into() },
+    );
+    assert!(session.transcript().is_empty());
+    event(&mut session, answered("It is"));
+    assert_eq!(lines(&session), [("Fermix", "It is")]);
+}
+
+#[test]
+fn each_utterance_is_its_own_line_and_one_with_no_words_adds_none() {
+    let mut session = listening();
+    event(&mut session, said("open the"));
+    event(&mut session, said(" \n"));
+    event(&mut session, said("browser"));
+    assert_eq!(lines(&session), [("You", "open the"), ("You", "browser")]);
+}
+
+#[test]
+fn a_transcript_without_a_role_is_yours_and_another_role_keeps_its_word() {
+    let mut session = listening();
+    let unlisted = ServerEvent::TranscriptDelta {
+        text: "hello".into(),
+        role: None,
     };
-    event(&mut session, ServerEvent::Caption(other));
-    assert_eq!(session.caption_line().as_deref(), Some("narrator: so"));
+    event(&mut session, unlisted);
+    let other = ServerEvent::TranscriptDelta {
+        text: "so".into(),
+        role: Some("narrator".into()),
+    };
+    event(&mut session, other);
+    assert_eq!(lines(&session), [("You", "hello"), ("narrator", "so")]);
+}
+
+/// Live captions are fragments of one stream per speaker, joined verbatim.
+#[test]
+fn live_captions_join_into_their_speakers_line_until_the_speaker_changes() {
+    let mut session = listening();
+    assert!(event(&mut session, caption(Speaker::User, "what is ")).is_empty());
+    event(&mut session, caption(Speaker::User, "the time"));
+    event(&mut session, caption(Speaker::Assistant, "It is "));
+    event(&mut session, caption(Speaker::Assistant, "noon."));
+    event(&mut session, caption(Speaker::User, "thanks"));
+    assert_eq!(
+        lines(&session),
+        [
+            ("You", "what is the time"),
+            ("Fermix", "It is noon."),
+            ("You", "thanks")
+        ]
+    );
+}
+
+#[test]
+fn the_transcript_keeps_only_its_last_lines() {
+    let mut session = listening();
+    for n in 0..TRANSCRIPT_LINES + 3 {
+        event(&mut session, said(&format!("line {n}")));
+    }
+    let kept = lines(&session);
+    assert_eq!(kept.len(), TRANSCRIPT_LINES);
+    assert_eq!(kept[0], ("You", "line 3"));
+    assert_eq!(
+        kept[TRANSCRIPT_LINES - 1].1,
+        format!("line {}", TRANSCRIPT_LINES + 2)
+    );
+}
+
+/// It stays to be read after the call, and the next call starts a fresh one.
+#[test]
+fn the_transcript_outlasts_its_call_until_the_next_one_begins() {
+    let mut session = listening();
+    event(&mut session, said("bye"));
+    session.apply(Input::End);
+    event(&mut session, answered("Bye!"));
+    assert_eq!(lines(&session), [("You", "bye"), ("Fermix", "Bye!")]);
+    session.apply(Input::Begin);
+    assert!(session.transcript().is_empty());
+}
+
+// The microphone meter
+
+/// What the microphone sends, as the linear RMS of a block, read on a decibel scale.
+#[test]
+fn the_meter_reads_the_sent_level_in_decibels() {
+    let mut session = listening();
+    let level = |db: f32| 10f32.powf(db / 20.0);
+    let cases = [
+        (0.0, 0.0),
+        (level(-80.0), 0.0),
+        (level(METER_FLOOR_DB), 0.0),
+        (level((METER_FLOOR_DB + METER_CEILING_DB) / 2.0), 0.5),
+        (level(METER_CEILING_DB), 1.0),
+        (1.0, 1.0),
+    ];
+    for (rms, meter) in cases {
+        assert!(session.apply(Input::MicLevel(rms)).is_empty());
+        let shown = session.mic_level().expect("the microphone streams");
+        assert!(
+            (shown - meter).abs() < 1e-4,
+            "{rms} read as {shown}, not {meter}"
+        );
+    }
+}
+
+#[test]
+fn the_meter_shows_only_while_the_microphone_streams() {
+    let mut session = calling();
+    session.apply(Input::MicLevel(0.1));
+    assert_eq!(session.mic_level(), None, "not armed yet");
+    state(&mut session, TurnState::Listening);
+    assert_eq!(
+        session.mic_level(),
+        Some(0.0),
+        "armed, nothing measured yet"
+    );
+    session.apply(Input::MicLevel(0.1));
+    assert!(session.mic_level().unwrap() > 0.0);
+    session.apply(Input::Mute(true));
+    assert_eq!(session.mic_level(), None);
+    session.apply(Input::Mute(false));
+    assert_eq!(
+        session.mic_level(),
+        Some(0.0),
+        "a muted block is never shown again"
+    );
+    session.apply(Input::End);
+    assert_eq!(session.mic_level(), None);
+}
+
+#[test]
+#[should_panic(expected = "a level is a finite RMS")]
+fn a_level_that_is_not_an_rms_is_a_bug() {
+    listening().apply(Input::MicLevel(f32::NAN));
 }
 
 /// A bill is a fact, not a state: what a limit does to the call arrives as its own error.
@@ -666,13 +820,7 @@ fn usage_without_a_voice_cost_shows_no_money_line() {
 fn a_new_call_does_not_inherit_the_last_calls_facts() {
     let mut session = listening();
     event(&mut session, live_ready());
-    let caption = Caption {
-        speaker: Speaker::User,
-        delta: "what is ".into(),
-        start_ms: 0,
-        end_ms: 1,
-    };
-    event(&mut session, ServerEvent::Caption(caption));
+    event(&mut session, caption(Speaker::User, "what is "));
     event(
         &mut session,
         ServerEvent::Task(task(1, TaskStatus::Running)),
@@ -687,7 +835,7 @@ fn a_new_call_does_not_inherit_the_last_calls_facts() {
     session.apply(Input::Begin);
     assert_eq!(session.engine(), None);
     assert_eq!(session.call_id(), None);
-    assert_eq!(session.caption_line(), None);
+    assert!(session.transcript().is_empty());
     assert_eq!(session.task(), None);
     assert_eq!(session.usage(), None);
 }
@@ -706,12 +854,8 @@ fn the_final_usage_after_the_call_ended_is_still_recorded() {
 }
 
 #[test]
-fn transcripts_unknown_events_and_a_second_hello_change_nothing() {
+fn reply_deltas_unknown_events_and_a_second_hello_change_nothing() {
     let quiet = [
-        ServerEvent::TranscriptDelta {
-            text: "hello".into(),
-            role: Some("user".into()),
-        },
         ServerEvent::AssistantTextDelta { text: "hi".into() },
         ServerEvent::Unknown("weather".into()),
         ServerEvent::ServerHello {

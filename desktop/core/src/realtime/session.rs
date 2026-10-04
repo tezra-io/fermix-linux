@@ -8,7 +8,8 @@
 //!   the playback queue *before* applying: the flush resets its anchor), `CancelTask`;
 //! - from the socket: `Connected` or `ConnectFailed` (the answer to `Effect::Connect`), then
 //!   every `Incoming` from the `Inbox` as `Wire`;
-//! - from the audio pipeline: `Drained` (playback ran dry), `AudioFailed(sentence)`;
+//! - from the audio pipeline: `Drained` (playback ran dry), `AudioFailed(sentence)`,
+//!   `MicLevel(rms)` (a block the microphone sent);
 //! - from the timer: `CallDeadline(n)`, `CALL_START_DEADLINE` after `Effect::WatchCallStart(n)`.
 //!
 //! Effects:
@@ -43,6 +44,11 @@ use std::time::Duration;
 pub const CALL_START_DEADLINE: Duration = Duration::from_secs(12);
 /// The engine whose calls have tasks that can be cancelled.
 const LIVE_ENGINE: &str = "openai_live";
+/// How many lines of the call's transcript the Pet page keeps.
+pub const TRANSCRIPT_LINES: usize = 8;
+/// The microphone meter's scale: a block this quiet reads as empty, and one this loud as full.
+pub const METER_FLOOR_DB: f32 = -60.0;
+pub const METER_CEILING_DB: f32 = -10.0;
 
 const NOT_OPENED: &str = "Voice is on, but Fermix has not opened its voice connection. \
                           Restarting Fermix usually fixes this.";
@@ -128,6 +134,8 @@ pub enum Input {
     Drained,
     /// The pipeline failed, in the audio module's own sentence.
     AudioFailed(String),
+    /// The linear RMS, 0 to 1, of a block the microphone just sent (`playback::rms`).
+    MicLevel(f32),
     CallDeadline(u64),
 }
 
@@ -164,10 +172,12 @@ pub struct Session {
     /// Reply audio is still playing out.
     tail: bool,
     level: f32,
+    /// The microphone meter, 0 to 1: the last block sent, on its decibel scale.
+    mic_level: f32,
     error: Option<String>,
     engine: Option<String>,
     call_id: Option<String>,
-    caption: Option<Caption>,
+    transcript: Vec<TranscriptLine>,
     task: Option<Task>,
     usage: Option<Usage>,
     /// Numbers calls, so a deadline left over from an earlier one is ignored.
@@ -195,6 +205,7 @@ impl Session {
             Input::Wire(Incoming::Closed(reason)) => self.closed(&reason),
             Input::Drained => self.drained(),
             Input::AudioFailed(sentence) => self.fail_call(sentence),
+            Input::MicLevel(rms) => self.measure_mic(rms),
             Input::CallDeadline(call) => self.call_deadline(call),
         }
     }
@@ -231,6 +242,11 @@ impl Session {
     /// The reply's smoothed output level, 0.0 to 1.0, for the pet's pulse.
     pub fn level(&self) -> f32 {
         self.level
+    }
+
+    /// The microphone meter, 0.0 to 1.0, while the microphone streams to the daemon.
+    pub fn mic_level(&self) -> Option<f32> {
+        self.streaming().then_some(self.mic_level)
     }
 
     /// Why voice stopped, while the mode is `Error`.
@@ -291,15 +307,9 @@ impl Session {
         }
     }
 
-    /// The last caption fragment and who said it, verbatim: "You: …" or "Fermix: …".
-    pub fn caption_line(&self) -> Option<String> {
-        let caption = self.caption.as_ref()?;
-        let who = match &caption.speaker {
-            Speaker::User => "You",
-            Speaker::Assistant => "Fermix",
-            Speaker::Other(word) => word,
-        };
-        Some(format!("{who}: {}", caption.delta))
+    /// The call's transcript, oldest line first. It stays after the call until the next begins.
+    pub fn transcript(&self) -> &[TranscriptLine] {
+        &self.transcript
     }
 
     /// The task's state, as the value of the Voice page's Task row.
@@ -320,6 +330,17 @@ impl Session {
     pub fn usage_line(&self) -> Option<String> {
         let cents = self.usage.as_ref()?.voice_cost_cents?;
         Some(format!("${:.2}", cents / 100.0))
+    }
+
+    /// The gate is open: the daemon armed it during this call and the user has not muted it.
+    fn streaming(&self) -> bool {
+        self.in_call && self.armed && !self.muted
+    }
+
+    /// A mute either way drops the last level: a block from before it is never shown after.
+    fn set_muted(&mut self, on: bool) {
+        self.muted = on;
+        self.mic_level = 0.0;
     }
 
     fn input_mode(&self) -> Mode {
@@ -352,7 +373,7 @@ impl Session {
     fn begin_call(&mut self) -> Vec<Effect> {
         self.begin_when_connected = false;
         self.in_call = true;
-        self.muted = false;
+        self.set_muted(false);
         self.armed = false;
         self.tail = false;
         self.level = 0.0;
@@ -361,7 +382,7 @@ impl Session {
         self.error = None;
         self.engine = None;
         self.call_id = None;
-        self.caption = None;
+        self.transcript.clear();
         self.task = None;
         self.usage = None;
         self.call_number += 1;
@@ -405,7 +426,7 @@ impl Session {
     fn drop_call(&mut self) -> Vec<Effect> {
         let had_call = self.in_call;
         self.in_call = false;
-        self.muted = false;
+        self.set_muted(false);
         self.armed = false;
         self.tail = false;
         self.level = 0.0;
@@ -420,7 +441,7 @@ impl Session {
         if !self.in_call {
             return Vec::new();
         }
-        self.muted = on;
+        self.set_muted(on);
         if !self.awaiting_listen {
             self.mode = self.input_mode();
         }
@@ -548,17 +569,19 @@ impl Session {
                 self.usage = Some(*usage);
                 Vec::new()
             }
-            ServerEvent::Caption(caption) => {
-                self.caption = Some(caption);
-                Vec::new()
+            ServerEvent::Caption(caption) => self.add_caption(caption),
+            ServerEvent::TranscriptDelta { text, role } => {
+                // The Realtime engine's role is unlisted; its transcript is the user's turn.
+                let speaker = role.map_or(Speaker::User, Speaker::from);
+                self.add_line(speaker, text)
             }
+            ServerEvent::AssistantTextDone { text } => self.add_line(Speaker::Assistant, text),
             ServerEvent::CallReady(ready) => {
                 self.engine = Some(ready.engine);
                 self.call_id = Some(ready.call_id);
                 Vec::new()
             }
             ServerEvent::ServerHello { .. }
-            | ServerEvent::TranscriptDelta { .. }
             | ServerEvent::AssistantTextDelta { .. }
             | ServerEvent::Unknown(_) => Vec::new(),
         }
@@ -570,8 +593,8 @@ impl Session {
         }
         let mut effects = Vec::new();
         match state {
-            TurnState::Muted => self.muted = true,
-            TurnState::Idle => self.muted = false,
+            TurnState::Muted => self.set_muted(true),
+            TurnState::Idle => self.set_muted(false),
             _ => {}
         }
         if matches!(state, TurnState::Muted | TurnState::Idle) {
@@ -612,6 +635,46 @@ impl Session {
         self.tail = true;
         self.level = smooth(self.level, rms);
         Vec::new()
+    }
+
+    fn measure_mic(&mut self, rms: f32) -> Vec<Effect> {
+        assert!(
+            rms.is_finite() && (0.0..=1.0).contains(&rms),
+            "a level is a finite RMS from 0 to 1, not {rms}"
+        );
+        if self.streaming() {
+            self.mic_level = meter(rms);
+        }
+        Vec::new()
+    }
+
+    /// A whole turn: a Realtime utterance once transcribed, or a reply once its words are done.
+    /// A turn with no words (a noise the provider took for speech) adds no line.
+    fn add_line(&mut self, speaker: Speaker, text: String) -> Vec<Effect> {
+        if !text.trim().is_empty() {
+            self.push_line(TranscriptLine { speaker, text });
+        }
+        Vec::new()
+    }
+
+    /// A Live caption fragment continues its speaker's line, or starts the next one.
+    fn add_caption(&mut self, caption: Caption) -> Vec<Effect> {
+        match self.transcript.last_mut() {
+            Some(line) if line.speaker == caption.speaker => line.text.push_str(&caption.delta),
+            _ if caption.delta.is_empty() => {}
+            _ => self.push_line(TranscriptLine {
+                speaker: caption.speaker,
+                text: caption.delta,
+            }),
+        }
+        Vec::new()
+    }
+
+    fn push_line(&mut self, line: TranscriptLine) {
+        self.transcript.push(line);
+        if self.transcript.len() > TRANSCRIPT_LINES {
+            self.transcript.remove(0);
+        }
     }
 
     fn playback_stop(&mut self) -> Vec<Effect> {
@@ -668,6 +731,33 @@ impl Session {
         }
         Vec::new()
     }
+}
+
+/// One turn of the call's transcript: who spoke, and their words verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptLine {
+    pub speaker: Speaker,
+    pub text: String,
+}
+
+impl TranscriptLine {
+    /// "You", "Fermix", or the daemon's own word for another speaker.
+    pub fn who(&self) -> &str {
+        match &self.speaker {
+            Speaker::User => "You",
+            Speaker::Assistant => "Fermix",
+            Speaker::Other(word) => word,
+        }
+    }
+}
+
+/// A block's linear RMS on the meter's decibel scale, 0.0 to 1.0.
+fn meter(rms: f32) -> f32 {
+    if rms <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * rms.log10();
+    ((db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB)).clamp(0.0, 1.0)
 }
 
 /// The word, icon and palette role of every mode but `Error`, which shows its sentence.
