@@ -1,8 +1,7 @@
 //! The window: a sidebar of pages over one stack, a toast overlay, and a header
 //! with at most two trailing buttons (design_final §1). Settings is pinned at
 //! the sidebar's foot; opening it swaps the sidebar for the pane list, whose
-//! header holds the way back. The window's buttons are the desktop's, with
-//! maximize added.
+//! header holds the way back. The window's buttons are the desktop's.
 //!
 //! In a wide window the pages' sidebar is a rail of icons, as on macOS, each
 //! named in its tooltip, under the pet's one-ink mark. Narrow, the
@@ -11,7 +10,6 @@
 
 use crate::settings::SettingsPage;
 use adw::prelude::*;
-use fermix_client::decoration::with_maximize;
 use fermix_client::settings::pane;
 use gtk::gio;
 use gtk::glib::{self, variant::ToVariant};
@@ -84,7 +82,6 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
     let pet = rail_mark();
     let (sidebar_page, header, wordmark, back) = sidebar_navigation(&sidebars);
-    follow_button_layout(vec![header.clone(), content_header]);
     let split = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
         .content(&content)
@@ -159,25 +156,6 @@ fn rail_mark() -> gtk::Image {
         .pixel_size(RAIL_MARK_SIZE)
         .accessible_role(gtk::AccessibleRole::Presentation)
         .build()
-}
-
-/// The window's buttons follow the desktop's layout, sides and order, with
-/// maximize added (`decoration::with_maximize`), and follow it again when the
-/// user changes it. Both headers take it: each shows the buttons on its own side.
-fn follow_button_layout(headers: Vec<adw::HeaderBar>) {
-    let settings = gtk::Settings::default().expect("the window's display has settings");
-    apply_button_layout(&settings, &headers);
-    settings.connect_gtk_decoration_layout_notify(move |settings| {
-        apply_button_layout(settings, &headers)
-    });
-}
-
-fn apply_button_layout(settings: &gtk::Settings, headers: &[adw::HeaderBar]) {
-    let desktop = settings.gtk_decoration_layout().unwrap_or_default();
-    let layout = with_maximize(&desktop);
-    for header in headers {
-        header.set_decoration_layout(Some(&layout));
-    }
 }
 
 /// The header's trailing actions and New conversation, all hidden until wanted.
