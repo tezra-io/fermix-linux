@@ -5,9 +5,11 @@
 //! maximize added.
 //!
 //! In a wide window the pages' sidebar is a rail of icons, as on macOS, each
-//! named in its tooltip. Narrow, the sidebar is a page of its own and names
-//! its rows under the wordmark. The settings pane list is always named.
+//! named in its tooltip, under the pet's one-ink mark on glass. Narrow, the
+//! sidebar is a page of its own and names its rows under the wordmark. The
+//! settings pane list is always named.
 
+use crate::pet_plate::PetPlate;
 use crate::settings::SettingsPage;
 use adw::prelude::*;
 use fermix_client::decoration::with_maximize;
@@ -77,6 +79,7 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
+    let pet = PetPlate::new();
     let (sidebar_page, header, wordmark, back) = sidebar_navigation(&sidebars);
     follow_button_layout(vec![header.clone(), content_header]);
     let split = adw::NavigationSplitView::builder()
@@ -88,6 +91,7 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         sidebars,
         header,
         wordmark,
+        pet,
         back,
         rail,
     };
@@ -272,9 +276,12 @@ struct SidebarShape {
     /// "main" or "settings": which list the sidebar shows.
     sidebars: gtk::Stack,
     /// Shows the page's own title ("Settings") over the settings panes, the
-    /// wordmark over the pages when narrow, and nothing over the rail.
+    /// wordmark over the pages when narrow, and the pet's mark over the rail.
     header: adw::HeaderBar,
     wordmark: gtk::Picture,
+    /// The pet's mark on its glass: the header's title over the rail, which
+    /// centres it over the rail's icons whatever the header's own padding.
+    pet: PetPlate,
     /// Back to Fermix, shown over the settings panes.
     back: gtk::Button,
     rail: Vec<RailRow>,
@@ -299,7 +306,9 @@ impl SidebarShape {
         };
         self.split.set_min_sidebar_width(min);
         self.split.set_max_sidebar_width(max);
-        self.header.set_show_title(!on_pages);
+        let over_rail = on_pages && !narrow;
+        self.header.set_show_title(!on_pages || over_rail);
+        self.header.set_title_widget(over_rail.then_some(&self.pet));
         self.back.set_visible(!on_pages);
         self.wordmark.set_visible(on_pages && narrow);
         let (align, tooltip) = if narrow {
