@@ -51,16 +51,13 @@ fn job(door: Door, phase: &str) -> Activity {
 }
 
 #[test]
-fn chatgpt_not_signed_in_leads_with_the_browser() {
+fn chatgpt_not_signed_in_leads_with_continue_with_chatgpt() {
     let v = row_view(&codex(), &Activity::Idle, None);
     assert_eq!(v.subtitle, "Not signed in");
     assert!(!v.is_error);
     assert_eq!(
         v.suffix,
-        resting(
-            Some((Door::BrowserSignIn, "Sign in")),
-            vec![MenuItem::Door(Door::Import(ImportSource::CodexCli))]
-        )
+        resting(Some((Door::BrowserSignIn, "Continue with ChatGPT")), vec![])
     );
 }
 
@@ -122,11 +119,8 @@ fn the_primary_row_says_so_and_does_not_offer_make_primary() {
     assert_eq!(
         v.suffix,
         resting(
-            Some((Door::BrowserSignIn, "Sign in again")),
-            vec![
-                MenuItem::Door(Door::Import(ImportSource::CodexCli)),
-                MenuItem::SignOut
-            ]
+            Some((Door::BrowserSignIn, "Continue with ChatGPT")),
+            vec![MenuItem::SignOut]
         )
     );
 }
@@ -139,12 +133,8 @@ fn a_signed_in_row_keeps_its_sign_in_visible_and_the_rest_in_the_menu() {
     assert_eq!(
         v.suffix,
         resting(
-            Some((Door::BrowserSignIn, "Sign in again")),
-            vec![
-                MenuItem::MakePrimary,
-                MenuItem::Door(Door::Import(ImportSource::CodexCli)),
-                MenuItem::SignOut
-            ]
+            Some((Door::BrowserSignIn, "Continue with ChatGPT")),
+            vec![MenuItem::MakePrimary, MenuItem::SignOut]
         )
     );
 }
@@ -188,10 +178,7 @@ fn an_expired_sign_in_asks_to_sign_in_again() {
     chatgpt.token_state = Some("revoked".into());
     assert_eq!(
         row_view(&chatgpt, &Activity::Idle, None).suffix,
-        resting(
-            Some((Door::BrowserSignIn, "Sign in again")),
-            vec![MenuItem::Door(Door::Import(ImportSource::CodexCli))]
-        )
+        resting(Some((Door::BrowserSignIn, "Continue with ChatGPT")), vec![])
     );
 }
 
@@ -345,18 +332,34 @@ fn saving_signing_out_and_switching_are_spinners() {
 
 #[test]
 fn every_door_has_a_verb_and_a_menu_label() {
-    assert_eq!(Door::BrowserSignIn.verb(false), "Sign in");
-    assert_eq!(Door::BrowserSignIn.verb(true), "Sign in again");
+    assert_eq!(Door::BrowserSignIn.verb("xai", false), "Sign in");
+    assert_eq!(Door::BrowserSignIn.verb("xai", true), "Sign in again");
     assert_eq!(
-        Door::Import(ImportSource::ClaudeCode).verb(false),
+        Door::Import(ImportSource::ClaudeCode).verb("anthropic", false),
         "Import from Claude Code"
     );
     assert_eq!(
-        Door::Import(ImportSource::CodexCli).verb(false),
-        "Import from Codex CLI"
+        Door::SetupToken.verb("anthropic", false),
+        "Paste a setup token…"
     );
-    assert_eq!(Door::SetupToken.verb(false), "Paste a setup token…");
-    assert_eq!(Door::ApiKey.verb(false), "Use an API key…");
+    assert_eq!(Door::ApiKey.verb("openai", false), "Use an API key…");
+}
+
+/// OpenAI's guidelines name the ChatGPT door, and it reads the same once a
+/// sign-in is held: it is also how a person reconnects or changes account.
+#[test]
+fn the_chatgpt_door_always_reads_continue_with_chatgpt() {
+    for again in [false, true] {
+        assert_eq!(
+            Door::BrowserSignIn.verb("openai_codex", again),
+            "Continue with ChatGPT"
+        );
+    }
+    assert_eq!(
+        MenuItem::Door(Door::BrowserSignIn).label("openai_codex"),
+        "Continue with ChatGPT"
+    );
+    assert_eq!(MenuItem::SignOut.label("openai_codex"), "Sign out");
 }
 
 #[test]

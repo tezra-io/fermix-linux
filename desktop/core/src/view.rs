@@ -61,10 +61,11 @@ pub enum MenuItem {
 }
 
 impl MenuItem {
-    pub fn label(self) -> String {
+    /// The menu words for this item on `provider`'s row.
+    pub fn label(self, provider: &str) -> String {
         match self {
             MenuItem::MakePrimary => "Make primary".into(),
-            MenuItem::Door(door) => door.verb(false),
+            MenuItem::Door(door) => door.verb(provider, false),
             MenuItem::ReplaceKey => "Replace key…".into(),
             MenuItem::RemoveKey => "Remove key".into(),
             MenuItem::SignOut => "Sign out".into(),
@@ -236,7 +237,10 @@ fn lead_verb(row: &ProviderRow, door: Door, link: Connection) -> String {
     let signed_in_this_way = row.auth_mode.as_deref() == Some("oauth");
     match door {
         Door::ApiKey => "Add key…".into(),
-        _ => door.verb(link != Connection::NotConnected && signed_in_this_way),
+        _ => door.verb(
+            &row.id,
+            link != Connection::NotConnected && signed_in_this_way,
+        ),
     }
 }
 
@@ -364,7 +368,7 @@ fn door_action(key: &str, state: &SetupState) -> Option<AttentionAction> {
     let main = *doors(row).first()?;
     Some(AttentionAction::Door {
         target: main.target(&row.id),
-        verb: main.verb(connection(row) == Connection::Expired),
+        verb: main.verb(&row.id, connection(row) == Connection::Expired),
     })
 }
 
@@ -420,7 +424,7 @@ pub(crate) fn fixed_attention_copy(key: &str) -> Option<(&'static str, &'static 
         "provider:unknown_configured" => ("The configured provider is not one Fermix knows", "Choose a provider Fermix can reach, or the assistant has nothing to answer with."),
         "provider:multiple_primary" => ("More than one provider is marked primary", "Exactly one provider answers each conversation, so pick which of them it is."),
         "provider:invalid_auth_mode" => ("A provider is set to sign in a way it does not offer", "Pick an authentication mode that provider supports, or it will refuse every call."),
-        "realtime:openai" => ("The voice companion needs an OpenAI key", "Voice uses the OpenAI Realtime API, which a Codex or Claude sign-in does not authorize."),
+        "realtime:openai" => ("The voice companion needs an OpenAI key", "Voice uses the OpenAI Realtime API, which a ChatGPT or Claude sign-in does not authorize."),
         "sandbox:env_missing" => ("Some allowed environment variables are not set", "Sandboxed commands run without them until each value is stored or its name is removed from the allowed list."),
         "sandbox:env_helper_failed" => ("A helper command for an environment variable failed", "Sandboxed commands run without that value until the helper command in the settings file works again."),
         "restart_pending" => ("Restart to apply your changes", "A saved change is waiting for Fermix to restart."),

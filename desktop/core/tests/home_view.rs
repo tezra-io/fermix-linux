@@ -17,7 +17,7 @@ fn state(status: &str, failures: serde_json::Value, restart: serde_json::Value) 
         "readiness": {"status": status, "failures": failures},
         "restart": restart,
         "providers": [
-            {"id": "openai_codex", "label": "OpenAI Codex (ChatGPT)", "auth_modes": ["oauth"],
+            {"id": "openai_codex", "label": "OpenAI Codex", "auth_modes": ["oauth"],
              "auth_mode": "oauth", "configured": true, "primary": true, "present_key": false,
              "default_model": "gpt-6-astra", "reasoning_effort": null, "fast": null,
              "account_label": null, "token_state": "valid"},
@@ -69,7 +69,7 @@ fn setup_required_outranks_a_pending_restart() {
 fn answers_with_names_the_primary_and_its_model() {
     assert_eq!(
         answers_with(&state("ready", json!([]), no_restart())),
-        "OpenAI Codex (ChatGPT) · gpt-6-astra"
+        "OpenAI Codex · gpt-6-astra"
     );
 }
 
@@ -99,6 +99,23 @@ fn a_missing_credential_routes_to_providers_under_the_providers_own_name() {
         Some(AttentionAction::Door {
             target: "anthropic|import:claude_code".into(),
             verb: "Import from Claude Code".into()
+        })
+    );
+}
+
+/// Home offers the ChatGPT door in the words its Providers row uses.
+#[test]
+fn a_missing_chatgpt_sign_in_offers_continue_with_chatgpt() {
+    let s = state(
+        "setup_required",
+        json!([{"component": "provider:openai_codex", "gating": true, "pane": "providers", "detail_key": "provider:missing_credentials:openai_codex"}]),
+        no_restart(),
+    );
+    assert_eq!(
+        attention_rows(&s)[0].action,
+        Some(AttentionAction::Door {
+            target: "openai_codex|browser".into(),
+            verb: "Continue with ChatGPT".into()
         })
     );
 }

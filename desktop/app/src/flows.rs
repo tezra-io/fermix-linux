@@ -6,14 +6,17 @@ use crate::app::App;
 use crate::dialogs::{confirm, secret_page, SecretPrompt, SECRET_WIDTH};
 use crate::secret_save::set_secret;
 use crate::state::Link;
+use adw::prelude::*;
 use fermix_client::job::{adoptable_sign_in, outcome, poll_cap, Outcome};
 use fermix_client::management::CallError;
 use fermix_client::model::JobView;
-use fermix_client::providers::{Door, ImportSource};
+use fermix_client::providers::{
+    connection, sign_out_sentence, uses_chatgpt_plan, Connection, Door, ImportSource,
+    CHATGPT_USAGE_URL, MANAGE_USAGE, PLAN_NOTICE_BODY, PLAN_NOTICE_TITLE,
+};
 use fermix_client::secrets::refused_sentence;
 use fermix_client::view::{daemon_problem, Activity, DaemonProblem, Recent};
 use gtk::glib;
-use gtk::prelude::*;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -201,6 +204,11 @@ impl App {
 
     async fn signed_in(self: &Rc<Self>, provider: &str, door: Door) {
         let was_ready = self.is_ready();
+        let first = self
+            .state
+            .borrow()
+            .provider(provider)
+            .is_some_and(|row| connection(row) == Connection::NotConnected);
         self.clear_activity(provider);
         let recent = match door {
             Door::Import(source) => Recent::Imported(source),
@@ -210,6 +218,40 @@ impl App {
         self.refresh().await;
         let label = self.state.borrow().label(provider);
         self.announce(&format!("Signed in to {label}"), was_ready);
+        let on_plan = self
+            .state
+            .borrow()
+            .provider(provider)
+            .is_some_and(uses_chatgpt_plan);
+        if first && on_plan {
+            self.plan_notice().await;
+        }
+    }
+
+    /// OpenAI's one-time notice when a first sign-in runs Fermix on the person's
+    /// ChatGPT plan. A reconnect does not show it again.
+    async fn plan_notice(self: &Rc<Self>) {
+        let dialog = adw::AlertDialog::new(Some(PLAN_NOTICE_TITLE), Some(PLAN_NOTICE_BODY));
+        dialog.add_responses(&[("manage", MANAGE_USAGE), ("done", "Got it")]);
+        dialog.set_response_appearance("done", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("done"));
+        dialog.set_close_response("done");
+        if dialog.choose_future(Some(&self.shell.window)).await == "manage" {
+            self.manage_usage().await;
+        }
+    }
+
+    /// Opens ChatGPT's usage settings, where the person sees and caps what Fermix
+    /// uses of their plan. The page is public and carries no credential.
+    pub async fn manage_usage(&self) {
+        let launched = gtk::UriLauncher::new(CHATGPT_USAGE_URL)
+            .launch_future(Some(&self.shell.window))
+            .await;
+        if let Err(e) = launched {
+            glib::g_warning!("fermix", "ChatGPT's usage settings did not open: {e}");
+            self.shell
+                .toast("Your browser did not open. Manage usage at chatgpt.com/settings/usage.");
+        }
     }
 
     /// A toast for a change that landed; offers Home when Fermix just became ready.
@@ -343,12 +385,10 @@ impl App {
 
     pub async fn sign_out(self: Rc<Self>, provider: &str) {
         let label = self.state.borrow().label(provider);
-        let body =
-            "Fermix forgets this sign-in on this computer. Nothing is revoked at the provider.";
         if !confirm(
             &self.shell.window,
             &format!("Sign out of {label}?"),
-            body,
+            sign_out_sentence(provider),
             "Sign out",
             true,
         )

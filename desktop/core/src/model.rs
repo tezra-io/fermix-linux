@@ -76,7 +76,6 @@ pub struct ProviderRow {
     pub present_key: bool,
     pub default_model: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub fast: Option<bool>,
     pub account_label: Option<String>,
     pub token_state: Option<String>,
 }

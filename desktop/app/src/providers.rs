@@ -228,7 +228,7 @@ fn menu_button(id: &str, items: &[MenuItem]) -> gtk::MenuButton {
             MenuItem::RemoveKey => ("win.remove-key", id.to_owned()),
             MenuItem::SignOut => ("win.sign-out", id.to_owned()),
         };
-        menu.append_item(&menu_item(&item.label(), action, &target));
+        menu.append_item(&menu_item(&item.label(id), action, &target));
     }
     gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")

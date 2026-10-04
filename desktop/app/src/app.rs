@@ -491,6 +491,9 @@ fn install_actions(app: &Rc<App>) {
     on(app, "sign-out", |app, provider| async move {
         app.sign_out(&provider).await
     });
+    on_plain(app, "manage-usage", |app| async move {
+        app.manage_usage().await
+    });
     on(app, "remove-key", |app, provider| async move {
         app.remove_key(&provider).await
     });

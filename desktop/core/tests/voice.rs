@@ -94,7 +94,7 @@ fn a_missing_key_says_a_sign_in_does_not_cover_voice() {
     );
     assert_eq!(
         sentence,
-        "Voice needs an OpenAI API key. A Codex or Claude sign-in does not cover it."
+        "Voice needs an OpenAI API key. A ChatGPT or Claude sign-in does not cover it."
     );
     assert_eq!(action, Some(GateAction::AddKey));
 }

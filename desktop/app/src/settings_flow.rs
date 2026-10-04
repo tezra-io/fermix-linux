@@ -9,6 +9,8 @@ use crate::dialogs::{leave, secret_dialog, SecretPrompt};
 use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::management::CallError;
+use fermix_client::model::ProviderRow;
+use fermix_client::providers::{uses_chatgpt_plan, MANAGE_USAGE, MANAGE_USAGE_HINT, USING_PLAN};
 use fermix_client::secrets::refused_sentence;
 use fermix_client::settings::{matching_panes, pane, read_failure, sections_for, Kind};
 use gtk::glib;
@@ -20,14 +22,23 @@ const NOT_SAVED: &str = "Fermix did not answer, so this was not saved.";
 const SECTION_WIDTH: i32 = 560;
 const SECTION_HEIGHT: i32 = 560;
 
-/// A section as a form page: what it is for, its rows, and Done. Done, as on
-/// macOS: every field has saved by the time the page goes, since clicking it
-/// takes the focus from the field still being typed in.
-fn section_page(title: &str, view: &SectionView, intro: &str) -> adw::NavigationPage {
+/// A section as a form page: what it is for, any `facts` the app adds above
+/// it, its rows, and Done. Done, as on macOS: every field has saved by the time
+/// the page goes, since clicking it takes the focus from the field still being
+/// typed in.
+fn section_page(
+    title: &str,
+    view: &SectionView,
+    intro: &str,
+    facts: Option<adw::PreferencesGroup>,
+) -> adw::NavigationPage {
     let content = adw::PreferencesPage::new();
     let lead = adw::PreferencesGroup::new();
     lead.set_description(Some(&glib::markup_escape_text(intro)));
     content.add(&lead);
+    if let Some(facts) = facts {
+        content.add(&facts);
+    }
     content.add(&view.group);
     let done = gtk::Button::builder()
         .label("Done")
@@ -317,9 +328,16 @@ impl App {
     /// Opens one daemon section as a form: the setup assistant's next page
     /// while it is open, else a dialog. Its rows follow the section like any
     /// pane's and stop when the page goes.
-    pub fn section_dialog(self: &Rc<Self>, title: &str, section: &str, keep: Keep, intro: &str) {
+    pub fn section_dialog(
+        self: &Rc<Self>,
+        title: &str,
+        section: &str,
+        keep: Keep,
+        intro: &str,
+        facts: Option<adw::PreferencesGroup>,
+    ) {
         let view = SectionView::keeping(section, None, keep);
-        let page = section_page(title, &view, intro);
+        let page = section_page(title, &view, intro, facts);
         self.settings.dialog_views.borrow_mut().push(view.clone());
         let views = self.settings.dialog_views.clone();
         page.connect_destroy(move |_| views.borrow_mut().retain(|v| !Rc::ptr_eq(v, &view)));
@@ -346,13 +364,50 @@ impl App {
         let keep: Keep = Box::new(move |key| Some(key) != switch.as_deref());
         let intro = "Fill these in and choose Done; each one saves as you go. Then turn the \
                      channel on with its switch in the list.";
-        self.section_dialog(&title, &section, keep, intro);
+        self.section_dialog(&title, &section, keep, intro, None);
     }
 
     pub fn provider_settings(self: &Rc<Self>, provider: &str) {
         let title = self.state.borrow().label(provider);
         let intro = "The model and how hard it thinks. Changes take effect when Fermix restarts.";
         let section = format!("providers.{provider}");
-        self.section_dialog(&title, &section, Box::new(|_| true), intro);
+        let facts = self
+            .state
+            .borrow()
+            .provider(provider)
+            .and_then(account_group);
+        self.section_dialog(&title, &section, Box::new(|_| true), intro, facts);
     }
+}
+
+/// Who the provider is signed in as and, while Fermix answers on a ChatGPT
+/// plan, that it does, with the way to manage it. None when there is neither.
+fn account_group(row: &ProviderRow) -> Option<adw::PreferencesGroup> {
+    let on_plan = uses_chatgpt_plan(row);
+    if row.account_label.is_none() && !on_plan {
+        return None;
+    }
+    let group = adw::PreferencesGroup::new();
+    if let Some(account) = &row.account_label {
+        let fact = adw::ActionRow::new();
+        fact.add_css_class("property");
+        fact.set_title("Account");
+        // An email may hold markup characters.
+        fact.set_subtitle(&glib::markup_escape_text(account));
+        group.add(&fact);
+    }
+    if on_plan {
+        let manage = gtk::Button::builder()
+            .label(MANAGE_USAGE)
+            .tooltip_text(MANAGE_USAGE_HINT)
+            .valign(gtk::Align::Center)
+            .action_name("win.manage-usage")
+            .build();
+        manage.update_property(&[gtk::accessible::Property::Description(MANAGE_USAGE_HINT)]);
+        let plan = adw::ActionRow::new();
+        plan.set_title(USING_PLAN);
+        plan.add_suffix(&manage);
+        group.add(&plan);
+    }
+    Some(group)
 }

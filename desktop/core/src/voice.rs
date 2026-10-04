@@ -252,7 +252,7 @@ fn restart_for<'a>(state: &'a SetupState, section: &str) -> Option<&'a str> {
 /// What the key is for, in short; Home's attention row for the same failure
 /// explains at length. The caveat stays: a sign-in looks like it should cover voice.
 const KEY_SENTENCE: &str =
-    "Voice needs an OpenAI API key. A Codex or Claude sign-in does not cover it.";
+    "Voice needs an OpenAI API key. A ChatGPT or Claude sign-in does not cover it.";
 
 /// The line under the mascot. Before a call, what stands in the way is said
 /// here and nowhere else, as a plain sentence in the faint palette: a setup

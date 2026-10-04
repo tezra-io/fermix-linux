@@ -1,7 +1,7 @@
 //! Everything the window knows, in one place. Pages render from this; only the
 //! controller in `app.rs` changes it.
 
-use fermix_client::model::SetupState;
+use fermix_client::model::{ProviderRow, SetupState};
 use fermix_client::overview::Overview;
 use fermix_client::service::ServiceRead;
 use fermix_client::view::{Activity, DaemonProblem, Recent};
@@ -99,9 +99,17 @@ impl State {
         (now.duration_since(*at) < RECENT_FOR).then_some(*recent)
     }
 
+    /// The daemon's row for `provider`, while it is up.
+    pub fn provider(&self, provider: &str) -> Option<&ProviderRow> {
+        self.snapshot()?
+            .state
+            .providers
+            .iter()
+            .find(|p| p.id == provider)
+    }
+
     pub fn label(&self, provider: &str) -> String {
-        self.snapshot()
-            .and_then(|s| s.state.providers.iter().find(|p| p.id == provider))
+        self.provider(provider)
             .map_or_else(|| provider.to_owned(), |p| p.label.clone())
     }
 
