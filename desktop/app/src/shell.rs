@@ -5,11 +5,10 @@
 //! maximize added.
 //!
 //! In a wide window the pages' sidebar is a rail of icons, as on macOS, each
-//! named in its tooltip, under the pet's one-ink mark on glass. Narrow, the
+//! named in its tooltip, under the pet's one-ink mark. Narrow, the
 //! sidebar is a page of its own and names its rows under the wordmark. The
 //! settings pane list is always named.
 
-use crate::pet_plate::PetPlate;
 use crate::settings::SettingsPage;
 use adw::prelude::*;
 use fermix_client::decoration::with_maximize;
@@ -38,6 +37,10 @@ const PANE_LIST_WIDTH: (f64, f64) = (200.0, 240.0);
 /// Its letters stand 22 pixels tall, which is what the two eye-dots need to
 /// still read as dots at 1x.
 const WORDMARK_HEIGHT: i32 = 26;
+/// The pet's one-ink mark over the rail. The icon ships downscaled at a few
+/// sizes, and GTK draws one of those as it is but rescales any other size,
+/// which blurs the eyes.
+const RAIL_MARK_SIZE: i32 = 24;
 
 pub struct Shell {
     pub window: adw::ApplicationWindow,
@@ -79,7 +82,7 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
-    let pet = PetPlate::new();
+    let pet = rail_mark();
     let (sidebar_page, header, wordmark, back) = sidebar_navigation(&sidebars);
     follow_button_layout(vec![header.clone(), content_header]);
     let split = adw::NavigationSplitView::builder()
@@ -145,6 +148,17 @@ fn sidebar_navigation(
     header.pack_start(&wordmark);
     let page = navigation_page("Fermix", &header, sidebars);
     (page, header, wordmark, back)
+}
+
+/// The pet's one-ink mark (marks/PROVENANCE.json, key app_icon_symbolic), in
+/// the text colour and on nothing of its own, so it never reads as one more
+/// button. Decorative: the sidebar's page is named Fermix in words.
+fn rail_mark() -> gtk::Image {
+    gtk::Image::builder()
+        .icon_name("io.tezra.Fermix-symbolic")
+        .pixel_size(RAIL_MARK_SIZE)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build()
 }
 
 /// The window's buttons follow the desktop's layout, sides and order, with
@@ -279,9 +293,9 @@ struct SidebarShape {
     /// wordmark over the pages when narrow, and the pet's mark over the rail.
     header: adw::HeaderBar,
     wordmark: gtk::Picture,
-    /// The pet's mark on its glass: the header's title over the rail, which
+    /// The pet's one-ink mark: the header's title over the rail, which
     /// centres it over the rail's icons whatever the header's own padding.
-    pet: PetPlate,
+    pet: gtk::Image,
     /// Back to Fermix, shown over the settings panes.
     back: gtk::Button,
     rail: Vec<RailRow>,
@@ -474,5 +488,23 @@ fn select_named(list: &gtk::ListBox, name: &str) {
             list.select_row(Some(&row));
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RAIL_MARK_SIZE;
+
+    #[test]
+    fn the_rail_mark_is_drawn_at_a_size_the_icon_ships_at() {
+        let n = RAIL_MARK_SIZE;
+        let path = format!(
+            "{}/../data/icons/hicolor/{n}x{n}/apps/io.tezra.Fermix-symbolic.symbolic.png",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert!(
+            std::path::Path::new(&path).is_file(),
+            "no {n} pixel mark: {path}"
+        );
     }
 }

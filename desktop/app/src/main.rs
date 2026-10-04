@@ -25,7 +25,6 @@ mod logs;
 mod marks;
 mod mascot;
 mod microphones;
-mod pet_plate;
 mod portal;
 mod providers;
 mod secret_save;
