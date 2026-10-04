@@ -179,9 +179,6 @@ impl MeetingsPane {
             Some("Zoom"),
             Box::new(|k| k.starts_with("meetings_zoom_")),
         );
-        // Its rows are the daemon's settings, so the mark heads the group instead.
-        zoom.group
-            .set_header_suffix(Some(&mark(Kind::MeetingPlatform, "zoom")));
         page.add(&zoom.group);
         MeetingsPane {
             page,

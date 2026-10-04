@@ -37,7 +37,8 @@
     "scope": "Each vendor record here is the macOS record, word for word, for a mark the Linux app draws. Asset paths are relative to app/marks/, which mirrors the macOS VendorMarks directory, and every file there is byte for byte the macOS file with the sha256 its record gives. A Linux-only fact about a record is in its linux_note field. The pet, wordmark, app_icon, app_icon_symbolic and tray_glyph records are the Linux app's own; an asset path that leaves app/marks/ (../) names a file elsewhere in the workspace. roster_source describes the macOS ROSTER.json, which is not copied. app/src/marks.rs tests that its table, these records and these files agree.",
     "omitted": {
       "computer_history": "Linux has no Computer history row: the Integrations page's Features filter lists computer_use and meetings only.",
-      "computer_use_sidecar": "Not a plugin row on Linux: plugins.list does not list it, and the Computer pane heads it with its own switch. Its file, features/computer-use-color.svg, ships for the computer_use feature."
+      "computer_use_sidecar": "Not a plugin row on Linux: plugins.list does not list it, and the Computer pane heads it with its own switch. Its file, features/computer-use-color.svg, ships for the computer_use feature.",
+      "zoom": "Not drawn on Linux since 2026-10-04: the Zoom section shows its name alone. The file the macOS record names is Zoom's opaque site touch icon, whose white ground drew as a white square around the mark, and Zoom publishes no transparent icon outside its licensed Brand Center (its site serves only 32 pixel favicons), whose guidelines say its marks may not be used without a written license or express permission. The owner chose the name alone over that file."
     },
     "neutral_icons": "The Linux fallback, one per kind: providers network-server-symbolic; channels fermix-chat-symbolic, the app's own speech bubble, because the GNOME 50 Adwaita theme has no plain chat bubble (it has no chat-bubbles-text-symbolic); meeting platforms camera-video-symbolic; plugins, features and sign-in clients application-x-addon-symbolic. It is drawn smaller than a mark and dimmed, so it never reads as one.",
     "decoding": "An SVG is drawn by GTK's own SVG renderer (GtkSvg, GTK 4.22), which needs no image loader, so it also draws in the dev loop and stays sharp at any size. On 2026-09-25, at 128 pixels wide, it matched rsvg-convert 2.62.4 on every SVG here but two: no pixel differed by more than 10 percent, apart from 15 anti-aliased edge pixels of providers/openai-color.svg that differed by less than 25 percent. The two are channels/discord-blurple.svg and channels/discord-white.svg, which colour their path with a <style> element GtkSvg does not implement and so drew black. Where GtkSvg reports a feature it does not implement, the app decodes the file with the image loader (glycin), as GTK's own icon loader does. A raster (PNG, WebP) always goes to the image loader. The loader runs in the installed app, where every file here decoded on 2026-09-25; the dev loop runs the runtime directly, cannot start the loader's sandbox, and so decodes PNG only.",
@@ -820,32 +821,6 @@
       ],
       "fallback": null,
       "notes": "meet.google.com references this exact product logo path, which is how the current mark was identified: the older fonts.gstatic.com/s/i/productlogos/meet_2020q4 icon still resolves and is superseded artwork. The raster is taken rather than the 192 point SVG Google serves beside it, for the reason the Google sign-in client already records: AppKit loads that SVG but omits its feGaussianBlur filter, so the soft wedge inside the camera draws with a hard edge. The vendor's own raster renders the complete artwork with no custom renderer."
-    },
-    {
-      "key": "zoom",
-      "kind": "meeting_platform",
-      "origin": "vendor",
-      "display_name": "Zoom",
-      "accessibility_label": "Zoom",
-      "treatment": "vendor_mark",
-      "plate": "neutral",
-      "source_url": "https://www.zoom.com/",
-      "source_retrieved_on": "2026-09-06",
-      "usage_terms": "This is the square application icon Zoom serves for its own site (the touch icon at https://www.zoom.com/apple-touch-icon.png), the current mark since Zoom's rebrand; written guidance is at “Zoom Brand Guidelines”, https://brand.zoom.com/. Zoom's own terms for the marks, published in plain text in its App Marketplace terms of service at https://www.zoom.com/en/trust/legal/zoom-api-license-and-tou/, state: “The “Zoom” word mark and the Zoom logo are trademarks and/or registered trademarks of Zoom (“Zoom Marks”). Subject to compliance with the Terms, Zoom grants SDK App developers a non-exclusive, non-transferable, royalty-free, fully paid-up, revocable, worldwide right and license, during the term of use of the Zoom SDK, to use the Zoom Marks solely for display within your SDK App and on your SDK App’s website to promote your SDK App’s compatibility with Zoom’s services and software. Zoom must agree in advance and in writing to all other uses of the Zoom Marks. All uses of the Zoom Marks must comply with Zoom’s Brand Guidelines and Partner Guide, which may be modified from time to time and are available at https://zoom.us/brandguidelines or from brand@zoom.us.” The Brand Center itself is a JavaScript portal: its logo library and the guideline text on it cannot be read without an interactive session, so the terms recorded here are the ones Zoom publishes as text.",
-      "permitted_treatment": "Ship the vendor's own file verbatim and scale uniformly. Never recolored, never cropped, never re-lettered, never redrawn. It heads the Zoom section of the Meetings pane beside that section's name, and the copy around it names Zoom only as a platform the notetaker joins, never as an endorsement or a partnership.",
-      "dark_mode_policy": "A white wordmark on Zoom's blue rounded square. The file carries its own ground, so it needs no appearance variant, is never rendered as a template image, and is drawn inset on the app's own neutral tile in both appearances.",
-      "assets": [
-        {
-          "role": "color",
-          "path": "meeting_platforms/zoom-color.png",
-          "sha256": "9ebe81173b0722df0a6cab4b27bfb4784d72ee11dfa8ab33d8fcbed381631366",
-          "asset_url": "https://www.zoom.com/apple-touch-icon.png",
-          "asset_member": null,
-          "retrieved_on": "2026-09-06"
-        }
-      ],
-      "fallback": null,
-      "notes": "Zoom's Brand Center is an interactive portal, so the icon recorded here is the one Zoom serves for its own site chrome: 72 by 72 pixels, which covers the pane's 20 point tile at 2x. The media kit's downloadable file is a horizontal wordmark, which draws as a thin band in a square tile and is not used. The retired camera glyph in a blue circle is not Zoom's current mark and is not an option."
     },
     {
       "key": "google",

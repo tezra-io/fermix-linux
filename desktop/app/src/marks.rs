@@ -267,17 +267,12 @@ const MARKS: &[Mark] = &[
         ink: Ink::File(asset!("features/meetings-color.svg")),
         plate: Plate::Neutral,
     },
-    // The platforms the Meetings pane is sectioned by.
+    // The platform whose account the Meetings pane signs in. Zoom has no mark:
+    // PROVENANCE.json says why under linux.omitted.
     Mark {
         kind: Kind::MeetingPlatform,
         key: "google_meet",
         ink: Ink::File(asset!("meeting_platforms/google-meet-color.png")),
-        plate: Plate::Neutral,
-    },
-    Mark {
-        kind: Kind::MeetingPlatform,
-        key: "zoom",
-        ink: Ink::File(asset!("meeting_platforms/zoom-color.png")),
         plate: Plate::Neutral,
     },
     // Google names a shared sign-in client rather than one Google plugin.
