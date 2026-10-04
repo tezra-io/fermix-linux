@@ -36,7 +36,7 @@ fn tools_are_built_in_plus_mcp() {
 
 #[test]
 fn channels_list_the_enabled_ones_by_their_names() {
-    assert_eq!(channels_line(&overview()), "Telegram");
+    assert_eq!(channels_line(&overview()), "Telegram, iMessage");
 }
 
 #[test]
