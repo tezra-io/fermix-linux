@@ -8,9 +8,9 @@ use crate::fields::{
 };
 use adw::prelude::*;
 use fermix_client::settings::{
-    choice_items, list_items, list_with, list_without, number_answer, number_view, placeholder,
-    text_answer, text_value, value_width, ChoiceItem, Kind, Row, SectionRows, FIELD_CHARS, NOT_SET,
-    UNKNOWN_KIND, WIDEST_VALUE_CHARS,
+    awaits_listing, choice_items, list_items, list_with, list_without, number_answer, number_view,
+    placeholder, text_answer, text_value, value_width, ChoiceItem, Kind, Row, SectionRows,
+    FIELD_CHARS, NOT_SET, UNKNOWN_KIND, WIDEST_VALUE_CHARS,
 };
 use gtk::glib::{self, variant::ToVariant};
 use serde_json::Value;
@@ -20,6 +20,8 @@ use std::time::Duration;
 
 /// A number is written once its control has been still this long, not on every click.
 const NUMBER_SETTLE: Duration = Duration::from_millis(700);
+/// What the button beside a model row whose listing failed does.
+const LIST_AGAIN: &str = "List the models again";
 
 /// Everything a section's rows are drawn from.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,8 @@ pub struct Drawn {
     pub unread: Option<String>,
     /// The daemon's refusal sentence, by row key.
     pub errors: Vec<(String, String)>,
+    /// The provider's models could not be listed: its model row offers to list them again.
+    pub listing_failed: bool,
     /// Set while the settings file changed outside Fermix: nothing may be written.
     pub locked: bool,
 }
@@ -85,7 +89,7 @@ impl SectionView {
         }
         let live: Live = Rc::new(Cell::new(true));
         let fresh = match (&drawn.rows, &drawn.unread) {
-            (Some(section), _) => self.row_widgets(section, &drawn.errors, &live),
+            (Some(section), _) => self.row_widgets(section, &drawn, &live),
             (None, Some(sentence)) => vec![(String::new(), unread_row(&self.id, sentence))],
             (None, None) => vec![(String::new(), loading_row())],
         };
@@ -104,7 +108,7 @@ impl SectionView {
     fn row_widgets(
         &self,
         section: &SectionRows,
-        errors: &[(String, String)],
+        drawn: &Drawn,
         live: &Live,
     ) -> Vec<(String, gtk::Widget)> {
         section
@@ -112,9 +116,13 @@ impl SectionView {
             .iter()
             .filter(|row| (self.keep)(&row.key))
             .map(|row| {
-                let error = errors.iter().find(|(k, _)| *k == row.key).map(|(_, s)| s);
-                let widget = row_widget(&self.id, row, live);
-                if let Some(sentence) = error {
+                let error = drawn.errors.iter().find(|(k, _)| *k == row.key);
+                let widget = if drawn.listing_failed && awaits_listing(row) {
+                    relist_row(&self.id, row, live).upcast()
+                } else {
+                    row_widget(&self.id, row, live)
+                };
+                if let Some((_, sentence)) = error {
                     show_refusal(&widget, sentence);
                 }
                 (row.key.clone(), widget)
@@ -391,6 +399,31 @@ fn text_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
 
 /// A text value with the daemon's suggestions one click away; any value is allowed.
 fn suggestion_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
+    linked_row(section, row, live, |entry| {
+        suggestions_button(section, row, entry).upcast()
+    })
+}
+
+/// A model row whose provider could not list its models: any name can still
+/// be typed, and the button where the suggestions would be lists them again.
+fn relist_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
+    let again = gtk::Button::builder()
+        .icon_name("view-refresh-symbolic")
+        .tooltip_text(LIST_AGAIN)
+        .action_name("win.section-read")
+        .action_target(&section.to_variant())
+        .build();
+    again.update_property(&[gtk::accessible::Property::Label(LIST_AGAIN)]);
+    linked_row(section, row, live, |_| again.upcast())
+}
+
+/// A row's text field with one button joined to its end.
+fn linked_row(
+    section: &str,
+    row: &Row,
+    live: &Live,
+    button: impl FnOnce(&gtk::Entry) -> gtk::Widget,
+) -> adw::ActionRow {
     let action = titled(row);
     let entry = text_field(section, row, live);
     let linked = gtk::Box::builder()
@@ -398,7 +431,7 @@ fn suggestion_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
         .valign(gtk::Align::Center)
         .build();
     linked.append(&entry);
-    linked.append(&suggestions_button(section, row, &entry));
+    linked.append(&button(&entry));
     action.add_suffix(&linked);
     field_row(&action, &entry);
     action
@@ -438,10 +471,13 @@ fn suggestions_button(section: &str, row: &Row, entry: &gtk::Entry) -> gtk::Menu
         entry.set_text(&value);
         apply(&entry, &section, &key, &Value::String(value));
     });
+    // Nothing to suggest (a model list still on its way, or one that failed):
+    // the field still takes any value, and the button opens no empty list.
     gtk::MenuButton::builder()
         .icon_name("pan-down-symbolic")
         .popover(&popover)
         .tooltip_text("Suggestions")
+        .sensitive(row.options.iter().any(|o| !o.disabled))
         .build()
 }
 

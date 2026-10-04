@@ -2,11 +2,12 @@
 //! that turn a row into what a control shows and what a control sends back.
 
 use fermix_client::management::{decode_response, CallError, Refusal};
+use fermix_client::model::ModelPage;
 use fermix_client::settings::{
     channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, pane, placeholder, read_failure, sections_for, text_answer, value_width,
-    ApplyResult, Kind, ReloadResult, Row, SectionRows, Sections, FIELD_CHARS, GROUPS,
-    KEPT_VALUE_CHARS, PANES, WIDEST_VALUE_CHARS,
+    number_view, pane, placeholder, read_failure, sections_for, text_answer, unlisted_models,
+    value_width, with_listing, ApplyResult, Kind, ReloadResult, Row, SectionRows, Sections,
+    FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES, WIDEST_VALUE_CHARS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -361,5 +362,93 @@ fn a_section_that_could_not_be_read_says_why() {
     assert_eq!(
         read_failure(&CallError::Protocol("no rows".into())),
         "Fermix answered in a way this app does not understand."
+    );
+}
+
+fn model_row(section: &SectionRows) -> &Row {
+    section
+        .rows
+        .iter()
+        .find(|r| r.key == "default_model")
+        .expect("a provider section has a model row")
+}
+
+fn all_but_the_model_row(section: &SectionRows) -> Vec<Row> {
+    section
+        .rows
+        .iter()
+        .filter(|r| r.key != "default_model")
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn only_a_providers_empty_model_row_waits_for_its_models_to_be_listed() {
+    let codex: SectionRows = decode("settings_get_providers_openai_codex");
+    assert_eq!(unlisted_models(&codex), Some("openai_codex"));
+    let anthropic: SectionRows = decode("settings_get_providers_anthropic");
+    assert_eq!(
+        unlisted_models(&anthropic),
+        None,
+        "a shipped catalog is the list"
+    );
+    let elsewhere = SectionRows {
+        id: "voice".into(),
+        title: "Voice".into(),
+        rows: vec![row(
+            json!({"key": "default_model", "kind": "choice", "suggestions": true}),
+        )],
+    };
+    assert_eq!(
+        unlisted_models(&elsewhere),
+        None,
+        "only a provider's own section is listed"
+    );
+}
+
+#[test]
+fn a_listing_fills_the_model_row_and_leaves_the_rest() {
+    let codex: SectionRows = decode("settings_get_providers_openai_codex");
+    let page: ModelPage = decode("providers_models_list");
+    let drawn = with_listing(&codex, &Ok(page.models));
+    let model = model_row(&drawn);
+    let offered: Vec<(&str, &str)> = model
+        .options
+        .iter()
+        .map(|o| (o.value.as_str(), o.label.as_str()))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            ("claude-opus-5", "Claude Opus 5"),
+            ("claude-sonnet-5", "Claude Sonnet 5")
+        ]
+    );
+    assert!(model
+        .options
+        .iter()
+        .all(|o| !o.disabled && o.hint.is_none()));
+    assert_eq!(model.footer, None);
+    assert_eq!(all_but_the_model_row(&drawn), all_but_the_model_row(&codex));
+}
+
+#[test]
+fn a_failed_listing_says_why_under_the_model_row_and_offers_nothing() {
+    let codex: SectionRows = decode("settings_get_providers_openai_codex");
+    let drawn = with_listing(&codex, &Err(MODELS_UNLISTED.to_owned()));
+    let model = model_row(&drawn);
+    assert!(model.options.is_empty());
+    assert_eq!(model.footer.as_deref(), Some(MODELS_UNLISTED));
+    assert_eq!(all_but_the_model_row(&drawn), all_but_the_model_row(&codex));
+}
+
+#[test]
+fn a_listing_never_replaces_a_shipped_catalog() {
+    let anthropic: SectionRows = decode("settings_get_providers_anthropic");
+    let page: ModelPage = decode("providers_models_list");
+    assert_eq!(with_listing(&anthropic, &Ok(page.models)), anthropic);
+    assert_eq!(
+        with_listing(&anthropic, &Err(MODELS_UNLISTED.to_owned())),
+        anthropic
     );
 }

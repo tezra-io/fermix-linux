@@ -3,7 +3,7 @@
 
 use crate::frame::{read_frame, write_frame, FrameError};
 use crate::model::{
-    AuthStart, DetectResult, Hello, JobList, JobStatus, JobView, Lease, RestartOnly,
+    AuthStart, DetectResult, Hello, JobList, JobStatus, JobView, Lease, ModelPage, RestartOnly,
     SecretSetResult, SetupSession, SetupState,
 };
 use crate::providers::ImportSource;
@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 2;
+/// The most models one `providers.models.list` page holds; the app asks for one page.
+const MODEL_PAGE: u64 = 200;
 
 #[derive(Debug)]
 pub enum CallError {
@@ -174,6 +176,19 @@ impl Management {
 
     pub fn set_primary(&self, provider: &str) -> Result<RestartOnly, CallError> {
         self.call_typed("providers.set_primary", json!({ "provider": provider }))
+    }
+
+    /// The models the provider itself lists now, one full page. A provider
+    /// that cannot list live, or whose listing fails, is refused.
+    pub fn models_list(&self, provider: &str) -> Result<ModelPage, CallError> {
+        assert!(
+            !provider.is_empty(),
+            "providers.models.list needs a provider"
+        );
+        self.call_typed(
+            "providers.models.list",
+            json!({ "provider": provider, "live": true, "limit": MODEL_PAGE }),
+        )
     }
 
     pub fn detect(&self, targets: &[&str]) -> Result<DetectResult, CallError> {

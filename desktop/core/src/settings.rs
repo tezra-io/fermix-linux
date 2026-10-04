@@ -4,7 +4,7 @@
 //! Rows decode tolerantly, so a newer daemon's fields and kinds never break it.
 
 use crate::management::CallError;
-use crate::model::RestartState;
+use crate::model::{ListedModel, RestartState};
 use crate::view::daemon_problem;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -26,6 +26,12 @@ pub const WIDEST_VALUE_CHARS: i32 = 64;
 const _: () = assert!(FIELD_CHARS <= KEPT_VALUE_CHARS && KEPT_VALUE_CHARS < WIDEST_VALUE_CHARS);
 
 pub const NOT_SET: &str = "Not set";
+/// Under a model row whose provider could not list its models. The listing's
+/// refusal is never more specific than "unavailable".
+pub const MODELS_UNLISTED: &str =
+    "Fermix could not list this provider's models. Type a model name instead.";
+/// The row a provider section names its model in.
+const MODEL_KEY: &str = "default_model";
 pub const UNKNOWN_KIND: &str = "This copy of Fermix is older than the daemon and has no control \
     for this setting. Update Fermix to change it here.";
 
@@ -330,6 +336,46 @@ pub fn choice_items(row: &Row) -> (Vec<ChoiceItem>, usize) {
         },
     );
     (items, 0)
+}
+
+/// The models a provider listed for its model row, or why it could not.
+pub type Listing = Result<Vec<ListedModel>, String>;
+
+/// A provider section's model row with no options of its own: the daemon
+/// leaves it empty for a provider whose models are discovered rather than
+/// shipped, and the client lists them (`providers.models.list`).
+pub fn awaits_listing(row: &Row) -> bool {
+    row.key == MODEL_KEY && row.kind == Kind::Choice && row.suggestions && row.options.is_empty()
+}
+
+/// The provider whose models `section`'s model row waits for, if it waits.
+pub fn unlisted_models(section: &SectionRows) -> Option<&str> {
+    let provider = section.id.strip_prefix("providers.")?;
+    section.rows.iter().any(awaits_listing).then_some(provider)
+}
+
+/// `section` as drawn once its provider's models were listed: the waiting
+/// model row offers them, or says why there are none. Nothing else changes.
+pub fn with_listing(section: &SectionRows, listing: &Listing) -> SectionRows {
+    let mut drawn = section.clone();
+    let Some(row) = drawn.rows.iter_mut().find(|r| awaits_listing(r)) else {
+        return drawn;
+    };
+    match listing {
+        Ok(models) => {
+            row.options = models
+                .iter()
+                .map(|m| ChoiceOption {
+                    value: m.id.clone(),
+                    label: m.label.clone(),
+                    hint: None,
+                    disabled: false,
+                })
+                .collect();
+        }
+        Err(sentence) => row.footer = Some(sentence.clone()),
+    }
+    drawn
 }
 
 /// What an empty field says: the label of the row's inherit option, else "Not set".

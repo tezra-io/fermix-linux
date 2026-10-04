@@ -12,7 +12,9 @@ use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
 use fermix_client::model::DetectRow;
-use fermix_client::settings::{pane, sections_for, Section, SectionRows, GROUPS, PANES};
+use fermix_client::settings::{
+    pane, sections_for, with_listing, Listing, Section, SectionRows, GROUPS, PANES,
+};
 use gtk::glib::{self, variant::ToVariant};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -35,6 +37,9 @@ const DESCRIPTOR_PANES: [&str; 8] = [
 pub struct SettingsData {
     pub sections: Option<Vec<Section>>,
     pub rows: HashMap<String, SectionRows>,
+    /// The models a provider section's model row offers, by section, once
+    /// listed; a re-read of the section keeps them.
+    pub listings: HashMap<String, Listing>,
     /// The daemon's refusal sentence, by (section, row key).
     pub errors: HashMap<(String, String), String>,
     /// Sections being read now, so a pane opened twice reads them once.
@@ -91,7 +96,13 @@ impl SettingsData {
             .map(|((_, key), sentence)| (key.clone(), sentence.clone()))
             .collect();
         errors.sort();
-        let rows = self.rows.get(section).cloned();
+        let rows = self
+            .rows
+            .get(section)
+            .map(|rows| match self.listings.get(section) {
+                Some(listing) => with_listing(rows, listing),
+                None => rows.clone(),
+            });
         let unread = match rows {
             Some(_) => None,
             None => self.unread.get(section).cloned(),
@@ -100,6 +111,7 @@ impl SettingsData {
             rows,
             unread,
             errors,
+            listing_failed: matches!(self.listings.get(section), Some(Err(_))),
             locked,
         }
     }
@@ -514,6 +526,19 @@ mod tests {
         data.reading_started("voice");
         data.reading_ended("voice", Ok(rows("voice")));
         assert!(!data.needs_read("voice"));
+    }
+
+    #[test]
+    fn only_a_failed_listing_offers_to_list_the_models_again() {
+        let mut data = SettingsData::default();
+        let section = "providers.openai_codex";
+        data.reading_ended(section, Ok(rows(section)));
+        assert!(!data.drawn(section, false).listing_failed, "not listed yet");
+        data.listings
+            .insert(section.into(), Err("Fermix could not list them.".into()));
+        assert!(data.drawn(section, false).listing_failed);
+        data.listings.insert(section.into(), Ok(Vec::new()));
+        assert!(!data.drawn(section, false).listing_failed, "listed again");
     }
 
     #[test]

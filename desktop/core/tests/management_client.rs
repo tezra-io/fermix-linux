@@ -380,3 +380,22 @@ fn a_refusal_names_the_row_it_is_about() {
     assert_eq!(refusal.field.as_deref(), Some("review_interval_hours"));
     assert_eq!(refusal.sentence, "This setting takes a number.");
 }
+
+#[test]
+fn models_list_asks_the_provider_live_for_one_full_page() {
+    let daemon = FakeDaemon::start(vec![Reply::Envelope(
+        json!({"request_id": "$id", "result": {
+        "models": [{"id": "gpt-6-astra", "label": "GPT-6-Astra"}],
+        "cursor": null, "source": "live", "truncated": false}}),
+    )]);
+    let page = daemon.client().models_list("openai_codex").unwrap();
+    assert_eq!(page.models.len(), 1);
+    assert_eq!(page.models[0].id, "gpt-6-astra");
+    assert_eq!(page.models[0].label, "GPT-6-Astra");
+    let requests = daemon.requests();
+    assert_eq!(requests[0]["method"], "providers.models.list");
+    assert_eq!(
+        requests[0]["params"],
+        json!({"provider": "openai_codex", "live": true, "limit": 200})
+    );
+}

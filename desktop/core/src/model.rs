@@ -127,6 +127,22 @@ pub struct RestartOnly {
     pub restart: RestartState,
 }
 
+/// One page of `providers.models.list`: from the catalog this build ships,
+/// or from the provider's own listing when asked live.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ModelPage {
+    pub models: Vec<ListedModel>,
+    pub cursor: Option<String>,
+    pub source: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ListedModel {
+    pub id: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SecretSetResult {
     pub id: String,

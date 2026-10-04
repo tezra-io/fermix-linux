@@ -12,7 +12,9 @@ use fermix_client::management::CallError;
 use fermix_client::model::ProviderRow;
 use fermix_client::providers::{uses_chatgpt_plan, MANAGE_USAGE, MANAGE_USAGE_HINT, USING_PLAN};
 use fermix_client::secrets::refused_sentence;
-use fermix_client::settings::{matching_panes, pane, read_failure, sections_for, Kind};
+use fermix_client::settings::{
+    matching_panes, pane, read_failure, sections_for, unlisted_models, Kind, MODELS_UNLISTED,
+};
 use gtk::glib;
 use serde_json::{Map, Value};
 use std::rc::Rc;
@@ -285,6 +287,7 @@ impl App {
         let mut data = self.settings_data.borrow_mut();
         data.sections = None;
         data.rows.clear();
+        data.listings.clear();
         data.unread.clear();
         data.errors.clear();
         data.unreadable = None;
@@ -327,7 +330,7 @@ impl App {
 
     /// Opens one daemon section as a form: the setup assistant's next page
     /// while it is open, else a dialog. Its rows follow the section like any
-    /// pane's and stop when the page goes.
+    /// pane's and stop when the page goes; the caller reads them.
     pub fn section_dialog(
         self: &Rc<Self>,
         title: &str,
@@ -343,10 +346,6 @@ impl App {
         page.connect_destroy(move |_| views.borrow_mut().retain(|v| !Rc::ptr_eq(v, &view)));
         self.render();
         self.present_form(&page, SECTION_WIDTH, Some(SECTION_HEIGHT));
-        glib::spawn_future_local({
-            let (app, section) = (self.clone(), section.to_owned());
-            async move { app.read_section(&section).await }
-        });
     }
 
     pub fn channel_setup(self: &Rc<Self>, channel: &str) {
@@ -365,6 +364,8 @@ impl App {
         let intro = "Fill these in and choose Done; each one saves as you go. Then turn the \
                      channel on with its switch in the list.";
         self.section_dialog(&title, &section, keep, intro, None);
+        let app = self.clone();
+        glib::spawn_future_local(async move { app.read_section(&section).await });
     }
 
     pub fn provider_settings(self: &Rc<Self>, provider: &str) {
@@ -377,6 +378,39 @@ impl App {
             .provider(provider)
             .and_then(account_group);
         self.section_dialog(&title, &section, Box::new(|_| true), intro, facts);
+        let app = self.clone();
+        glib::spawn_future_local(async move {
+            app.read_section(&section).await;
+            app.list_models(&section).await;
+        });
+    }
+
+    /// Lists the models a provider section's model row waits for, if it waits,
+    /// so the row offers them (M57 §3.6). A failure is said under the row,
+    /// whose field still takes any name and whose button lists them again.
+    /// Each opening of the page lists afresh.
+    pub async fn list_models(&self, section: &str) {
+        let provider = self
+            .settings_data
+            .borrow()
+            .rows
+            .get(section)
+            .and_then(unlisted_models)
+            .map(str::to_owned);
+        let Some(provider) = provider else {
+            return;
+        };
+        let target = provider.clone();
+        let answer = self.daemon.call(move |m| m.models_list(&target)).await;
+        let listing = answer.map(|page| page.models).map_err(|e| {
+            glib::g_warning!("fermix", "providers.models.list {provider} failed: {e:?}");
+            MODELS_UNLISTED.to_owned()
+        });
+        self.settings_data
+            .borrow_mut()
+            .listings
+            .insert(section.to_owned(), listing);
+        self.render();
     }
 }
 
