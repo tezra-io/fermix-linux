@@ -6,6 +6,7 @@ pub mod activity;
 pub mod capabilities;
 pub mod chat;
 pub mod companion;
+pub mod decoration;
 pub mod doctor;
 pub mod frame;
 pub mod greeting;

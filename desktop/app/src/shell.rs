@@ -1,6 +1,8 @@
 //! The window: a sidebar of pages over one stack, a toast overlay, and a header
 //! with at most two trailing buttons (design_final §1). Settings is pinned at
-//! the sidebar's foot; opening it swaps the sidebar for the pane list.
+//! the sidebar's foot; opening it swaps the sidebar for the pane list, whose
+//! header holds the way back. The window's buttons are the desktop's, with
+//! maximize added.
 //!
 //! In a wide window the pages' sidebar is a rail of icons, as on macOS, each
 //! named in its tooltip. Narrow, the sidebar is a page of its own and names
@@ -8,6 +10,7 @@
 
 use crate::settings::SettingsPage;
 use adw::prelude::*;
+use fermix_client::decoration::with_maximize;
 use fermix_client::settings::pane;
 use gtk::gio;
 use gtk::glib::{self, variant::ToVariant};
@@ -74,7 +77,8 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
     let sidebars = sidebar_stack(&sidebar, &pinned, &settings.sidebar);
-    let (sidebar_page, header, wordmark) = sidebar_navigation(&sidebars);
+    let (sidebar_page, header, wordmark, back) = sidebar_navigation(&sidebars);
+    follow_button_layout(vec![header.clone(), content_header]);
     let split = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
         .content(&content)
@@ -84,6 +88,7 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         sidebars,
         header,
         wordmark,
+        back,
         rail,
     };
     shape.follow_window();
@@ -112,16 +117,49 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
 
 /// The sidebar's page and its head. The wordmark starts on the left, where the
 /// rows start, as a name above a list. The title still names the page: for the
-/// back button when narrow, and in words.
+/// back button when narrow, and in words. Over the settings panes the head
+/// holds Back to Fermix, as an icon, where scrolling the list cannot hide it.
 fn sidebar_navigation(
     sidebars: &gtk::Stack,
-) -> (adw::NavigationPage, adw::HeaderBar, gtk::Picture) {
+) -> (
+    adw::NavigationPage,
+    adw::HeaderBar,
+    gtk::Picture,
+    gtk::Button,
+) {
     let wordmark = crate::wordmark::picture(WORDMARK_HEIGHT);
     wordmark.add_css_class("sidebar-wordmark");
+    let back = gtk::Button::builder()
+        .icon_name("go-previous-symbolic")
+        .tooltip_text("Back to Fermix")
+        .visible(false)
+        .build();
+    back.update_property(&[gtk::accessible::Property::Label("Back to Fermix")]);
+    back.set_action_name(Some("win.leave-settings"));
     let header = adw::HeaderBar::builder().show_title(false).build();
+    header.pack_start(&back);
     header.pack_start(&wordmark);
     let page = navigation_page("Fermix", &header, sidebars);
-    (page, header, wordmark)
+    (page, header, wordmark, back)
+}
+
+/// The window's buttons follow the desktop's layout, sides and order, with
+/// maximize added (`decoration::with_maximize`), and follow it again when the
+/// user changes it. Both headers take it: each shows the buttons on its own side.
+fn follow_button_layout(headers: Vec<adw::HeaderBar>) {
+    let settings = gtk::Settings::default().expect("the window's display has settings");
+    apply_button_layout(&settings, &headers);
+    settings.connect_gtk_decoration_layout_notify(move |settings| {
+        apply_button_layout(settings, &headers)
+    });
+}
+
+fn apply_button_layout(settings: &gtk::Settings, headers: &[adw::HeaderBar]) {
+    let desktop = settings.gtk_decoration_layout().unwrap_or_default();
+    let layout = with_maximize(&desktop);
+    for header in headers {
+        header.set_decoration_layout(Some(&layout));
+    }
 }
 
 /// The header's trailing actions and New conversation, all hidden until wanted.
@@ -237,6 +275,8 @@ struct SidebarShape {
     /// wordmark over the pages when narrow, and nothing over the rail.
     header: adw::HeaderBar,
     wordmark: gtk::Picture,
+    /// Back to Fermix, shown over the settings panes.
+    back: gtk::Button,
     rail: Vec<RailRow>,
 }
 
@@ -260,6 +300,7 @@ impl SidebarShape {
         self.split.set_min_sidebar_width(min);
         self.split.set_max_sidebar_width(max);
         self.header.set_show_title(!on_pages);
+        self.back.set_visible(!on_pages);
         self.wordmark.set_visible(on_pages && narrow);
         let (align, tooltip) = if narrow {
             (gtk::Align::Fill, false)

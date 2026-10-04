@@ -353,7 +353,9 @@ fn permissions_page() -> adw::PreferencesPage {
     page
 }
 
-/// The pane list: search, the way back, then each group's panes under its heading.
+/// The pane list: search, then each group's panes under its heading. The way
+/// back to Fermix is a button in the sidebar's header (shell), so it never
+/// scrolls away.
 fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox, gtk::SearchEntry) {
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search settings")
@@ -365,11 +367,6 @@ fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox,
     let list = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar"])
         .build();
-    // An action, not a pane: keyboard focus on it never selects it, so Tab
-    // through the list never leaves Settings.
-    let back = nav_row("back", "Back to Fermix", "go-previous-symbolic");
-    back.set_selectable(false);
-    list.append(&back);
     for (group, slugs) in GROUPS {
         list.append(&heading_row(group));
         for slug in slugs {
@@ -393,9 +390,6 @@ fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox,
 
 fn row_visible(row: &gtk::ListBoxRow, visible: &[&'static str]) -> bool {
     let name = row.widget_name();
-    if name == "back" {
-        return true;
-    }
     match name.strip_prefix("group:") {
         Some(group) => GROUPS
             .iter()
@@ -427,7 +421,7 @@ fn wire_sidebar(list: &gtk::ListBox, search: &gtk::SearchEntry) {
                 continue;
             };
             let name = row.widget_name();
-            if row.is_child_visible() && name != "back" && !name.starts_with("group:") {
+            if row.is_child_visible() && !name.starts_with("group:") {
                 row.activate();
                 return;
             }
@@ -437,12 +431,7 @@ fn wire_sidebar(list: &gtk::ListBox, search: &gtk::SearchEntry) {
 
 fn open_settings_row(row: &gtk::ListBoxRow) {
     let name = row.widget_name();
-    let result = if name == "back" {
-        row.activate_action("win.leave-settings", None)
-    } else {
-        row.activate_action("win.page", Some(&name.as_str().to_variant()))
-    };
-    if let Err(e) = result {
+    if let Err(e) = row.activate_action("win.page", Some(&name.as_str().to_variant())) {
         glib::g_warning!("fermix", "the settings list could not open {name}: {e}");
     }
 }
