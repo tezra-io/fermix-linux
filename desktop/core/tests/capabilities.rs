@@ -86,8 +86,15 @@ fn a_running_job_says_what_it_is_doing_in_words() {
     );
     assert_eq!(
         phase_words(Some("awaiting_signin")),
-        "Finish signing in to Google in the window that opened."
+        "Finish signing in to Google in the notetaker's browser window."
     );
     assert_eq!(phase_words(Some("brand_new_phase")), "Working…");
     assert_eq!(phase_words(None), "Working…");
+}
+
+#[test]
+fn the_sign_in_says_it_opens_the_notetakers_own_browser() {
+    use fermix_client::capabilities::MEETBOT_SIGN_IN_NOTE;
+    assert!(MEETBOT_SIGN_IN_NOTE.contains("the notetaker's own browser, separate from yours"));
+    assert!(MEETBOT_SIGN_IN_NOTE.contains("under that account's name"));
 }

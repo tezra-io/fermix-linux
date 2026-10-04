@@ -7,7 +7,9 @@ use crate::descriptor::{Drawn, SectionView};
 use crate::marks::{mark, Kind};
 use adw::prelude::*;
 use fermix_client::capabilities::{meetbot_state, phase_words, verdict, MeetbotState};
-use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
+use fermix_client::capabilities::{
+    ComputerPermissions, COMPUTER_SIDECAR, MEETBOT, MEETBOT_SIGN_IN_NOTE,
+};
 use fermix_client::ledger::MEETINGS_SLEEP_STATEMENT;
 use fermix_client::model::DetectRow;
 use fermix_client::settings::SectionRows;
@@ -171,6 +173,7 @@ impl MeetingsPane {
         let google = Redrawn::new(
             adw::PreferencesGroup::builder()
                 .title("Google Meet")
+                .description(glib::markup_escape_text(MEETBOT_SIGN_IN_NOTE))
                 .build(),
         );
         page.add(&google.group);

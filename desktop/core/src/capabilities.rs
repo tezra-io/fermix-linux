@@ -10,6 +10,13 @@ use serde_json::json;
 pub const MEETBOT: &str = "meetbot";
 pub const COMPUTER_SIDECAR: &str = "computer_use_sidecar";
 
+/// Above the notetaker's Google account. Its sign-in opens the helper's own Chromium on its own
+/// profile, never the user's browser, and it joins meetings as whoever signs in there
+/// (macOS says the same in settings.meetings.signInNotice).
+pub const MEETBOT_SIGN_IN_NOTE: &str = "Signing in opens the notetaker's own browser, separate \
+    from yours, so it starts signed out. Use the Google account the notetaker should join \
+    meetings as: it appears under that account's name, so an account made for it is best.";
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ComputerPermissions {
     pub installed: bool,
@@ -56,7 +63,7 @@ pub fn phase_words(phase: Option<&str>) -> &'static str {
     match phase {
         Some("sidecar_downloading") => "Downloading the helper…",
         Some("downloading") => "Downloading the notetaker's browser…",
-        Some("awaiting_signin") => "Finish signing in to Google in the window that opened.",
+        Some("awaiting_signin") => "Finish signing in to Google in the notetaker's browser window.",
         _ => "Working…",
     }
 }
