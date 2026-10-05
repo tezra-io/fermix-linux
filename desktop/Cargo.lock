@@ -145,6 +145,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "fermix-client",
+ "pkg-config",
 ]
 
 [[package]]

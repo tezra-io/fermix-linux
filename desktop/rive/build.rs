@@ -1,10 +1,15 @@
 //! Compiles the vendored Rive runtime (`vendor/`, pinned by `scripts/vendor_rive.sh`)
-//! and the shim that gives it a C interface, and links the system's EGL and libpng.
+//! and the shim that gives it a C interface, and links EGL and libpng.
 //!
 //! Four static libraries, linked in dependency order: the shim, the GL renderer
 //! with the PNG decoder, the runtime, then the GL loader. The vendored code is
 //! compiled as shipped, with its own warnings off; the shim is compiled with
 //! warnings as errors.
+//!
+//! EGL and libpng are found through pkg-config, as every gtk-rs -sys crate
+//! finds its library, so their headers and libraries need not be on the
+//! compiler's default paths. The package build's libpng is only under the
+//! private prefix `/usr/lib/fermix-desktop`.
 
 use std::path::{Path, PathBuf};
 
@@ -56,12 +61,28 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor");
     println!("cargo:rerun-if-changed=shim");
 
-    shim(&root, &runtime);
-    renderer(&root, &runtime);
+    // The shim calls EGL itself; only the PNG decoder includes png.h.
+    let egl = probe("egl");
+    let png = probe("libpng16");
+    shim(&root, &runtime, &egl.include_paths);
+    renderer(&root, &runtime, &png.include_paths);
     core(&runtime);
     glad(&runtime);
-    println!("cargo:rustc-link-lib=png");
-    println!("cargo:rustc-link-lib=EGL");
+}
+
+/// Finds `name` with pkg-config, which also tells cargo how to link it. The
+/// system's own directories are left out, as pkg-config does by default: the
+/// compiler and linker search them anyway. Named, `-L/usr/lib64` could come
+/// before the private prefix and the linker would take a host library over a
+/// private one (system-deps leaves it out for the gtk-rs -sys crates too),
+/// and `-isystem /usr/include` breaks the `#include_next <stdlib.h>` in
+/// libstdc++'s `<cstdlib>`.
+fn probe(name: &str) -> pkg_config::Library {
+    pkg_config::Config::new()
+        .print_system_libs(false)
+        .print_system_cflags(false)
+        .probe(name)
+        .unwrap_or_else(|e| panic!("pkg-config finds no {name}: {e}"))
 }
 
 /// A C++ build of the vendored code: C++17, optimised in every profile (the
@@ -80,7 +101,7 @@ fn vendored() -> cc::Build {
     build
 }
 
-fn shim(root: &Path, runtime: &Path) {
+fn shim(root: &Path, runtime: &Path, egl: &[PathBuf]) {
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -94,16 +115,20 @@ fn shim(root: &Path, runtime: &Path) {
         // headers only declare Texture; clang does not.
         .flag("-include")
         .flag("rive/renderer/texture.hpp");
-    // The runtime's headers as system headers: its own warnings are not the shim's.
-    for dir in [
+    // The runtime's headers, then EGL's, as system headers: their own warnings
+    // are not the shim's. Searched in this order, glad's EGL/eglplatform.h
+    // comes before the system's.
+    let runtime_dirs = [
         "include",
         "renderer/include",
         "renderer/glad",
         "renderer/glad/include",
-    ] {
+    ]
+    .map(|dir| runtime.join(dir));
+    for dir in runtime_dirs.iter().chain(egl) {
         build
             .flag("-isystem")
-            .flag(runtime.join(dir).to_str().expect("a UTF-8 path"));
+            .flag(dir.to_str().expect("a UTF-8 path"));
     }
     for (name, value) in DEFINES {
         build.define(name, value);
@@ -111,7 +136,7 @@ fn shim(root: &Path, runtime: &Path) {
     build.compile("fermix_rive_shim");
 }
 
-fn renderer(root: &Path, runtime: &Path) {
+fn renderer(root: &Path, runtime: &Path, png: &[PathBuf]) {
     let top = files_in(&runtime.join("renderer/src"), "cpp");
     let mut build = vendored();
     build
@@ -125,6 +150,7 @@ fn renderer(root: &Path, runtime: &Path) {
         .include(runtime.join("renderer/src"))
         .include(runtime.join("decoders/include"))
         .include(root.join("vendor"))
+        .includes(png)
         // The pet's body and pearl are PNGs inside the file. The GL renderer
         // decodes images only through these; without `RIVE_DECODERS` it drops
         // every image silently and draws the face alone.

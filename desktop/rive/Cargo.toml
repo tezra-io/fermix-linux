@@ -9,6 +9,7 @@ links = "rive"
 
 [build-dependencies]
 cc = { version = "1", features = ["parallel"] }
+pkg-config = "0.3"
 
 [dev-dependencies]
 fermix-client = { path = "../core" }
