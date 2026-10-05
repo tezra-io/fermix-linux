@@ -1,13 +1,16 @@
-//! The window run from the `fermix-desktop` package: how it knows, the one
-//! variable it sets while GLib reads its schemas, and what puts the
-//! environment back as the window found it.
+//! The window run from the `fermix-desktop` package: how it knows, what it
+//! sets while the private libraries read their configuration, and what puts
+//! the environment back as the window found it.
 
 use fermix_client::runtime_env::{
-    packaged_settings, restore_plan, runs_from_package, schema_dir, Environment, Restore,
-    PACKAGED_BIN, PRIVATE_ICONS, PRIVATE_SCHEMAS, SCHEMA_DIR,
+    gst_registry, packaged_settings, restore_plan, runs_from_package, schema_dir, Environment,
+    PrivatePaths, Restore, Setting, PACKAGED_BIN, PRIVATE_GST_PLUGINS, PRIVATE_ICONS,
+    PRIVATE_SCHEMAS, SCHEMA_DIR,
 };
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const HOME: &str = "/home/someone";
 
 fn environment(pairs: &[(&str, &str)]) -> Environment {
     pairs
@@ -16,20 +19,37 @@ fn environment(pairs: &[(&str, &str)]) -> Environment {
         .collect()
 }
 
-fn pair(name: &str, value: &str) -> (OsString, OsString) {
-    (name.into(), value.into())
+fn set(name: &str, value: &str) -> Setting {
+    (name.into(), Some(value.into()))
+}
+
+fn unset(name: &str) -> Setting {
+    (name.into(), None)
 }
 
 fn private() -> &'static Path {
     Path::new(PRIVATE_SCHEMAS)
 }
 
-/// The environment after the window set `set` over `entry` and then applied
+fn paths() -> PrivatePaths {
+    PrivatePaths {
+        schemas: PRIVATE_SCHEMAS.into(),
+        gst_plugins: PRIVATE_GST_PLUGINS.into(),
+        gst_registry: "/home/someone/.cache/fermix-desktop/gstreamer-1.0/registry.bin".into(),
+    }
+}
+
+/// The environment after the window applied `settings` over `entry` and then
 /// the plan, as `main` does.
-fn after_restore(entry: &Environment, set: &[(OsString, OsString)]) -> Environment {
+fn after_restore(entry: &Environment, settings: &[Setting]) -> Environment {
     let mut now = entry.clone();
-    now.extend(set.iter().cloned());
-    for change in restore_plan(entry, set) {
+    for (name, value) in settings {
+        match value {
+            Some(value) => now.insert(name.clone(), value.clone()),
+            None => now.remove(name),
+        };
+    }
+    for change in restore_plan(entry, settings) {
         match change {
             Restore::Set(name, value) => now.insert(name, value),
             Restore::Unset(name) => now.remove(&name),
@@ -95,23 +115,55 @@ fn a_relative_schema_directory_is_refused() {
 }
 
 #[test]
-fn the_schema_directory_is_the_only_variable_the_package_sets() {
-    let entry = environment(&[
-        (SCHEMA_DIR, "/opt/schemas"),
-        ("XDG_DATA_DIRS", "/usr/share"),
-        ("PATH", "/usr/bin"),
-    ]);
+fn the_gstreamer_registry_is_the_windows_own_under_xdg_cache_home() {
+    let file = format!("registry.{}.bin", std::env::consts::ARCH);
     assert_eq!(
-        packaged_settings(&entry, private()),
-        vec![pair(
-            SCHEMA_DIR,
-            "/usr/lib/fermix-desktop/share/glib-2.0/schemas:/opt/schemas"
-        )]
+        gst_registry(Some(OsStr::new("/srv/cache")), Path::new(HOME)),
+        PathBuf::from("/srv/cache/fermix-desktop/gstreamer-1.0").join(&file)
     );
-    let bare = environment(&[("PATH", "/usr/bin")]);
+    let fallback = PathBuf::from("/home/someone/.cache/fermix-desktop/gstreamer-1.0").join(&file);
+    assert_eq!(gst_registry(None, Path::new(HOME)), fallback);
+    // The base directory specification treats an empty or relative value as unset.
     assert_eq!(
-        packaged_settings(&bare, private()),
-        vec![pair(SCHEMA_DIR, PRIVATE_SCHEMAS)]
+        gst_registry(Some(OsStr::new("")), Path::new(HOME)),
+        fallback
+    );
+    assert_eq!(
+        gst_registry(Some(OsStr::new("cache")), Path::new(HOME)),
+        fallback
+    );
+}
+
+#[test]
+#[should_panic(expected = "absolute")]
+fn a_relative_home_for_the_registry_is_refused() {
+    gst_registry(None, Path::new("someone"));
+}
+
+#[test]
+fn the_package_points_each_library_at_the_private_runtime_alone() {
+    let entry = environment(&[(SCHEMA_DIR, "/opt/schemas"), ("PATH", "/usr/bin")]);
+    assert_eq!(
+        packaged_settings(&entry, &paths()),
+        vec![
+            set(
+                SCHEMA_DIR,
+                "/usr/lib/fermix-desktop/share/glib-2.0/schemas:/opt/schemas"
+            ),
+            set("GIO_EXTRA_MODULES", ""),
+            unset("GIO_MODULE_DIR"),
+            unset("GDK_PIXBUF_MODULE_FILE"),
+            set(
+                "GST_REGISTRY_1_0",
+                "/home/someone/.cache/fermix-desktop/gstreamer-1.0/registry.bin"
+            ),
+            set(
+                "GST_PLUGIN_SYSTEM_PATH_1_0",
+                "/usr/lib/fermix-desktop/lib/gstreamer-1.0"
+            ),
+            set("GST_PLUGIN_PATH_1_0", ""),
+            set("GST_PLUGIN_SCANNER_1_0", ""),
+        ]
     );
 }
 
@@ -119,48 +171,80 @@ fn the_schema_directory_is_the_only_variable_the_package_sets() {
 fn a_window_that_changed_nothing_restores_nothing() {
     let entry = environment(&[(SCHEMA_DIR, "/opt/schemas"), ("PATH", "/usr/bin")]);
     assert_eq!(restore_plan(&entry, &[]), vec![]);
-    // Setting a variable to the value it had changes nothing either.
-    assert_eq!(restore_plan(&entry, &[pair("PATH", "/usr/bin")]), vec![]);
+    // A value the variable already had, or an absence it already had, changes nothing.
+    assert_eq!(restore_plan(&entry, &[set("PATH", "/usr/bin")]), vec![]);
+    assert_eq!(restore_plan(&entry, &[unset("GIO_MODULE_DIR")]), vec![]);
 }
 
 #[test]
 fn a_changed_variable_goes_back_to_its_entry_value() {
     let entry = environment(&[(SCHEMA_DIR, "/opt/schemas"), ("PATH", "/usr/bin")]);
-    let set = packaged_settings(&entry, private());
+    let settings = [set(SCHEMA_DIR, "/private:/opt/schemas")];
     assert_eq!(
-        restore_plan(&entry, &set),
+        restore_plan(&entry, &settings),
         vec![Restore::Set(SCHEMA_DIR.into(), "/opt/schemas".into())]
     );
-    assert_eq!(after_restore(&entry, &set), entry);
+    assert_eq!(after_restore(&entry, &settings), entry);
 }
 
 #[test]
 fn a_variable_absent_at_entry_is_unset_rather_than_emptied() {
     let entry = environment(&[("PATH", "/usr/bin")]);
-    let set = packaged_settings(&entry, private());
+    let settings = [set("GIO_EXTRA_MODULES", "")];
     assert_eq!(
-        restore_plan(&entry, &set),
-        vec![Restore::Unset(SCHEMA_DIR.into())]
+        restore_plan(&entry, &settings),
+        vec![Restore::Unset("GIO_EXTRA_MODULES".into())]
     );
-    assert_eq!(after_restore(&entry, &set), entry);
+    assert_eq!(after_restore(&entry, &settings), entry);
+}
+
+#[test]
+fn a_variable_unset_for_the_start_comes_back_with_its_entry_value() {
+    let entry = environment(&[("GIO_MODULE_DIR", "/snap/gio/modules")]);
+    let settings = [unset("GIO_MODULE_DIR")];
+    assert_eq!(
+        restore_plan(&entry, &settings),
+        vec![Restore::Set(
+            "GIO_MODULE_DIR".into(),
+            "/snap/gio/modules".into()
+        )]
+    );
+    assert_eq!(after_restore(&entry, &settings), entry);
 }
 
 #[test]
 fn an_empty_entry_value_comes_back_empty() {
     let entry = environment(&[(SCHEMA_DIR, ""), ("PATH", "/usr/bin")]);
-    let set = packaged_settings(&entry, private());
-    assert_eq!(set, vec![pair(SCHEMA_DIR, PRIVATE_SCHEMAS)]);
-    assert_eq!(
-        restore_plan(&entry, &set),
-        vec![Restore::Set(SCHEMA_DIR.into(), "".into())]
-    );
-    assert_eq!(after_restore(&entry, &set), entry);
+    let settings = packaged_settings(&entry, &paths());
+    assert_eq!(settings[0], set(SCHEMA_DIR, PRIVATE_SCHEMAS));
+    assert!(restore_plan(&entry, &settings).contains(&Restore::Set(SCHEMA_DIR.into(), "".into())));
+    assert_eq!(after_restore(&entry, &settings), entry);
+}
+
+#[test]
+fn whatever_the_host_set_comes_back_after_the_start() {
+    let host = environment(&[
+        (SCHEMA_DIR, "/snap/schemas"),
+        ("GIO_EXTRA_MODULES", "/snap/gio"),
+        ("GIO_MODULE_DIR", "/snap/gio/modules"),
+        ("GDK_PIXBUF_MODULE_FILE", "/snap/loaders.cache"),
+        ("GST_REGISTRY_1_0", "/tmp/registry.bin"),
+        ("GST_PLUGIN_SYSTEM_PATH_1_0", "/usr/lib/gstreamer-1.0"),
+        ("GST_PLUGIN_PATH_1_0", "/home/someone/plugins"),
+        ("GST_PLUGIN_SCANNER_1_0", "/usr/libexec/gst-plugin-scanner"),
+        ("GST_PLUGIN_PATH", "/opt/plugins"),
+    ]);
+    let bare = environment(&[("PATH", "/usr/bin")]);
+    for entry in [host, bare] {
+        let settings = packaged_settings(&entry, &paths());
+        assert_eq!(after_restore(&entry, &settings), entry);
+    }
 }
 
 #[test]
 #[should_panic(expected = "not a variable name")]
 fn a_name_no_environment_can_hold_is_refused() {
-    restore_plan(&Environment::new(), &[pair("A=B", "c")]);
+    restore_plan(&Environment::new(), &[set("A=B", "c")]);
 }
 
 #[test]
@@ -171,5 +255,9 @@ fn the_private_paths_are_the_ones_the_package_installs() {
         "/usr/lib/fermix-desktop/share/glib-2.0/schemas"
     );
     assert_eq!(PRIVATE_ICONS, "/usr/lib/fermix-desktop/share/icons");
+    assert_eq!(
+        PRIVATE_GST_PLUGINS,
+        "/usr/lib/fermix-desktop/lib/gstreamer-1.0"
+    );
     assert_eq!(SCHEMA_DIR, "GSETTINGS_SCHEMA_DIR");
 }
