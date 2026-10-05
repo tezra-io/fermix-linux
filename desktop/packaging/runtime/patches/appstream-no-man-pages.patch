@@ -1,0 +1,23 @@
+Do not build AppStream's man pages.
+
+AppStream 1.0.6 includes docs/ unconditionally, and docs/meson.build runs
+`xsltproc --nonet` against the Docbook man page stylesheet and calls error() if
+that fails. The pages document appstreamcli, which the runtime does not ship;
+libadwaita links libappstream for metadata parsing only. Satisfying the check
+would put a documentation toolchain into the build image for output that is
+pruned from the shipped tree.
+
+Dropping the subdir leaves data/, which still uses itstool, and every library
+target untouched. Nothing to send upstream: it is a local choice not to build a
+documentation target. Drop it when AppStream gains an option for the man pages.
+
+--- a/meson.build
++++ b/meson.build
+@@ -226,7 +226,6 @@
+ subdir('po/')
+ subdir('data/')
+ subdir('contrib/')
+-subdir('docs/')
+ subdir('tests/')
+ if get_option('qt')
+     subdir('qt/')
