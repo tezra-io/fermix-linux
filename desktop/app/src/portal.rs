@@ -1,6 +1,7 @@
-//! "Open at login" through the XDG Background portal (spec §6.6). The portal
-//! writes or deletes the autostart entry itself; it has no getter, so the last
-//! granted answer is kept in this app's state directory.
+//! "Open at login" through the XDG Background portal (spec §6.6), which serves
+//! the window inside the Flatpak. The portal writes or deletes the autostart
+//! entry itself; it has no getter, so the last granted answer is kept in this
+//! app's state directory.
 
 use futures_channel::oneshot;
 use gtk::gio;

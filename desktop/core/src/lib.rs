@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod activity;
+pub mod autostart;
 pub mod capabilities;
 pub mod chat;
 pub mod companion;
@@ -21,6 +22,7 @@ pub mod overview;
 pub mod plugins;
 pub mod providers;
 pub mod realtime;
+pub mod runtime_env;
 pub mod secrets;
 pub mod service;
 pub mod settings;

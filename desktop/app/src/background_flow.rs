@@ -1,15 +1,18 @@
 //! Home's Background switches. "Run in the background" registers or
 //! unregisters the unit with systemd (spec §6.3); "Open at login" asks the
-//! desktop through its portal (§6.6). Neither ever changes the other.
+//! desktop through its portal inside the Flatpak (§6.6), and outside a sandbox
+//! keeps the autostart entry itself. Neither ever changes the other.
 
 use crate::app::App;
 use crate::dialogs::confirm;
 use crate::portal::{remember_login, request_background};
 use crate::systemd::{disable_service, enable_service, read_service};
+use fermix_client::autostart::{entry_path, read_entry, remove_entry, write_entry};
 use fermix_client::service::{
     background_switch, disable_warning, login_answer, LoginAnswer, ServiceRead,
 };
 use gtk::glib;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -25,10 +28,42 @@ fn binding_exists() -> bool {
         .exists()
 }
 
+/// Who keeps the "Open at login" entry. The Background portal serves sandboxed
+/// apps; outside a sandbox there is none to ask, so the window writes the
+/// entry itself, and the file is the truth.
+pub enum LoginEntry {
+    Portal,
+    File(PathBuf),
+}
+
+impl LoginEntry {
+    /// Decided once, at startup. `/.flatpak-info` exists only in a Flatpak sandbox.
+    pub fn detect() -> LoginEntry {
+        if Path::new("/.flatpak-info").exists() {
+            return LoginEntry::Portal;
+        }
+        let config_home = std::env::var_os("XDG_CONFIG_HOME");
+        LoginEntry::File(entry_path(config_home.as_deref(), &glib::home_dir()))
+    }
+}
+
+/// Whether the entry opens Fermix at login. One that cannot be read is logged
+/// and drawn off, so the switch offers to write it again.
+fn read_login_entry(path: &Path) -> bool {
+    read_entry(path).unwrap_or_else(|e| {
+        glib::g_warning!(
+            "fermix",
+            "the autostart entry {} could not be read: {e}",
+            path.display()
+        );
+        false
+    })
+}
+
 impl App {
-    /// Re-reads what systemd and logind say, and whether a binding exists. A
-    /// daemon that answered once proves one, and disabling keeps it, so that
-    /// proof outlives the daemon.
+    /// Re-reads what systemd and logind say, whether a binding exists, and
+    /// outside a sandbox the autostart entry. A daemon that answered once
+    /// proves a binding, and disabling keeps it, so that proof outlives the daemon.
     pub async fn read_service(&self) {
         let read = read_service().await;
         let file = binding_exists();
@@ -36,6 +71,10 @@ impl App {
         let answered = state.snapshot().is_some();
         state.background.service = Some(read);
         state.background.binding |= file || answered;
+        // Anything may change a file; the portal's answer can only be remembered.
+        if let LoginEntry::File(path) = &self.login {
+            state.background.opens_at_login = read_login_entry(path);
+        }
     }
 
     /// The switch was moved to `on`. A move that only mirrors what is drawn, or
@@ -151,18 +190,58 @@ impl App {
         }
         self.state.borrow_mut().background.login_change = Some(on);
         self.render();
-        self.ask_desktop(on).await;
+        match &self.login {
+            LoginEntry::Portal => self.ask_desktop(on).await,
+            LoginEntry::File(path) => self.keep_entry(path, on),
+        }
         self.state.borrow_mut().background.login_change = None;
         self.render();
     }
 
-    /// At startup: the portal has no getter, so a remembered yes is asked again.
-    /// Asking again is harmless and repairs an entry an update left stale.
-    pub async fn reassert_open_at_login(&self) {
-        if self.state.borrow().background.opens_at_login {
-            self.ask_desktop(true).await;
-            self.render();
+    /// Whether Fermix opens at login, when the window starts: the portal's
+    /// remembered answer, or the entry itself.
+    pub fn read_open_at_login(&self) -> bool {
+        match &self.login {
+            LoginEntry::Portal => crate::portal::opens_at_login(),
+            LoginEntry::File(path) => read_login_entry(path),
         }
+    }
+
+    /// At startup: the portal has no getter, so a remembered yes is asked again,
+    /// and an entry the window keeps is written again. Either repairs an entry
+    /// an update left stale, such as the Flatpak's after a move to the package.
+    pub async fn reassert_open_at_login(&self) {
+        if !self.state.borrow().background.opens_at_login {
+            return;
+        }
+        match &self.login {
+            LoginEntry::Portal => self.ask_desktop(true).await,
+            LoginEntry::File(path) => self.keep_entry(path, true),
+        }
+        self.render();
+    }
+
+    /// Outside a sandbox: writes the entry to open at login, or removes it, then
+    /// reads back what the file says now.
+    fn keep_entry(&self, path: &Path, on: bool) {
+        let changed = if on {
+            write_entry(path)
+        } else {
+            remove_entry(path)
+        };
+        if let Err(e) = changed {
+            glib::g_warning!(
+                "fermix",
+                "the autostart entry {} was not changed: {e}",
+                path.display()
+            );
+            self.shell.toast(if on {
+                "Fermix could not turn on Open at login."
+            } else {
+                "Fermix could not turn off Open at login."
+            });
+        }
+        self.state.borrow_mut().background.opens_at_login = read_login_entry(path);
     }
 
     async fn ask_desktop(&self, on: bool) {

@@ -3,6 +3,7 @@
 
 use crate::assistant::Assistant;
 use crate::audio::Endpoints;
+use crate::background_flow::LoginEntry;
 use crate::chat::ChatPage;
 use crate::companion::Companion;
 use crate::conversation::Conversation;
@@ -71,6 +72,8 @@ pub struct App {
     pub application: adw::Application,
     /// The tray icon, once it is on the session bus.
     pub tray: RefCell<Option<Tray>>,
+    /// Who keeps the "Open at login" entry.
+    pub login: LoginEntry,
 }
 
 /// `hidden`: started at login, so the window waits in the tray (see `start_tray`).
@@ -140,6 +143,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         providers,
         application: application.clone(),
         tray: RefCell::default(),
+        login: LoginEntry::detect(),
     })
 }
 
@@ -154,7 +158,8 @@ fn audio_endpoints() -> Endpoints {
 
 /// Wires the controller in, shows the window unless `hidden`, and makes the first read.
 fn start(app: &Rc<App>, hidden: bool) {
-    app.state.borrow_mut().background.opens_at_login = crate::portal::opens_at_login();
+    let opens_at_login = app.read_open_at_login();
+    app.state.borrow_mut().background.opens_at_login = opens_at_login;
     install_actions(app);
     follow_visible_page(app);
     keep_alive_with_window(app);

@@ -27,6 +27,7 @@ mod mascot;
 mod microphones;
 mod portal;
 mod providers;
+mod runtime_env;
 mod secret_save;
 mod service;
 mod settings;
@@ -43,7 +44,7 @@ mod voice_flow;
 mod wordmark;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use std::cell::Cell;
 use std::ops::ControlFlow;
 use std::rc::Rc;
@@ -51,6 +52,8 @@ use std::rc::Rc;
 const APP_ID: &str = "io.tezra.Fermix";
 
 fn main() -> glib::ExitCode {
+    // First, before GTK and before any thread exists (see runtime_env).
+    let packaged = runtime_env::start();
     gio::resources_register_include!("fermix.gresource")
         .expect("the app's own resource bundle is built in");
     let application = adw::Application::builder().application_id(APP_ID).build();
@@ -70,6 +73,12 @@ fn main() -> glib::ExitCode {
         asked.set(options.contains("background"));
         ControlFlow::Continue(())
     });
+    if packaged {
+        application.connect_startup(|_| {
+            let display = gdk::Display::default().expect("GTK has its display once started");
+            runtime_env::add_bundled_icons(&display);
+        });
+    }
     application.connect_activate(move |application| app::activate(application, hidden.take()));
     install_app_actions(&application);
     application.run()
