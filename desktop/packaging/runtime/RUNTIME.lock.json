@@ -48,6 +48,30 @@
     "liblzma.so.5",
     "libpulse.so.0"
   ],
+  "application_packages": [
+    "gtk4",
+    "libadwaita-1",
+    "glib-2.0",
+    "gobject-2.0",
+    "gio-2.0",
+    "cairo",
+    "pango",
+    "gdk-pixbuf-2.0",
+    "graphene-gobject-1.0",
+    "gstreamer-1.0",
+    "gstreamer-base-1.0",
+    "gstreamer-app-1.0",
+    "gstreamer-audio-1.0"
+  ],
+  "license_text_source": {
+    "name": "license-list-data",
+    "version": "3.29.0",
+    "url": "https://github.com/spdx/license-list-data/archive/refs/tags/v3.29.0.tar.gz",
+    "sha256": "d69195f5b11d4b84ffccd12d943e90732694d00fea42dc81fcc66f79d6cc8104",
+    "archive": "license-list-data-3.29.0.tar.gz",
+    "source_dir": "license-list-data-3.29.0",
+    "text_dir": "text"
+  },
   "components": [
     {
       "name": "libffi",
@@ -76,6 +100,9 @@
       "source_dir": "pcre2-10.48",
       "build_system": "autotools",
       "license": "BSD-3-Clause WITH PCRE2-exception",
+      "extra_license_files": [
+        "deps/sljit/LICENSE"
+      ],
       "options": [
         "--disable-static",
         "--enable-jit",
@@ -129,6 +156,9 @@
       "source_dir": "libjpeg-turbo-3.2.0",
       "build_system": "cmake",
       "license": "IJG AND BSD-3-Clause AND Zlib",
+      "extra_license_files": [
+        "README.ijg"
+      ],
       "options": [
         "-DENABLE_SHARED=ON",
         "-DENABLE_STATIC=OFF",
@@ -173,6 +203,9 @@
       "source_dir": "libwebp-1.6.0",
       "build_system": "autotools",
       "license": "BSD-3-Clause",
+      "extra_license_files": [
+        "PATENTS"
+      ],
       "options": [
         "--disable-static",
         "--enable-libwebpdemux",
@@ -197,6 +230,10 @@
       "source_dir": "freetype-2.13.3",
       "build_system": "meson",
       "license": "FTL OR GPL-2.0-or-later",
+      "extra_license_files": [
+        "docs/FTL.TXT",
+        "docs/GPLv2.TXT"
+      ],
       "options": [
         "-Dharfbuzz=disabled",
         "-Dbrotli=disabled",
@@ -277,7 +314,7 @@
       "archive": "glib-2.88.3.tar.xz",
       "source_dir": "glib-2.88.3",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND (LGPL-2.1-or-later OR AFL-2.0)",
       "options": [
         "-Dselinux=disabled",
         "-Dlibmount=disabled",
@@ -308,6 +345,9 @@
       "source_dir": "harfbuzz-14.4.0",
       "build_system": "meson",
       "license": "MIT-Modern-Variant",
+      "extra_license_files": [
+        "src/ms-use/COPYING"
+      ],
       "options": [
         "-Dglib=enabled",
         "-Dgobject=disabled",
@@ -424,7 +464,7 @@
         "-Dpng=enabled",
         "-Djpeg=enabled",
         "-Dtiff=disabled",
-        "-Dgif=disabled",
+        "-Dgif=enabled",
         "-Dothers=disabled",
         "-Dbuiltin_loaders=none",
         "-Drelocatable=false",
@@ -481,7 +521,31 @@
       "source_dir": "librsvg-2.62.4",
       "build_system": "meson",
       "license": "LGPL-2.1-or-later",
-      "cargo_lock": "Cargo.lock",
+      "cargo": {
+        "lock": "Cargo.lock",
+        "packages": {
+          "librsvg-c": [
+            "pixbuf"
+          ],
+          "pixbufloader-svg": []
+        },
+        "standard_license_texts": {
+          "cssparser-color 0.3.0": [
+            "MPL-2.0"
+          ],
+          "fxhash 0.2.1": [
+            "Apache-2.0",
+            "MIT"
+          ],
+          "mac 0.1.1": [
+            "Apache-2.0",
+            "MIT"
+          ],
+          "selectors 0.31.0": [
+            "MPL-2.0"
+          ]
+        }
+      },
       "options": [
         "-Dpixbuf=enabled",
         "-Dpixbuf-loader=enabled",
@@ -609,6 +673,10 @@
       "source_dir": "gtk-4.22.5",
       "build_system": "meson",
       "license": "LGPL-2.1-or-later",
+      "extra_license_files": [
+        "gtk/roaring/COPYING",
+        "gtk/timsort/COPYING"
+      ],
       "options": [
         "-Dx11-backend=true",
         "-Dwayland-backend=true",
@@ -717,6 +785,15 @@
       "source_dir": "webrtc-audio-processing-2.1",
       "build_system": "meson",
       "license": "BSD-3-Clause",
+      "extra_license_files": [
+        "webrtc/LICENSE",
+        "webrtc/PATENTS",
+        "webrtc/common_audio/third_party/ooura/LICENSE",
+        "webrtc/common_audio/third_party/spl_sqrt_floor/LICENSE",
+        "webrtc/modules/third_party/fft/LICENSE",
+        "webrtc/third_party/pffft/LICENSE",
+        "webrtc/third_party/rnnoise/COPYING"
+      ],
       "options": [],
       "patches": []
     },

@@ -27,12 +27,28 @@ REQUIRED = {
 }
 # Components the runtime decided against; see README.md.
 REFUSED = {"glycin", "orc"}
+# Components built from and never shipped: their licence files are listed, and
+# marked so.
+BUILD_ONLY = {"wayland-protocols"}
 
 HOST_REQUIRED = {
     "libc.so.6", "libm.so.6", "libgcc_s.so.1", "libstdc++.so.6",
     "libGL.so.1", "libEGL.so.1", "libGLESv2.so.2", "libdbus-1.so.3",
     "libX11.so.6", "libxkbcommon.so.0", "libz.so.1", "libyaml-0.so.2",
     "libcurl.so.4", "libpulse.so.0",
+}
+# The pkg-config package each -sys crate in desktop/Cargo.lock links, or None
+# for one that links no library of the runtime. The window links exactly these,
+# so they are the roots the shipped tree is pruned from.
+SYS_CRATES = {
+    "cairo-sys-rs": "cairo", "gdk-pixbuf-sys": "gdk-pixbuf-2.0", "gdk4-sys": "gtk4",
+    "gio-sys": "gio-2.0", "glib-sys": "glib-2.0", "gobject-sys": "gobject-2.0",
+    "graphene-sys": "graphene-gobject-1.0", "gsk4-sys": "gtk4",
+    "gstreamer-app-sys": "gstreamer-app-1.0",
+    "gstreamer-audio-sys": "gstreamer-audio-1.0",
+    "gstreamer-base-sys": "gstreamer-base-1.0", "gstreamer-sys": "gstreamer-1.0",
+    "gtk4-sys": "gtk4", "libadwaita-sys": "libadwaita-1", "pango-sys": "pango",
+    "linux-raw-sys": None, "windows-sys": None,
 }
 # Private libraries, and host ones whose SONAME differs across the matrix or
 # that GLib is built without.
@@ -69,9 +85,9 @@ def check_header(lock, dockerfile):
 
 def check_component(component):
     name = component["name"]
-    for field in FIELDS:
-        if field not in component:
-            fail("%s has no %s" % (name, field))
+    missing = [field for field in FIELDS if field not in component]
+    if missing:
+        fail("%s has no %s" % (name, ", ".join(missing)))
     # The coordinate the vulnerability watch queries has to name what is built.
     if component["purl"] != "pkg:generic/%s@%s" % (name, component["version"]):
         fail("%s has a purl that does not match its name and version" % name)
@@ -87,12 +103,47 @@ def check_component(component):
         fail("%s: the archive is not a tarball" % name)
     if not all(isinstance(component[field], list) for field in ("options", "patches")):
         fail("%s: options and patches are lists" % name)
-    # The one file inside the tarball that pins the crates the build fetches.
-    cargo_lock = component.get("cargo_lock")
-    if cargo_lock is not None and (not isinstance(cargo_lock, str)
-                                   or not cargo_lock.endswith("Cargo.lock")
-                                   or cargo_lock.startswith("/") or ".." in cargo_lock):
-        fail("%s: cargo_lock is not a Cargo.lock inside the source tree" % name)
+    check_licence_fields(component)
+    if "cargo" in component:
+        check_cargo(name, component["cargo"])
+
+
+def check_licence_fields(component):
+    """What runtime-licenses.json reads from a component beyond its licence."""
+    name = component["name"]
+    if component.get("build_only", True) is not True:
+        fail("%s: build_only is true or absent" % name)
+    for path in component.get("extra_license_files", []):
+        if not is_inner_path(path):
+            fail("%s: the licence file %r is not a path inside its source tree" % (name, path))
+
+
+def is_inner_path(path):
+    return (isinstance(path, str) and path != "" and not path.startswith("/")
+            and ".." not in path.split("/"))
+
+
+def check_cargo(name, cargo):
+    """The Cargo.lock that pins a Rust component's crates, and the packages and
+    features its build compiles, which name the crates compiled in."""
+    lock = cargo.get("lock") if isinstance(cargo, dict) else None
+    if (not isinstance(lock, str) or not lock.endswith("Cargo.lock")
+            or lock.startswith("/") or ".." in lock):
+        fail("%s: cargo.lock is not a Cargo.lock inside the source tree" % name)
+    packages = cargo.get("packages")
+    if not isinstance(packages, dict) or not packages:
+        fail("%s: cargo.packages names no package" % name)
+    for package, features in packages.items():
+        if not (isinstance(features, list)
+                and all(isinstance(f, str) for f in features)):
+            fail("%s: the features of %s are not a list of names" % (name, package))
+    # For a crate whose package carries no licence file: the SPDX ids of the
+    # standard texts that stand for it, from license_text_source.
+    for crate, ids in cargo.get("standard_license_texts", {}).items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+ [0-9A-Za-z.+-]+", crate):
+            fail("%s: standard_license_texts key %r is not 'name version'" % (name, crate))
+        if not ids or not all(re.fullmatch(r"[A-Za-z0-9.+-]+", i or "") for i in ids):
+            fail("%s: the standard texts of %s are not SPDX ids" % (name, crate))
 
 
 def by_name(lock):
@@ -109,6 +160,9 @@ def check_set(lock):
     present = REFUSED & set(names)
     if present:
         fail("components the runtime decided against: %s" % ", ".join(sorted(present)))
+    build_only = {c["name"] for c in lock["components"] if c.get("build_only")}
+    if build_only != BUILD_ONLY:
+        fail("the build-only components are %s, not %s" % (sorted(build_only), sorted(BUILD_ONLY)))
     # The lock order is the build order: each needs what comes before it.
     order = names.index
     for before, after in (
@@ -147,15 +201,17 @@ def check_flags(lock):
                              "-Dvulkan=disabled", "-Dmedia-gstreamer=disabled",
                              "-Dprint-cups=disabled", "-Dintrospection=disabled",
                              "-Daccesskit=disabled"])
-    # PNG, JPEG and WebP through gdk-pixbuf, and nothing it would hand to glycin.
+    # PNG, JPEG, GIF and WebP through gdk-pixbuf, and nothing it would hand to
+    # glycin. Chats send GIFs.
     require_flags(c["gdk-pixbuf"], ["-Dpng=enabled", "-Djpeg=enabled",
-                                    "-Dtiff=disabled", "-Dgif=disabled",
+                                    "-Dgif=enabled", "-Dtiff=disabled",
                                     "-Dothers=disabled", "-Dbuiltin_loaders=none"])
     require_flags(c["librsvg"], ["-Dpixbuf-loader=enabled", "-Drsvg-convert=disabled",
                                  "-Davif=disabled"])
-    # librsvg is Rust: without its Cargo.lock named, its crates would not be vendored.
-    if c["librsvg"].get("cargo_lock") != "Cargo.lock":
-        fail("librsvg does not name the Cargo.lock that pins its crates")
+    check_librsvg_cargo(c["librsvg"])
+    # FreeType's LICENSE.TXT only points at the two licences it offers.
+    if c["freetype"].get("extra_license_files") != ["docs/FTL.TXT", "docs/GPLv2.TXT"]:
+        fail("freetype does not name docs/FTL.TXT and docs/GPLv2.TXT as its licence files")
     require_flags(c["libtiff"], ["--disable-cxx"])
     require_flags(c["harfbuzz"], ["-Dsubset=enabled", "-Dwith_libstdcxx=false"])
     require_flags(c["abseil-cpp"], ["-DBUILD_SHARED_LIBS=OFF",
@@ -176,6 +232,60 @@ def check_flags(lock):
             fail("%s enables more than the window needs: %s" % (name, " ".join(extra)))
 
 
+def check_librsvg_cargo(component):
+    """librsvg's meson options decide which Rust packages it builds and with
+    which features; the lock's cargo entry has to say the same, or the crate
+    list written from it names crates that were not compiled in, or misses some."""
+    cargo = component.get("cargo")
+    if not cargo or cargo.get("lock") != "Cargo.lock":
+        fail("librsvg does not name the Cargo.lock that pins its crates")
+    options = component["options"]
+    expected = {"librsvg-c": ["pixbuf"] if "-Dpixbuf=enabled" in options else []}
+    if "-Dpixbuf-loader=enabled" in options:
+        expected["pixbufloader-svg"] = []
+    if "-Davif=enabled" in options:
+        expected["librsvg-c"].append("avif")
+    if cargo["packages"] != expected:
+        fail("librsvg's cargo packages %s are not what its options build: %s"
+             % (cargo["packages"], expected))
+
+
+def check_application(lock, cargo_lock_text):
+    """application_packages is what the window's -sys crates link."""
+    names = set(re.findall(r'^name = "([^"]+-sys(?:-rs)?)"$', cargo_lock_text, re.M))
+    unknown = names - set(SYS_CRATES)
+    if unknown:
+        fail("desktop/Cargo.lock has %s, which SYS_CRATES does not map"
+             % ", ".join(sorted(unknown)))
+    linked = {SYS_CRATES[n] for n in names} - {None}
+    declared = lock.get("application_packages")
+    if not isinstance(declared, list) or len(declared) != len(set(declared)):
+        fail("application_packages is not a list of distinct names")
+    if set(declared) != linked:
+        fail("application_packages %s is not what the window links: %s"
+             % (sorted(declared), sorted(linked)))
+
+
+def check_text_source(lock):
+    """SPDX's license-list-data, pinned like a component and never built."""
+    source = lock.get("license_text_source")
+    if not isinstance(source, dict):
+        fail("there is no license_text_source")
+    for field in ("name", "version", "url", "sha256", "archive", "source_dir", "text_dir"):
+        if not isinstance(source.get(field), str) or not source[field]:
+            fail("license_text_source has no %s" % field)
+    if source["name"] != "license-list-data" or not source["url"].startswith(
+            "https://github.com/spdx/license-list-data/"):
+        fail("license_text_source is not SPDX's license-list-data")
+    if source["version"] not in source["url"] or not re.fullmatch(r"[0-9a-f]{64}",
+                                                                  source["sha256"]):
+        fail("license_text_source is not pinned by version and sha256")
+    if not source["archive"].endswith(".tar.gz") or not is_inner_path(source["text_dir"]):
+        fail("license_text_source is not a tarball with a text directory inside it")
+    if source["name"] in {c["name"] for c in lock["components"]}:
+        fail("license_text_source is listed as a component, which would build it")
+
+
 def check_hosts(lock):
     hosts = lock["host_libraries"]
     if len(hosts) != len(set(hosts)):
@@ -193,12 +303,15 @@ def check_hosts(lock):
 
 
 def main(argv):
-    if len(argv) != 2:
-        fail("usage: build_runtime_test_lock.py <lock file> <Dockerfile.runtime>")
+    if len(argv) != 3:
+        fail("usage: build_runtime_test_lock.py <lock file> <Dockerfile.runtime>"
+             " <desktop/Cargo.lock>")
     with open(argv[0], encoding="utf-8") as handle:
         lock = json.load(handle)
     with open(argv[1], encoding="utf-8") as handle:
         dockerfile = handle.read()
+    with open(argv[2], encoding="utf-8") as handle:
+        cargo_lock_text = handle.read()
     check_header(lock, dockerfile)
     for component in lock["components"]:
         check_component(component)
@@ -206,6 +319,8 @@ def main(argv):
     check_versions(lock)
     check_flags(lock)
     check_hosts(lock)
+    check_text_source(lock)
+    check_application(lock, cargo_lock_text)
     print("  ok: %d components, every digest, every required flag, the host list"
           % len(lock["components"]))
     return 0

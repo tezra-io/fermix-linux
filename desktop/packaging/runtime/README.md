@@ -9,19 +9,31 @@ the rules it keeps are sections 4.1 to 4.3 of
 
 ```
 RUNTIME.lock.json         every component: version, url, sha256, build flags, licence,
-                          the Cargo.lock of a Rust one;
-                          the host library list and the symbol version ceilings
+                          licence files outside the top of its tree, and for a Rust
+                          one its Cargo.lock and packages; the host library list,
+                          the symbol version ceilings, the pkg-config packages the
+                          window links, and SPDX's license-list-data for standard
+                          licence texts
 build_runtime.sh          fetch, build, wire, check and export the prefix
 check_boundary.sh         the host boundary gate, on any prefix
+drop_unreachable.sh       drops from the shipped tree every object nothing reaches
+write_crates.py           the Rust crates a component compiles in: their sources and
+                          licence files
+write_licenses.py         runtime-licenses.json: the licence files of every component,
+                          crate and the Rust standard library
 fetch_source.sh           one fetch and one digest rule, shared by the build and the archive
 package_sources.sh        the LGPL source archive published beside the packages
 smoke_runtime.sh          draw a libadwaita window on ubuntu:22.04 from the built tree
 smoke/runtime_smoke.c     the window it draws
+smoke/sample.gif          the GIF it decodes, two frames, made for the smoke
 write_manifest.py         runtime-manifest.json: the lock plus every shipped file's sha256
 compare_manifest.py       what --verify compares
 check_options.py          holds every meson flag to the option upstream declares
-build_runtime_test.sh     the offline tests; with build_runtime_test_lock.py and
-                          build_runtime_test_boundary.sh
+build_runtime_test.sh     the offline tests; with build_runtime_test_lock.py,
+                          build_runtime_test_boundary.sh,
+                          build_runtime_test_unreachable.sh,
+                          build_runtime_test_crates.py and
+                          build_runtime_test_licenses.py
 patches/                  per-component patches, named by the lock file
 ../docker/Dockerfile.runtime   the toolchain image the build runs in
 ```
@@ -41,8 +53,9 @@ desktop/packaging/runtime/package_sources.sh 0.12.2         # the source archive
 On six cores the build takes about 10 minutes from empty volumes, and about 25
 when the image is built too. It resumes: each installed component leaves a
 stamp in the build volume, and the volumes carry the cache key they were filled
-under, so a changed lock file, patch, Dockerfile, `build_runtime.sh` or
-`write_manifest.py` starts from empty and an unchanged set picks up where a
+under, so a changed lock file, patch, Dockerfile, `build_runtime.sh`,
+`write_manifest.py`, `drop_unreachable.sh`, `write_crates.py` or
+`write_licenses.py` starts from empty and an unchanged set picks up where a
 failure stopped.
 
 Outputs land in `$FERMIX_RUNTIME_OUT`, by default
@@ -52,7 +65,10 @@ Outputs land in `$FERMIX_RUNTIME_OUT`, by default
 |---|---|
 | `runtime-<arch>.tar` | The shipped tree, rooted at `usr/lib/fermix-desktop` |
 | `runtime-dev-<arch>.tar` | The same tree with headers, `.pc` files and the build-time binaries |
-| `runtime-manifest.json` | The lock file plus the sha256 of every shipped file and of both tarballs |
+| `runtime-manifest.json` | The lock file plus the sha256 of every shipped file and of the five files above and below it |
+| `runtime-licenses.json` | Every component, Rust crate and the Rust standard library, each with its licence and licence files; see below |
+| `runtime-licenses.tar.gz` | Those licence files, at the paths the index names |
+| `runtime-crates.tar.gz` | The sources of the Rust crates compiled in, as cargo vendored them, for the source archive |
 | `SHA256SUMS` | Written in the container, checked on the host after the copy |
 | `cache-key` | The key of A§4.2 |
 | `smoke/smoke-{cairo,gl}.png` | The smoke's screenshots |
@@ -68,16 +84,24 @@ and the two volumes, all `fermix-desktop-pkg-runtime-*` by default.
 
 **The package.** Unpack `runtime-<arch>.tar` at the root of the staged tree:
 it is already `usr/lib/fermix-desktop/...`, pruned of headers, `.pc` and CMake
-files, static libraries, documentation, the MIME database and every build-time
-binary. There is no `bin/`; the application ELF's directory is the package's to
+files, static libraries, documentation, the MIME database, every build-time
+binary, and every library nothing reaches (below). There is no `bin/`; the application ELF's directory is the package's to
 create. `libexec/` stays for `gio-launch-desktop` and `gst-plugin-scanner`,
 which GLib and GStreamer run by their compiled-in paths. Nothing needs a
 post-install step: `loaders.cache`, `giomodule.cache`, `gschemas.compiled` and
 the icon cache are generated at build time against the final prefix.
 `runtime-manifest.json` ships at
 `/usr/share/doc/fermix-desktop/runtime-manifest.json`; its `lock` object carries
-each component's `license`, which the copyright file is generated from.
-`check_boundary.sh <dir> RUNTIME.lock.json` runs the same gate on any tree.
+each component's `license`. The copyright file is generated from
+`runtime-licenses.json` and the texts in `runtime-licenses.tar.gz`; the format
+is below. `check_boundary.sh <dir> RUNTIME.lock.json` runs the same gate on any
+tree.
+
+If the window comes to link a library of the runtime through a pkg-config
+package not in the lock file's `application_packages`, that library may be
+pruned from the shipped tree; the package's own NEEDED check then fails, and the
+package name goes into the lock file. The lock test reads the window's `-sys`
+crates from `desktop/Cargo.lock` and fails first.
 
 **The window.** Build against the dev tree, unpacked at `/`:
 
@@ -137,10 +161,12 @@ are too. `gdk/gdktexture.c` decodes PNG, JPEG and TIFF with GTK's own loaders
 and hands every other format to gdk-pixbuf (`gdk_texture_new_from_bytes_pixbuf`);
 glycin appears only in documentation comments recommending it to applications.
 gdk-pixbuf is pinned at 2.42.12, which predates gdk-pixbuf's own glycin
-support, and built with the PNG and JPEG loaders only (`-Dtiff=disabled
--Dgif=disabled -Dothers=disabled`), plus webp-pixbuf-loader for WebP and
-librsvg's loader for SVG. So nothing is sandboxed, no bubblewrap and no loader
-binaries are needed, and the host needs nothing for images.
+support, and built with the PNG, JPEG and GIF loaders only (`-Dtiff=disabled
+-Dothers=disabled`), plus webp-pixbuf-loader for WebP and librsvg's loader for
+SVG. GIF is there because chats send GIFs; its loader is gdk-pixbuf's own and
+needs no other library, and the smoke decodes a two-frame GIF
+(`smoke/sample.gif`) through it. So nothing is sandboxed, no bubblewrap and no
+loader binaries are needed, and the host needs nothing for images.
 
 SVG is GTK's own first. In 4.22 the icon theme draws SVG icons with `GtkSvg`
 and falls back to the image loader only when `GtkSvg` reports a feature it does
@@ -156,16 +182,75 @@ toolchain and cargo-c in the build image.
 
 **Crates.** librsvg's Rust half needs 357 crates that its tarball does not
 carry. They are pinned by the `Cargo.lock` inside that tarball, which the lock
-file pins by sha256 and names in librsvg's `cargo_lock` field. For a component
-with that field, `vendor_crates` fetches the crates with `cargo vendor
---locked`, which refuses one whose checksum differs from `Cargo.lock`, into the
-source tree; the compile then runs with `CARGO_NET_OFFLINE=true`. It is the only
+file pins by sha256 and names in librsvg's `cargo.lock`. For a component with a
+`cargo` object, `vendor_crates` fetches the crates with `cargo vendor --locked`,
+which refuses one whose checksum differs from `Cargo.lock`, into the source
+tree; the compile then runs with `CARGO_NET_OFFLINE=true`. It is the only
 network fetch the build makes itself. A `Cargo.lock` alone does not trigger it:
 fontconfig 2.16's tarball carries one for its optional Fontations backend, which
-is not built. The build log lists the vendored crates by licence. Six are
-MPL-2.0, which asks that recipients of the binary be told where the source is;
-the source archive points to them through librsvg's `Cargo.lock` and does not
-carry them.
+is not built.
+
+Of the 357, 136 are compiled in: librsvg's three workspace members and 133
+from crates.io. `cargo.packages` names the packages librsvg's
+meson builds and their features (`librsvg-c` with `pixbuf`, and
+`pixbufloader-svg`); the lock test holds them to librsvg's meson options, and
+`write_crates.py` holds them to the cargo targets in meson's introspection.
+`cargo tree` over those packages, for the host target, without build scripts and
+procedural macros, which run at build time and are not linked, gives the crates
+compiled in. Their sources go into `runtime-crates.tar.gz`, which the source
+archive carries, among them the MPL-2.0 crates whose source has to be offered
+with the binary, and their licence files into `runtime-licenses.tar.gz`.
+
+Four of those crates publish no licence file. For exactly those, the lock
+file's `cargo.standard_license_texts` names the SPDX ids of their declared
+licences, and `write_licenses.py` copies the standard texts from
+`license_text_source`, SPDX's license-list-data 3.29.0, pinned by sha256 like a
+component and never built, to `standard/<id>.txt`:
+
+| Crate | Declares | Standard texts | Upstream |
+|---|---|---|---|
+| cssparser-color 0.3.0 | MPL-2.0 | MPL-2.0 | servo/rust-cssparser carries the MPL 2.0 at the commit the crate records (3dd4f636); the published crate leaves it out |
+| selectors 0.31.0 | MPL-2.0 | MPL-2.0 | servo/stylo has no licence file at the recorded commit (7f8df16f); its sources point to the MPL 2.0 |
+| fxhash 0.2.1 | Apache-2.0/MIT | Apache-2.0, MIT | cbreeden/fxhash has no licence file; `lib.rs` is "Copyright 2015 The Rust Project Developers", licensed as Rust is |
+| mac 0.1.1 | MIT/Apache-2.0 | Apache-2.0, MIT | reem/rust-mac has no licence file; its README says "MIT/Apache-2.0, like rust itself" |
+
+`write_crates.py` refuses a crate that ships no licence file and is not in that
+list, so a new one fails the build rather than quietly getting a generic text.
+It also refuses an entry for a crate that is not compiled in, for one that
+ships its own licence file, or naming a licence the crate does not declare.
+
+**Licence files.** `write_licenses.py` reads each component's licence files
+from its locked tarball, so the texts carry the copyright holders, which a
+generic text would drop. It takes the files at the top of the source tree whose
+names start with `COPYING`, `LICENSE`, `LICENCE`, `COPYRIGHT` or `NOTICE`
+(libxml2's is `Copyright`), every file in a top-level `LICENSES/` directory
+(all of GLib's REUSE texts, below), and what
+the component's `extra_license_files` names: texts a top-level file only points
+to (FreeType's `docs/FTL.TXT` and `docs/GPLv2.TXT`, libjpeg-turbo's
+`README.ijg`), libwebp's `PATENTS`, and the licences of code bundled into what
+ships (GTK's roaring and timsort, HarfBuzz's Microsoft USE tables, pcre2's
+sljit, the third-party code in webrtc-audio-processing). A licence file that is
+a link, as GLib's `COPYING` is, holds the text of its target, which has to be a
+licence file taken too. A component with no licence file, a named file its
+tarball lacks, a crate with none and no standard text named, and a file in the
+tree the index does not name are each refused. Tarball entries that start with
+`./`, as AppStream's do, are read like any other. wayland-protocols ships no
+file of its own, but GTK compiles code generated from its XML, so its licence
+is listed and marked `build_only`.
+
+**GLib's licence.** Its `LICENSES/` holds eleven texts, and the lock file names
+the two that apply to code in the shipped libraries:
+`LGPL-2.1-or-later AND (LGPL-2.1-or-later OR AFL-2.0)`, the second for
+`gio/xdgmime`. By the SPDX headers and `.reuse/dep5` of 2.88.3, the others
+cover what does not ship: Apache-2.0 with LLVM-exception for `fuzzing/` and CI,
+MIT for `tests/lib`, GPL-2.0-or-later for `glib/tests` and `tools`, CC0-1.0 and
+CC-BY-SA-3.0 for documentation and test data, LicenseRef-old-glib-tests for
+tests, and LGPL-2.1-only OR MPL-1.1 for `girepository/cmph`, whose library is
+dropped from the shipped tree (above). Three files compiled in carry notices of
+their own and no SPDX header: `glib/gutilsprivate.c` (MIT, Red Hat 2007),
+`glib/valgrind.h` (the bzip2-1.0.6 terms, Julian Seward) and
+`gobject/gbsearcharray.h` (a permissive notice of Tim Janik's). Their notices
+are in those files only.
 
 **Voice.** The window's pipelines (`desktop/app/src/audio.rs`) make
 `pulsesrc`, `pulsesink`, `webrtcdsp`, `webrtcechoprobe`, `audioconvert`,
@@ -176,8 +261,23 @@ and enables only the plugins that provide those: `tools` in core (for
 in base, `pulse` and `level` in good, `webrtcdsp` in bad. The lock file test
 refuses any other enable. `level` is built because the plan names it;
 `audio.rs` computes its own meter today. The libraries each module always builds
-(gst-plugins-bad's `gst-libs`, for one) are built and shipped; nothing loads
-them unless something links them.
+(gst-plugins-bad's `gst-libs`, for one) are built, and the ones nothing reaches
+are dropped from the shipped tree.
+
+**Only what is reached ships.** `drop_unreachable.sh` walks the NEEDED graph of
+the shipped tree from its roots: the libraries the window links, which are the
+`-l` flags of the lock file's `application_packages` (the pkg-config package of
+every `-sys` crate in `desktop/Cargo.lock`), the plugin directories compiled
+into GStreamer, gdk-pixbuf and GIO, and `libexec/`. Every ELF object it does not
+reach is removed, with the links that name it. A library loaded with `dlopen`
+by name appears in no NEEDED entry, so the script first searches every file
+that stays for the soname of each object it would drop, and stops, removing
+nothing, if one names it. The boundary gate then runs again over the pruned
+tree. What goes: the gst-plugins-base and gst-plugins-bad libraries no plugin
+the window uses links (codecparsers, video, pbutils, rtp, rtsp, sdp, webrtc and
+the like), GLib's girepository and gthread, pcre2-posix, wayland-server and
+wayland-cursor, libdconf (the GSettings module carries its own copy of what it
+uses) and cairo's trace preload: 34 objects, about 5 MB.
 
 **abseil is static.** webrtc-audio-processing 2.1 needs abseil and would
 otherwise download it as a meson subproject mid-build. abseil is a locked
@@ -240,8 +340,8 @@ which is not on the host list), no GStreamer media backend, no print backends
 and no AccessKit. FreeType is `-Dharfbuzz=disabled`, which breaks a dependency
 cycle at the cost of script-aware autohinting. The private fontconfig reads the
 host's `/etc/fonts` and shares `~/.cache/fontconfig`, whose file names carry
-the cache format version. From dconf only the GSettings module and its library
-ship; the host runs `dconf-service`.
+the cache format version. From dconf only the GSettings module ships; the host
+runs `dconf-service`.
 
 **Reproducibility.** `SOURCE_DATE_EPOCH` is the lock file's
 `source_date_epoch`, the compiler is pinned by the base image digest, the prefix
@@ -255,6 +355,88 @@ abseil's static archives in `ar`'s deterministic mode. `tar --sort=name` makes
 each archive's digest a property of the tree. `--verify` rebuilds from empty
 volumes and compares file by file and archive by archive.
 
+## runtime-licenses.json
+
+Every component, every Rust crate compiled in and the Rust standard library,
+each with its licence and its licence files, for the package's copyright file.
+Plain JSON, written by `write_licenses.py`:
+
+```json
+{
+  "schema_version": 1,
+  "archive": "runtime-licenses.tar.gz",
+  "components": [
+    {
+      "name": "freetype",
+      "version": "2.13.3",
+      "license": "FTL OR GPL-2.0-or-later",
+      "build_only": false,
+      "license_files": [
+        "components/freetype-2.13.3/LICENSE.TXT",
+        "components/freetype-2.13.3/docs/FTL.TXT",
+        "components/freetype-2.13.3/docs/GPLv2.TXT"
+      ]
+    }
+  ],
+  "crates": [
+    {
+      "component": "librsvg",
+      "name": "cssparser",
+      "version": "0.35.0",
+      "license": "MPL-2.0",
+      "source": "crates.io",
+      "checksum": "<sha256 from librsvg's Cargo.lock>",
+      "license_files": ["crates/cssparser-0.35.0/LICENSE"]
+    },
+    {
+      "component": "librsvg",
+      "name": "fxhash",
+      "version": "0.2.1",
+      "license": "Apache-2.0/MIT",
+      "source": "crates.io",
+      "checksum": "<sha256 from librsvg's Cargo.lock>",
+      "license_files": ["standard/Apache-2.0.txt", "standard/MIT.txt"]
+    }
+  ],
+  "rust_std": {
+    "version": "1.97.1",
+    "license": "(Apache-2.0 OR MIT) AND Unicode-3.0",
+    "license_files": [
+      "rust-std/COPYRIGHT-library.html",
+      "rust-std/licenses/Apache-2.0.txt",
+      "rust-std/licenses/MIT.txt",
+      "rust-std/licenses/Unicode-3.0.txt"
+    ]
+  }
+}
+```
+
+| Field | What |
+|---|---|
+| `archive` | The tarball the paths are relative to, beside this file |
+| `components` | Every component of the lock file, sorted by name |
+| `components[].license` | The component's `license` in the lock file, an SPDX expression |
+| `components[].build_only` | `true` for a component none of whose own files ship (wayland-protocols, whose XML GTK compiles into code) |
+| `crates` | Every crate compiled into a Rust component, sorted by component, name and version, with librsvg's three workspace members among them |
+| `crates[].component` | The lock file component the crate is compiled into |
+| `crates[].license` | The SPDX expression the crate declares in its `Cargo.toml`, as written there (`Apache-2.0/MIT` is the old form of `Apache-2.0 OR MIT`) |
+| `crates[].source` | `crates.io` for a vendored crate, `path` for a member of the component's own workspace |
+| `crates[].checksum` | The crate's sha256 in the component's `Cargo.lock`, which cargo checked; `null` for `path` |
+| `rust_std` | The standard library, which every Rust object links; `null` when no component is Rust. `COPYRIGHT-library.html` carries every notice of the standard library and its dependencies, for every target |
+| `license_files` | Paths inside `archive`, each a file to reproduce in the copyright file; never empty. A workspace member without its own licence file names its source tree's. The four crates above name `standard/` texts, which two of them share |
+
+`runtime-licenses.tar.gz` holds exactly the files the index names:
+`components/<name>-<version>/<path in its source tree>`,
+`crates/<name>-<version>/<file>`, `standard/<SPDX id>.txt` and
+`rust-std/<path>`. Integrity comes from `SHA256SUMS` and
+`runtime-manifest.json`, which record both files. The texts come from the
+pinned tarballs, the vendored crates and the toolchain, and are written in the
+export step, so `--verify` covers them.
+
+`runtime-crates.tar.gz` is the source archive's: under
+`<source_dir>/_crates/<name>-<version>/`, the whole source of every crates.io
+crate in the index.
+
 ## Deviations from the amendment
 
 | Amendment | What is true | Why |
@@ -263,7 +445,7 @@ volumes and compares file by file and archive by archive.
 | A§4.1 lists neither expat nor pixman | Both are private | fontconfig needs an XML parser and cairo needs pixman |
 | A§4.1 keeps libstdc++ off the host list | It is on it | webrtc-audio-processing is C++, and the plan adds it with a symbol ceiling |
 | A§4.2 says `build_system` is `meson`, `autotools` or `cargo` | `meson`, `autotools` or `cmake` | libjpeg-turbo and abseil build with CMake; librsvg's meson build drives cargo itself |
-| A§4.2 computes the cache key from the lock file, the patches and the Dockerfile | It also covers `build_runtime.sh` and `write_manifest.py` | The script sets the compiler, linker and archiver flags and the manifest is published with the tree; a change to either under an unchanged key would publish a different runtime under the old key |
+| A§4.2 computes the cache key from the lock file, the patches and the Dockerfile | It also covers `build_runtime.sh`, `write_manifest.py`, `drop_unreachable.sh`, `write_crates.py` and `write_licenses.py` | The script sets the compiler, linker and archiver flags, the pruning decides what ships, and the manifest and licence index are published with the tree; a change to any of them under an unchanged key would publish a different runtime under the old key |
 | A§4.2 builds the runtime in an image layer | The image is the toolchain; the compile is a container run | A failed component resumes, and the source cache is copied in rather than re-fetched |
 | A§4.2 sets `SOURCE_DATE_EPOCH` from the lock file's commit | It is the lock file's `source_date_epoch` field | A commit date moves under a rebase; a field is covered by the cache key |
 | A§4.3 puts the fontconfig cache under `$XDG_CACHE_HOME/fermix-desktop/fontconfig` | It shares `~/.cache/fontconfig` | The host `fonts.conf` names the cache directory and wins over a compiled-in default |

@@ -5,9 +5,10 @@
 # The package ships LGPL libraries as binaries under /usr/lib/fermix-desktop,
 # which is allowed on condition that the corresponding source is offered. This
 # writes the archive that offers it: every locked tarball as it was fetched,
-# every patch, the lock file, the container definition and the scripts that
-# drive the build. With it and Docker the runtime can be rebuilt without this
-# repository.
+# the Rust crates compiled into librsvg as the runtime build vendored them, the
+# licence files the runtime build gathered, every patch, the lock file, the
+# container definition and the scripts that drive the build. With it and Docker
+# the runtime can be rebuilt without this repository.
 #
 # Each tarball comes from the download cache when it is there and from the lock
 # file's URL when it is not, and is held to the locked sha256 either way.
@@ -16,11 +17,15 @@
 # that discharges a licence obligation.
 #
 # Usage:
-#   desktop/packaging/runtime/package_sources.sh <version> [--out <dir>] [--sources <dir>] [--no-fetch]
+#   desktop/packaging/runtime/package_sources.sh <version> [--out <dir>] [--sources <dir>]
+#                                                [--runtime <dir>] [--no-fetch]
 #
 #   <version>    X.Y.Z or X.Y.Z+N, matching the package it accompanies
 #   --out        where to write the archive; default ~/.cache/fermix-desktop-runtime/out
 #   --sources    the download cache; default ~/.cache/fermix-desktop-runtime/sources
+#   --runtime    the runtime build's outputs, for runtime-crates.tar.gz,
+#                runtime-licenses.tar.gz and runtime-licenses.json; default
+#                $FERMIX_RUNTIME_OUT or ~/.cache/fermix-desktop-runtime/out
 #   --no-fetch   refuse the network; every tarball must already be cached
 #
 # The archive is deterministic: sorted entries, zero timestamps, numeric owners
@@ -35,11 +40,16 @@ PATCH_DIR="$RUNTIME_DIR/patches"
 DOCKERFILE="$ROOT_DIR/packaging/docker/Dockerfile.runtime"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime"
 # What build_runtime.sh needs beside itself to run from the archive.
-BUILD_FILES="build_runtime.sh fetch_source.sh check_boundary.sh write_manifest.py compare_manifest.py"
+BUILD_FILES="build_runtime.sh fetch_source.sh check_boundary.sh drop_unreachable.sh write_crates.py
+write_licenses.py write_manifest.py compare_manifest.py"
+# The runtime build's outputs this archive carries, each checked against the
+# digest runtime-manifest.json records for it.
+RUNTIME_FILES="runtime-crates.tar.gz runtime-licenses.tar.gz runtime-licenses.json"
 
 VERSION=""
 OUT_DIR="$CACHE_HOME/out"
 SOURCE_CACHE="${FERMIX_RUNTIME_SOURCES:-$CACHE_HOME/sources}"
+RUNTIME_OUT="${FERMIX_RUNTIME_OUT:-$CACHE_HOME/out}"
 STAGE=""
 FETCH=1
 
@@ -57,7 +67,7 @@ log() {
 . "$RUNTIME_DIR/fetch_source.sh"
 
 usage() {
-  echo "usage: package_sources.sh <version> [--out <dir>] [--sources <dir>] [--no-fetch]" >&2
+  echo "usage: package_sources.sh <version> [--out <dir>] [--sources <dir>] [--runtime <dir>] [--no-fetch]" >&2
 }
 
 cleanup() {
@@ -69,6 +79,7 @@ parse_args() {
     case "$1" in
       --out) [ $# -ge 2 ] || fail "--out needs a directory"; OUT_DIR="$2"; shift 2 ;;
       --sources) [ $# -ge 2 ] || fail "--sources needs a directory"; SOURCE_CACHE="$2"; shift 2 ;;
+      --runtime) [ $# -ge 2 ] || fail "--runtime needs a directory"; RUNTIME_OUT="$2"; shift 2 ;;
       --no-fetch) FETCH=0; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) usage; fail "unknown argument: $1" ;;
@@ -104,25 +115,47 @@ require_inputs() {
   else
     [ -d "$SOURCE_CACHE" ] || fail "--no-fetch, and there is no download cache at $SOURCE_CACHE"
   fi
+  require_runtime_outputs
+}
+
+# The crates and licence files are those of a runtime built from this lock
+# file, as its manifest records them.
+require_runtime_outputs() {
+  local manifest="$RUNTIME_OUT/runtime-manifest.json" name recorded
+  [ -f "$manifest" ] || fail "no runtime manifest at $manifest; build the runtime first"
+  jq -e --slurpfile lock "$LOCK_FILE" '.lock == $lock[0]' "$manifest" >/dev/null \
+    || fail "the runtime at $RUNTIME_OUT was built from another lock file"
+  for name in $RUNTIME_FILES; do
+    recorded="$(jq -r --arg n "$name" '.archives[$n] // empty' "$manifest")"
+    [ -n "$recorded" ] || fail "the runtime manifest records no $name"
+    [ -f "$RUNTIME_OUT/$name" ] || fail "no $name at $RUNTIME_OUT"
+    [ "$(sha256sum < "$RUNTIME_OUT/$name" | cut -d' ' -f1)" = "$recorded" ] \
+      || fail "$RUNTIME_OUT/$name is not the one the runtime manifest records"
+  done
+}
+
+copy_runtime_outputs() {
+  local dest="$1"
+  cp -p "$RUNTIME_OUT/runtime-crates.tar.gz" "$dest/sources/runtime-crates.tar.gz"
+  cp -p "$RUNTIME_OUT/runtime-licenses.tar.gz" "$dest/runtime-licenses.tar.gz"
+  cp -p "$RUNTIME_OUT/runtime-licenses.json" "$dest/runtime-licenses.json"
 }
 
 # A cache is a directory anyone can write to, so its contents count only once
-# ensure_source has held them to the lock file.
+# ensure_source has held them to the lock file. The licence text source is a
+# build input like the components, so it is copied too.
 copy_verified_sources() {
-  local dest="$1" name archive fetched=0
+  local dest="$1" name archive url sha256 fetched=0
   mkdir -p "$dest"
-  while read -r name; do
-    archive="$(jq -r --arg n "$name" '.components[] | select(.name == $n) | .archive' "$LOCK_FILE")"
+  while IFS=$'\t' read -r name archive url sha256; do
     if [ ! -s "$SOURCE_CACHE/$archive" ]; then
       [ "$FETCH" = "1" ] || fail "$name: $archive is not cached and --no-fetch was given"
       fetched=$((fetched + 1))
     fi
-    ensure_source "$name" \
-      "$(jq -r --arg n "$name" '.components[] | select(.name == $n) | .url' "$LOCK_FILE")" \
-      "$SOURCE_CACHE/$archive" \
-      "$(jq -r --arg n "$name" '.components[] | select(.name == $n) | .sha256' "$LOCK_FILE")"
+    ensure_source "$name" "$url" "$SOURCE_CACHE/$archive" "$sha256"
     cp -p "$SOURCE_CACHE/$archive" "$dest/$archive"
-  done < <(jq -r '.components[].name' "$LOCK_FILE")
+  done < <(jq -r '(.components[], .license_text_source) | [.name, .archive, .url, .sha256] | @tsv' \
+             "$LOCK_FILE")
   [ "$fetched" -eq 0 ] || log "fetched $fetched tarball(s) the cache did not have"
 }
 
@@ -148,11 +181,20 @@ The sources of the private toolkit runtime in fermix-desktop $VERSION.
 
 This archive is the corresponding source for the libraries the fermix-desktop
 package installs under /usr/lib/fermix-desktop: all $count component tarballs as
-they were fetched, every patch applied to them, the lock file that pins each
-one by version and sha256, the container definition that compiles them and the
+they were fetched, the Rust crates compiled into librsvg, the licence files of
+all of them, every patch applied, the lock file that pins each component by
+version and sha256, the container definition that compiles them and the
 scripts that drive the build.
 
-  sources/                              every component tarball
+  sources/                              every component tarball, and SPDX's
+                                        license-list-data, the standard texts
+                                        of crates that publish no licence file
+  sources/runtime-crates.tar.gz         the source of every Rust crate compiled
+                                        in, as cargo vendored it
+  runtime-licenses.tar.gz               the licence files of every component,
+                                        every crate and the Rust standard library
+  runtime-licenses.json                 the index of those: name, version,
+                                        licence and licence files of each
   packaging/runtime/RUNTIME.lock.json   version, URL, sha256, licence, build
                                         system and options, per component
   packaging/runtime/build_runtime.sh    the build
@@ -167,14 +209,16 @@ relative to itself. To rebuild from the top of this archive:
 No component tarball is downloaded, and the build refuses any whose sha256 is
 not the locked one. The Rust crates librsvg compiles are the exception: cargo
 fetches them from crates.io at the versions and sha256 digests of the
-Cargo.lock inside librsvg's tarball, and refuses any that differs. The
+Cargo.lock inside librsvg's tarball, and refuses any that differs;
+runtime-crates.tar.gz holds the same bytes for those compiled in. The
 toolchain image uses the network too: Dockerfile.runtime starts from a
 digest-pinned AlmaLinux 9 and installs a compiler, Meson, Ninja, patchelf,
 sassc, Rust and cargo-c. Of those, only Rust's standard library is compiled
 into what the package ships, inside librsvg.
 
-Each component's licence is in RUNTIME.lock.json, and the installed package
-carries the same at /usr/share/doc/fermix-desktop/runtime-manifest.json.
+Each component's, crate's and the standard library's licence is in
+runtime-licenses.json, and the installed package carries the lock file at
+/usr/share/doc/fermix-desktop/runtime-manifest.json.
 EOF
 }
 
@@ -195,6 +239,7 @@ main() {
   STAGE="$(mktemp -d "${TMPDIR:-/tmp}/fermix-runtime-sources.XXXXXX")"
   trap cleanup EXIT
   copy_verified_sources "$STAGE/$top/sources"
+  copy_runtime_outputs "$STAGE/$top"
   copy_build_inputs "$STAGE/$top"
   write_readme "$STAGE/$top"
   write_archive "$STAGE" "$top" "$out"

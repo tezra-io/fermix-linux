@@ -1,8 +1,8 @@
 /* A libadwaita window that proves the private runtime works off its own tree.
  *
- * It presents an AdwApplicationWindow showing a PNG and a WebP texture, waits
- * for it to draw, and then checks what breaks when a bundled toolkit is wired
- * wrongly:
+ * It presents an AdwApplicationWindow showing a PNG, a WebP and a GIF texture
+ * (two frames, as chats send them), waits for it to draw, and then checks what
+ * breaks when a bundled toolkit is wired wrongly:
  *
  *   - the renderer is the one asked for (a GL pass must not fall back to cairo);
  *   - a symbolic icon resolves through the bundled Adwaita theme;
@@ -14,8 +14,8 @@
  * It saves a screenshot of the window and quits by itself. Every GLib or GTK
  * warning is fatal, so a missing schema, module or loader fails the run.
  *
- * Inputs, from the environment: SMOKE_MARKS (a directory), SMOKE_PNG and
- * SMOKE_WEBP (files), SMOKE_SCREENSHOT (the PNG to write) and SMOKE_EXPECT_GL.
+ * Inputs, from the environment: SMOKE_MARKS (a directory), SMOKE_PNG, SMOKE_WEBP
+ * and SMOKE_GIF (files), SMOKE_SCREENSHOT (the PNG to write) and SMOKE_EXPECT_GL.
  */
 
 #include <adwaita.h>
@@ -34,6 +34,7 @@ typedef struct {
   const char *marks;
   const char *png;
   const char *webp;
+  const char *gif;
   const char *screenshot;
   gboolean expect_gl;
   GtkApplication *app;
@@ -280,7 +281,8 @@ static void on_activate(GtkApplication *app, gpointer data) {
   Smoke *smoke = data;
   GtkWidget *png = texture_picture(smoke->png);
   GtkWidget *webp = texture_picture(smoke->webp);
-  if (png == NULL || webp == NULL) {
+  GtkWidget *gif = texture_picture(smoke->gif);
+  if (png == NULL || webp == NULL || gif == NULL) {
     g_application_quit(G_APPLICATION(app));
     return;
   }
@@ -289,6 +291,7 @@ static void on_activate(GtkApplication *app, gpointer data) {
   gtk_widget_set_valign(row, GTK_ALIGN_CENTER);
   gtk_box_append(GTK_BOX(row), png);
   gtk_box_append(GTK_BOX(row), webp);
+  gtk_box_append(GTK_BOX(row), gif);
   gtk_box_append(GTK_BOX(row), gtk_image_new_from_icon_name(SMOKE_ICON));
 
   GtkWidget *view = adw_toolbar_view_new();
@@ -296,7 +299,7 @@ static void on_activate(GtkApplication *app, gpointer data) {
   adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), row);
 
   smoke->window = adw_application_window_new(app);
-  gtk_window_set_default_size(GTK_WINDOW(smoke->window), 420, 260);
+  gtk_window_set_default_size(GTK_WINDOW(smoke->window), 520, 260);
   gtk_window_set_title(GTK_WINDOW(smoke->window), "fermix runtime smoke");
   adw_application_window_set_content(ADW_APPLICATION_WINDOW(smoke->window), view);
   smoke->watchdog = g_timeout_add_seconds(SMOKE_TIMEOUT_SECONDS, on_watchdog, smoke);
@@ -310,8 +313,9 @@ int main(int argc, char **argv) {
   smoke.marks = required_env("SMOKE_MARKS");
   smoke.png = required_env("SMOKE_PNG");
   smoke.webp = required_env("SMOKE_WEBP");
+  smoke.gif = required_env("SMOKE_GIF");
   smoke.screenshot = required_env("SMOKE_SCREENSHOT");
-  if (!smoke.marks || !smoke.png || !smoke.webp || !smoke.screenshot) {
+  if (!smoke.marks || !smoke.png || !smoke.webp || !smoke.gif || !smoke.screenshot) {
     return 2;
   }
   smoke.expect_gl = g_strcmp0(g_getenv("SMOKE_EXPECT_GL"), "1") == 0;

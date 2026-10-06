@@ -41,6 +41,8 @@ JOBS="${FERMIX_RUNTIME_JOBS:-4}"
 BUILD_ROOT="/var/tmp/fermix-runtime-build"
 STAMP_DIR="$BUILD_ROOT/stamps"
 CONTAINER_OUT="$BUILD_ROOT/out"
+CRATES_DIR="$BUILD_ROOT/crates"
+LICENSES_DIR="$BUILD_ROOT/licenses"
 PREFIX_VOLUME="${FERMIX_RUNTIME_PREFIX_VOLUME:-fermix-desktop-pkg-runtime-prefix}"
 BUILD_VOLUME="${FERMIX_RUNTIME_BUILD_VOLUME:-fermix-desktop-pkg-runtime-build}"
 
@@ -127,6 +129,9 @@ cache_key() {
     sha256sum < "$DOCKERFILE"
     sha256sum < "$RUNTIME_DIR/build_runtime.sh"
     sha256sum < "$RUNTIME_DIR/write_manifest.py"
+    sha256sum < "$RUNTIME_DIR/drop_unreachable.sh"
+    sha256sum < "$RUNTIME_DIR/write_crates.py"
+    sha256sum < "$RUNTIME_DIR/write_licenses.py"
     while IFS= read -r patch; do
       printf '%s ' "$(basename -- "$patch")"
       sha256sum < "$patch"
@@ -134,8 +139,9 @@ cache_key() {
   } | sha256sum | cut -c1-16
 }
 
-# Every locked tarball, each held to its digest. On the host this fills the
-# source cache; in the container it re-checks what was copied in.
+# Every locked tarball, each held to its digest, and the licence text source,
+# which is read and never built. On the host this fills the source cache; in
+# the container it re-checks what was copied in.
 fetch_all() {
   local name
   mkdir -p "$SOURCE_CACHE"
@@ -143,6 +149,9 @@ fetch_all() {
     ensure_source "$name" "$(component_field "$name" url)" \
       "$SOURCE_CACHE/$(component_field "$name" archive)" "$(component_field "$name" sha256)"
   done
+  ensure_source "$(lock_get '.license_text_source.name')" "$(lock_get '.license_text_source.url')" \
+    "$SOURCE_CACHE/$(lock_get '.license_text_source.archive')" \
+    "$(lock_get '.license_text_source.sha256')"
   log "every locked tarball is in $SOURCE_CACHE and matches its digest"
 }
 
@@ -204,7 +213,7 @@ create_build_container() {
 # file, patches and Dockerfile by paths relative to itself.
 copy_inputs() {
   local -a archives
-  mapfile -t archives < <(lock_get '.components[].archive')
+  mapfile -t archives < <(lock_get '.components[].archive, .license_text_source.archive')
   tar -C "$ROOT_DIR" -cf - packaging/runtime packaging/docker/Dockerfile.runtime \
     | docker cp - "$CONTAINER:/workspace"
   tar -C "$SOURCE_CACHE" -cf - "${archives[@]}" | docker cp - "$CONTAINER:/sources"
@@ -282,7 +291,8 @@ run_verify_mode() {
 
 require_build_tools() {
   local tool
-  for tool in jq meson ninja patchelf cmake gcc g++ cargo cargo-cbuild curl tar python3 readelf strip objcopy sassc; do
+  for tool in jq meson ninja patchelf cmake gcc g++ cargo cargo-cbuild rustc curl tar gzip python3 \
+              readelf strip objcopy sassc pkg-config realpath; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is not installed in this container"
   done
   require_inputs
@@ -365,8 +375,8 @@ build_cmake() {
 }
 
 # A Rust component's crates are the one input the build fetches itself. They are
-# pinned by the Cargo.lock its lock entry names, inside the locked tarball, and
-# cargo checks each one against it. They are vendored into the source tree, and
+# pinned by the Cargo.lock its lock entry's cargo object names, inside the
+# locked tarball, and cargo checks each one against it. They are vendored into the source tree, and
 # the .cargo/config.toml cargo vendor prints points the compile there; cargo
 # finds that file from $src/_build, where meson runs it.
 vendor_crates() {
@@ -382,6 +392,19 @@ vendor_crates() {
     | sort | uniq -c | sort -rn >&2
 }
 
+# The crates a Rust component compiled in: their sources into the tree
+# runtime-crates.tar.gz is made from, their licence files into the one
+# runtime-licenses.tar.gz is made from, and their entries into a fragment of
+# runtime-licenses.json. Run while the source tree and its build still exist.
+inventory_crates() {
+  local name="$1" src="$2"
+  python3 "$RUNTIME_DIR/write_crates.py" component --name "$name" --source-dir "$src" \
+    --cargo "$(jq -c --arg n "$name" '.components[] | select(.name == $n) | .cargo' "$LOCK_FILE")" \
+    --build-dir "$src/_build" --tree "$CRATES_DIR/tree" --licenses-tree "$LICENSES_DIR" \
+    --out "$CRATES_DIR/fragments/$name.json" \
+    || fail "$name: the crates it compiles in could not be listed"
+}
+
 build_component() {
   local name="$1" system src cargo_lock stamp="$STAMP_DIR/$1"
   if [ -f "$stamp" ]; then
@@ -392,7 +415,7 @@ build_component() {
   log "=== $name $(component_field "$name" version) ($system)"
   src="$BUILD_ROOT/$(component_field "$name" source_dir)"
   unpack_component "$name" "$src"
-  cargo_lock="$(component_field "$name" cargo_lock)"
+  cargo_lock="$(component_field "$name" cargo.lock)"
   [ "$cargo_lock" = "null" ] || vendor_crates "$name" "$src" "$cargo_lock"
   case "$system" in
     meson) build_meson "$name" "$src" ;;
@@ -400,6 +423,7 @@ build_component() {
     cmake) build_cmake "$name" "$src" ;;
     *) fail "$name: unknown build system $system" ;;
   esac
+  [ "$cargo_lock" = "null" ] || inventory_crates "$name" "$src"
   # At once: the next component's configure may run a tool this one installed,
   # and with no LD_LIBRARY_PATH that tool finds its libraries by this RUNPATH.
   fix_runpaths quiet
@@ -605,7 +629,53 @@ prune_shipped_tree() {
   # libfoo.so is the link-time name only; what loads is the SONAME beside it.
   find "$root/lib" -maxdepth 1 -type l -name '*.so' -delete
   find "$root" -type d -name '__pycache__' -prune -exec rm -rf {} +
+  drop_unreachable_objects "$root"
   find "$root" -type d -empty -delete
+}
+
+# The libraries the window links: every -l of the lock file's application
+# packages that the prefix holds, as the file it resolves to. The rest, -lm and
+# the like, are the host's.
+application_roots() {
+  local -a packages
+  local flags flag
+  mapfile -t packages < <(lock_get '.application_packages[]')
+  [ "${#packages[@]}" -gt 0 ] || fail "the lock file names no application package"
+  flags="$(pkg-config --libs-only-l "${packages[@]}")" \
+    || fail "pkg-config does not find every application package: ${packages[*]}"
+  for flag in $flags; do
+    if [ -e "$PREFIX/lib/lib${flag#-l}.so" ]; then
+      realpath --relative-to="$PREFIX" -- "$PREFIX/lib/lib${flag#-l}.so"
+    fi
+  done
+}
+
+# What loads without a NEEDED entry: the plugin directories compiled into
+# GStreamer, gdk-pixbuf and GIO, and libexec, whose programs run by path.
+plugin_roots() {
+  local dir
+  for dir in "$(pkg-config --variable=pluginsdir gstreamer-1.0)" \
+             "$(pkg-config --variable=gdk_pixbuf_moduledir gdk-pixbuf-2.0)" \
+             "$(pkg-config --variable=giomoduledir gio-2.0)"; do
+    case "$dir" in
+      "$PREFIX"/*) printf '%s\n' "${dir#"$PREFIX"/}" ;;
+      *) fail "a plugin directory is not in the prefix: '$dir'" ;;
+    esac
+  done
+  echo libexec
+}
+
+# Every object no root reaches through NEEDED goes: gst-plugins-bad's and
+# gst-plugins-base's unused libraries, among others.
+drop_unreachable_objects() {
+  local root="$1" found
+  local -a roots
+  found="$(application_roots)"
+  mapfile -t roots <<< "$found"
+  found="$(plugin_roots)"
+  mapfile -t -O "${#roots[@]}" roots <<< "$found"
+  bash "$RUNTIME_DIR/drop_unreachable.sh" "$root" "${roots[@]}" \
+    || fail "the shipped tree could not be pruned to what is reached"
 }
 
 stage_tree() {
@@ -628,6 +698,30 @@ archive_digest() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
+# A tree's top entries in name order, gzipped with no name or time in the header.
+write_tar_gz() {
+  local tree="$1" out="$2"
+  local -a tops
+  mapfile -t tops < <(find "$tree" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+  [ "${#tops[@]}" -gt 0 ] || fail "nothing to archive in $tree"
+  LC_ALL=C tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+    -C "$tree" -cf - "${tops[@]}" | gzip -n > "$out"
+}
+
+# runtime-crates.tar.gz: the compiled-in crates' sources, for the source archive.
+# runtime-licenses.tar.gz: the licence files of every component, crate and std,
+# and runtime-licenses.json, its index.
+export_crates_and_licences() {
+  local index="$CONTAINER_OUT/runtime-licenses.json"
+  mkdir -p "$CRATES_DIR/fragments" "$CRATES_DIR/tree" "$LICENSES_DIR"
+  python3 "$RUNTIME_DIR/write_licenses.py" --lock "$LOCK_FILE" --sources "$SOURCE_CACHE" \
+    --crates "$CRATES_DIR/fragments" --tree "$LICENSES_DIR" --out "$index" \
+    || fail "runtime-licenses.json could not be written"
+  write_tar_gz "$CRATES_DIR/tree" "$CONTAINER_OUT/runtime-crates.tar.gz"
+  write_tar_gz "$LICENSES_DIR" "$CONTAINER_OUT/runtime-licenses.tar.gz"
+  log "runtime-licenses.json: $(jq -r '"\(.components | length) components, \(.crates | length) crates"' "$index")"
+}
+
 export_trees() {
   local arch="$1" stage_dev="$BUILD_ROOT/stage-dev" stage_ship="$BUILD_ROOT/stage-ship"
   local shipped="runtime-$arch.tar" dev="runtime-dev-$arch.tar"
@@ -635,6 +729,9 @@ export_trees() {
   stage_tree "$stage_dev"
   stage_tree "$stage_ship"
   prune_shipped_tree "$stage_ship"
+  bash "$RUNTIME_DIR/check_boundary.sh" "$stage_ship$PREFIX" "$LOCK_FILE" \
+    || fail "the pruned shipped tree crossed the host boundary"
+  export_crates_and_licences
   write_tar "$stage_ship" "$CONTAINER_OUT/$shipped"
   write_tar "$stage_dev" "$CONTAINER_OUT/$dev"
   log "shipped tree $(du -sh "$stage_ship$PREFIX" | cut -f1), dev tree $(du -sh "$stage_dev$PREFIX" | cut -f1)"
@@ -642,9 +739,13 @@ export_trees() {
     --lock "$LOCK_FILE" --tree "$stage_ship$PREFIX" --prefix "$PREFIX" --arch "$arch" \
     --archive "$shipped=$(archive_digest "$CONTAINER_OUT/$shipped")" \
     --archive "$dev=$(archive_digest "$CONTAINER_OUT/$dev")" \
+    --archive "runtime-crates.tar.gz=$(archive_digest "$CONTAINER_OUT/runtime-crates.tar.gz")" \
+    --archive "runtime-licenses.tar.gz=$(archive_digest "$CONTAINER_OUT/runtime-licenses.tar.gz")" \
+    --archive "runtime-licenses.json=$(archive_digest "$CONTAINER_OUT/runtime-licenses.json")" \
     --out "$CONTAINER_OUT/runtime-manifest.json" >&2
   rm -rf "$stage_dev" "$stage_ship"
-  (cd "$CONTAINER_OUT" && sha256sum "$shipped" "$dev" runtime-manifest.json > SHA256SUMS)
+  (cd "$CONTAINER_OUT" && sha256sum "$shipped" "$dev" runtime-crates.tar.gz runtime-licenses.tar.gz \
+     runtime-licenses.json runtime-manifest.json > SHA256SUMS)
   log "exported: $(tr '\n' ' ' < "$CONTAINER_OUT/SHA256SUMS")"
 }
 

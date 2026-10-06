@@ -12,6 +12,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/packaging/runtime"
 SCRIPT="$RUNTIME_DIR/build_runtime.sh"
 GATE="$RUNTIME_DIR/check_boundary.sh"
+DROP="$RUNTIME_DIR/drop_unreachable.sh"
 SMOKE="$RUNTIME_DIR/smoke_runtime.sh"
 SOURCES="$RUNTIME_DIR/package_sources.sh"
 LOCK="$RUNTIME_DIR/RUNTIME.lock.json"
@@ -52,8 +53,9 @@ make_path_without_docker() {
 test_syntax() {
   echo "build_runtime_test: the scripts parse"
   local script
-  for script in "$SCRIPT" "$GATE" "$SMOKE" "$SOURCES" "$RUNTIME_DIR/fetch_source.sh" \
-                "$RUNTIME_DIR/build_runtime_test_boundary.sh"; do
+  for script in "$SCRIPT" "$GATE" "$DROP" "$SMOKE" "$SOURCES" "$RUNTIME_DIR/fetch_source.sh" \
+                "$RUNTIME_DIR/build_runtime_test_boundary.sh" \
+                "$RUNTIME_DIR/build_runtime_test_unreachable.sh"; do
     bash -n "$script" || fail "$(basename "$script") does not parse"
   done
   # Compiled in memory, so no __pycache__ lands in the tree.
@@ -63,6 +65,8 @@ for name in sys.argv[1:]:
         compile(handle.read(), name, "exec")' \
     "$RUNTIME_DIR/write_manifest.py" "$RUNTIME_DIR/compare_manifest.py" \
     "$RUNTIME_DIR/check_options.py" "$RUNTIME_DIR/build_runtime_test_lock.py" \
+    "$RUNTIME_DIR/write_crates.py" "$RUNTIME_DIR/build_runtime_test_crates.py" \
+    "$RUNTIME_DIR/write_licenses.py" "$RUNTIME_DIR/build_runtime_test_licenses.py" \
     || fail "a python helper does not parse"
   echo "  ok: shell and python syntax"
 }
@@ -88,8 +92,27 @@ test_build_refusals() {
   echo "  refused: unknown argument, no mode, no docker, no manifest, no lock file"
 }
 
+# A runtime output directory package_sources.sh accepts: a manifest of this lock
+# file recording the digests of the crate and licence files beside it.
+make_runtime_out() {
+  local dir="$1"
+  mkdir -p "$dir"
+  echo "the crates" > "$dir/runtime-crates.tar.gz"
+  echo "the licences" > "$dir/runtime-licenses.tar.gz"
+  echo '{"schema_version": 1}' > "$dir/runtime-licenses.json"
+  jq -n --slurpfile lock "$LOCK" \
+    --arg crates "$(sha256sum < "$dir/runtime-crates.tar.gz" | cut -d' ' -f1)" \
+    --arg texts "$(sha256sum < "$dir/runtime-licenses.tar.gz" | cut -d' ' -f1)" \
+    --arg index "$(sha256sum < "$dir/runtime-licenses.json" | cut -d' ' -f1)" \
+    '{lock: $lock[0], archives: {"runtime-crates.tar.gz": $crates,
+      "runtime-licenses.tar.gz": $texts, "runtime-licenses.json": $index}}' \
+    > "$dir/runtime-manifest.json"
+}
+
 test_other_refusals() {
   echo "build_runtime_test: smoke and source archive refusals"
+  local runtime="$WORK/runtime-ok"
+  make_runtime_out "$runtime"
   refuses "unknown argument" "$SMOKE" --unknown-argument \
     || fail "smoke_runtime.sh accepted an unknown argument"
   refuses "no version given" "$SOURCES" || fail "package_sources.sh accepted a run with no version"
@@ -100,20 +123,43 @@ test_other_refusals() {
   done
   refuses "unknown argument" "$SOURCES" 1.2.3 --unknown-argument \
     || fail "package_sources.sh accepted an unknown argument"
-  refuses "no download cache" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/missing-cache" --out "$WORK/out" \
+  refuses "no download cache" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/missing-cache" \
+    --runtime "$runtime" --out "$WORK/out" \
     || fail "package_sources.sh --no-fetch accepted a missing cache directory"
   mkdir -p "$WORK/empty-cache"
-  refuses "is not cached and --no-fetch" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/empty-cache" --out "$WORK/out" \
+  refuses "is not cached and --no-fetch" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/empty-cache" \
+    --runtime "$runtime" --out "$WORK/out" \
     || fail "package_sources.sh --no-fetch accepted an empty cache"
+
+  # The crates and licences come from a runtime built from this lock file, as its
+  # manifest records them.
+  refuses "no runtime manifest" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/empty-cache" \
+    --runtime "$WORK/missing-runtime" --out "$WORK/out" \
+    || fail "package_sources.sh accepted a runtime directory with no manifest"
+  make_runtime_out "$WORK/runtime-other"
+  jq '.lock.source_date_epoch = 0' "$WORK/runtime-other/runtime-manifest.json" > "$WORK/other.json"
+  mv "$WORK/other.json" "$WORK/runtime-other/runtime-manifest.json"
+  refuses "built from another lock file" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/empty-cache" \
+    --runtime "$WORK/runtime-other" --out "$WORK/out" \
+    || fail "package_sources.sh accepted crates of a runtime built from another lock file"
+  local name
+  for name in runtime-crates.tar.gz runtime-licenses.tar.gz runtime-licenses.json; do
+    make_runtime_out "$WORK/runtime-tampered-$name"
+    echo "other bytes" > "$WORK/runtime-tampered-$name/$name"
+    refuses "$name is not the one the runtime manifest records" "$SOURCES" 1.2.3 --no-fetch \
+      --sources "$WORK/empty-cache" --runtime "$WORK/runtime-tampered-$name" --out "$WORK/out" \
+      || fail "package_sources.sh accepted a $name the manifest does not record"
+  done
 
   # Files of the right names whose bytes are not the locked ones.
   mkdir -p "$WORK/wrong-cache"
   jq -r '.components[].archive' "$LOCK" | while read -r archive; do
     echo "not the locked tarball" > "$WORK/wrong-cache/$archive"
   done
-  refuses "the lock file says" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/wrong-cache" --out "$WORK/out" \
+  refuses "the lock file says" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/wrong-cache" \
+    --runtime "$runtime" --out "$WORK/out" \
     || fail "package_sources.sh accepted tarballs that are not the locked ones"
-  echo "  refused: smoke argument, source archive version, cache and digests"
+  echo "  refused: smoke argument, source archive version, cache and digests, runtime crates and licences"
 }
 
 # Driven over file:// so the test never touches the network. Each refusal runs
@@ -129,7 +175,9 @@ test_cache_key() {
   cp "$DOCKERFILE" "$tree/packaging/docker/"
   for input in packaging/runtime/RUNTIME.lock.json packaging/docker/Dockerfile.runtime \
                packaging/runtime/patches/appstream-no-man-pages.patch \
-               packaging/runtime/build_runtime.sh packaging/runtime/write_manifest.py; do
+               packaging/runtime/build_runtime.sh packaging/runtime/write_manifest.py \
+               packaging/runtime/drop_unreachable.sh packaging/runtime/write_crates.py \
+               packaging/runtime/write_licenses.py; do
     before="$(bash "$tree/packaging/runtime/build_runtime.sh" --print-key)"
     echo " " >> "$tree/$input"
     [ "$(bash "$tree/packaging/runtime/build_runtime.sh" --print-key)" != "$before" ] \
@@ -177,7 +225,7 @@ test_fetcher() {
 
 test_lock() {
   echo "build_runtime_test: the lock file"
-  python3 "$RUNTIME_DIR/build_runtime_test_lock.py" "$LOCK" "$DOCKERFILE" \
+  python3 "$RUNTIME_DIR/build_runtime_test_lock.py" "$LOCK" "$DOCKERFILE" "$ROOT_DIR/Cargo.lock" \
     || fail "the lock file does not hold"
 }
 
@@ -230,10 +278,16 @@ test_fetches() {
   grep -q -- '--wrap-mode=nodownload' "$SCRIPT" || fail "meson may download an unpinned subproject"
   grep -q 'cargo vendor --locked' "$SCRIPT" || fail "cargo may fetch crates Cargo.lock does not pin"
   # shellcheck disable=SC2016 # the script's own text, not an expansion
-  grep -qF 'component_field "$name" cargo_lock' "$SCRIPT" \
+  grep -qF 'component_field "$name" cargo.lock' "$SCRIPT" \
     || fail "crates are vendored for a component the lock file does not name"
   grep -qx '  export CARGO_NET_OFFLINE=true' "$SCRIPT" || fail "cargo may reach the network while compiling"
-  echo "  ok: no meson download, crates vendored at Cargo.lock, cargo offline while compiling"
+  # The standard licence texts come from a pinned tarball, held to its digest.
+  grep -q "ensure_source \"\$(lock_get '.license_text_source.name')\"" "$SCRIPT" \
+    || fail "the build does not fetch the licence text source by its digest"
+  grep -q '(.components\[\], .license_text_source)' "$SOURCES" \
+    || fail "the source archive does not carry the licence text source"
+  echo "  ok: no meson download, crates vendored at Cargo.lock, cargo offline while compiling,"
+  echo "      the licence text source fetched by digest and carried in the source archive"
 }
 
 # librsvg's meson asks rustc which system libraries its static half needs and
@@ -295,6 +349,27 @@ test_boundary() {
     || fail "the boundary gate does not hold"
 }
 
+test_crates() {
+  echo "build_runtime_test: the list of Rust crates compiled in"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$RUNTIME_DIR/build_runtime_test_crates.py" \
+    "$RUNTIME_DIR/write_crates.py" "$WORK/crates" \
+    || fail "write_crates.py does not hold"
+}
+
+test_licenses() {
+  echo "build_runtime_test: the licence files of everything compiled in"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$RUNTIME_DIR/build_runtime_test_licenses.py" \
+    "$RUNTIME_DIR/write_licenses.py" "$WORK/licenses" \
+    || fail "write_licenses.py does not hold"
+}
+
+test_unreachable() {
+  echo "build_runtime_test: dropping what nothing needs"
+  command -v gcc >/dev/null 2>&1 || fail "gcc is needed to build the test objects"
+  bash "$RUNTIME_DIR/build_runtime_test_unreachable.sh" "$DROP" "$WORK/unreachable" \
+    || fail "drop_unreachable.sh does not hold"
+}
+
 main() {
   test_syntax
   test_build_refusals
@@ -308,6 +383,9 @@ main() {
   test_patches
   test_archives
   test_boundary
+  test_unreachable
+  test_crates
+  test_licenses
   echo "build_runtime_test: every check passed"
 }
 

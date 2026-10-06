@@ -69,6 +69,7 @@ require_inputs() {
   [ -f "$OUT_DIR/runtime-$arch.tar" ] || fail "no shipped tree at $OUT_DIR/runtime-$arch.tar"
   [ -f "$OUT_DIR/runtime-dev-$arch.tar" ] || fail "no dev tree at $OUT_DIR/runtime-dev-$arch.tar"
   [ -f "$RUNTIME_DIR/smoke/runtime_smoke.c" ] || fail "no smoke program to compile"
+  [ -f "$RUNTIME_DIR/smoke/sample.gif" ] || fail "no GIF to decode"
   [ -d "$MARKS_DIR" ] || fail "no marks at $MARKS_DIR"
   docker image inspect "$BUILD_IMAGE" >/dev/null 2>&1 \
     || fail "$BUILD_IMAGE is not built; run build_runtime.sh --container first"
@@ -135,6 +136,7 @@ SMOKE_SCRIPT='
   export GTK_A11Y=none
   export SMOKE_MARKS=/tmp/marks SMOKE_SCREENSHOT=/tmp/screenshot.png
   export SMOKE_PNG=/tmp/marks/channels/slack-color.png SMOKE_WEBP=/tmp/marks/channels/whatsapp-color.webp
+  export SMOKE_GIF=/tmp/sample.gif
   dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" /usr/lib/fermix-desktop/bin/runtime-smoke
   sha256sum /tmp/screenshot.png > /tmp/screenshot.png.sha256
   unset GST_PLUGIN_SYSTEM_PATH GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0
@@ -160,6 +162,7 @@ run_pass() {
   docker cp "$WORK/runtime-smoke" "$CONTAINER:/tmp/runtime-smoke"
   docker cp "$WORK/gst-inspect-1.0" "$CONTAINER:/tmp/gst-inspect-1.0"
   docker cp "$MARKS_DIR" "$CONTAINER:/tmp/marks"
+  docker cp "$RUNTIME_DIR/smoke/sample.gif" "$CONTAINER:/tmp/sample.gif"
   docker start -a "$CONTAINER" >&2 || fail "the $renderer pass failed"
   mkdir -p "$OUT_DIR/smoke"
   copy_out_checked /tmp/screenshot.png "$OUT_DIR/smoke/smoke-$renderer.png"
