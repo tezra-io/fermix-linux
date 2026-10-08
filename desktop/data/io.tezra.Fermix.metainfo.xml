@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo for the window fermix-desktop installs. GNOME Software and
+  KDE Discover show an application only when its metainfo, its desktop entry and
+  its icon are all installed, under one id; all three carry io.tezra.Fermix.
+
+  No release is written here: desktop/packaging/metainfo_release.py gives the
+  installed copy one, with the package's version and the build's date. The
+  summary is the desktop entry's Comment, word for word.
+-->
+<component type="desktop-application">
+  <id>io.tezra.Fermix</id>
+  <name>Fermix</name>
+  <summary>Set up Fermix and chat with it</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.tezra">
+    <name>Tezra</name>
+  </developer>
+
+  <description>
+    <p>
+      Fermix is a personal assistant that runs as a background service on this computer. This
+      window is where you set it up, talk to it, and see what it is doing.
+    </p>
+    <p>
+      The package carries the Fermix engine as well as the window. The engine runs as a service of
+      your own account, started by your systemd user manager, and keeps running when the window is
+      closed.
+    </p>
+    <ul>
+      <li>Chat with Fermix, or call it and talk</li>
+      <li>Connect a model provider and the channels Fermix answers on</li>
+      <li>Start the service, keep it running in the background, and open the window at login</li>
+      <li>Run the doctor's checks and read the service's log</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.tezra.Fermix.desktop</launchable>
+
+  <url type="homepage">https://fermix.ai</url>
+
+  <provides>
+    <binary>fermix-desktop</binary>
+    <binary>fermix</binary>
+    <dbus type="user">io.tezra.Fermix</dbus>
+  </provides>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+</component>

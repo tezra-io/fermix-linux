@@ -1,0 +1,78 @@
+# What fermix-desktop asks the host for, as package relations, one row each:
+#
+#   <soname, or @what> :: <deb relation> :: <rpm requirement>
+#
+# A soname row exists for every entry of host_libraries in runtime/RUNTIME.lock.json and for
+# nothing else: nfpm_config.py refuses a host library with no row and a row for a library the lock
+# does not name, and declares every row in both families. package_dependencies.py then proves the
+# other direction, that every NEEDED in the built package is either inside the private prefix or
+# covered by a relation the package declares.
+#
+# {glibc_floor} is the lock's glibc_floor. Every C library row names the C library with that
+# floor, so the two families state the floor once each and the loader rows need no relation of
+# their own: the loader ships inside libc6 and inside glibc. "(64bit)" is right for both
+# architectures the package is built for, x86_64 and aarch64.
+#
+# The deb names are Ubuntu 22.04's, the oldest deb target. libcurl4 holds on 24.04 and on Debian
+# 13 too, where libcurl4t64 provides it. The install smoke installs the package on ubuntu:22.04
+# and fedora:44 with apt and dnf, which is what proves each name exists.
+
+# The C library and the C++ runtime. The boundary gate holds every object to the lock's symbol
+# version ceilings, so no relation needs a version beyond the glibc floor.
+ld-linux-x86-64.so.2 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+ld-linux-aarch64.so.1 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libc.so.6 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libm.so.6 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libdl.so.2 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libpthread.so.0 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+librt.so.1 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libresolv.so.2 :: libc6 (>= {glibc_floor}) :: libc.so.6(GLIBC_{glibc_floor})(64bit)
+libgcc_s.so.1 :: libgcc-s1 :: libgcc_s.so.1()(64bit)
+libstdc++.so.6 :: libstdc++6 :: libstdc++.so.6()(64bit)
+
+# The GL driver. libepoxy loads most of these with dlopen, so no NEEDED names them; they are
+# declared because the lock lists them, and a host without them has no working GL.
+libGL.so.1 :: libgl1 :: libGL.so.1()(64bit)
+libEGL.so.1 :: libegl1 :: libEGL.so.1()(64bit)
+libgbm.so.1 :: libgbm1 :: libgbm.so.1()(64bit)
+libGLdispatch.so.0 :: libglvnd0 :: libGLdispatch.so.0()(64bit)
+libGLESv2.so.2 :: libgles2 :: libGLESv2.so.2()(64bit)
+libGLESv1_CM.so.1 :: libgles1 :: libGLESv1_CM.so.1()(64bit)
+libGLX.so.0 :: libglx0 :: libGLX.so.0()(64bit)
+libOpenGL.so.0 :: libopengl0 :: libOpenGL.so.0()(64bit)
+libdrm.so.2 :: libdrm2 :: libdrm.so.2()(64bit)
+
+# The session: the bus, X11, the keymap and the sound server.
+libdbus-1.so.3 :: libdbus-1-3 :: libdbus-1.so.3()(64bit)
+libX11.so.6 :: libx11-6 :: libX11.so.6()(64bit)
+libX11-xcb.so.1 :: libx11-xcb1 :: libX11-xcb.so.1()(64bit)
+libxcb.so.1 :: libxcb1 :: libxcb.so.1()(64bit)
+libxcb-render.so.0 :: libxcb-render0 :: libxcb-render.so.0()(64bit)
+libxcb-shm.so.0 :: libxcb-shm0 :: libxcb-shm.so.0()(64bit)
+libXext.so.6 :: libxext6 :: libXext.so.6()(64bit)
+libXi.so.6 :: libxi6 :: libXi.so.6()(64bit)
+libXcursor.so.1 :: libxcursor1 :: libXcursor.so.1()(64bit)
+libXdamage.so.1 :: libxdamage1 :: libXdamage.so.1()(64bit)
+libXfixes.so.3 :: libxfixes3 :: libXfixes.so.3()(64bit)
+libXrandr.so.2 :: libxrandr2 :: libXrandr.so.2()(64bit)
+libXinerama.so.1 :: libxinerama1 :: libXinerama.so.1()(64bit)
+libXrender.so.1 :: libxrender1 :: libXrender.so.1()(64bit)
+libxkbcommon.so.0 :: libxkbcommon0 :: libxkbcommon.so.0()(64bit)
+libpulse.so.0 :: libpulse0 :: libpulse.so.0()(64bit)
+
+# Libraries with the same SONAME on every target.
+libz.so.1 :: zlib1g :: libz.so.1()(64bit)
+libyaml-0.so.2 :: libyaml-0-2 :: libyaml-0.so.2()(64bit)
+libcurl.so.4 :: libcurl4 :: libcurl.so.4()(64bit)
+libzstd.so.1 :: libzstd1 :: libzstd.so.1()(64bit)
+liblzma.so.5 :: liblzma5 :: liblzma.so.5()(64bit)
+
+# Not libraries: files and services the private runtime reads from the host.
+#
+# The bundled GSettings backend is a client of the host's dconf service and reads the host's
+# schemas for every id the private ones do not define, org.gnome.desktop.interface among them.
+# The private fontconfig reads its configuration from the host's /etc/fonts, and without that
+# directory it finds no fonts at all.
+@dconf :: dconf-service :: dconf
+@gsettings-desktop-schemas :: gsettings-desktop-schemas :: gsettings-desktop-schemas
+@fontconfig :: fontconfig-config :: fontconfig

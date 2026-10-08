@@ -1,0 +1,7 @@
+# Session D-Bus activation of the window, installed by fermix-desktop at
+# /usr/share/dbus-1/services/io.tezra.Fermix.service. A call to io.tezra.Fermix while the window
+# is not running starts it as a GApplication service, which then handles the call: an Activate
+# opens the window.
+[D-BUS Service]
+Name=io.tezra.Fermix
+Exec=/usr/bin/fermix-desktop --gapplication-service

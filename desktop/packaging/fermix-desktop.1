@@ -1,0 +1,40 @@
+.\" The manual page of the window the fermix-desktop package installs. build_in_container.sh
+.\" compresses it into /usr/share/man/man1/fermix-desktop.1.gz.
+.TH FERMIX-DESKTOP 1 "October 2026" "fermix-desktop" "User Commands"
+.SH NAME
+fermix-desktop \- the window of the Fermix assistant
+.SH SYNOPSIS
+.B fermix-desktop
+.RB [ \-\-background ]
+.SH DESCRIPTION
+.B fermix-desktop
+is the window of Fermix, a personal assistant that runs as a service of your
+own account.
+In it you start the service, sign in to a model provider, chat with Fermix or
+talk to it by voice, follow its activity and read its log.
+.PP
+Only one window runs at a time: starting
+.B fermix-desktop
+again brings the running one forward.
+The service itself is
+.BR fermix (1),
+which this package carries too.
+.SH OPTIONS
+.TP
+.B \-\-background
+Start in the tray, without the window.
+This is how the desktop starts Fermix at login when
+.I Open at login
+is on.
+.TP
+.B \-\-help
+Show the options.
+.SH FILES
+.TP
+.I /usr/lib/fermix\-desktop
+The window and the GTK runtime it draws with, private to it.
+.TP
+.I /usr/share/doc/fermix\-desktop/copyright
+The licences of everything the package carries.
+.SH SEE ALSO
+.BR fermix (1)
