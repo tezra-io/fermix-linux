@@ -7,7 +7,7 @@ use fermix_client::model::{DetectResult, DetectRow};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 
 fn decode<T: DeserializeOwned>(name: &str) -> T {
     let found = SUCCESS

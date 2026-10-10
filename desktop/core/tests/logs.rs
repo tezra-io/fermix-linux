@@ -12,8 +12,8 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::Duration;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
-const ERRORS: &str = include_str!("fixtures/management/errors.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
+const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
 
 fn answer(name: &str) -> Result<Value, CallError> {
     let found = SUCCESS

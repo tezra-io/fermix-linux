@@ -88,11 +88,12 @@ impl App {
             "meetings" => self.detect_meetbot().await,
             "computer" => self.probe_computer().await,
             "integrations" => self.integrations.shown(),
+            "channels" => self.read_phone_row().await,
             _ => {}
         }
     }
 
-    async fn ensure_sections(&self) -> bool {
+    pub async fn ensure_sections(&self) -> bool {
         if self.settings_data.borrow().sections.is_some() {
             return true;
         }

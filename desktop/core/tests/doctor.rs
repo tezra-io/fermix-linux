@@ -14,8 +14,8 @@ use std::os::unix::net::UnixListener;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
-const ERRORS: &str = include_str!("fixtures/management/errors.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
+const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
 
 fn fixture(name: &str) -> Value {
     let found: Vec<Value> = SUCCESS

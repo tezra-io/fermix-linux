@@ -13,6 +13,9 @@ use std::time::Duration;
 /// 90 s, the CLI's own ceiling (M38 §4.1).
 const WAKE_INTERVAL: Duration = Duration::from_secs(1);
 const WAKE_TRIES: u32 = 90;
+/// What any restart does, where the daemon names no reason of its own.
+pub const INTERRUPTS: &str =
+    "Fermix stops and starts again. Anything it is doing right now is interrupted.";
 
 impl App {
     /// "Restart Fermix…" (M38 §6.4): take the daemon's drain lease, then have
@@ -83,7 +86,7 @@ impl App {
             })
             .unwrap_or_default();
         if reasons.is_empty() {
-            "Fermix stops and starts again. Anything it is doing right now is interrupted.".into()
+            INTERRUPTS.into()
         } else {
             reasons.join("\n")
         }

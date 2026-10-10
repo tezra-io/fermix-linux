@@ -9,7 +9,7 @@ use fermix_client::settings::{sections_for, SectionRows, Sections};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 
 fn golden<T: DeserializeOwned>(name: &str) -> T {
     let found: Value = SUCCESS

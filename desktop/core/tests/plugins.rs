@@ -17,7 +17,7 @@ use std::os::unix::net::UnixListener;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 
 fn fixture_result(name: &str) -> Value {
     let found = SUCCESS

@@ -477,6 +477,18 @@ pub fn matching_panes(
         .collect()
 }
 
+/// A channel's switch: its section's `<channel>_enabled` toggle. It is the first row of the phone
+/// section, whose last toggle is the local-network announcement, so position names nothing.
+pub fn switch_key<'a>(channel: &str, section: &'a SectionRows) -> Option<&'a str> {
+    assert!(!channel.is_empty(), "a channel is named");
+    let key = format!("{channel}_enabled");
+    section
+        .rows
+        .iter()
+        .find(|r| r.kind == Kind::Toggle && r.key == key)
+        .map(|r| r.key.as_str())
+}
+
 /// A channel's state in words. The daemon publishes only a status atom.
 pub fn channel_word(enabled: bool, status: Option<&str>) -> &'static str {
     match (enabled, status) {

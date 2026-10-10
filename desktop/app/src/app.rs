@@ -14,6 +14,7 @@ use crate::integrations::IntegrationsPane;
 use crate::logs::LogsPage;
 use crate::mascot;
 use crate::microphones::MicrophoneWatch;
+use crate::phone_flow::{intent, Phone};
 use crate::providers::ProvidersPage;
 use crate::settings::{SettingsData, SettingsPage};
 use crate::shell::{self, Shell};
@@ -52,6 +53,8 @@ pub struct App {
     pub settings_data: RefCell<SettingsData>,
     /// The setup assistant while it is open.
     pub assistant: RefCell<Option<Rc<Assistant>>>,
+    /// The Phone dialog and its pairing window.
+    pub phone: RefCell<Phone>,
     /// Pages that read the daemon themselves while they are in view.
     pub integrations: Rc<IntegrationsPane>,
     doctor: Rc<DoctorPage>,
@@ -130,6 +133,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         settings,
         settings_data: RefCell::default(),
         assistant: RefCell::default(),
+        phone: RefCell::default(),
         integrations,
         doctor,
         logs,
@@ -200,6 +204,8 @@ impl App {
         );
         self.home.render(&state);
         self.providers.render(&state, Instant::now());
+        // Before Settings, which draws the Phones step's rows once the step has added them.
+        self.render_phone();
         self.settings.render(&state, &self.settings_data.borrow());
         // One prominent header action (M38 §5.6): finish setup first, then restart.
         // Behind an outside change the banner comes first: reload, then restart (spec G7).
@@ -477,6 +483,7 @@ fn install_actions(app: &Rc<App>) {
         |app, text| async move { app.shell.toast(&text) },
     );
     install_settings_actions(app);
+    install_phone_actions(app);
     install_setup_actions(app);
     install_service_actions(app);
     install_chat_actions(app);
@@ -610,6 +617,45 @@ fn install_settings_actions(app: &Rc<App>) {
     });
     on(app, "provider-settings", |app, provider| async move {
         app.provider_settings(&provider)
+    });
+}
+
+/// The Phone row's button and every button of the Phone dialog.
+fn install_phone_actions(app: &Rc<App>) {
+    on(app, "phone-open", |app, target| async move {
+        match intent(&target) {
+            Some(intent) => app.open_phone(intent),
+            None => glib::g_warning!("fermix", "the Phone dialog has no {target} step"),
+        }
+    });
+    on_plain(
+        app,
+        "phone-dismiss",
+        |app| async move { app.phone_dismiss() },
+    );
+    on_plain(app, "phone-turn-on", |app| async move {
+        app.phone_turn_on().await
+    });
+    on_value(app, "phone-decide", |app, approved: bool| async move {
+        app.phone_decide(approved).await
+    });
+    on_plain(app, "phone-ending", |app| async move {
+        app.phone_ending().await
+    });
+    on_plain(app, "phone-phones", |app| async move {
+        app.phone_show_phones().await
+    });
+    on_plain(app, "phone-pair-another", |app| async move {
+        app.phone_pair_another().await
+    });
+    on(app, "phone-forget-ask", |app, device| async move {
+        app.phone_forget_ask(&device)
+    });
+    on_plain(app, "phone-forget-withdraw", |app| async move {
+        app.phone_forget_withdraw()
+    });
+    on_plain(app, "phone-forget", |app| async move {
+        app.phone_forget().await
     });
 }
 

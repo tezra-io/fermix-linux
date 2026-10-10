@@ -5,16 +5,16 @@ use fermix_client::management::{decode_response, CallError, Refusal};
 use fermix_client::model::ModelPage;
 use fermix_client::settings::{
     channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, pane, placeholder, read_failure, sections_for, text_answer, unlisted_models,
-    value_width, with_listing, ApplyResult, Kind, ReloadResult, Row, SectionRows, Sections,
-    FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES, WIDEST_VALUE_CHARS,
+    number_view, pane, placeholder, read_failure, sections_for, switch_key, text_answer,
+    unlisted_models, value_width, with_listing, ApplyResult, Kind, ReloadResult, Row, SectionRows,
+    Sections, FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES, WIDEST_VALUE_CHARS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 
 fn fixtures() -> impl Iterator<Item = Value> {
     SUCCESS
@@ -327,6 +327,26 @@ fn a_channel_says_off_needs_setup_or_connected() {
     assert_eq!(channel_word(false, None), "Off");
     assert_eq!(channel_word(true, Some("setup_required")), "Needs setup");
     assert_eq!(channel_word(true, Some("ok")), "Connected");
+}
+
+/// A channel's switch is its `<channel>_enabled` toggle, wherever the section puts it; the phone
+/// section's last toggle is the local-network announcement.
+#[test]
+fn every_channels_switch_is_its_enabled_row() {
+    for channel in [
+        "telegram", "whatsapp", "discord", "slack", "signal", "imessage", "mobile",
+    ] {
+        let section: SectionRows = decode(&format!("settings_get_channels_{channel}"));
+        let expected = format!("{channel}_enabled");
+        assert_eq!(switch_key(channel, &section), Some(expected.as_str()));
+    }
+    let mut mobile: SectionRows = decode("settings_get_channels_mobile");
+    mobile.rows.retain(|r| r.key != "mobile_enabled");
+    assert_eq!(
+        switch_key("mobile", &mobile),
+        None,
+        "no other toggle stands in"
+    );
 }
 
 #[test]

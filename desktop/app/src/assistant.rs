@@ -6,6 +6,7 @@
 use crate::providers::ProvidersPage;
 use adw::prelude::*;
 use fermix_client::onboarding::{DEFAULT_STYLE, STYLES};
+use fermix_client::phone::SETUP_ROW;
 use gtk::glib;
 
 pub struct AboutFields {
@@ -79,6 +80,8 @@ pub struct Assistant {
     pub about: AboutFields,
     pub applying: ApplyingRows,
     pub ready: adw::StatusPage,
+    /// The last screen's phone row, drawn only where the daemon publishes the phone channel.
+    pub phone: adw::ActionRow,
 }
 
 impl Assistant {
@@ -87,7 +90,7 @@ impl Assistant {
         let connect_next = pill("Continue", "win.assistant-next");
         let (about, about_page) = about_page();
         let (applying, applying_page) = applying_page();
-        let (ready, ready_page) = ready_page();
+        let (ready, phone, ready_page) = ready_page();
         let nav = adw::NavigationView::new();
         nav.add(&welcome_page());
         nav.add(&page(
@@ -113,6 +116,7 @@ impl Assistant {
             about,
             applying,
             ready,
+            phone,
         }
     }
 
@@ -260,23 +264,23 @@ fn applying_page() -> (ApplyingRows, adw::NavigationPage) {
     (rows, page("applying", "Applying", &content, None))
 }
 
-fn ready_page() -> (adw::StatusPage, adw::NavigationPage) {
+/// The last screen. Its phone row, between the other two, opens Channels with the Phone dialog
+/// up; it stays hidden until the daemon is known to publish the phone channel.
+fn ready_page() -> (adw::StatusPage, adw::ActionRow, adw::NavigationPage) {
     let next = adw::PreferencesGroup::builder()
         .title("Next, if you like")
         .build();
-    for (title, pane) in [
+    let rows = [
         ("Reach Fermix from a chat app", "channels"),
+        (SETUP_ROW, "phone"),
         ("Set up voice", "voice"),
-    ] {
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .activatable(true)
-            .build();
-        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-        row.set_action_name(Some("win.assistant-finish"));
-        row.set_action_target_value(Some(&glib::Variant::from(pane)));
-        next.add(&row);
+    ]
+    .map(|(title, target)| next_row(title, target));
+    for row in &rows {
+        next.add(row);
     }
+    let phone = rows[1].clone();
+    phone.set_visible(false);
     let finish = gtk::Button::builder()
         .label("Start chatting")
         .halign(gtk::Align::Center)
@@ -294,7 +298,18 @@ fn ready_page() -> (adw::StatusPage, adw::NavigationPage) {
         .build();
     let page = page("ready", "Ready", &status, None);
     page.set_can_pop(false);
-    (status, page)
+    (status, phone, page)
+}
+
+fn next_row(title: &str, target: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .activatable(true)
+        .build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    row.set_action_name(Some("win.assistant-finish"));
+    row.set_action_target_value(Some(&glib::Variant::from(target)));
+    row
 }
 
 fn error_label() -> gtk::Label {

@@ -4,7 +4,7 @@ use fermix_client::management::decode_response;
 use fermix_client::overview::{channels_line, duration_words, tools_count, Overview};
 use serde_json::Value;
 
-const SUCCESS: &str = include_str!("fixtures/management/success.jsonl");
+const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 
 fn overview_json() -> Value {
     let found = SUCCESS
@@ -37,6 +37,15 @@ fn tools_are_built_in_plus_mcp() {
 #[test]
 fn channels_list_the_enabled_ones_by_their_names() {
     assert_eq!(channels_line(&overview()), "Telegram, iMessage");
+}
+
+/// Home does not read `settings.sections`, so the phone channel's title is spelled here too.
+#[test]
+fn the_phone_channel_reads_as_phone() {
+    let mut json = overview_json();
+    json["channels"][0]["name"] = Value::from("mobile");
+    let overview: Overview = serde_json::from_value(json).unwrap();
+    assert_eq!(channels_line(&overview), "Phone, iMessage");
 }
 
 #[test]

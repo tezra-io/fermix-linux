@@ -1,14 +1,17 @@
 //! Channels: one row per channel with its state in words, a switch, and a way
 //! into its credentials (M38 §5.7). The daemon supplies every field of a
 //! channel; this pane only knows that a channel's switch is its section's
-//! toggle row, the last one.
+//! `<channel>_enabled` toggle. The phone channel's row states its phones and
+//! opens the Phone dialog instead (M60 §3.2).
 
 use crate::descriptor::SectionView;
 use crate::marks;
+use crate::phone_flow::target;
 use crate::settings::SettingsData;
 use adw::prelude::*;
 use fermix_client::model::ChannelRow;
-use fermix_client::settings::{channel_word, sections_for, Kind, Section};
+use fermix_client::phone::{self, CHANNEL};
+use fermix_client::settings::{self as settings_rules, channel_word, sections_for, Section};
 use gtk::glib::{self, variant::ToVariant};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -19,8 +22,9 @@ use std::rc::Rc;
 struct Line {
     name: String,
     title: String,
-    word: &'static str,
-    configured: bool,
+    word: String,
+    /// The row's one button: its label, its action and the action's target.
+    button: (&'static str, &'static str, String),
     /// The switch's row key and value, once the channel's section has been read.
     switch: Option<(String, bool)>,
     error: Option<String>,
@@ -81,14 +85,37 @@ pub fn section_id(channel: &str) -> String {
     format!("channels.{channel}")
 }
 
-/// The channel's switch is the last toggle row of its section.
+/// The channel's switch, once its section has been read.
 pub fn switch_key(data: &SettingsData, channel: &str) -> Option<String> {
     let rows = data.rows.get(&section_id(channel))?;
-    rows.rows
-        .iter()
-        .rev()
-        .find(|r| r.kind == Kind::Toggle)
-        .map(|r| r.key.clone())
+    settings_rules::switch_key(channel, rows).map(str::to_owned)
+}
+
+/// A channel's state in words and its button: its credentials, or for the phone channel, the
+/// Phone dialog with what the row's status says it opens.
+fn words(
+    channel: &ChannelRow,
+    data: &SettingsData,
+) -> (String, (&'static str, &'static str, String)) {
+    if channel.name == CHANNEL {
+        let row = phone::row(data.phone_status.as_ref(), data.phone_devices.as_ref());
+        let button = (
+            row.action_title(),
+            "win.phone-open",
+            target(row.opens).to_owned(),
+        );
+        return (row.status, button);
+    }
+    let verb = if channel.configured {
+        "Change…"
+    } else {
+        "Set up…"
+    };
+    let word = channel_word(channel.enabled, channel.status.as_deref());
+    (
+        word.to_owned(),
+        (verb, "win.channel-setup", channel.name.clone()),
+    )
 }
 
 fn line(channel: &ChannelRow, data: &SettingsData, locked: bool) -> Line {
@@ -110,11 +137,12 @@ fn line(channel: &ChannelRow, data: &SettingsData, locked: bool) -> Line {
         Some((key.clone(), row.value.as_bool().unwrap_or(false)))
     });
     let error = key.and_then(|key| data.errors.get(&(section, key)).cloned());
+    let (word, button) = words(channel, data);
     Line {
         name: channel.name.clone(),
         title,
-        word: channel_word(channel.enabled, channel.status.as_deref()),
-        configured: channel.configured,
+        word,
+        button,
         switch,
         error,
         locked,
@@ -122,7 +150,7 @@ fn line(channel: &ChannelRow, data: &SettingsData, locked: bool) -> Line {
 }
 
 fn channel_row(line: &Line) -> adw::ActionRow {
-    let subtitle = line.error.as_deref().unwrap_or(line.word);
+    let subtitle = line.error.as_deref().unwrap_or(&line.word);
     let row = adw::ActionRow::builder()
         .title(glib::markup_escape_text(&line.title))
         .subtitle(glib::markup_escape_text(subtitle))
@@ -131,17 +159,13 @@ fn channel_row(line: &Line) -> adw::ActionRow {
     if line.error.is_some() {
         row.add_css_class("setting-refused");
     }
-    let verb = if line.configured {
-        "Change…"
-    } else {
-        "Set up…"
-    };
+    let (verb, action, target) = &line.button;
     let setup = gtk::Button::builder()
-        .label(verb)
+        .label(*verb)
         .valign(gtk::Align::Center)
         .build();
-    setup.set_action_name(Some("win.channel-setup"));
-    setup.set_action_target_value(Some(&line.name.to_variant()));
+    setup.set_action_name(Some(action));
+    setup.set_action_target_value(Some(&target.to_variant()));
     setup.update_property(&[gtk::accessible::Property::Label(&format!(
         "{verb} {}",
         line.title

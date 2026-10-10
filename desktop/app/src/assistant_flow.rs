@@ -7,6 +7,7 @@ use crate::dialogs::form_dialog;
 use adw::prelude::*;
 use fermix_client::management::CallError;
 use fermix_client::onboarding::{finish_gate, landing, personalization_answer, Stage};
+use fermix_client::phone::{offers_phone, Intent};
 use fermix_client::view::answers_with;
 use gtk::glib;
 use std::rc::Rc;
@@ -157,6 +158,14 @@ impl App {
 
     async fn assistant_finish_gate(&self) {
         self.refresh().await;
+        // The phone row is offered only where the daemon publishes the phone channel.
+        let offers = self.ensure_sections().await
+            && self
+                .settings_data
+                .borrow()
+                .sections
+                .as_deref()
+                .is_some_and(offers_phone);
         let verdict = {
             let state = self.state.borrow();
             let Some(snapshot) = state.snapshot() else {
@@ -170,6 +179,7 @@ impl App {
             Ok(line) => self.with_assistant(|a| {
                 a.ready
                     .set_description(Some(&format!("Answers with {line}.")));
+                a.phone.set_visible(offers);
                 a.show("ready");
             }),
             Err(sentence) => self.applying_failed(sentence),
@@ -192,6 +202,10 @@ impl App {
         let assistant = self.assistant.borrow_mut().take();
         if let Some(assistant) = assistant {
             assistant.dialog.close();
+        }
+        if target == "phone" {
+            self.show_page("channels");
+            return self.open_phone(Intent::Pair);
         }
         self.show_page(target);
         if target == "chat" {

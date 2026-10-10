@@ -11,6 +11,7 @@ use crate::status::{down_view, waiting, DownPage};
 use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
+use fermix_client::mobile::{MobileDevices, MobileStatus};
 use fermix_client::model::DetectRow;
 use fermix_client::settings::{
     pane, sections_for, with_listing, Listing, Section, SectionRows, GROUPS, PANES,
@@ -58,6 +59,10 @@ pub struct SettingsData {
     pub meetbot: Option<DetectRow>,
     /// The computer-use helper's last probe, or why it could not be read.
     pub probe: Option<Result<ComputerPermissions, String>>,
+    /// The phone channel as `mobile.status` last answered, or why it did not.
+    pub phone_status: Option<Result<MobileStatus, String>>,
+    /// The paired phones as `mobile.devices.list` last answered, or why it did not.
+    pub phone_devices: Option<Result<MobileDevices, String>>,
 }
 
 impl SettingsData {

@@ -160,6 +160,13 @@ const MARKS: &[Mark] = &[
         ink: Ink::File(asset!("channels/discord-blurple.svg")),
         plate: Plate::Neutral,
     },
+    // Fermix's own phone app, so Fermix's own mark, as macOS draws it.
+    Mark {
+        kind: Kind::Channel,
+        key: "mobile",
+        ink: Ink::File(asset!("channels/phone-color.svg")),
+        plate: Plate::Bleed,
+    },
     Mark {
         kind: Kind::Channel,
         key: "signal",

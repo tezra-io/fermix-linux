@@ -206,6 +206,32 @@
       "linux_note": "Decoded by the image loader. On 2026-09-25 gdk::Texture::from_bytes decoded it, 194 by 194, inside the installed io.tezra.Fermix sandbox. In the dev loop the loader cannot start and the row shows the neutral channel icon."
     },
     {
+      "key": "mobile",
+      "kind": "channel",
+      "origin": "first_party",
+      "display_name": "Phone",
+      "accessibility_label": "Phone",
+      "treatment": "vendor_mark",
+      "plate": "bleed",
+      "source_url": "https://github.com/tezra-io/fermix",
+      "source_retrieved_on": "2026-10-04",
+      "usage_terms": "Fermix's own artwork, drawn for this surface; no vendor terms apply.",
+      "permitted_treatment": "Ship the file as it is; it carries its own ground and fills the tile.",
+      "dark_mode_policy": "An opaque gradient tile with a white glyph, the same on both appearances.",
+      "assets": [
+        {
+          "role": "color",
+          "path": "channels/phone-color.svg",
+          "sha256": "1d4e49f0488e4367fcf20309623d3f7516bca7956ef5ebd20de8ab584ee850c4",
+          "asset_url": "https://github.com/tezra-io/fermix/blob/dev/apps/fermix_web/lib/fermix_web_web/live/setup_live/phone_logo.svg",
+          "retrieved_on": "2026-10-04"
+        }
+      ],
+      "notes": "The phone channel row of the Channels pane (setup.state.get names it mobile). Fermix's own phone app, so Fermix's own mark.",
+      "roster_note": "Not a vendor: the phone is Fermix's own companion app, so it is absent from the roster's channel set, which lists the messaging vendors the setup form map publishes.",
+      "linux_note": "Copied on 2026-10-10 from the macOS PROVENANCE.json whose sha256 is 0ac0a6689ac1dfface75c0151d8d0459cc36846c510658cdf92d6351ceb0b1b0, later than the copy the other records come from. The Phone row of the Channels pane draws it, full tile, as macOS does."
+    },
+    {
       "key": "computer_use",
       "kind": "feature",
       "origin": "first_party",

@@ -383,6 +383,7 @@ pub fn channel_title(name: &str) -> &str {
         "slack" => "Slack",
         "signal" => "Signal",
         "imessage" => "iMessage",
+        "mobile" => "Phone",
         other => other,
     }
 }
