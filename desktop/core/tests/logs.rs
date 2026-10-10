@@ -1,10 +1,11 @@
 //! Logs: pages decoded from the engine's own fixtures, the query the app sends,
-//! and the merge that keeps the held lines in order with no duplicates.
+//! and the merge that keeps the held lines newest first with no duplicates.
 
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::logs::{
-    copy_text, emphasis, line_text, query_params, search_term, shown_time, Emphasis, Filter, Level,
-    LogEntry, LogLines, LogPage, MAX_SEARCH_BYTES, PAGE_LIMIT, SEARCH_TOO_LONG,
+    capped_note, copy_text, emphasis, line_text, query_params, search_term, shown_time, Emphasis,
+    Filter, Level, LogEntry, LogLines, LogPage, Merged, MAX_SEARCH_BYTES, PAGE_LIMIT,
+    SEARCH_TOO_LONG,
 };
 use fermix_client::management::{decode_response, CallError, Management};
 use serde_json::{json, Value};
@@ -45,12 +46,24 @@ fn page(from: u32, to: u32, cursor: Option<&str>) -> LogPage {
     }
 }
 
-fn numbers(lines: &LogLines) -> Vec<u32> {
-    lines
-        .entries()
+fn numbers_of(entries: &[LogEntry]) -> Vec<u32> {
+    entries
         .iter()
         .map(|e| e.message.trim_start_matches("line ").parse().unwrap())
         .collect()
+}
+
+/// The held lines' numbers, in the order the view shows them.
+fn numbers(lines: &LogLines) -> Vec<u32> {
+    numbers_of(lines.entries())
+}
+
+/// A list model taking a merge as the app's store does: `newer` at the head,
+/// then `dropped` let go from the tail and `older` added there.
+fn take(model: &mut Vec<LogEntry>, merged: Merged) {
+    model.splice(0..0, merged.newer);
+    model.truncate(model.len() - merged.dropped);
+    model.extend(merged.older);
 }
 
 #[test]
@@ -137,70 +150,75 @@ fn a_search_is_trimmed_blank_is_no_search_and_the_limit_counts_bytes() {
 }
 
 #[test]
-fn the_first_page_is_held_in_order_with_its_cursor_for_older() {
+fn the_first_page_is_held_newest_first_with_its_cursor_for_older() {
     let lines = LogLines::new(page(0, 5, Some("c1")), 100);
-    assert_eq!(numbers(&lines), [0, 1, 2, 3, 4]);
+    assert_eq!(numbers(&lines), [4, 3, 2, 1, 0]);
     assert_eq!(lines.older_cursor(), Some("c1"));
     assert!(lines.can_load_older());
     assert!(!lines.capped());
 }
 
 #[test]
-fn a_poll_appends_only_the_newer_lines_and_keeps_the_older_cursor() {
+fn a_poll_prepends_only_the_newer_lines_and_keeps_the_older_cursor() {
     let mut lines = LogLines::new(page(0, 5, Some("c1")), 100);
-    let merged = lines.append_newer(page(2, 8, Some("poll")));
+    let merged = lines.prepend_newer(page(2, 8, Some("poll")));
+    assert_eq!(numbers_of(&merged.newer), [7, 6, 5], "newest first");
     assert_eq!(merged.dropped, 0);
-    assert_eq!(merged.added.len(), 3);
-    assert_eq!(numbers(&lines), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert!(merged.older.is_empty());
+    assert_eq!(numbers(&lines), [7, 6, 5, 4, 3, 2, 1, 0]);
     assert_eq!(lines.older_cursor(), Some("c1"), "a poll never moves it");
-    let again = lines.append_newer(page(2, 8, Some("poll")));
-    assert!(again.added.is_empty(), "the same poll twice adds nothing");
-    assert_eq!(numbers(&lines), [0, 1, 2, 3, 4, 5, 6, 7]);
+    let again = lines.prepend_newer(page(2, 8, Some("poll")));
+    assert_eq!(
+        again,
+        Merged::default(),
+        "the same poll twice changes nothing"
+    );
+    assert_eq!(numbers(&lines), [7, 6, 5, 4, 3, 2, 1, 0]);
 }
 
 #[test]
-fn a_poll_with_nothing_in_common_appends_it_all() {
+fn a_poll_with_nothing_in_common_prepends_it_all() {
     let mut lines = LogLines::new(page(0, 3, None), 100);
-    let merged = lines.append_newer(page(10, 12, None));
-    assert_eq!(merged.added.len(), 2);
-    assert_eq!(numbers(&lines), [0, 1, 2, 10, 11]);
+    let merged = lines.prepend_newer(page(10, 12, None));
+    assert_eq!(numbers_of(&merged.newer), [11, 10]);
+    assert_eq!(numbers(&lines), [11, 10, 2, 1, 0]);
 }
 
 #[test]
-fn load_older_prepends_replaces_the_cursor_and_drops_the_shifted_overlap() {
+fn load_older_appends_replaces_the_cursor_and_drops_the_shifted_overlap() {
     let mut lines = LogLines::new(page(10, 15, Some("c1")), 100);
-    lines.append_newer(page(12, 17, None));
-    // Two lines were appended since c1 was minted, so the older page overlaps by two.
-    let merged = lines.prepend_older(page(7, 12, Some("c2")));
+    lines.prepend_newer(page(12, 17, None));
+    // Two lines were logged since c1 was minted, so the older page overlaps by two.
+    let merged = lines.append_older(page(7, 12, Some("c2")));
+    assert!(merged.newer.is_empty());
     assert_eq!(merged.dropped, 0);
-    let added: Vec<&str> = merged.added.iter().map(|e| e.message.as_str()).collect();
-    assert_eq!(added, ["line 7", "line 8", "line 9"]);
-    assert_eq!(numbers(&lines), [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    assert_eq!(numbers_of(&merged.older), [9, 8, 7], "newest first");
+    assert_eq!(numbers(&lines), [16, 15, 14, 13, 12, 11, 10, 9, 8, 7]);
     assert_eq!(lines.older_cursor(), Some("c2"));
-    lines.prepend_older(page(5, 7, None));
-    assert_eq!(numbers(&lines)[..2], [5, 6]);
+    lines.append_older(page(5, 7, None));
+    assert_eq!(numbers(&lines)[8..], [8, 7, 6, 5]);
     assert!(!lines.can_load_older(), "a null cursor is the honest end");
 }
 
 #[test]
-fn past_the_cap_a_poll_lets_the_oldest_go_and_ends_older_history() {
+fn past_the_cap_a_poll_lets_the_oldest_go_from_the_tail_and_ends_older_history() {
     let mut lines = LogLines::new(page(0, 4, Some("c1")), 5);
-    let merged = lines.append_newer(page(4, 7, None));
+    let merged = lines.prepend_newer(page(4, 7, None));
+    assert_eq!(numbers_of(&merged.newer), [6, 5, 4]);
     assert_eq!(merged.dropped, 2);
-    assert_eq!(merged.added.len(), 3);
-    assert_eq!(numbers(&lines), [2, 3, 4, 5, 6]);
+    assert_eq!(numbers(&lines), [6, 5, 4, 3, 2]);
     assert!(lines.capped());
     assert_eq!(lines.older_cursor(), None, "older lines would leave a gap");
     assert!(!lines.can_load_older());
 }
 
 #[test]
-fn past_the_cap_load_older_keeps_the_lines_next_to_the_head() {
+fn past_the_cap_load_older_keeps_the_lines_next_to_the_oldest_held() {
     let mut lines = LogLines::new(page(10, 13, Some("c1")), 5);
-    let merged = lines.prepend_older(page(5, 10, Some("c2")));
+    let merged = lines.append_older(page(5, 10, Some("c2")));
     assert_eq!(merged.dropped, 0);
-    assert_eq!(merged.added.len(), 2);
-    assert_eq!(numbers(&lines), [8, 9, 10, 11, 12]);
+    assert_eq!(numbers_of(&merged.older), [9, 8]);
+    assert_eq!(numbers(&lines), [12, 11, 10, 9, 8]);
     assert!(lines.capped());
     assert!(!lines.can_load_older());
 }
@@ -208,9 +226,46 @@ fn past_the_cap_load_older_keeps_the_lines_next_to_the_head() {
 #[test]
 fn a_first_page_larger_than_the_cap_keeps_its_newest_lines() {
     let lines = LogLines::new(page(0, 8, Some("c1")), 5);
-    assert_eq!(numbers(&lines), [3, 4, 5, 6, 7]);
+    assert_eq!(numbers(&lines), [7, 6, 5, 4, 3]);
     assert!(lines.capped());
     assert!(!lines.can_load_older());
+}
+
+#[test]
+fn a_list_model_taking_each_merge_mirrors_the_held_lines() {
+    let mut lines = LogLines::new(page(10, 13, Some("c1")), 8);
+    let mut model = lines.entries().to_vec();
+    let check = |lines: &LogLines, model: &[LogEntry]| {
+        assert_eq!(numbers_of(model), numbers(lines));
+    };
+    take(&mut model, lines.prepend_newer(page(11, 15, None)));
+    check(&lines, &model);
+    take(&mut model, lines.append_older(page(8, 12, Some("c2"))));
+    check(&lines, &model);
+    take(&mut model, lines.prepend_newer(page(14, 17, None)));
+    check(&lines, &model);
+    assert_eq!(numbers(&lines), [16, 15, 14, 13, 12, 11, 10, 9]);
+    // More new lines than the cap holds: some of this poll's own oldest go too.
+    take(&mut model, lines.prepend_newer(page(17, 27, None)));
+    check(&lines, &model);
+    assert_eq!(numbers(&lines), [26, 25, 24, 23, 22, 21, 20, 19]);
+    assert!(lines.capped());
+}
+
+#[test]
+fn copy_reads_as_shown_newest_first() {
+    let lines = LogLines::new(page(0, 3, None), 100);
+    let copied = copy_text(lines.entries());
+    let shown: Vec<&str> = copied
+        .lines()
+        .map(|l| l.rsplit(' ').next().unwrap())
+        .collect();
+    assert_eq!(shown, ["2", "1", "0"]);
+}
+
+#[test]
+fn the_cap_note_names_the_cap() {
+    assert_eq!(capped_note(), "This view keeps the newest 5000 lines.");
 }
 
 #[test]

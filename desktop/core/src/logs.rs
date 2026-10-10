@@ -1,7 +1,8 @@
 //! Logs: `logs.query` pages and the lines the app holds from them. The daemon
 //! owns the reads; the app never opens a log file. Each page comes back oldest
-//! first. A poll repeats the cursorless query and appends what is new at the
-//! tail; "Load older" follows the cursor and prepends. Only `backward` paging is
+//! first, and the lines are held newest first, as the view shows them. A poll
+//! repeats the cursorless query and prepends what is new at the head; "Load
+//! older" follows the cursor and appends at the tail. Only `backward` paging is
 //! used: `forward` overlaps its cursor's page.
 //!
 //! Messages are log-redacted but not path-scrubbed: they hold `/home/<user>`.
@@ -16,7 +17,7 @@ use std::collections::HashSet;
 pub const PAGE_LIMIT: u32 = 200;
 /// The daemon refuses a longer search, counted in UTF-8 bytes.
 pub const MAX_SEARCH_BYTES: usize = 256;
-/// The most lines the view holds; past it the oldest are let go.
+/// The most lines the view holds; past it the oldest, at the tail, are let go.
 pub const MAX_LINES: usize = 5_000;
 
 pub const SEARCH_TOO_LONG: &str = "That search is longer than Fermix accepts, so it was not sent.";
@@ -159,17 +160,22 @@ fn key(entry: &LogEntry) -> Key<'_> {
     )
 }
 
-/// What one merge changed, so a list model can take the same edit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What one merge changed, as the edit a list model holding the same lines
+/// takes: `newer` inserted at the head, then `dropped` rows removed from the
+/// tail and `older` added there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Merged {
-    /// Rows let go from the oldest end to stay under the cap.
+    /// Rows added at the head, newest first.
+    pub newer: Vec<LogEntry>,
+    /// Rows let go from the tail, the oldest, to stay under the cap.
     pub dropped: usize,
-    /// Rows added at the end the merge worked on, oldest first.
-    pub added: Vec<LogEntry>,
+    /// Rows added at the tail, newest first.
+    pub older: Vec<LogEntry>,
 }
 
-/// The lines the view holds, oldest first, with no gaps: past the cap the
-/// oldest are let go and older history ends there, rather than leave a hole.
+/// The lines the view holds, newest first, with no gaps and no line twice:
+/// past the cap the oldest are let go from the tail and older history ends
+/// there, rather than leave a hole.
 #[derive(Debug, Clone)]
 pub struct LogLines {
     entries: Vec<LogEntry>,
@@ -179,10 +185,13 @@ pub struct LogLines {
 }
 
 impl LogLines {
+    /// The first page for a filter, which comes oldest first.
     pub fn new(first: LogPage, cap: usize) -> Self {
         assert!(cap > 0, "the view must hold at least one line");
+        let mut entries = first.entries;
+        entries.reverse();
         let mut lines = LogLines {
-            entries: first.entries,
+            entries,
             older: first.cursor,
             capped: false,
             cap,
@@ -191,6 +200,7 @@ impl LogLines {
         lines
     }
 
+    /// Newest first, as the view shows them.
     pub fn entries(&self) -> &[LogEntry] {
         &self.entries
     }
@@ -209,49 +219,64 @@ impl LogLines {
     }
 
     /// A poll: the newest page again. Its entries already held sit among the
-    /// last `page.len()` held rows, so only those are compared.
-    pub fn append_newer(&mut self, poll: LogPage) -> Merged {
-        let start = self.entries.len().saturating_sub(poll.entries.len());
-        let recent: HashSet<Key<'_>> = self.entries[start..].iter().map(key).collect();
-        let added: Vec<LogEntry> = poll
+    /// first `page.len()` held rows, so only those are compared.
+    pub fn prepend_newer(&mut self, poll: LogPage) -> Merged {
+        let end = self.entries.len().min(poll.entries.len());
+        let recent: HashSet<Key<'_>> = self.entries[..end].iter().map(key).collect();
+        let newer: Vec<LogEntry> = poll
             .entries
             .into_iter()
+            .rev()
             .filter(|e| !recent.contains(&key(e)))
             .collect();
-        self.entries.extend(added.iter().cloned());
+        self.entries.splice(0..0, newer.iter().cloned());
         let dropped = self.trim_oldest();
-        Merged { dropped, added }
+        Merged {
+            newer,
+            dropped,
+            older: Vec::new(),
+        }
     }
 
-    /// "Load older". Lines appended since the cursor was minted shift its window
-    /// newer, so rows already held come back and are dropped here.
-    pub fn prepend_older(&mut self, page: LogPage) -> Merged {
+    /// "Load older". Lines logged since the cursor was minted shift its window
+    /// newer, so rows already held come back and are dropped here. Past the cap
+    /// only the rows next to the oldest held one are kept.
+    pub fn append_older(&mut self, page: LogPage) -> Merged {
         let held: HashSet<Key<'_>> = self.entries.iter().map(key).collect();
-        let mut added: Vec<LogEntry> = page
+        let mut older: Vec<LogEntry> = page
             .entries
             .into_iter()
+            .rev()
             .filter(|e| !held.contains(&key(e)))
             .collect();
         self.older = page.cursor;
         let room = self.cap.saturating_sub(self.entries.len());
-        if added.len() > room {
-            added.drain(..added.len() - room);
+        if older.len() > room {
+            older.truncate(room);
             self.older = None;
             self.capped = true;
         }
-        self.entries.splice(0..0, added.iter().cloned());
-        Merged { dropped: 0, added }
+        self.entries.extend(older.iter().cloned());
+        Merged {
+            older,
+            ..Merged::default()
+        }
     }
 
     fn trim_oldest(&mut self) -> usize {
         let over = self.entries.len().saturating_sub(self.cap);
         if over > 0 {
-            self.entries.drain(..over);
+            self.entries.truncate(self.cap);
             self.older = None;
             self.capped = true;
         }
         over
     }
+}
+
+/// Said at the oldest end once the cap has let lines go.
+pub fn capped_note() -> String {
+    format!("This view keeps the newest {MAX_LINES} lines.")
 }
 
 /// One line as copied: the raw time, the level, and the message, which already
@@ -260,6 +285,7 @@ pub fn line_text(entry: &LogEntry) -> String {
     format!("{} {} {}", entry.time, entry.level, entry.message)
 }
 
+/// The lines as copied, one to a line, in the order given.
 pub fn copy_text(entries: &[LogEntry]) -> String {
     entries.iter().map(line_text).collect::<Vec<_>>().join("\n")
 }

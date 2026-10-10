@@ -1,12 +1,13 @@
-//! Logs: the daemon's log, newest at the bottom, read through `logs.query` every
-//! 2 s while the page is shown. The app never opens the log file. Messages hold
-//! home paths: they are shown as they are and never logged.
+//! Logs: the daemon's log, newest at the top, read through `logs.query` every
+//! 2 s while the page is shown. "Load older" sits at the bottom, past the oldest
+//! line. The app never opens the log file. Messages hold home paths: they are
+//! shown as they are and never logged.
 
 use crate::daemon::Daemon;
 use adw::prelude::*;
 use fermix_client::logs::{
-    copy_text, emphasis, search_term, shown_time, Emphasis, Filter, Level, LogEntry, LogLines,
-    LogPage, Merged, MAX_LINES, ROTATED,
+    capped_note, copy_text, emphasis, search_term, shown_time, Emphasis, Filter, Level, LogEntry,
+    LogLines, LogPage, Merged, MAX_LINES, ROTATED,
 };
 use fermix_client::management::CallError;
 use fermix_client::view::{daemon_problem, DaemonProblem};
@@ -16,10 +17,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 const POLL: Duration = Duration::from_secs(2);
-/// Past this distance from the bottom, new lines no longer pull the view down.
+/// Past this distance from the top, new lines no longer pull the view up.
 const STICK_DISTANCE: f64 = 48.0;
 /// Pages "Load older" may follow in one click past pages that brought only
-/// lines already held (lines appended since its cursor shift the window).
+/// lines already held (lines logged since its cursor was minted shift the window).
 const OLDER_HOPS: u32 = 5;
 /// The longest level's width, "emergency", so every message starts in one column.
 const LEVEL_CHARS: i32 = 9;
@@ -64,10 +65,14 @@ pub struct LogsPage {
     down: adw::StatusPage,
     controls: Controls,
     note: gtk::Label,
+    /// Below the list, past the oldest line: "Load older", or the cap's note.
+    older_end: gtk::Box,
+    capped: gtk::Label,
+    /// Mirrors the held lines, newest first.
     store: gio::ListStore,
     list: gtk::ListView,
-    /// Whether the reader is at the bottom, so new lines keep the newest in view.
-    stuck: Rc<Cell<bool>>,
+    /// Whether the reader is at the top, so new lines keep the newest in view.
+    at_top: Rc<Cell<bool>>,
     daemon: Daemon,
     feed: RefCell<Feed>,
     timer: RefCell<Option<glib::SourceId>>,
@@ -77,7 +82,7 @@ impl LogsPage {
     pub fn new(daemon: Daemon) -> Rc<Self> {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let (scroller, list) = log_list(&store);
-        let stuck = watch_bottom(&scroller);
+        let at_top = watch_top(&scroller);
         let empty = adw::StatusPage::builder()
             .icon_name("text-x-generic-symbolic")
             .build();
@@ -85,6 +90,7 @@ impl LogsPage {
         body.add_named(&scroller, Some("list"));
         body.add_named(&empty, Some("empty"));
         let controls = controls();
+        let (older_end, capped) = older_end(&controls.older);
         let note = gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
@@ -100,6 +106,7 @@ impl LogsPage {
         content.append(&controls_bar(&controls));
         content.append(&note);
         content.append(&body);
+        content.append(&older_end);
         let down = down_page();
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -114,9 +121,11 @@ impl LogsPage {
             down,
             controls,
             note,
+            older_end,
+            capped,
             store,
             list,
-            stuck,
+            at_top,
             daemon,
             feed: RefCell::default(),
             timer: RefCell::default(),
@@ -232,33 +241,34 @@ impl LogsPage {
             Err(e) => return self.failed(e),
         };
         self.came_back();
+        // Read before the rows change, since keeping the reader's row in place
+        // moves the view. An empty list has no place to keep.
+        let follow = self.at_top.get() || self.store.n_items() == 0;
         let merged = self.take_newest(newest);
-        let objects = boxed(merged.added);
-        let dropped = u32::try_from(merged.dropped).expect("the view holds at most MAX_LINES");
-        self.store.splice(0, dropped, &[] as &[glib::Object]);
-        self.store.extend_from_slice(&objects);
-        self.follow_tail();
+        let grew = !merged.newer.is_empty();
+        self.show(merged);
+        if follow && grew {
+            self.show_newest();
+        }
         self.render();
     }
 
-    /// Scrolls to the newest line while the reader is at the bottom. A list
-    /// view re-anchors after rows change, so the adjustment alone cannot hold it.
-    fn follow_tail(&self) {
-        let count = self.store.n_items();
-        if self.stuck.get() && count > 0 {
-            self.list
-                .scroll_to(count - 1, gtk::ListScrollFlags::NONE, None);
-        }
+    /// Scrolls to the newest line. A list view anchors to a row, so rows
+    /// inserted above the top one would otherwise push the newest out of view;
+    /// the same anchor keeps a reader further down on the row they are reading.
+    fn show_newest(&self) {
+        assert!(self.store.n_items() > 0, "there is a newest line to show");
+        self.list.scroll_to(0, gtk::ListScrollFlags::NONE, None);
     }
 
-    /// The first page for this filter, or a poll appended to the lines held.
+    /// The first page for this filter, or a poll prepended to the lines held.
     fn take_newest(&self, newest: LogPage) -> Merged {
         let mut feed = self.feed.borrow_mut();
         if matches!(feed.notice, Some(Notice::Refused(_))) {
             feed.notice = None;
         }
         if let Some(lines) = feed.lines.as_mut() {
-            return lines.append_newer(newest);
+            return lines.prepend_newer(newest);
         }
         assert_eq!(
             self.store.n_items(),
@@ -266,9 +276,39 @@ impl LogsPage {
             "a first page lands on an empty list"
         );
         let lines = LogLines::new(newest, MAX_LINES);
-        let added = lines.entries().to_vec();
+        let newer = lines.entries().to_vec();
         feed.lines = Some(lines);
-        Merged { dropped: 0, added }
+        Merged {
+            newer,
+            ..Merged::default()
+        }
+    }
+
+    /// Takes one merge into the store as core describes it: newer rows at the
+    /// head, then the oldest let go and older rows added at the tail.
+    fn show(&self, merged: Merged) {
+        if merged == Merged::default() {
+            return;
+        }
+        let dropped = u32::try_from(merged.dropped).expect("the view holds at most MAX_LINES");
+        self.store.splice(0, 0, &boxed(merged.newer));
+        let kept = self
+            .store
+            .n_items()
+            .checked_sub(dropped)
+            .expect("only held rows are let go");
+        self.store.splice(kept, dropped, &boxed(merged.older));
+        let held = self
+            .feed
+            .borrow()
+            .lines
+            .as_ref()
+            .map_or(0, |l| l.entries().len());
+        assert_eq!(
+            usize::try_from(self.store.n_items()),
+            Ok(held),
+            "the store mirrors the held lines"
+        );
     }
 
     /// Follows the older cursor, and on past pages that brought nothing new.
@@ -311,7 +351,7 @@ impl LogsPage {
         (feed.generation == generation).then(|| (feed.filter.clone(), cursor))
     }
 
-    /// Prepends one older page. True when this click has nothing more to follow.
+    /// Appends one older page. True when this click has nothing more to follow.
     fn older_landed(self: &Rc<Self>, generation: u64, answer: Result<LogPage, CallError>) -> bool {
         if self.feed.borrow().generation != generation {
             return true;
@@ -331,11 +371,10 @@ impl LogsPage {
         let Some(lines) = feed.lines.as_mut() else {
             return true;
         };
-        let merged = lines.prepend_older(older);
+        let merged = lines.append_older(older);
         drop(feed);
-        let added = merged.added.len();
-        self.store.splice(0, 0, &boxed(merged.added));
-        self.follow_tail();
+        let added = merged.older.len();
+        self.show(merged);
         added > 0
     }
 
@@ -402,8 +441,8 @@ impl LogsPage {
         self.render();
     }
 
-    /// Copies every line the view holds: the filter is the daemon's, so what is
-    /// held is what matches.
+    /// Copies every line the view holds, newest first as shown: the filter is
+    /// the daemon's, so what is held is what matches.
     fn copy_visible(&self) {
         let feed = self.feed.borrow();
         let Some(lines) = feed.lines.as_ref() else {
@@ -429,21 +468,19 @@ impl LogsPage {
         } else {
             "No entries match this filter"
         });
-        self.controls
-            .older
-            .set_visible(lines.is_some_and(LogLines::can_load_older));
+        let more = lines.is_some_and(LogLines::can_load_older);
+        let capped = lines.is_some_and(LogLines::capped);
+        self.controls.older.set_visible(more);
         self.controls.older.set_sensitive(!feed.loading_older);
+        self.capped.set_visible(capped);
+        self.older_end.set_visible(more || capped);
         self.controls
             .copy
             .set_sensitive(lines.is_some_and(|l| !l.entries().is_empty()));
-        let capped = lines
-            .filter(|l| l.capped())
-            .map(|_| format!("This view keeps the newest {MAX_LINES} lines."));
-        let note = match &feed.notice {
-            Some(Notice::Refused(s) | Notice::Said(s)) => Some(s.clone()),
-            None => capped,
-        };
-        self.note.set_text(note.as_deref().unwrap_or(""));
+        let note = feed.notice.as_ref().map(|notice| match notice {
+            Notice::Refused(s) | Notice::Said(s) => s.as_str(),
+        });
+        self.note.set_text(note.unwrap_or(""));
         self.note.set_visible(note.is_some());
     }
 }
@@ -491,11 +528,33 @@ fn controls_bar(controls: &Controls) -> gtk::Box {
         .margin_start(12)
         .margin_end(12)
         .build();
-    bar.append(&controls.older);
     bar.append(&controls.level);
     bar.append(&controls.search);
     bar.append(&controls.copy);
     bar
+}
+
+/// The bottom edge, past the oldest line: "Load older" while there is more,
+/// or the cap's note once older history ends there. One shows at a time.
+fn older_end(older: &gtk::Button) -> (gtk::Box, gtk::Label) {
+    let capped = gtk::Label::builder()
+        .label(capped_note())
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .css_classes(["dimmed"])
+        .visible(false)
+        .build();
+    let end = gtk::Box::builder()
+        .halign(gtk::Align::Center)
+        .margin_top(6)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .visible(false)
+        .build();
+    end.append(older);
+    end.append(&capped);
+    (end, capped)
 }
 
 /// A list that draws only the lines in view, so thousands stay fast.
@@ -595,15 +654,15 @@ fn show_line(line: &gtk::Box, entry: &LogEntry) {
     message.set_css_classes(&message_classes);
 }
 
-/// Tracks whether the reader is within `STICK_DISTANCE` of the bottom; once
-/// they scroll up to read, new lines leave the view alone.
-fn watch_bottom(scroller: &gtk::ScrolledWindow) -> Rc<Cell<bool>> {
-    let stuck = Rc::new(Cell::new(true));
-    let watch = stuck.clone();
+/// Tracks whether the reader is within `STICK_DISTANCE` of the top; once
+/// they scroll down to read, new lines leave the view alone.
+fn watch_top(scroller: &gtk::ScrolledWindow) -> Rc<Cell<bool>> {
+    let at_top = Rc::new(Cell::new(true));
+    let watch = at_top.clone();
     scroller.vadjustment().connect_value_changed(move |a| {
-        watch.set(a.value() + a.page_size() >= a.upper() - STICK_DISTANCE);
+        watch.set(a.value() <= a.lower() + STICK_DISTANCE);
     });
-    stuck
+    at_top
 }
 
 fn down_page() -> adw::StatusPage {
