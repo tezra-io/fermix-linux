@@ -145,11 +145,13 @@ wait_for() {
 }
 
 # A window titled Fermix that the X server shows, its id written to $WINDOW_ID_FILE; GTK may also
-# name windows it never maps.
+# name windows it never maps. Each report is read whole before it is searched: piped into grep -q,
+# xwininfo takes SIGPIPE on the lines after Map State, and pipefail makes that the pipeline's status.
 window_mapped() {
-  local id
+  local id report
   for id in $(xwininfo -root -tree 2> /dev/null | sed -n 's/^[[:space:]]*\(0x[0-9a-f]*\) "Fermix":.*/\1/p'); do
-    if xwininfo -id "$id" 2> /dev/null | grep -q 'Map State: IsViewable'; then
+    report="$(xwininfo -id "$id" 2> /dev/null)" || continue
+    if grep -q 'Map State: IsViewable' <<< "$report"; then
       echo "$id" > "$WINDOW_ID_FILE"
       return 0
     fi
@@ -248,4 +250,7 @@ main() {
   write_sums
 }
 
-main "$@"
+# Run, not sourced: smoke_in_container_test.sh sources this file for its functions.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

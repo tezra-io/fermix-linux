@@ -23,12 +23,15 @@ fail() {
 
 main() {
   [ $# -eq 2 ] || fail "usage: convert_screenshot.sh <dir> <screen WxH>"
-  local dir="$1" screen="$2" verdict
+  local dir="$1" screen="$2" verdict version
   local -a bounds
   [ -f "$dir/screen.xwd" ] && [ -f "$dir/window-bounds.txt" ] || fail "$dir has no screen.xwd and window-bounds.txt"
   read -r -a bounds < "$dir/window-bounds.txt"
   [ "${#bounds[@]}" -eq 4 ] || fail "window-bounds.txt is not 'x y width height': ${bounds[*]}"
-  magick -version | head -n 1 >&2
+  # Read whole, then cut: piped into head, magick takes SIGPIPE on its next line, and pipefail
+  # makes that the pipeline's status.
+  version="$(magick -version)" || fail "ImageMagick cannot say its version"
+  echo "${version%%$'\n'*}" >&2
   magick "xwd:$dir/screen.xwd" "png:$dir/screenshot.png" || fail "ImageMagick cannot decode screen.xwd"
   bash "$here/check_screenshot.sh" "$dir/screenshot.png" "$screen" "${bounds[@]}" ||
     fail "screenshot.png does not show the window drawn"
