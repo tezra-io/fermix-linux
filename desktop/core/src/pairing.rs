@@ -70,9 +70,30 @@ pub mod guards {
         value.len() == DIGITS && value.bytes().all(|b| b.is_ascii_digit())
     }
 
-    /// A phone's name or model: present, and inside the pairing intake's bound.
+    /// A phone's name or model: present, inside the pairing intake's bound, and nothing that draws
+    /// text of its own. The phone writes both, and Compare draws them above the digits the owner
+    /// approves by, so a character that breaks the line, reorders the words around it or hides
+    /// itself is refused rather than drawn.
     pub fn field(value: &str) -> bool {
-        !value.is_empty() && value.len() <= MAX_FIELD_BYTES
+        !value.is_empty()
+            && value.len() <= MAX_FIELD_BYTES
+            && !value.chars().any(|c| c.is_control() || draws_unseen(c))
+    }
+
+    /// A line or paragraph separator, a bidirectional control, or an invisible character that
+    /// joins nothing. The zero-width joiner and non-joiner stay allowed: emoji and several
+    /// scripts are spelled with them.
+    fn draws_unseen(c: char) -> bool {
+        matches!(
+            c,
+            '\u{061c}'
+                | '\u{200b}'
+                | '\u{200e}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
     }
 }
 

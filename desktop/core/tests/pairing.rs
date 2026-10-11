@@ -454,6 +454,45 @@ fn the_phones_name_and_model_are_present_and_at_most_128_bytes() {
     assert_eq!(transition.abandons, None, "an approved window is over");
 }
 
+/// The phone writes its own name and model, and Compare draws them above the six digits the
+/// owner approves by. The engine refuses control characters at intake; a line or paragraph
+/// separator, a bidirectional control or an invisible character passes it, and could draw a line
+/// or reorder words of the phone's choosing on that screen.
+#[test]
+fn a_name_or_model_that_could_draw_text_of_its_own_is_refused() {
+    for spoof in [
+        "Pixel\n481 062",
+        "Pixel\u{1b}[2J",
+        "Pixel\u{2028}481 062",
+        "Pixel\u{2029}Secure hardware checked",
+        "Pixel \u{202e}260 184",
+        "Pixel \u{2066}481\u{2069}",
+        "Pixel\u{200f}",
+        "Pixel\u{061c}",
+        "Pi\u{200b}xel",
+        "Pi\u{2060}xel",
+        "\u{feff}Pixel",
+    ] {
+        assert!(!guards::field(spoof), "{spoof:?}");
+    }
+    for name in [
+        "Sam's 👨\u{200d}👩\u{200d}👧 phone",
+        "گوشی\u{200c}ام",
+        "هاتف سارة",
+        "Téléphone de Zoé",
+    ] {
+        assert!(guards::field(name), "{name:?}");
+    }
+    for key in ["device_name", "model"] {
+        let answer = session_with("mobile_pair_get_awaiting_decision", |s| {
+            s["request"][key] = json!("Pixel\u{2028}481 062")
+        });
+        let transition = reduce(&scanning(), Answer::Session(answer));
+        assert_eq!(transition.step, ended(ENDED_UNREADABLE), "{key}");
+        assert_eq!(transition.abandons.as_deref(), Some(SESSION), "{key}");
+    }
+}
+
 #[test]
 fn a_state_or_a_reason_this_app_cannot_read_ends_with_its_own_sentence() {
     let new_state = session_with("mobile_pair_get_awaiting_scan", |s| {
