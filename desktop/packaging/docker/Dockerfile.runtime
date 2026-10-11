@@ -84,10 +84,27 @@ RUN found="$(find /usr/lib64/pkgconfig /usr/share/pkgconfig -name '*.pc' -printf
 
 # Meson and Ninja are pinned rather than taken from the distribution: several
 # components need a newer Meson than AlmaLinux 9 ships, and a build tool that
-# moves with the base image is a build that moves.
-RUN python3.12 -m pip install --no-cache-dir \
-      "meson==${MESON_VERSION}" "ninja==${NINJA_VERSION}" \
-    && meson --version && ninja --version
+# moves with the base image is a build that moves. Each wheel is held to the
+# sha256 PyPI publishes for it: --require-hashes refuses a wheel with any other
+# digest, and --only-binary refuses to build one from a source distribution.
+# Ninja has a wheel per architecture. The digests are declared here rather than
+# at the top because every RUN after an ARG reruns when its value changes; here,
+# a new digest leaves the package layers above cached.
+ARG MESON_SHA256=930bc7542cbd9f57009e182fd014eba48cf1a0180a7b9006d2d32d8f168d8b02
+ARG NINJA_SHA256_X86_64=65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c
+ARG NINJA_SHA256_AARCH64=d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) ninja_digest="${NINJA_SHA256_X86_64}" ;; \
+      aarch64) ninja_digest="${NINJA_SHA256_AARCH64}" ;; \
+      *) echo "no ninja wheel digest for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    printf '%s\n' "meson==${MESON_VERSION} --hash=sha256:${MESON_SHA256}" \
+      "ninja==${NINJA_VERSION} --hash=sha256:${ninja_digest}" > /tmp/build-tools.txt; \
+    python3.12 -m pip install --no-cache-dir --require-hashes --only-binary=:all: \
+      -r /tmp/build-tools.txt; \
+    rm /tmp/build-tools.txt; \
+    meson --version; ninja --version
 
 # patchelf writes the RUNPATH of every shipped object. It is built from a
 # digest-checked tarball rather than taken from EPEL, a moving repository.

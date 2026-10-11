@@ -142,8 +142,8 @@ copy_runtime_outputs() {
 }
 
 # A cache is a directory anyone can write to, so its contents count only once
-# ensure_source has held them to the lock file. The licence text source is a
-# build input like the components, so it is copied too.
+# ensure_source has held them to the lock file. The standard licence texts and
+# SPDX's lists are build inputs like the components, so they are copied too.
 copy_verified_sources() {
   local dest="$1" name archive url sha256 fetched=0
   mkdir -p "$dest"
@@ -154,8 +154,11 @@ copy_verified_sources() {
     fi
     ensure_source "$name" "$url" "$SOURCE_CACHE/$archive" "$sha256"
     cp -p "$SOURCE_CACHE/$archive" "$dest/$archive"
-  done < <(jq -r '(.components[], .license_text_source) | [.name, .archive, .url, .sha256] | @tsv' \
-             "$LOCK_FILE")
+  done < <(jq -r '(.components[] | [.name, .archive, .url, .sha256]),
+                  (.license_text_sources[] | ["SPDX text " + .spdx_id, .file, .url, .sha256]),
+                  (.license_list | to_entries[] | ["SPDX list " + .key, .value.file, .value.url,
+                                                   .value.sha256])
+                  | @tsv' "$LOCK_FILE")
   [ "$fetched" -eq 0 ] || log "fetched $fetched tarball(s) the cache did not have"
 }
 
@@ -186,9 +189,11 @@ all of them, every patch applied, the lock file that pins each component by
 version and sha256, the container definition that compiles them and the
 scripts that drive the build.
 
-  sources/                              every component tarball, and SPDX's
+  sources/                              every component tarball; from SPDX's
                                         license-list-data, the standard texts
-                                        of crates that publish no licence file
+                                        of licences no file of a component or
+                                        crate holds, and the licence and
+                                        exception lists every id is held to
   sources/runtime-crates.tar.gz         the source of every Rust crate compiled
                                         in, as cargo vendored it
   runtime-licenses.tar.gz               the licence files of every component,

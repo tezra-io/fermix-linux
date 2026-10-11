@@ -17,6 +17,9 @@ SMOKE="$RUNTIME_DIR/smoke_runtime.sh"
 SOURCES="$RUNTIME_DIR/package_sources.sh"
 LOCK="$RUNTIME_DIR/RUNTIME.lock.json"
 DOCKERFILE="$ROOT_DIR/packaging/docker/Dockerfile.runtime"
+# The build's source cache: the lock test reads SPDX's lists from it, and some
+# checks read tarballs from it when they are there.
+SOURCE_CACHE="${FERMIX_RUNTIME_SOURCES:-${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime/sources}"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-runtime-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -67,6 +70,7 @@ for name in sys.argv[1:]:
     "$RUNTIME_DIR/check_options.py" "$RUNTIME_DIR/build_runtime_test_lock.py" \
     "$RUNTIME_DIR/write_crates.py" "$RUNTIME_DIR/build_runtime_test_crates.py" \
     "$RUNTIME_DIR/write_licenses.py" "$RUNTIME_DIR/build_runtime_test_licenses.py" \
+    "$RUNTIME_DIR/build_runtime_test_compare.py" \
     || fail "a python helper does not parse"
   echo "  ok: shell and python syntax"
 }
@@ -223,17 +227,116 @@ test_fetcher() {
   echo "  ok: fetches, refuses a wrong digest, bounded retries, http and a tampered cache"
 }
 
+# The lock test imports write_crates.py's SPDX parser from beside it, and reads
+# SPDX's lists from the source cache; build_runtime.sh --fetch fills it.
+lock_test() {
+  PYTHONDONTWRITEBYTECODE=1 python3 "$RUNTIME_DIR/build_runtime_test_lock.py" "$1" "$DOCKERFILE" \
+    "$ROOT_DIR/Cargo.lock" "$SOURCE_CACHE"
+}
+
+# True when the lock test refuses the real lock changed by one jq filter, and
+# says why.
+lock_refuses() {
+  local reason="$1" filter="$2"
+  jq "$filter" "$LOCK" > "$WORK/lock-changed.json"
+  refuses "$reason" lock_test "$WORK/lock-changed.json"
+}
+
 test_lock() {
   echo "build_runtime_test: the lock file"
-  python3 "$RUNTIME_DIR/build_runtime_test_lock.py" "$LOCK" "$DOCKERFILE" "$ROOT_DIR/Cargo.lock" \
-    || fail "the lock file does not hold"
+  lock_test "$LOCK" || fail "the lock file does not hold"
+}
+
+# The licence rules, each broken once in a copy of the real lock.
+test_lock_licences() {
+  echo "build_runtime_test: the lock file's licences"
+  lock_refuses "libffi: 'MIT/Apache-2.0' is not an SPDX expression" \
+    '(.components[] | select(.name == "libffi") | .license) = "MIT/Apache-2.0"' \
+    || fail "a component licensed in Cargo's old form is accepted"
+  lock_refuses "glib is licensed" \
+    '(.components[] | select(.name == "glib") | .license) |= sub(" AND bzip2-1.0.6"; "")' \
+    || fail "a licence the audit found can be dropped"
+  lock_refuses "glib names" \
+    'del(.components[] | select(.name == "glib") | .license_excerpts[]
+       | select(.path == "glib/valgrind.h"))' \
+    || fail "a notice the audit found can be dropped"
+  lock_refuses "glib names" \
+    'del(.components[] | select(.name == "glib") | .license_excerpts[]
+       | select(.lines == [477, 488]))' \
+    || fail "one of two excerpts of a file can be dropped"
+  lock_refuses "glib: the excerpts of glib/gchecksum.c overlap or are out of order" \
+    '(.components[] | select(.name == "glib") | .license_excerpts[]
+       | select(.lines == [477, 488]) | .lines) = [210, 488]' \
+    || fail "two excerpts of a file that share lines are accepted"
+  lock_refuses "glib: glib/valgrind.h is named whole and as an excerpt" \
+    '(.components[] | select(.name == "glib") | .extra_license_files) = ["glib/valgrind.h"]' \
+    || fail "a file named whole and as an excerpt is accepted"
+  lock_refuses "glib: the lines of glib/gbsearcharray.h are not" \
+    '(.components[] | select(.name == "glib") | .license_excerpts[0].lines) = [18, 1]' \
+    || fail "an excerpt's lines in the wrong order are accepted"
+  lock_refuses "glib: the excerpt of glib/gbsearcharray.h has no sha256" \
+    '(.components[] | select(.name == "glib") | .license_excerpts[0].sha256) = "1719"' \
+    || fail "an excerpt with no digest is accepted"
+  lock_refuses "inside its source tree" \
+    '(.components[] | select(.name == "glib") | .license_excerpts[0].path) = "../gbsearcharray.h"' \
+    || fail "an excerpt outside the source tree is accepted"
+  lock_refuses "there are no license_text_sources" 'del(.license_text_sources)' \
+    || fail "a lock with no standard texts is accepted"
+  lock_refuses "the text of Apache-2.0 is not license-list-data v3.29.0's" \
+    '.license_text_sources[0].url |= sub("v3.29.0"; "main")' \
+    || fail "a standard text off the release tag is accepted"
+  lock_refuses "are not the ones crates and components name" \
+    'del(.license_text_sources[] | select(.spdx_id == "MIT"))' \
+    || fail "a standard text a crate names can be dropped"
+  echo "  ok: Cargo's old form, a dropped licence or notice, a bad excerpt, excerpts of one"
+  echo "      file that overlap, and a standard text missing, unpinned or off its tag are"
+  echo "      each refused"
+}
+
+# Where each licence's text comes from, and SPDX's lists, each broken once.
+test_lock_texts() {
+  echo "build_runtime_test: the lock file's licence texts and SPDX's lists"
+  lock_refuses "glib: its licence names" \
+    'del(.components[] | select(.name == "glib") | .license_refs)' \
+    || fail "a LicenseRef with no text is accepted"
+  lock_refuses "glib: LicenseRef-glib-gbsearcharray maps to 'glib/gbsearcharray.h', which is not" \
+    '(.components[] | select(.name == "glib") | .license_refs[]) = "glib/gbsearcharray.h"' \
+    || fail "a LicenseRef mapped to a whole source file is accepted"
+  lock_refuses "LicenseRef-webrtc-ooura is mapped by both glib and webrtc-audio-processing" \
+    '(.components[] | select(.name == "glib")) |= (.license += " AND LicenseRef-webrtc-ooura"
+       | .license_refs["LicenseRef-webrtc-ooura"] = "glib/gbsearcharray.h.notice")' \
+    || fail "a LicenseRef mapped by two components is accepted"
+  lock_refuses "pango: standard_license_texts" \
+    '(.components[] | select(.name == "pango") | .standard_license_texts) = ["MIT"]' \
+    || fail "a standard text of a licence the component does not name is accepted"
+  lock_refuses "pango names" \
+    'del(.components[] | select(.name == "pango") | .standard_license_texts)' \
+    || fail "the Unicode-3.0 text of a component can be dropped"
+  lock_refuses "expat: Foo-1.0 is not on SPDX's licence list" \
+    '(.components[] | select(.name == "expat") | .license) = "MIT AND Foo-1.0"' \
+    || fail "a licence off SPDX's list is accepted"
+  lock_refuses "expat: GPL-2.0+ is deprecated" \
+    '(.components[] | select(.name == "expat") | .license) = "GPL-2.0+"' \
+    || fail "a deprecated licence is accepted"
+  lock_refuses "expat: Bar-exception is not on SPDX's exception list" \
+    '(.components[] | select(.name == "expat") | .license) = "MIT WITH Bar-exception"' \
+    || fail "an exception off SPDX's list is accepted"
+  lock_refuses "license_list's licenses is not license-list-data v3.29.0's json/licenses.json" \
+    '.license_list.licenses.url |= sub("v3.29.0"; "main")' \
+    || fail "a licence list off the release tag is accepted"
+  lock_refuses "spdx-license-list-3.29.0-exceptions.json has sha256" \
+    '.license_list.exceptions.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    || fail "a licence list that is not the pinned one is read"
+  echo "  ok: a LicenseRef unmapped, mapped to a file not named or by two components, a"
+  echo "      standard text not named or dropped, an id or exception off SPDX's lists or"
+  echo "      deprecated, and a list off its tag or digest are each refused"
 }
 
 test_options() {
   echo "build_runtime_test: the meson flags, against upstream"
   python3 "$RUNTIME_DIR/check_options.py" \
     --lock "$LOCK" \
-    --sources "${FERMIX_RUNTIME_SOURCES:-${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime/sources}" \
+    --sources "$SOURCE_CACHE" \
     || fail "a meson flag is not an option upstream declares"
 }
 
@@ -251,6 +354,19 @@ test_dockerfile() {
                 RUSTUP_VERSION RUST_VERSION CARGO_C_VERSION; do
     grep -qE "ARG $pinned=[0-9]+\.[0-9]+\.[0-9]+" "$DOCKERFILE" || fail "$pinned is not pinned"
   done
+  # pip installs only wheels, each held to the digest PyPI publishes.
+  for pinned in MESON_SHA256 NINJA_SHA256_X86_64 NINJA_SHA256_AARCH64; do
+    grep -qE "^ARG $pinned=[0-9a-f]{64}$" "$DOCKERFILE" || fail "$pinned is not a sha256"
+  done
+  if grep -n 'pip install' "$DOCKERFILE" | grep -v -- '--require-hashes --only-binary=:all:'; then
+    fail "pip installs something not held to a digest, or builds it from source"
+  fi
+  # shellcheck disable=SC2016 # the Dockerfile's own text, not an expansion
+  grep -qF '"meson==${MESON_VERSION} --hash=sha256:${MESON_SHA256}"' "$DOCKERFILE" \
+    || fail "the Meson wheel is not held to MESON_SHA256"
+  # shellcheck disable=SC2016 # the Dockerfile's own text, not an expansion
+  grep -qF '"ninja==${NINJA_VERSION} --hash=sha256:${ninja_digest}"' "$DOCKERFILE" \
+    || fail "the Ninja wheel is not held to its architecture's digest"
   # The host half's headers, and the build tools the components stop without.
   for needed in mesa-libGL-devel mesa-libEGL-devel libX11-devel libxkbcommon-devel dbus-devel \
                 zlib-devel libcurl-devel libyaml-devel pulseaudio-libs-devel gcc-c++ \
@@ -281,13 +397,27 @@ test_fetches() {
   grep -qF 'component_field "$name" cargo.lock' "$SCRIPT" \
     || fail "crates are vendored for a component the lock file does not name"
   grep -qx '  export CARGO_NET_OFFLINE=true' "$SCRIPT" || fail "cargo may reach the network while compiling"
-  # The standard licence texts come from a pinned tarball, held to its digest.
-  grep -q "ensure_source \"\$(lock_get '.license_text_source.name')\"" "$SCRIPT" \
-    || fail "the build does not fetch the licence text source by its digest"
-  grep -q '(.components\[\], .license_text_source)' "$SOURCES" \
-    || fail "the source archive does not carry the licence text source"
+  # The standard licence texts and SPDX's lists are files the lock pins, each
+  # held to its digest.
+  grep -qF "(.license_text_sources[] | [\"SPDX text \" + .spdx_id, .url, .sha256, .file])," \
+    "$SCRIPT" || fail "the build does not fetch each standard licence text by its digest"
+  grep -qF "(.license_list | to_entries[] | [\"SPDX list \" + .key, .value.url, .value.sha256," \
+    "$SCRIPT" || fail "the build does not fetch SPDX's lists by their digests"
+  grep -qF ".license_text_sources[].file,
+    .license_list[].file')" "$SCRIPT" \
+    || fail "the build does not copy the standard texts and SPDX's lists into its container"
+  grep -qF -- "--spdx-licences \"\$SOURCE_CACHE/\$(lock_get '.license_list.licenses.file')\"" \
+    "$SCRIPT" || fail "the crates are not held to the pinned licence list"
+  grep -qF '(.license_text_sources[] | ["SPDX text " + .spdx_id, .file, .url, .sha256])' \
+    "$SOURCES" || fail "the source archive does not carry the standard licence texts"
+  grep -qF '(.license_list | to_entries[] | ["SPDX list " + .key, .value.file, .value.url,' \
+    "$SOURCES" || fail "the source archive does not carry SPDX's lists"
+  if grep -n 'license_text_source\b' "$SCRIPT" "$SOURCES"; then
+    fail "a script still reads license-list-data's tarball"
+  fi
   echo "  ok: no meson download, crates vendored at Cargo.lock, cargo offline while compiling,"
-  echo "      the licence text source fetched by digest and carried in the source archive"
+  echo "      each standard licence text and SPDX list fetched by digest and carried in the"
+  echo "      source archive"
 }
 
 # librsvg's meson asks rustc which system libraries its static half needs and
@@ -296,8 +426,7 @@ test_fetches() {
 # rustc's order; the seeds here would scatter it again.
 test_patches() {
   echo "build_runtime_test: the patches"
-  local cache archive source_dir dir="$WORK/patched" patch seed order
-  cache="${FERMIX_RUNTIME_SOURCES:-${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime/sources}"
+  local cache="$SOURCE_CACHE" archive source_dir dir="$WORK/patched" patch seed order
   archive="$(jq -r '.components[] | select(.name == "librsvg") | .archive' "$LOCK")"
   source_dir="$(jq -r '.components[] | select(.name == "librsvg") | .source_dir' "$LOCK")"
   if [ ! -f "$cache/$archive" ]; then
@@ -363,6 +492,13 @@ test_licenses() {
     || fail "write_licenses.py does not hold"
 }
 
+test_compare() {
+  echo "build_runtime_test: what --verify compares"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$RUNTIME_DIR/build_runtime_test_compare.py" \
+    "$RUNTIME_DIR/compare_manifest.py" "$WORK/compare" \
+    || fail "compare_manifest.py does not hold"
+}
+
 test_unreachable() {
   echo "build_runtime_test: dropping what nothing needs"
   command -v gcc >/dev/null 2>&1 || fail "gcc is needed to build the test objects"
@@ -377,6 +513,8 @@ main() {
   test_other_refusals
   test_fetcher
   test_lock
+  test_lock_licences
+  test_lock_texts
   test_options
   test_dockerfile
   test_fetches
@@ -386,6 +524,7 @@ main() {
   test_unreachable
   test_crates
   test_licenses
+  test_compare
   echo "build_runtime_test: every check passed"
 }
 

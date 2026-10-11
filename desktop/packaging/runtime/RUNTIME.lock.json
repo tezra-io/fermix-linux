@@ -63,14 +63,79 @@
     "gstreamer-app-1.0",
     "gstreamer-audio-1.0"
   ],
-  "license_text_source": {
-    "name": "license-list-data",
-    "version": "3.29.0",
-    "url": "https://github.com/spdx/license-list-data/archive/refs/tags/v3.29.0.tar.gz",
-    "sha256": "d69195f5b11d4b84ffccd12d943e90732694d00fea42dc81fcc66f79d6cc8104",
-    "archive": "license-list-data-3.29.0.tar.gz",
-    "source_dir": "license-list-data-3.29.0",
-    "text_dir": "text"
+  "license_text_sources": [
+    {
+      "spdx_id": "Apache-2.0",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/Apache-2.0.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "file": "spdx-license-list-3.29.0-Apache-2.0.txt"
+    },
+    {
+      "spdx_id": "BSD-3-Clause",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/BSD-3-Clause.txt",
+      "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+      "file": "spdx-license-list-3.29.0-BSD-3-Clause.txt"
+    },
+    {
+      "spdx_id": "CC-BY-SA-4.0",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/CC-BY-SA-4.0.txt",
+      "sha256": "cde7883b9050a1104f4ac19a1572aafd6e5d7323b68351aaf51fbf4beba54966",
+      "file": "spdx-license-list-3.29.0-CC-BY-SA-4.0.txt"
+    },
+    {
+      "spdx_id": "CC0-1.0",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/CC0-1.0.txt",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "file": "spdx-license-list-3.29.0-CC0-1.0.txt"
+    },
+    {
+      "spdx_id": "FSFAP",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/FSFAP.txt",
+      "sha256": "99cb91dacd5714a701749ec47239015726beec5fc86a5c94a4873778824b16d7",
+      "file": "spdx-license-list-3.29.0-FSFAP.txt"
+    },
+    {
+      "spdx_id": "LGPL-2.0-or-later",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/LGPL-2.0-or-later.txt",
+      "sha256": "86dc99d7e5060915ab1dfc1378b7dd351c62088bfa74067e8aa1868c6fdba7d8",
+      "file": "spdx-license-list-3.29.0-LGPL-2.0-or-later.txt"
+    },
+    {
+      "spdx_id": "LGPL-2.1-or-later",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/LGPL-2.1-or-later.txt",
+      "sha256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2",
+      "file": "spdx-license-list-3.29.0-LGPL-2.1-or-later.txt"
+    },
+    {
+      "spdx_id": "MIT",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/MIT.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "file": "spdx-license-list-3.29.0-MIT.txt"
+    },
+    {
+      "spdx_id": "MPL-2.0",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/MPL-2.0.txt",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+      "file": "spdx-license-list-3.29.0-MPL-2.0.txt"
+    },
+    {
+      "spdx_id": "Unicode-3.0",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/Unicode-3.0.txt",
+      "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1",
+      "file": "spdx-license-list-3.29.0-Unicode-3.0.txt"
+    }
+  ],
+  "license_list": {
+    "licenses": {
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/json/licenses.json",
+      "sha256": "47d1cc681abe31166b342b6cc4aab13a6ba8ea5c48794697fe3bf8b1dbaf509a",
+      "file": "spdx-license-list-3.29.0-licenses.json"
+    },
+    "exceptions": {
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/json/exceptions.json",
+      "sha256": "59ee7c150de521d635cbf9367b8cf543b8da6781ea3ac1c073d305524f84ada2",
+      "file": "spdx-license-list-3.29.0-exceptions.json"
+    }
   },
   "components": [
     {
@@ -82,7 +147,20 @@
       "archive": "libffi-3.8.0.tar.gz",
       "source_dir": "libffi-3.8.0",
       "build_system": "autotools",
-      "license": "MIT",
+      "license": "MIT AND CC0-1.0",
+      "license_excerpts": [
+        {
+          "path": "src/dlmalloc.c",
+          "lines": [
+            1,
+            5
+          ],
+          "sha256": "f80aba12fcd278868e69814d5b42e93fe91567ae4fd77a774f832162030986b8"
+        }
+      ],
+      "standard_license_texts": [
+        "CC0-1.0"
+      ],
       "options": [
         "--disable-static",
         "--disable-docs",
@@ -99,9 +177,12 @@
       "archive": "pcre2-10.48.tar.bz2",
       "source_dir": "pcre2-10.48",
       "build_system": "autotools",
-      "license": "BSD-3-Clause WITH PCRE2-exception",
+      "license": "BSD-3-Clause WITH PCRE2-exception AND BSD-2-Clause AND Unicode-3.0",
       "extra_license_files": [
         "deps/sljit/LICENSE"
+      ],
+      "standard_license_texts": [
+        "Unicode-3.0"
       ],
       "options": [
         "--disable-static",
@@ -158,6 +239,24 @@
       "license": "IJG AND BSD-3-Clause AND Zlib",
       "extra_license_files": [
         "README.ijg"
+      ],
+      "license_excerpts": [
+        {
+          "path": "simd/jsimd.c",
+          "lines": [
+            1,
+            27
+          ],
+          "sha256": "132bf5ab586fcc6135b7bcb9628d747338a31432aa469ab6c96f63c999b8b9c5"
+        },
+        {
+          "path": "simd/nasm/jsimdext.inc",
+          "lines": [
+            1,
+            28
+          ],
+          "sha256": "f772498d971dbee1bc3e6a5c31dbe08caea6e58a36008288aa34b003b1a81ba0"
+        }
       ],
       "options": [
         "-DENABLE_SHARED=ON",
@@ -229,10 +328,44 @@
       "archive": "freetype-2.13.3.tar.xz",
       "source_dir": "freetype-2.13.3",
       "build_system": "meson",
-      "license": "FTL OR GPL-2.0-or-later",
+      "license": "(FTL OR GPL-2.0-or-later) AND MIT AND MIT-open-group",
       "extra_license_files": [
         "docs/FTL.TXT",
         "docs/GPLv2.TXT"
+      ],
+      "license_excerpts": [
+        {
+          "path": "src/base/fthash.c",
+          "lines": [
+            9,
+            31
+          ],
+          "sha256": "5285d96f6aa3188193d5fbefd8710ed6a46af185e0a43817c17acee5f4b1ab3d"
+        },
+        {
+          "path": "src/bdf/README",
+          "lines": [
+            99,
+            144
+          ],
+          "sha256": "d97ce69c9dff1f885ad6341b58bdfeecf241337597f78ecc9544776b8f1d7416"
+        },
+        {
+          "path": "src/pcf/README",
+          "lines": [
+            66,
+            88
+          ],
+          "sha256": "acb4adde9db25f992623adb83a3c95db21fb157aae02a19b56aad9194fe8cc64"
+        },
+        {
+          "path": "src/pcf/pcfutil.c",
+          "lines": [
+            1,
+            25
+          ],
+          "sha256": "af57587b2694810c266311071d5f723d156e32cfebc86c1438c7a8ba24daa2c8"
+        }
       ],
       "options": [
         "-Dharfbuzz=disabled",
@@ -253,7 +386,10 @@
       "archive": "fribidi-1.0.16.tar.xz",
       "source_dir": "fribidi-1.0.16",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND Unicode-3.0",
+      "standard_license_texts": [
+        "Unicode-3.0"
+      ],
       "options": [
         "-Ddocs=false",
         "-Dbin=false",
@@ -289,7 +425,32 @@
       "archive": "fontconfig-2.16.0.tar.xz",
       "source_dir": "fontconfig-2.16.0",
       "build_system": "meson",
-      "license": "HPND-sell-variant",
+      "license": "HPND-sell-variant AND MIT-Modern-Variant AND MIT AND LicenseRef-fontconfig-fcmd5 AND LicenseRef-fontconfig-ftglue AND Unicode-3.0",
+      "license_excerpts": [
+        {
+          "path": "src/fcmd5.h",
+          "lines": [
+            1,
+            16
+          ],
+          "sha256": "138496767cacfdf2d2379b4b5e2ea01663ea7c49753304992da3ff81768bfaf2"
+        },
+        {
+          "path": "src/ftglue.c",
+          "lines": [
+            1,
+            9
+          ],
+          "sha256": "59307f966cfa30da106fdc2a6ddff460790c8b1019fb42b0d146a54b06b9f772"
+        }
+      ],
+      "license_refs": {
+        "LicenseRef-fontconfig-fcmd5": "src/fcmd5.h.notice",
+        "LicenseRef-fontconfig-ftglue": "src/ftglue.c.notice"
+      },
+      "standard_license_texts": [
+        "Unicode-3.0"
+      ],
       "options": [
         "-Ddoc=disabled",
         "-Ddoc-man=disabled",
@@ -314,7 +475,57 @@
       "archive": "glib-2.88.3.tar.xz",
       "source_dir": "glib-2.88.3",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later AND (LGPL-2.1-or-later OR AFL-2.0)",
+      "license": "LGPL-2.1-or-later AND (LGPL-2.1-or-later OR AFL-2.0) AND LGPL-2.0-or-later AND MIT AND bzip2-1.0.6 AND LicenseRef-glib-gbsearcharray AND LicenseRef-glib-gchecksum AND Unicode-3.0",
+      "license_excerpts": [
+        {
+          "path": "glib/gbsearcharray.h",
+          "lines": [
+            1,
+            18
+          ],
+          "sha256": "1719118eba639ccea1edd1f9c39cd911689166be60e2b989fb8a6979dce4ff6c"
+        },
+        {
+          "path": "glib/gchecksum.c",
+          "lines": [
+            205,
+            217
+          ],
+          "sha256": "f4f732047438dc687ccf359aed5b7e21d2780711072a54d4fbabf5aba56e295e"
+        },
+        {
+          "path": "glib/gchecksum.c",
+          "lines": [
+            477,
+            488
+          ],
+          "sha256": "4a776e5267c58db1f73f61dbe1f582f2c4f9d94b14ef59f550507e4987029ef2"
+        },
+        {
+          "path": "glib/gutilsprivate.c",
+          "lines": [
+            1,
+            24
+          ],
+          "sha256": "88c72f005a0a62db2688aa53805033c8f3a94d153173372a517c096c53c8981d"
+        },
+        {
+          "path": "glib/valgrind.h",
+          "lines": [
+            1,
+            56
+          ],
+          "sha256": "0f2544da3bbd7bd87db358fe4e12329bcaa4cb8031ae464549cc7ea2d8120a8d"
+        }
+      ],
+      "license_refs": {
+        "LicenseRef-glib-gbsearcharray": "glib/gbsearcharray.h.notice",
+        "LicenseRef-glib-gchecksum": "glib/gchecksum.c.notice"
+      },
+      "standard_license_texts": [
+        "LGPL-2.0-or-later",
+        "Unicode-3.0"
+      ],
       "options": [
         "-Dselinux=disabled",
         "-Dlibmount=disabled",
@@ -344,9 +555,22 @@
       "archive": "harfbuzz-14.4.0.tar.xz",
       "source_dir": "harfbuzz-14.4.0",
       "build_system": "meson",
-      "license": "MIT-Modern-Variant",
+      "license": "MIT-Modern-Variant AND MIT AND ISC AND Unicode-3.0",
       "extra_license_files": [
         "src/ms-use/COPYING"
+      ],
+      "license_excerpts": [
+        {
+          "path": "src/hb-ucd.cc",
+          "lines": [
+            1,
+            15
+          ],
+          "sha256": "cb95728cc2b4a3502bb8e69c019e0e5f01c0a218a855168e9c19d4df51582cd5"
+        }
+      ],
+      "standard_license_texts": [
+        "Unicode-3.0"
       ],
       "options": [
         "-Dglib=enabled",
@@ -384,7 +608,17 @@
       "archive": "cairo-1.18.4.tar.xz",
       "source_dir": "cairo-1.18.4",
       "build_system": "meson",
-      "license": "LGPL-2.1-only OR MPL-1.1",
+      "license": "(LGPL-2.1-only OR MPL-1.1) AND HPND-sell-variant",
+      "license_excerpts": [
+        {
+          "path": "src/cairo-pattern.c",
+          "lines": [
+            3,
+            29
+          ],
+          "sha256": "ab0ad9e155aeadb99a8da491c53284257ba08c7b30819a65d3b3e5505da85831"
+        }
+      ],
       "options": [
         "-Dfontconfig=enabled",
         "-Dfreetype=enabled",
@@ -434,7 +668,38 @@
       "archive": "pango-1.56.4.tar.xz",
       "source_dir": "pango-1.56.4",
       "build_system": "meson",
-      "license": "LGPL-2.0-or-later",
+      "license": "LGPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND ICU AND TCL AND Unicode-3.0",
+      "license_excerpts": [
+        {
+          "path": "pango/emoji_presentation_scanner.c",
+          "lines": [
+            3,
+            5
+          ],
+          "sha256": "4dedb8d128513d3ed56eaa8d9041a7d3839315af9880ab6623ab5844ff48d2eb"
+        },
+        {
+          "path": "pango/pango-color.c",
+          "lines": [
+            105,
+            147
+          ],
+          "sha256": "ef64430578678551fe1c74cf133f7ede051e95497eebe595a6ea29cc119922b6"
+        },
+        {
+          "path": "pango/pango-script.c",
+          "lines": [
+            21,
+            54
+          ],
+          "sha256": "829f1da12e71686903811703f38fddcdeb9cc2877d14985af2345a335a2af0eb"
+        }
+      ],
+      "standard_license_texts": [
+        "BSD-3-Clause",
+        "LGPL-2.1-or-later",
+        "Unicode-3.0"
+      ],
       "options": [
         "-Dcairo=enabled",
         "-Dfontconfig=enabled",
@@ -459,7 +724,10 @@
       "archive": "gdk-pixbuf-2.42.12.tar.xz",
       "source_dir": "gdk-pixbuf-2.42.12",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dpng=enabled",
         "-Djpeg=enabled",
@@ -487,6 +755,9 @@
       "source_dir": "webp-pixbuf-loader-0.2.7",
       "build_system": "meson",
       "license": "LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dupdate_cache=false"
       ],
@@ -501,7 +772,28 @@
       "archive": "libxml2-2.13.9.tar.xz",
       "source_dir": "libxml2-2.13.9",
       "build_system": "autotools",
-      "license": "MIT",
+      "license": "MIT AND ISC AND Unicode-3.0",
+      "license_excerpts": [
+        {
+          "path": "dict.c",
+          "lines": [
+            1,
+            17
+          ],
+          "sha256": "5e67dfcf4fbeb9e1a224e1001ad7cd4cab6cadb7383cc173ccd09315f89b0d9a"
+        },
+        {
+          "path": "list.c",
+          "lines": [
+            1,
+            16
+          ],
+          "sha256": "f7e1dd16905738b50f2c88c14bb778b1730c2023c2910485106d1cc8078fa1c7"
+        }
+      ],
+      "standard_license_texts": [
+        "Unicode-3.0"
+      ],
       "options": [
         "--disable-static",
         "--without-python",
@@ -590,7 +882,10 @@
       "archive": "AppStream-1.0.6.tar.xz",
       "source_dir": "AppStream-1.0.6",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND FSFAP",
+      "standard_license_texts": [
+        "FSFAP"
+      ],
       "options": [
         "-Dcompose=false",
         "-Dsystemd=false",
@@ -637,7 +932,25 @@
       "archive": "wayland-protocols-1.49.tar.xz",
       "source_dir": "wayland-protocols-1.49",
       "build_system": "meson",
-      "license": "MIT",
+      "license": "MIT AND HPND-sell-variant",
+      "license_excerpts": [
+        {
+          "path": "unstable/pointer-gestures/pointer-gestures-unstable-v1.xml",
+          "lines": [
+            3,
+            26
+          ],
+          "sha256": "b6d1b5f0842e67d3ed5ae25b9f24a04ef2cdb03c1791f8e0ee47c22375cf7aba"
+        },
+        {
+          "path": "unstable/text-input/text-input-unstable-v3.xml",
+          "lines": [
+            4,
+            30
+          ],
+          "sha256": "8198d361283ac922f8a00f9ea4263a3456fd8dc8d34c2b584cb0f76c52e9d872"
+        }
+      ],
       "build_only": true,
       "options": [
         "-Dtests=false"
@@ -672,10 +985,81 @@
       "archive": "gtk-4.22.5.tar.xz",
       "source_dir": "gtk-4.22.5",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later AND Apache-2.0 AND MIT AND MIT-open-group AND HPND-sell-variant AND TCL AND CC0-1.0 AND Unicode-3.0",
       "extra_license_files": [
         "gtk/roaring/COPYING",
         "gtk/timsort/COPYING"
+      ],
+      "license_excerpts": [
+        {
+          "path": "gdk/wayland/protocol/xx-session-management-v1.xml",
+          "lines": [
+            3,
+            26
+          ],
+          "sha256": "52bc71d408a91ca5501aecc522dc831eb3332507024025db264c646dbecbb3ee"
+        },
+        {
+          "path": "gdk/x11/gdkasync.c",
+          "lines": [
+            20,
+            43
+          ],
+          "sha256": "5fa5d70969ef400f62c550197dcf0df13b188d0673ec4206e28574a213e29e1f"
+        },
+        {
+          "path": "gdk/x11/gdkxftdefaults.c",
+          "lines": [
+            17,
+            37
+          ],
+          "sha256": "33fb13834d0565a26d8e9553c652a49432783e9115615f45780f0ede3629f4ec"
+        },
+        {
+          "path": "gdk/x11/xsettings-client.c",
+          "lines": [
+            1,
+            22
+          ],
+          "sha256": "959f4eaa2176fe232b8c1c4c5d58094467b29d91f9c9cdfb2ce3da9e35342ae1"
+        },
+        {
+          "path": "gtk/gtktextbtree.c",
+          "lines": [
+            1,
+            53
+          ],
+          "sha256": "89b4077c9aaea2298363198ef6fa71de3cbc615e96d3dd4be12a8135ef2ebc45"
+        },
+        {
+          "path": "gtk/inspector/css-node-tree.c",
+          "lines": [
+            1,
+            21
+          ],
+          "sha256": "39b2a50780e4bc9e09f4fc936e716574aa3c000982145eef39a28c126bdf400c"
+        },
+        {
+          "path": "gtk/inspector/logs.c",
+          "lines": [
+            1,
+            21
+          ],
+          "sha256": "9089b08923ebc10063522ffc281be542148a539797ac599839191e32a5ed993a"
+        },
+        {
+          "path": "gtk/inspector/window.c",
+          "lines": [
+            1,
+            23
+          ],
+          "sha256": "4fba42fdd94af022206a679885632243c5e66172496b31ecc88af57853980461"
+        }
+      ],
+      "standard_license_texts": [
+        "CC0-1.0",
+        "LGPL-2.1-or-later",
+        "Unicode-3.0"
       ],
       "options": [
         "-Dx11-backend=true",
@@ -733,7 +1117,10 @@
       "archive": "dconf-0.40.0.tar.xz",
       "source_dir": "dconf-0.40.0",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dbash_completion=false",
         "-Dman=false",
@@ -751,7 +1138,10 @@
       "archive": "adwaita-icon-theme-50.0.tar.xz",
       "source_dir": "adwaita-icon-theme-50.0",
       "build_system": "meson",
-      "license": "CC-BY-SA-3.0 OR LGPL-3.0-only",
+      "license": "(CC-BY-SA-3.0 OR LGPL-3.0-only) AND CC-BY-SA-4.0",
+      "standard_license_texts": [
+        "CC-BY-SA-4.0"
+      ],
       "options": [],
       "patches": []
     },
@@ -784,16 +1174,30 @@
       "archive": "webrtc-audio-processing-2.1.tar.xz",
       "source_dir": "webrtc-audio-processing-2.1",
       "build_system": "meson",
-      "license": "BSD-3-Clause",
+      "license": "BSD-3-Clause AND BSD-2-Clause AND LicenseRef-webrtc-ooura AND LicenseRef-webrtc-spl-sqrt-floor AND LicenseRef-webrtc-pffft",
       "extra_license_files": [
         "webrtc/LICENSE",
         "webrtc/PATENTS",
         "webrtc/common_audio/third_party/ooura/LICENSE",
         "webrtc/common_audio/third_party/spl_sqrt_floor/LICENSE",
-        "webrtc/modules/third_party/fft/LICENSE",
         "webrtc/third_party/pffft/LICENSE",
         "webrtc/third_party/rnnoise/COPYING"
       ],
+      "license_excerpts": [
+        {
+          "path": "webrtc/third_party/rnnoise/src/rnn_activations.h",
+          "lines": [
+            1,
+            26
+          ],
+          "sha256": "db4473368a5266b22f93aa5be6daa61bcf58a371e18060d7a223345718b65bdc"
+        }
+      ],
+      "license_refs": {
+        "LicenseRef-webrtc-ooura": "webrtc/common_audio/third_party/ooura/LICENSE",
+        "LicenseRef-webrtc-spl-sqrt-floor": "webrtc/common_audio/third_party/spl_sqrt_floor/LICENSE",
+        "LicenseRef-webrtc-pffft": "webrtc/third_party/pffft/LICENSE"
+      },
       "options": [],
       "patches": []
     },
@@ -806,7 +1210,20 @@
       "archive": "gstreamer-1.26.11.tar.xz",
       "source_dir": "gstreamer-1.26.11",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later AND BSD-3-Clause",
+      "license_excerpts": [
+        {
+          "path": "gst/gsturi.c",
+          "lines": [
+            64,
+            96
+          ],
+          "sha256": "4f4c26875df1ceb31dbb6fc045c76b2142174cae3550020dc299fc749eb794ea"
+        }
+      ],
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dauto_features=disabled",
         "-Dtools=enabled"
@@ -822,7 +1239,10 @@
       "archive": "gst-plugins-base-1.26.11.tar.xz",
       "source_dir": "gst-plugins-base-1.26.11",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dauto_features=disabled",
         "-Dapp=enabled",
@@ -841,7 +1261,10 @@
       "archive": "gst-plugins-good-1.26.11.tar.xz",
       "source_dir": "gst-plugins-good-1.26.11",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dauto_features=disabled",
         "-Dpulse=enabled",
@@ -858,7 +1281,10 @@
       "archive": "gst-plugins-bad-1.26.11.tar.xz",
       "source_dir": "gst-plugins-bad-1.26.11",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "standard_license_texts": [
+        "LGPL-2.0-or-later"
+      ],
       "options": [
         "-Dauto_features=disabled",
         "-Dwebrtcdsp=enabled"

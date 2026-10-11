@@ -67,7 +67,7 @@ log() {
 . "$RUNTIME_DIR/fetch_source.sh"
 
 usage() {
-  echo "usage: build_runtime.sh --container [--fresh] | --verify | --print-key | --build" >&2
+  echo "usage: build_runtime.sh --container [--fresh] | --verify | --print-key | --fetch | --build" >&2
 }
 
 parse_args() {
@@ -76,6 +76,7 @@ parse_args() {
       --container) MODE="container"; shift ;;
       --verify) MODE="verify"; shift ;;
       --print-key) MODE="print-key"; shift ;;
+      --fetch) MODE="fetch"; shift ;;
       --build) MODE="build"; shift ;;
       --fresh) FRESH=1; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -139,20 +140,23 @@ cache_key() {
   } | sha256sum | cut -c1-16
 }
 
-# Every locked tarball, each held to its digest, and the licence text source,
-# which is read and never built. On the host this fills the source cache; in
-# the container it re-checks what was copied in.
+# Every locked tarball, standard licence text and SPDX list, each held to its
+# digest. The texts and lists are read and never built. On the host this fills
+# the source cache; in the container it re-checks what was copied in.
 fetch_all() {
-  local name
+  local name texts label url sha256 file
   mkdir -p "$SOURCE_CACHE"
   for name in $(lock_get '.components[].name'); do
     ensure_source "$name" "$(component_field "$name" url)" \
       "$SOURCE_CACHE/$(component_field "$name" archive)" "$(component_field "$name" sha256)"
   done
-  ensure_source "$(lock_get '.license_text_source.name')" "$(lock_get '.license_text_source.url')" \
-    "$SOURCE_CACHE/$(lock_get '.license_text_source.archive')" \
-    "$(lock_get '.license_text_source.sha256')"
-  log "every locked tarball is in $SOURCE_CACHE and matches its digest"
+  texts="$(lock_get '(.license_text_sources[] | ["SPDX text " + .spdx_id, .url, .sha256, .file]),
+    (.license_list | to_entries[] | ["SPDX list " + .key, .value.url, .value.sha256, .value.file])
+    | @tsv')"
+  while IFS=$'\t' read -r label url sha256 file; do
+    ensure_source "$label" "$url" "$SOURCE_CACHE/$file" "$sha256"
+  done <<< "$texts"
+  log "every locked tarball, text and list is in $SOURCE_CACHE and matches its digest"
 }
 
 # ---------------------------------------------------------------- host side
@@ -213,7 +217,8 @@ create_build_container() {
 # file, patches and Dockerfile by paths relative to itself.
 copy_inputs() {
   local -a archives
-  mapfile -t archives < <(lock_get '.components[].archive, .license_text_source.archive')
+  mapfile -t archives < <(lock_get '.components[].archive, .license_text_sources[].file,
+    .license_list[].file')
   tar -C "$ROOT_DIR" -cf - packaging/runtime packaging/docker/Dockerfile.runtime \
     | docker cp - "$CONTAINER:/workspace"
   tar -C "$SOURCE_CACHE" -cf - "${archives[@]}" | docker cp - "$CONTAINER:/sources"
@@ -252,6 +257,17 @@ run_container_mode() {
   run_build_container "$OUT_DIR"
   echo "$key" > "$OUT_DIR/cache-key"
   log "runtime built for $arch, cache key $key, in $OUT_DIR"
+}
+
+# Fills the source cache, each file held to its digest, without Docker and
+# without building: the offline tests read SPDX's lists and the tarballs from it.
+run_fetch_mode() {
+  local tool
+  for tool in curl sha256sum jq; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is not installed"
+  done
+  require_inputs
+  fetch_all
 }
 
 # Needs no daemon: a workflow deciding whether to pull or build the runtime
@@ -401,6 +417,8 @@ inventory_crates() {
   python3 "$RUNTIME_DIR/write_crates.py" component --name "$name" --source-dir "$src" \
     --cargo "$(jq -c --arg n "$name" '.components[] | select(.name == $n) | .cargo' "$LOCK_FILE")" \
     --build-dir "$src/_build" --tree "$CRATES_DIR/tree" --licenses-tree "$LICENSES_DIR" \
+    --spdx-licences "$SOURCE_CACHE/$(lock_get '.license_list.licenses.file')" \
+    --spdx-exceptions "$SOURCE_CACHE/$(lock_get '.license_list.exceptions.file')" \
     --out "$CRATES_DIR/fragments/$name.json" \
     || fail "$name: the crates it compiles in could not be listed"
 }
@@ -774,6 +792,7 @@ main() {
     container) run_container_mode ;;
     verify) run_verify_mode ;;
     print-key) run_print_key_mode ;;
+    fetch) run_fetch_mode ;;
     build) run_build_mode ;;
     *) fail "unreachable mode $MODE" ;;
   esac

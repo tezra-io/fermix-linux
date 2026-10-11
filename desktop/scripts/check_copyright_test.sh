@@ -38,6 +38,9 @@ mkdir -p "$inputs/texts/components/glib-2.88.3" "$inputs/texts/components/expat-
 
 printf 'GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n\nThe fixture text.\n' \
   > "$inputs/texts/components/glib-2.88.3/COPYING"
+mkdir -p "$inputs/texts/components/glib-2.88.3/glib"
+printf 'GBSearchArray fixture notice: permission to use, copy, modify.\n' \
+  > "$inputs/texts/components/glib-2.88.3/glib/gbsearcharray.h.notice"
 printf 'Copyright (c) 1998-2000 Thai Open Source Software Center Ltd\n\nPermission is granted.\n' \
   > "$inputs/texts/components/expat-2.8.4/COPYING"
 printf 'Mozilla Public License Version 2.0\n\nThe fixture text.\n' \
@@ -50,10 +53,12 @@ printf 'Copyright (c) 2020 Thing\n\nThe thing licence.\n' > "$inputs/repo/deskto
 printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n' \
   > "$inputs/engine-copyright"
 
-# wayland-protocols is build-only: the runtime is built with it and ships none of it.
+# wayland-protocols is build-only: the runtime is built with it and ships none of it. glib's
+# expression names a LicenseRef, whose text is the notice license_refs maps it to.
 cat > "$inputs/lock.json" <<'EOF'
 {"schema_version": 1, "components": [
-  {"name": "glib", "version": "2.88.3", "source_dir": "glib-2.88.3", "license": "LGPL-2.1-or-later",
+  {"name": "glib", "version": "2.88.3", "source_dir": "glib-2.88.3",
+   "license": "LGPL-2.1-or-later AND LicenseRef-glib-gbsearcharray",
    "url": "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.tar.xz", "sha256": "aa"},
   {"name": "wayland-protocols", "version": "1.49", "source_dir": "wayland-protocols-1.49",
    "license": "MIT", "url": "https://example.org/wayland-protocols-1.49.tar.xz", "sha256": "cc"},
@@ -63,19 +68,21 @@ EOF
 cat > "$inputs/runtime-licenses.json" <<'EOF'
 {"schema_version": 1, "archive": "runtime-licenses.tar.gz",
  "components": [
-  {"name": "glib", "version": "2.88.3", "license": "LGPL-2.1-or-later", "build_only": false,
-   "license_files": ["components/glib-2.88.3/COPYING"]},
+  {"name": "glib", "version": "2.88.3", "license": "LGPL-2.1-or-later AND LicenseRef-glib-gbsearcharray",
+   "build_only": false, "license_files": ["components/glib-2.88.3/COPYING",
+                                          "components/glib-2.88.3/glib/gbsearcharray.h.notice"]},
   {"name": "wayland-protocols", "version": "1.49", "license": "MIT", "build_only": true,
    "license_files": []},
   {"name": "expat", "version": "2.8.4", "license": "MIT", "build_only": false,
    "license_files": ["components/expat-2.8.4/COPYING"]}],
  "crates": [
-  {"name": "cssparser", "version": "0.35.0", "license": "MPL-2.0",
-   "license_files": ["crates/cssparser-0.35.0/LICENSE"]},
-  {"name": "tendril", "version": "0.4.3", "license": "MIT / Apache-2.0",
-   "license_files": ["crates/tendril-0.4.3/LICENSE-MIT"]}],
+  {"component": "librsvg", "name": "cssparser", "version": "0.35.0", "license": "MPL-2.0",
+   "source": "crates.io", "checksum": "ee", "license_files": ["crates/cssparser-0.35.0/LICENSE"]},
+  {"component": "librsvg", "name": "tendril", "version": "0.4.3", "license": "MIT / Apache-2.0",
+   "source": "crates.io", "checksum": "ff", "license_files": ["crates/tendril-0.4.3/LICENSE-MIT"]}],
  "rust_std": {"version": "1.97.1", "license": "MIT OR Apache-2.0",
-              "license_files": ["rust-std/COPYRIGHT-library.html"]}}
+              "license_files": ["rust-std/COPYRIGHT-library.html"]},
+ "license_refs": {"LicenseRef-glib-gbsearcharray": "components/glib-2.88.3/glib/gbsearcharray.h.notice"}}
 EOF
 # cc only runs while the window is built; the others are linked into it.
 cat > "$inputs/window-crates.json" <<'EOF'
@@ -158,8 +165,18 @@ expect_text "$out" "Files: engine/*"
 expect_text "$out" " /usr/share/doc/fermix/copyright"
 expect_text "$out" " Permission is hereby granted."
 grep -qxF "License: MIT" "$out" || fail "there is no stand-alone MIT paragraph"
+grep -A2 -xF "Files: runtime/glib-2.88.3/*" "$out" |
+  grep -qxF "License: LGPL-2.1-or-later AND LicenseRef-glib-gbsearcharray" ||
+  fail "glib's paragraph does not state its expression with the LicenseRef"
+grep -A1 -xF "License: LicenseRef-glib-gbsearcharray" "$out" |
+  grep -qxF " GBSearchArray fixture notice: permission to use, copy, modify." ||
+  fail "the LicenseRef has no stand-alone paragraph holding the text license_refs maps it to"
+[ "$(grep -cF "GBSearchArray fixture notice" "$out")" = 1 ] ||
+  fail "the LicenseRef's text is not in the file exactly once"
+expect_text "$out" " The notice in glib-2.88.3/glib/gbsearcharray.h of the private runtime's sources."
 ! grep -qF wayland-protocols "$out" || fail "the build-only component has a paragraph"
 echo "  ok: every shipped component, crate and vendored part, the engine's pointer, and the texts"
+echo "  ok: the LicenseRef has its own License paragraph, with the mapped text, given once"
 echo "  ok: the build-only component is accounted for in the check and has no paragraph"
 echo "  ok: crates with the same texts share a paragraph: $(grep -F 'crates/gio-0.22.0' "$out")"
 order="$(grep -n '^Files: ' "$out" | head -n 3 | cut -d: -f3 | tr '\n' '|')"
@@ -184,13 +201,14 @@ expect_refusal "a lock component runtime-licenses.json does not account for" \
 dir="$(inputs_variant unknown "edit_json runtime-licenses.json 'd[\"components\"].append($ZLIB_LICENSES)'")"
 expect_refusal "a runtime-licenses.json component the lock does not have" \
   "runtime-licenses.json has the component zlib 1.3, which the lock does not" check "$work/copyright" "$dir"
-dir="$(inputs_variant relicensed-lock "sed -i 's/\"LGPL-2.1-or-later\"/\"LGPL-2.0-or-later\"/' lock.json")"
+GLIB_REF="AND LicenseRef-glib-gbsearcharray"
+dir="$(inputs_variant relicensed-lock "sed -i 's/LGPL-2.1-or-later/LGPL-2.0-or-later/' lock.json")"
 expect_refusal "a lock licence runtime-licenses.json does not repeat" \
-  "the lock gives glib 2.88.3 the licence LGPL-2.0-or-later, and runtime-licenses.json LGPL-2.1-or-later" \
+  "the lock gives glib 2.88.3 the licence LGPL-2.0-or-later $GLIB_REF, and runtime-licenses.json LGPL-2.1-or-later $GLIB_REF" \
   check "$work/copyright" "$dir"
-dir="$(inputs_variant relicensed "sed -i 's/\"LGPL-2.1-or-later\"/\"LGPL-2.0-or-later\"/' lock.json runtime-licenses.json")"
+dir="$(inputs_variant relicensed "sed -i 's/LGPL-2.1-or-later/LGPL-2.0-or-later/' lock.json runtime-licenses.json")"
 expect_refusal "a component whose licence changed" \
-  "no paragraph for runtime/glib-2.88.3/* with License: LGPL-2.0-or-later" check "$work/copyright" "$dir"
+  "no paragraph for runtime/glib-2.88.3/* with License: LGPL-2.0-or-later $GLIB_REF" check "$work/copyright" "$dir"
 dir="$(inputs_variant shipped "edit_json runtime-licenses.json 'd[\"components\"][1].update(build_only=False, license_files=[\"components/expat-2.8.4/COPYING\"])'")"
 expect_refusal "a build-only component that turns out to ship" \
   "no paragraph for runtime/wayland-protocols-1.49/* with License: MIT" check "$work/copyright" "$dir"
@@ -206,6 +224,37 @@ dir="$(inputs_variant new-rust "sed -i 's/\"1.97.1\"/\"1.98.0\"/' runtime-licens
 expect_refusal "another Rust standard library" "no paragraph for runtime/rust-std-1.98.0/*" \
   check "$work/copyright" "$dir"
 
+UNMAPPED="glib 2.88.3's licence names LicenseRef-glib-gbsearcharray, which runtime-licenses.json's license_refs does not map"
+UNUSED="runtime-licenses.json's license_refs maps LicenseRef-unused, which no licence names"
+CRATE_REF="serde 1.0.0's licence names LicenseRef-serde-terms, which runtime-licenses.json's license_refs does not map"
+NO_REFS="runtime-licenses.json has no license_refs object"
+dir="$(inputs_variant ref-unmapped "edit_json runtime-licenses.json 'd[\"license_refs\"] = {}'")"
+expect_refusal "a LicenseRef license_refs does not map" "check_copyright: $UNMAPPED" check "$work/copyright" "$dir"
+dir="$(inputs_variant ref-unused "edit_json runtime-licenses.json 'd[\"license_refs\"][\"LicenseRef-unused\"] = \"components/expat-2.8.4/COPYING\"'")"
+expect_refusal "a license_refs mapping no licence names" "check_copyright: $UNUSED" check "$work/copyright" "$dir"
+dir="$(inputs_variant ref-crate "sed -i '/\"name\": \"serde\"/s/\"MIT OR Apache-2.0\"/\"MIT AND LicenseRef-serde-terms\"/' window-crates.json")"
+grep -qF LicenseRef-serde-terms "$dir/window-crates.json" || fail "the window crate variant was not made"
+expect_refusal "a window crate's LicenseRef, which nothing maps" "check_copyright: $CRATE_REF" check "$work/copyright" "$dir"
+dir="$(inputs_variant ref-none "edit_json runtime-licenses.json 'del(d[\"license_refs\"])'")"
+expect_refusal "a runtime-licenses.json with no license_refs" "check_copyright: $NO_REFS" check "$work/copyright" "$dir"
+awk 'BEGIN { RS = ""; ORS = "\n\n" } !/^License: LicenseRef-glib-gbsearcharray\n/' "$out" > "$work/edit-no-ref"
+expect_refusal "a file whose LicenseRef has no text" "License: LicenseRef-glib-gbsearcharray has no text" \
+  check "$work/edit-no-ref" "$inputs"
+{ cat "$out"; printf '\nLicense: LicenseRef-stray\n A text nothing names.\n'; } > "$work/edit-stray"
+expect_refusal "a stand-alone License paragraph no Files paragraph names" \
+  "License: LicenseRef-stray stands alone, and no Files paragraph names it" check "$work/edit-stray" "$inputs"
+
+echo "check_copyright_test: a LicenseRef only a build-only component names has no paragraph"
+dir="$(inputs_variant ref-build-only "sed -i 's/\"license\": \"MIT\", \"build_only\": true/\"license\": \"MIT AND LicenseRef-wp\", \"build_only\": true/' runtime-licenses.json &&
+  sed -i 's/\"license\": \"MIT\", \"url\": \"https:\/\/example.org\/wayland/\"license\": \"MIT AND LicenseRef-wp\", \"url\": \"https:\/\/example.org\/wayland/' lock.json &&
+  edit_json runtime-licenses.json 'd[\"license_refs\"][\"LicenseRef-wp\"] = \"components/expat-2.8.4/COPYING\"'")"
+grep -qF '"MIT AND LicenseRef-wp", "url"' "$dir/lock.json" || fail "the build-only variant's lock was not made"
+generate "$dir" "$work/copyright-build-only" > /dev/null
+check "$work/copyright-build-only" "$dir" > /dev/null || fail "a build-only component's mapped LicenseRef was refused"
+! grep -qF LicenseRef-wp "$work/copyright-build-only" || fail "a build-only component's LicenseRef has a paragraph"
+echo "  ok: mapped, accounted for, and not in the file"
+
+echo "check_copyright_test: a hand-edited file"
 sed 's/^ serde Apache\.$/ serde Apache, edited by hand./' "$out" > "$work/edited-text"
 expect_refusal "a licence text edited by hand" "is not what copyright.py generates from its inputs" \
   check "$work/edited-text" "$inputs"
@@ -229,12 +278,22 @@ expect_refusal "no engine copyright file" "engine-copyright" generate "$dir" "$w
 dir="$(inputs_variant unlisted "edit_json runtime-licenses.json 'd[\"components\"][2][\"license_files\"] = []'")"
 expect_refusal "a shipped component with no licence files listed" \
   "runtime-licenses.json lists no licence files for expat 2.8.4" generate "$dir" "$work/x"
+dir="$(inputs_variant gen-ref-unmapped "edit_json runtime-licenses.json 'd[\"license_refs\"] = {}'")"
+expect_refusal "a LicenseRef license_refs does not map" "copyright: $UNMAPPED" generate "$dir" "$work/x"
+dir="$(inputs_variant gen-ref-unused "edit_json runtime-licenses.json 'd[\"license_refs\"][\"LicenseRef-unused\"] = \"components/expat-2.8.4/COPYING\"'")"
+expect_refusal "a license_refs mapping no licence names" "$UNUSED" generate "$dir" "$work/x"
+expect_refusal "a window crate's LicenseRef, which nothing maps" "$CRATE_REF" generate "$work/ref-crate" "$work/x"
+expect_refusal "a runtime-licenses.json with no license_refs" "$NO_REFS" generate "$work/ref-none" "$work/x"
+dir="$(inputs_variant gen-ref-no-text "rm texts/components/glib-2.88.3/glib/gbsearcharray.h.notice")"
+expect_refusal "a LicenseRef text the archive does not hold" \
+  "the runtime's licence archive has no components/glib-2.88.3/glib/gbsearcharray.h.notice, which LicenseRef-glib-gbsearcharray names" \
+  generate "$dir" "$work/x"
 dir="$(inputs_variant gen-unaccounted "edit_json lock.json 'd[\"components\"].append($ZLIB)'")"
 expect_refusal "a lock component the generator cannot account for" \
   "the lock's component zlib 1.3 is not in runtime-licenses.json" generate "$dir" "$work/x"
-dir="$(inputs_variant gen-relicensed "sed -i 's/\"LGPL-2.1-or-later\"/\"LGPL-2.0-or-later\"/' lock.json")"
+dir="$(inputs_variant gen-relicensed "sed -i 's/LGPL-2.1-or-later/LGPL-2.0-or-later/' lock.json")"
 expect_refusal "a licence the two runtime inputs disagree on" \
-  "the lock gives glib 2.88.3 the licence LGPL-2.0-or-later, and runtime-licenses.json LGPL-2.1-or-later" \
+  "the lock gives glib 2.88.3 the licence LGPL-2.0-or-later $GLIB_REF, and runtime-licenses.json LGPL-2.1-or-later $GLIB_REF" \
   generate "$dir" "$work/x"
 [ ! -e "$work/x" ] || fail "a refused generation left a file behind"
 expect_refusal "no arguments" "usage" "$packaging/copyright.py"

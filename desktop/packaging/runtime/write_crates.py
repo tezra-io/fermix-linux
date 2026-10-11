@@ -12,6 +12,10 @@ not linked. Then:
   made from, under crates/<name>-<version>/;
 - writes a fragment write_licenses.py folds into runtime-licenses.json.
 
+Each crate's licence has to be an SPDX expression whose ids and exceptions are
+on SPDX's lists, which the lock pins, and none deprecated there; Cargo's old
+"/" between licences is read as OR.
+
 A crate whose package carries no licence file needs an entry in the lock's
 cargo.standard_license_texts naming the SPDX ids of its declared licence whose
 standard texts stand for it; without one the crate is refused. write_licenses.py
@@ -30,6 +34,11 @@ LICENCE_FILE = re.compile(
     r"(?i)^(licen[cs]e|copying|copyright|notice|unlicen[cs]e)([-_.].*)?$")
 TREE_LINE = re.compile(r"^(\S+) v(\S+)(?: \((.+)\))?$")
 SPDX_ID = re.compile(r"[A-Za-z0-9.+-]+")
+# A licence or exception identifier as an SPDX expression writes one. Whether
+# the identifier is on SPDX's list is not checked here.
+SPDX_LICENCE = re.compile(r"LicenseRef-[A-Za-z0-9.-]+|[A-Za-z0-9][A-Za-z0-9.-]*\+?")
+SPDX_OPERATORS = {"AND", "OR", "WITH"}
+MAX_PARENTHESES = 16
 
 
 def fail(message):
@@ -50,21 +59,107 @@ def host_triple():
     fail("rustc -vV names no host")
 
 
+def target_commands(targets):
+    """Every command line in meson's introspection of its targets."""
+    for target in targets:
+        yield from (source.get("compiler") or [] for source in target.get("target_sources", []))
+
+
 def meson_packages(build_dir):
     """The packages meson's cargo targets build, from its introspection."""
     path = os.path.join(build_dir, "meson-info", "intro-targets.json")
     with open(path, encoding="utf-8") as handle:
         targets = json.load(handle)
     packages = set()
-    for target in targets:
-        for source in target.get("target_sources", []):
-            args = source.get("compiler") or []
-            if not any("cargo" in os.path.basename(arg) for arg in args):
-                continue
-            for flag, value in zip(args, args[1:]):
-                if flag == "--packages":
-                    packages.add(value)
+    for args in target_commands(targets):
+        if any("cargo" in os.path.basename(arg) for arg in args):
+            packages.update(value for flag, value in zip(args, args[1:]) if flag == "--packages")
     return packages
+
+
+def spdx_term(tokens, at, depth):
+    """Parses one licence, licence WITH exception, or parenthesised expression."""
+    if depth > MAX_PARENTHESES or at >= len(tokens):
+        raise ValueError("an expression ends early or nests too deep")
+    if tokens[at] == "(":
+        at = spdx_or(tokens, at + 1, depth + 1)
+        if at >= len(tokens) or tokens[at] != ")":
+            raise ValueError("an unclosed parenthesis")
+        return at + 1
+    if tokens[at] in SPDX_OPERATORS or not SPDX_LICENCE.fullmatch(tokens[at]):
+        raise ValueError("%r where a licence belongs" % tokens[at])
+    if at + 1 < len(tokens) and tokens[at + 1] == "WITH":
+        if at + 2 >= len(tokens) or not SPDX_LICENCE.fullmatch(tokens[at + 2]):
+            raise ValueError("WITH and no exception")
+        return at + 3
+    return at + 1
+
+
+def spdx_and(tokens, at, depth):
+    at = spdx_term(tokens, at, depth)
+    while at < len(tokens) and tokens[at] == "AND":
+        at = spdx_term(tokens, at + 1, depth)
+    return at
+
+
+def spdx_or(tokens, at, depth):
+    at = spdx_and(tokens, at, depth)
+    while at < len(tokens) and tokens[at] == "OR":
+        at = spdx_and(tokens, at + 1, depth)
+    return at
+
+
+def spdx_licence(declared):
+    """The SPDX expression a crate declares, with Cargo's old "/" between
+    licences read as OR, as Cargo defines it; None when it is not one."""
+    expression = declared
+    if "/" in declared:
+        parts = [part.strip() for part in declared.split("/")]
+        if not all(SPDX_LICENCE.fullmatch(part) for part in parts):
+            return None
+        expression = " OR ".join(parts)
+    tokens = expression.replace("(", " ( ").replace(")", " ) ").split()
+    try:
+        end = spdx_or(tokens, 0, 0)
+    except ValueError:
+        return None
+    return expression if end == len(tokens) else None
+
+
+def spdx_list(licences_path, exceptions_path):
+    """SPDX's licence and exception lists: each id, and whether it is deprecated."""
+    with open(licences_path, encoding="utf-8") as handle:
+        licences = json.load(handle)["licenses"]
+    with open(exceptions_path, encoding="utf-8") as handle:
+        exceptions = json.load(handle)["exceptions"]
+    return ({entry["licenseId"]: entry["isDeprecatedLicenseId"] is True for entry in licences},
+            {entry["licenseExceptionId"]: entry["isDeprecatedLicenseId"] is True
+             for entry in exceptions})
+
+
+def spdx_terms(expression):
+    """Each licence and exception an SPDX expression names, and whether it is an
+    exception, the term after WITH."""
+    tokens = expression.replace("(", " ").replace(")", " ").split()
+    return [(token, at > 0 and tokens[at - 1] == "WITH") for at, token in enumerate(tokens)
+            if token not in SPDX_OPERATORS]
+
+
+def unlisted(expression, listed):
+    """What SPDX's lists do not take in an expression: an id they lack, or one
+    they deprecate. A LicenseRef is the expression's own, and no list names it."""
+    licences, exceptions = listed
+    problems = []
+    for token, is_exception in spdx_terms(expression):
+        if token.startswith("LicenseRef-") and not is_exception:
+            continue
+        table, kind = (exceptions, "exception") if is_exception else (licences, "licence")
+        spdx_id = token[:-1] if token.endswith("+") and not is_exception else token
+        if spdx_id not in table:
+            problems.append("%s is not on SPDX's %s list" % (token, kind))
+        elif table[spdx_id]:
+            problems.append("%s is deprecated" % token)
+    return problems
 
 
 def checksums(cargo_lock_text):
@@ -75,7 +170,7 @@ def checksums(cargo_lock_text):
     return found
 
 
-def tree_crates(src, manifest, package, features, triple):
+def tree_crates(src, manifest, package, features, triple, listed):
     args = ["cargo", "tree", "--offline", "--locked", "--manifest-path", manifest,
             "-p", package, "-e", "normal,no-proc-macro", "--target", triple,
             "--prefix", "none", "--no-dedupe", "-f", "{p}|{l}"]
@@ -90,7 +185,14 @@ def tree_crates(src, manifest, package, features, triple):
         name, version, path = match.groups()
         if not licence.strip():
             fail("%s %s declares no licence" % (name, version))
-        crates[(name, version)] = (licence.strip(), path)
+        expression = spdx_licence(licence.strip())
+        if expression is None:
+            fail("%s %s declares %r, which is not an SPDX expression"
+                 % (name, version, licence.strip()))
+        problems = unlisted(expression, listed)
+        if problems:
+            fail("%s %s declares %r: %s" % (name, version, licence.strip(), "; ".join(problems)))
+        crates[(name, version)] = (expression, path)
     return crates
 
 
@@ -103,7 +205,8 @@ def licence_files(directory):
 def copy_licences(directory, names, licenses_tree, crate_dir):
     """Copies the named files of directory to crates/<crate_dir>/ of the licence tree."""
     destination = os.path.join(licenses_tree, "crates", crate_dir)
-    shutil.rmtree(destination, ignore_errors=True)
+    if os.path.exists(destination):
+        shutil.rmtree(destination)
     os.makedirs(destination)
     for name in names:
         shutil.copy2(os.path.join(directory, name), os.path.join(destination, name))
@@ -152,7 +255,8 @@ def licence_files_for(src, licenses_tree, crate, standard):
 def copy_sources(src, tree, crates):
     """The vendored crates compiled in, as the source archive carries them."""
     top = os.path.basename(src)
-    shutil.rmtree(os.path.join(tree, top), ignore_errors=True)
+    if os.path.exists(os.path.join(tree, top)):
+        shutil.rmtree(os.path.join(tree, top))
     for name, version, _, path in crates:
         if path is None:
             relative = os.path.join("_crates", "%s-%s" % (name, version))
@@ -173,9 +277,10 @@ def run_component(args):
     with open(lock_path, encoding="utf-8") as handle:
         sums = checksums(handle.read())
     triple = host_triple()
+    listed = spdx_list(args.spdx_licences, args.spdx_exceptions)
     found = {}
     for package, features in sorted(cargo["packages"].items()):
-        found.update(tree_crates(src, manifest, package, features, triple))
+        found.update(tree_crates(src, manifest, package, features, triple, listed))
     crates = [(n, v, licence, path) for (n, v), (licence, path) in sorted(found.items())]
     standard = cargo.get("standard_license_texts", {})
     stale = set(standard) - {"%s %s" % (n, v) for n, v, _, _ in crates}
@@ -212,6 +317,8 @@ def main(argv):
     one.add_argument("--build-dir", required=True)
     one.add_argument("--tree", required=True, help="the crate source tree")
     one.add_argument("--licenses-tree", required=True, help="the licence file tree")
+    one.add_argument("--spdx-licences", required=True, help="SPDX's json/licenses.json")
+    one.add_argument("--spdx-exceptions", required=True, help="SPDX's json/exceptions.json")
     one.add_argument("--out", required=True, help="the fragment to write")
     args = parser.parse_args(argv)
     return run_component(args)

@@ -5,13 +5,16 @@
 # Two checks, the second independent of the program that writes the file:
 #
 #   1. runtime-licenses.json accounts for every component of the lock, with its version and
-#      licence, and names no other. Read back as Debian's format, the file has a paragraph for
+#      licence, and names no other, and its license_refs maps every LicenseRef any input's
+#      expression names and no other. Read back as Debian's format, the file has a paragraph for
 #      every runtime component that is not build-only, every crate compiled into the runtime,
 #      the Rust standard library, every crate the window's build compiles, every vendored part,
 #      this repository and the engine, each with the licence its input names, and no paragraph
 #      for anything else: a build-only component ships nothing and has none. Every licence a
-#      paragraph states without a text has a License paragraph that gives it, and the engine's
-#      paragraph points to the engine's own copyright.
+#      paragraph states without a text, and every LicenseRef any paragraph names, has a
+#      stand-alone License paragraph that gives its text; every stand-alone License paragraph is
+#      named by a Files paragraph; and the engine's paragraph points to the engine's own
+#      copyright.
 #   2. The file is byte for byte what desktop/packaging/copyright.py writes from these inputs,
 #      which holds every licence text to its source too.
 #
@@ -48,6 +51,39 @@ expected() {
     (.rust_std | "runtime/rust-std-\(.version)/*\t\(.license)")' "${inputs[runtime-licenses]}"
   jq -r '.crates[] | "crates/\(.name)-\(.version)/*\t\(.license)"' "${inputs[window-crates]}"
   jq -r '.vendored[] | .license as $licence | .files[] | "\(.)\t\($licence)"' "${inputs[vendored]}"
+}
+
+# Every licence expression of the inputs, as "whose<TAB>expression" per line.
+expressions() {
+  local -n inputs=$1
+  jq -r '(.components[], .crates[] | "\(.name) \(.version)\t\(.license)"),
+    (.rust_std | "the Rust standard library \(.version)\t\(.license)")' "${inputs[runtime-licenses]}"
+  jq -r '.crates[] | "\(.name) \(.version)\t\(.license)"' "${inputs[window-crates]}"
+  jq -r '.vendored[] | "\(.name)\t\(.license)"' "${inputs[vendored]}"
+}
+
+# runtime-licenses.json's license_refs against the LicenseRefs the expressions name, as one
+# sentence per disagreement: <runtime-licenses.json> <expressions>
+ref_accounting() {
+  local mapped
+  if ! jq -e '.license_refs | type == "object"' "$1" > /dev/null; then
+    echo "runtime-licenses.json has no license_refs object"
+    return 0
+  fi
+  mapped="$(jq -r '.license_refs | keys[]' "$1")"
+  awk -F '\t' '
+    FNR == NR { if ($0 != "") mapped[$0] = 1; next }
+    {
+      rest = $2
+      while (match(rest, /LicenseRef-[A-Za-z0-9.-]+/)) {
+        ref = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+        named[ref] = 1
+        if (!(ref in mapped)) print $1 "\047s licence names " ref ", which runtime-licenses.json\047s license_refs does not map"
+      }
+    }
+    END { for (r in mapped) if (!(r in named)) print "runtime-licenses.json\047s license_refs maps " r ", which no licence names" }' \
+    <(printf '%s\n' "$mapped") "$2" | sort -u
 }
 
 # The lock's components against runtime-licenses.json's, as one sentence per disagreement:
@@ -92,18 +128,22 @@ coverage() {
   local copyright="$1" want="$2" have="$3"
   awk -F '\t' '
     FNR == NR { want[$1] = $2; next }
-    $1 == "FILES" { seen[$2] = $3; if (!($2 in want)) print "the file names " $2 ", which no input has" }
+    $1 == "FILES" { seen[$2] = $3; used[$3] = 1; if (!($2 in want)) print "the file names " $2 ", which no input has" }
     $1 == "FILES" && $4 == 0 { bare[$3] = 1 }
+    $1 == "LICENSE" { alone[$2] = 1 }
     $1 == "LICENSE" && $3 == 1 { texts[$2] = 1 }
     END {
       for (p in want) if (!(p in seen) || seen[p] != want[p]) print "no paragraph for " p " with License: " want[p]
-      for (l in bare) {
+      for (l in used) {
         n = split(l, ids, /[ ()]+/)
         for (i = 1; i <= n; i++) {
           id = ids[i]
-          if (id != "" && id != "OR" && id != "AND" && id != "WITH" && !(id in texts)) print "License: " id " has no text"
+          if (id == "" || id == "OR" || id == "AND" || id == "WITH") continue
+          named[id] = 1
+          if (((l in bare) || id ~ /^LicenseRef-/) && !(id in texts)) print "License: " id " has no text"
         }
       }
+      for (a in alone) if (!(a in named)) print "License: " a " stands alone, and no Files paragraph names it"
     }' "$want" "$have" | sort -u
   awk -v pointer="$ENGINE_COPYRIGHT" 'BEGIN { RS = "" }
     /^Files: engine\/\*/ && index($0, pointer) { found = 1 }
@@ -131,8 +171,10 @@ main() {
   # shellcheck disable=SC2064 # the path is fixed now, and the directory goes on every exit
   trap "rm -rf -- '$work'" EXIT
   expected given > "$work/want"
+  expressions given > "$work/expressions"
   paragraphs "$copyright" > "$work/have"
   problems="$(accounting "${given[lock]}" "${given[runtime-licenses]}")"
+  problems+=$'\n'"$(ref_accounting "${given[runtime-licenses]}" "$work/expressions")"
   problems+=$'\n'"$(coverage "$copyright" "$work/want" "$work/have")"
   if ! python3 "$GENERATOR" "${args[@]}" --out "$work/generated" > /dev/null; then
     problems+=$'\n'"copyright.py cannot generate a copyright file from these inputs, as it says above"

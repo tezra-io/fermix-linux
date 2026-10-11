@@ -29,7 +29,7 @@ def describe(entry):
     return entry["sha256"]
 
 
-def compare(reference, fresh):
+def compare_header(reference, fresh):
     problems = []
     if reference["lock"] != fresh["lock"]:
         problems.append("the lock file recorded in the manifest is not the one rebuilt")
@@ -38,11 +38,15 @@ def compare(reference, fresh):
             "architecture %s was rebuilt as %s"
             % (reference["architecture"], fresh["architecture"])
         )
+    return problems
 
-    # The tarballs, not only the tree inside them. Two archives of an identical
-    # tree can differ in entry order or metadata, and it is the archive's digest
-    # that gets published, so a rebuild that reproduces the tree but not the tar
-    # is a rebuild whose published digest verifies for nobody.
+
+# The tarballs, not only the tree inside them. Two archives of an identical
+# tree can differ in entry order or metadata, and it is the archive's digest
+# that gets published, so a rebuild that reproduces the tree but not the tar
+# is a rebuild whose published digest verifies for nobody.
+def compare_archives(reference, fresh):
+    problems = []
     old_archives = reference.get("archives", {})
     new_archives = fresh.get("archives", {})
     for name in sorted(set(old_archives) | set(new_archives)):
@@ -55,12 +59,13 @@ def compare(reference, fresh):
                 "archive differs: %s (%s -> %s)"
                 % (name, old_archives[name], new_archives[name])
             )
+    return problems
 
+
+def compare_tree(reference, fresh):
     old, new = index(reference), index(fresh)
-    for path in sorted(set(old) - set(new)):
-        problems.append("missing from the rebuild: %s" % path)
-    for path in sorted(set(new) - set(old)):
-        problems.append("new in the rebuild: %s" % path)
+    problems = ["missing from the rebuild: %s" % path for path in sorted(set(old) - set(new))]
+    problems += ["new in the rebuild: %s" % path for path in sorted(set(new) - set(old))]
     for path in sorted(set(old) & set(new)):
         if describe(old[path]) != describe(new[path]):
             problems.append(
@@ -68,6 +73,11 @@ def compare(reference, fresh):
                 % (path, describe(old[path]), describe(new[path]))
             )
     return problems
+
+
+def compare(reference, fresh):
+    return (compare_header(reference, fresh) + compare_archives(reference, fresh)
+            + compare_tree(reference, fresh))
 
 
 def main(argv):
