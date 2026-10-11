@@ -9,11 +9,11 @@ use fermix_client::mobile::{
 };
 use fermix_client::pairing::{
     guards, reduce, Answer, Compare, EndAction, Ending, PairingCode, PairingLink, Progress, Step,
-    StepKind, TurnOn,
+    StepKind, TurnOn, TurnOnAction,
 };
 use fermix_client::phone::{
     ENDED_CANCELLED, ENDED_DENIED, ENDED_ELSEWHERE, ENDED_EXPIRED, ENDED_UNREADABLE, PAIR_AGAIN,
-    RESTART, START_OVER, TURN_ON_AND_RESTART,
+    RESTART, START_OVER, TURN_ON, TURN_ON_AND_RESTART,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const SESSION: &str = "5b0c7d2e-8f41-4a6b-9c3d-2e7f1a8b4c60";
 const OTHER: &str = "0d9e8f7a-6b5c-4d3e-8f2a-1b0c9d8e7f6a";
-const HARDWARE: &str = "Fermix does not check a phone's secure hardware yet.";
+const HARDWARE: &str = "Secure hardware, locked bootloader, official Fermix build.";
 
 /// The golden named `name`, its result changed by `change`, decoded as the app decodes it.
 fn golden<T: DeserializeOwned>(name: &str, change: impl FnOnce(&mut Value)) -> T {
@@ -96,28 +96,63 @@ fn golden_link() -> String {
 
 // Opening
 
+/// `mobile.status` as pairing begins, with whether the switch's row says it starts the channel
+/// in place.
+fn opening(starts_in_place: bool, change: impl FnOnce(&mut Value)) -> Step {
+    let answer = Answer::Status {
+        status: status(change),
+        switch_starts_in_place: starts_in_place,
+    };
+    reduce(&waiting(), answer).step
+}
+
+fn turn_on(action: TurnOnAction) -> Step {
+    Step::TurnOn(TurnOn::new(action))
+}
+
 #[test]
 fn pairing_opens_the_window_on_a_running_channel_and_turn_on_on_one_that_is_not() {
-    let running = reduce(&waiting(), Answer::Status(status(|_| {})));
-    assert_eq!(running.step, waiting());
-
-    let owed = reduce(
-        &waiting(),
-        Answer::Status(status(|s| s["started"] = json!(false))),
+    let not_started = |s: &mut Value| s["started"] = json!(false);
+    let off = |s: &mut Value| {
+        s["enabled"] = json!(false);
+        s["started"] = json!(false);
+    };
+    for starts_in_place in [true, false] {
+        assert_eq!(opening(starts_in_place, |_| {}), waiting());
+        assert_eq!(
+            opening(starts_in_place, not_started),
+            turn_on(TurnOnAction::Restart),
+            "a switch that is on owes the restart that starts the channel"
+        );
+    }
+    assert_eq!(opening(true, off), turn_on(TurnOnAction::SwitchOn));
+    assert_eq!(
+        opening(false, off),
+        turn_on(TurnOnAction::SwitchOnAndRestart)
     );
-    assert_eq!(owed.step, Step::TurnOn(TurnOn::new(false)));
+    assert_eq!(TurnOn::new(TurnOnAction::SwitchOn).progress, Progress::Idle);
+}
 
-    let off = reduce(
-        &waiting(),
-        Answer::Status(status(|s| {
-            s["enabled"] = json!(false);
-            s["started"] = json!(false);
-        })),
-    );
-    assert_eq!(off.step, Step::TurnOn(TurnOn::new(true)));
-    assert_eq!(TurnOn::new(true).action_title(), TURN_ON_AND_RESTART);
-    assert_eq!(TurnOn::new(false).action_title(), RESTART);
-    assert_eq!(TurnOn::new(true).progress, Progress::Idle);
+/// c01722f on macOS: the engine on dev starts the channel the moment its switch is thrown, and
+/// says so on the switch's row, so Turn on restarts Fermix only where the row waits for one.
+#[test]
+fn turn_on_says_whether_it_restarts_and_restarts_only_where_the_channel_waits_for_one() {
+    let cases = [
+        (TurnOnAction::SwitchOn, TURN_ON, true, false),
+        (
+            TurnOnAction::SwitchOnAndRestart,
+            TURN_ON_AND_RESTART,
+            true,
+            true,
+        ),
+        (TurnOnAction::Restart, RESTART, false, true),
+    ];
+    for (action, title, throws_switch, restarts) in cases {
+        assert_eq!(TurnOn::new(action).action_title(), title, "{action:?}");
+        assert_eq!(action.throws_switch(), throws_switch, "{action:?}");
+        assert_eq!(action.restarts(), restarts, "{action:?}");
+    }
+    assert_eq!(TURN_ON, "Turn on");
 }
 
 // Every transition, on the goldens
@@ -241,6 +276,24 @@ fn each_ending_says_what_the_daemon_reported() {
     );
     assert_eq!(ENDED_DENIED, "You denied this phone.");
     assert_eq!(ENDED_CANCELLED, "Pairing was cancelled.");
+}
+
+/// F-01: a phone whose secure-hardware proof the daemon refused never reaches Compare. The window
+/// it scanned ends `failed` with no request, in the daemon's words naming the check that failed.
+#[test]
+fn a_phone_whose_secure_hardware_proof_was_refused_ends_the_scan_in_the_daemons_words() {
+    let transition = reduce(
+        &scanning(),
+        Answer::Session(session("mobile_pair_get_refused")),
+    );
+    assert_eq!(
+        transition.step,
+        ended(
+            "The phone's secure-hardware proof was refused: the phone's bootloader is unlocked \
+             or its system is not verified."
+        )
+    );
+    assert_eq!(transition.abandons, None, "a failed window is over already");
 }
 
 #[test]
@@ -533,7 +586,7 @@ fn closing_cancels_the_window_in_scan_and_compare_and_nothing_once_it_has_ended(
     );
     let closed = [
         waiting(),
-        Step::TurnOn(TurnOn::new(true)),
+        turn_on(TurnOnAction::SwitchOnAndRestart),
         Step::Paired { name: "x".into() },
         ended(ENDED_DENIED),
         Step::Phones,

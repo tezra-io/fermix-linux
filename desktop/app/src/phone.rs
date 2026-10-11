@@ -75,6 +75,8 @@ enum Parts {
 struct TurnOnParts {
     lead: gtk::Box,
     lead_label: gtk::Label,
+    /// What a restart interrupts, drawn only where the button restarts.
+    interrupts: gtk::Label,
     working: gtk::Box,
     working_label: gtk::Label,
     refusal: gtk::Label,
@@ -386,13 +388,14 @@ fn foot(buttons: &[gtk::Button]) -> gtk::Box {
     foot
 }
 
-/// Turn on: the daemon's own footer for the switch, what a restart interrupts, and the one
-/// button, which says it restarts.
+/// Turn on: the daemon's own footer for the switch; where the button restarts, what a restart
+/// interrupts; and the one button, which says whether it restarts.
 fn turn_on_step(turn_on: &TurnOn, footer: Option<&str>) -> Built {
     let body = column();
     let (lead, lead_label) = heading(footer.unwrap_or_default());
     body.append(&lead);
-    body.append(&note(crate::service::INTERRUPTS));
+    let interrupts = note(crate::service::INTERRUPTS);
+    body.append(&interrupts);
     let working_label = gtk::Label::new(Some(RESTARTING));
     working_label.add_css_class("dim-label");
     let working = gtk::Box::builder()
@@ -410,6 +413,7 @@ fn turn_on_step(turn_on: &TurnOn, footer: Option<&str>) -> Built {
     let parts = TurnOnParts {
         lead: lead.clone(),
         lead_label,
+        interrupts,
         working,
         working_label,
         refusal,
@@ -432,6 +436,7 @@ impl TurnOnParts {
         self.lead
             .update_property(&[gtk::accessible::Property::Label(lead)]);
         self.lead.set_visible(!lead.is_empty());
+        self.interrupts.set_visible(turn_on.action.restarts());
         self.working.set_visible(turn_on.progress != Progress::Idle);
         self.working_label
             .set_visible(turn_on.progress == Progress::Restarting);

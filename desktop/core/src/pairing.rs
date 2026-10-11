@@ -10,7 +10,7 @@ use crate::mobile::{
 };
 use crate::phone::{
     ENDED_CANCELLED, ENDED_DENIED, ENDED_ELSEWHERE, ENDED_EXPIRED, ENDED_UNREADABLE, PAIR_AGAIN,
-    RESTART, START_OVER, TURN_ON_AND_RESTART,
+    RESTART, START_OVER, TURN_ON, TURN_ON_AND_RESTART,
 };
 use std::fmt;
 
@@ -228,30 +228,50 @@ pub enum Progress {
     Restarting,
 }
 
+/// What Turn on's one button does, which its words say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOnAction {
+    /// Throws the switch, which starts the channel in place.
+    SwitchOn,
+    /// Throws the switch and restarts, since the channel starts only at boot.
+    SwitchOnAndRestart,
+    /// Restarts: the switch is on already and the channel did not start.
+    Restart,
+}
+
+impl TurnOnAction {
+    pub fn throws_switch(self) -> bool {
+        self != TurnOnAction::Restart
+    }
+
+    pub fn restarts(self) -> bool {
+        self != TurnOnAction::SwitchOn
+    }
+}
+
 /// Turn on: shown while the channel is not running.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnOn {
-    /// Whether this step throws the switch, or the switch is on and only the restart is owed.
-    pub throws_switch: bool,
+    pub action: TurnOnAction,
     pub progress: Progress,
     /// What refused it, as written, where something did.
     pub refusal: Option<String>,
 }
 
 impl TurnOn {
-    pub fn new(throws_switch: bool) -> TurnOn {
+    pub fn new(action: TurnOnAction) -> TurnOn {
         TurnOn {
-            throws_switch,
+            action,
             progress: Progress::Idle,
             refusal: None,
         }
     }
 
     pub fn action_title(&self) -> &'static str {
-        if self.throws_switch {
-            TURN_ON_AND_RESTART
-        } else {
-            RESTART
+        match self.action {
+            TurnOnAction::SwitchOn => TURN_ON,
+            TurnOnAction::SwitchOnAndRestart => TURN_ON_AND_RESTART,
+            TurnOnAction::Restart => RESTART,
         }
     }
 }
@@ -314,8 +334,12 @@ impl Ending {
 /// One answer from the daemon, as the dialog takes it.
 #[derive(Debug)]
 pub enum Answer {
-    /// `mobile.status`, read as pairing begins.
-    Status(MobileStatus),
+    /// `mobile.status`, read as pairing begins, and whether the channel's switch says on its own
+    /// row that it starts the channel in place.
+    Status {
+        status: MobileStatus,
+        switch_starts_in_place: bool,
+    },
     Started(PairingStart),
     /// `mobile.pair.start` refused `busy`, with the window `mobile.status` named afterwards.
     Busy(Option<PairingSummary>),
@@ -344,7 +368,10 @@ impl Transition {
 
 pub fn reduce(step: &Step, answer: Answer) -> Transition {
     match answer {
-        Answer::Status(status) => opening(&status),
+        Answer::Status {
+            status,
+            switch_starts_in_place,
+        } => opening(&status, switch_starts_in_place),
         Answer::Started(start) => started(&start),
         Answer::Busy(pairing) => busy(pairing),
         Answer::Session(session) => read(&session, step),
@@ -352,12 +379,19 @@ pub fn reduce(step: &Step, answer: Answer) -> Transition {
     }
 }
 
-/// Pairing begins on the channel as it stands: Turn on while it is not running.
-fn opening(status: &MobileStatus) -> Transition {
-    if !status.started {
-        return Transition::to(Step::TurnOn(TurnOn::new(!status.enabled)));
+/// Pairing begins on the channel as it stands: Turn on while it is not running. A switch that is
+/// off is thrown, with a restart unless its row says it starts the channel in place; one that is
+/// on owes the restart that starts the channel.
+fn opening(status: &MobileStatus, switch_starts_in_place: bool) -> Transition {
+    if status.started {
+        return Transition::to(Step::Waiting { session: None });
     }
-    Transition::to(Step::Waiting { session: None })
+    let action = match (status.enabled, switch_starts_in_place) {
+        (true, _) => TurnOnAction::Restart,
+        (false, true) => TurnOnAction::SwitchOn,
+        (false, false) => TurnOnAction::SwitchOnAndRestart,
+    };
+    Transition::to(Step::TurnOn(TurnOn::new(action)))
 }
 
 /// The window the start opened, or the daemon's refusal of it. The link is read here and nowhere

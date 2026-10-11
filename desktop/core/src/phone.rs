@@ -4,7 +4,7 @@
 //! sentences are macOS's, word for word.
 
 use crate::mobile::{ListenerStatus, MobileDevices, MobileStatus};
-use crate::settings::Section;
+use crate::settings::{Section, SectionRows};
 
 /// The channel's name in `setup.state.get`.
 pub const CHANNEL: &str = "mobile";
@@ -20,6 +20,7 @@ pub const STATUS_NO_PHONE: &str = "No phone paired";
 pub const STATUS_CHECKING: &str = "Checking";
 pub const PAIR: &str = "Pair a phone…";
 pub const CHANGE: &str = "Change…";
+pub const TURN_ON: &str = "Turn on";
 pub const TURN_ON_AND_RESTART: &str = "Turn on and restart Fermix";
 pub const RESTART: &str = "Restart Fermix";
 pub const RESTARTING: &str = "Restarting Fermix";
@@ -48,7 +49,7 @@ pub const PAIR_ANOTHER: &str = "Pair another phone";
 pub const SETUP_ROW: &str = "Pair your Android phone";
 
 /// Every fixed string the phone surfaces show, so a test can hold them to where Android is named.
-pub const STRINGS: [&str; 33] = [
+pub const STRINGS: [&str; 34] = [
     STATUS_OFF,
     STATUS_RESTART,
     STATUS_COULD_NOT_START,
@@ -56,6 +57,7 @@ pub const STRINGS: [&str; 33] = [
     STATUS_CHECKING,
     PAIR,
     CHANGE,
+    TURN_ON,
     TURN_ON_AND_RESTART,
     RESTART,
     RESTARTING,
@@ -155,6 +157,16 @@ fn phone_name(devices: Option<&Result<MobileDevices, String>>) -> String {
         Some(Err(sentence)) => sentence.clone(),
         None => STATUS_CHECKING.to_owned(),
     }
+}
+
+/// Whether the channel's switch says on its own row that throwing it starts the channel in place.
+/// The engine this app pins starts the channel only at boot and marks the row as waiting for a
+/// restart; a newer one starts it at once and does not. A section not read, or one without the
+/// switch, is taken as waiting, so Turn on restarts.
+pub fn switch_starts_in_place(section: Option<&SectionRows>) -> bool {
+    section
+        .and_then(|s| s.rows.iter().find(|r| r.key == SWITCH_KEY))
+        .is_some_and(|row| !row.restart)
 }
 
 /// Whether the daemon publishes the phone channel, which is when the last setup screen offers it.

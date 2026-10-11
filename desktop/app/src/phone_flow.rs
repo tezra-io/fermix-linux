@@ -8,9 +8,10 @@ use crate::phone::{PhoneView, Screen};
 use adw::prelude::*;
 use fermix_client::management::CallError;
 use fermix_client::mobile::PairingStart;
-use fermix_client::pairing::{reduce, Answer, EndAction, Progress, Step, TurnOn};
+use fermix_client::pairing::{reduce, Answer, EndAction, Progress, Step, TurnOn, TurnOnAction};
 use fermix_client::phone::{
-    Forgetting, Intent, CHANNEL, ENDED_UNREADABLE, POLL_MS, SECTION, SWITCH_KEY,
+    switch_starts_in_place, Forgetting, Intent, CHANNEL, ENDED_UNREADABLE, POLL_MS, SECTION,
+    SWITCH_KEY,
 };
 use fermix_client::settings::read_failure;
 use fermix_client::view::channel_title;
@@ -63,9 +64,9 @@ pub fn target(intent: Intent) -> &'static str {
     }
 }
 
-fn turning(throws_switch: bool, progress: Progress, refusal: Option<String>) -> Step {
+fn turning(action: TurnOnAction, progress: Progress, refusal: Option<String>) -> Step {
     Step::TurnOn(TurnOn {
-        throws_switch,
+        action,
         progress,
         refusal,
     })
@@ -216,14 +217,21 @@ impl App {
     }
 
     /// Pairing begins on the channel as it stands: Turn on while it is not running, and the
-    /// window once it is.
+    /// window once it is. The switch's row is read first, since it says whether throwing the
+    /// switch starts the channel in place or waits for a restart.
     async fn phone_pair(&self, token: u64) {
         self.phone_show(token, Step::Waiting { session: None });
+        self.read_section(SECTION).await;
         let status = self.daemon.call(|m| m.mobile_status()).await;
         let status = status.map_err(|e| self.phone_refusal(&e, "mobile.status"));
         self.settings_data.borrow_mut().phone_status = Some(status.clone());
         let answer = match status {
-            Ok(status) => Answer::Status(status),
+            Ok(status) => Answer::Status {
+                status,
+                switch_starts_in_place: switch_starts_in_place(
+                    self.settings_data.borrow().rows.get(SECTION),
+                ),
+            },
             Err(sentence) => return self.phone_take(token, Answer::Refused(sentence)).await,
         };
         self.phone_take(token, answer).await;
@@ -322,25 +330,28 @@ impl App {
         }
     }
 
-    /// Turn on's one button: the switch where it is off, then the app's restart, each shown as
-    /// it runs. A refusal stays on the step in its own words. After the restart the window is
-    /// asked for whatever the channel did, so a channel that still could not start says why in
-    /// the daemon's sentence.
+    /// Turn on's one button: the switch where it is off, the app's restart where the channel
+    /// waits for one, each shown as it runs. A refusal stays on the step in its own words. Then
+    /// the window is asked for whatever the channel did, so a channel that still could not start
+    /// says why in the daemon's sentence, and Pair again offers the restart.
     pub async fn phone_turn_on(self: Rc<Self>) {
-        let turn_on = match &self.phone.borrow().step {
-            Step::TurnOn(turn_on) if turn_on.progress == Progress::Idle => turn_on.clone(),
+        let action = match &self.phone.borrow().step {
+            Step::TurnOn(turn_on) if turn_on.progress == Progress::Idle => turn_on.action,
             _ => return,
         };
         let token = self.phone_begin();
-        if turn_on.throws_switch {
-            self.phone_show(token, turning(true, Progress::Applying, None));
+        if action.throws_switch() {
+            self.phone_show(token, turning(action, Progress::Applying, None));
             if let Err(sentence) = self.phone_switch_on().await {
-                return self.phone_show(token, turning(true, Progress::Idle, Some(sentence)));
+                return self.phone_show(token, turning(action, Progress::Idle, Some(sentence)));
             }
         }
-        self.phone_show(token, turning(false, Progress::Restarting, None));
-        if let Err(sentence) = self.restart_now().await {
-            return self.phone_show(token, turning(false, Progress::Idle, Some(sentence)));
+        if action.restarts() {
+            let restart = TurnOnAction::Restart;
+            self.phone_show(token, turning(restart, Progress::Restarting, None));
+            if let Err(sentence) = self.restart_now().await {
+                return self.phone_show(token, turning(restart, Progress::Idle, Some(sentence)));
+            }
         }
         if !self.phone_current(token) {
             return;

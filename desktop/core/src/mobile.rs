@@ -70,7 +70,8 @@ pub struct Listener {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MobileStatus {
     pub enabled: bool,
-    /// False until the channel runs, which a switch turned on does not do before a restart.
+    /// Whether the channel runs. Where the switch is live it starts with the write that turns it
+    /// on; where the channel starts only at boot, a switch turned on waits for a restart.
     pub started: bool,
     /// True when the channel could not start this boot.
     pub refused: bool,

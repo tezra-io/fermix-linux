@@ -5,9 +5,10 @@
 use fermix_client::mobile::{MobileDevices, MobileStatus};
 use fermix_client::phone::{
     countdown, detail, grouped, heading, offers_phone, paired_line, row, seen, spoken,
-    unix_seconds, Forgetting, Intent, CHANGE, PAIR, SCAN_LINE, SETUP_ROW, STRINGS,
+    switch_starts_in_place, unix_seconds, Forgetting, Intent, CHANGE, PAIR, SCAN_LINE, SETUP_ROW,
+    STRINGS,
 };
-use fermix_client::settings::Sections;
+use fermix_client::settings::{SectionRows, Sections};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -53,6 +54,26 @@ fn the_row_says_off_restart_or_could_not_start_before_it_counts_phones() {
     assert_eq!(status_of(refused, devices()), "Could not start");
     let deaf = status(|s| s["listener"]["status"] = json!("unavailable"));
     assert_eq!(status_of(deaf, devices()), "Could not start");
+}
+
+/// The phone section with its switch's row changed by `change`.
+fn section(change: impl FnOnce(&mut Value)) -> SectionRows {
+    golden("settings_get_channels_mobile", |s| {
+        change(&mut s["rows"][0])
+    })
+}
+
+/// The engine this app pins starts the channel only at boot and marks the switch's row as
+/// waiting for a restart; a newer one starts it the moment the switch is thrown. A row that was
+/// not read, or a section without the switch, is taken as waiting, so Turn on restarts.
+#[test]
+fn the_switch_starts_the_channel_in_place_only_where_its_own_row_says_so() {
+    assert!(switch_starts_in_place(Some(&section(|_| {}))));
+    let waits = section(|row| row["restart"] = json!(true));
+    assert!(!switch_starts_in_place(Some(&waits)));
+    let other = section(|row| row["key"] = json!("mobile_other"));
+    assert!(!switch_starts_in_place(Some(&other)));
+    assert!(!switch_starts_in_place(None));
 }
 
 #[test]

@@ -6,6 +6,7 @@
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::management::{CallError, Management};
 use fermix_client::mobile::{OutcomeReason, SessionState};
+use fermix_client::phone::switch_starts_in_place;
 use fermix_client::settings::{switch_key, SectionRows};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -154,6 +155,7 @@ fn every_session_read_decodes_with_the_fields_its_state_carries() {
         ("mobile_pair_get_expired", SessionState::Expired),
         ("mobile_pair_get_cancelled", SessionState::Cancelled),
         ("mobile_pair_get_failed", SessionState::Failed),
+        ("mobile_pair_get_refused", SessionState::Failed),
     ];
     for (golden, state) in cases {
         let mut session = None;
@@ -164,6 +166,20 @@ fn every_session_read_decodes_with_the_fields_its_state_carries() {
         assert_eq!(session.state, state, "{golden}");
         assert_eq!(session.ttl_ms.is_some(), !state.is_terminal(), "{golden}");
     }
+}
+
+/// A refused secure-hardware proof never reaches the owner: the window fails with no request.
+#[test]
+fn a_refused_proof_fails_the_window_with_no_phone_named() {
+    let mut refused = None;
+    exchange("mobile_pair_get", "mobile_pair_get_refused", |m| {
+        refused = Some(m.mobile_pair_get(SESSION).expect("the golden decodes"));
+    });
+    let refused = refused.expect("answered");
+    assert_eq!(refused.state, SessionState::Failed);
+    assert!(refused.request.is_none(), "no phone reaches the owner");
+    let failure = refused.failure.expect("the daemon says why");
+    assert_eq!(failure.code, "refused");
 }
 
 #[test]
@@ -180,7 +196,7 @@ fn a_decision_and_a_cancel_answer_the_terminal_view() {
     assert_eq!(request.sas, "481062");
     assert_eq!(
         request.attestation.sentence,
-        "Fermix does not check a phone's secure hardware yet."
+        "Secure hardware, locked bootloader, official Fermix build."
     );
 
     // Denying sends the same method with approved false; the golden answer is not read.
@@ -229,6 +245,7 @@ fn no_phone_golden_goes_unread() {
         "mobile_pair_get_expired",
         "mobile_pair_get_cancelled",
         "mobile_pair_get_failed",
+        "mobile_pair_get_refused",
         "mobile_pair_decide",
         "mobile_pair_cancel",
         "mobile_devices_list",
@@ -286,6 +303,10 @@ fn the_phone_sections_switch_is_mobile_enabled() {
     let section: SectionRows = serde_json::from_value(result).expect("the section decodes");
     assert_eq!(section.title, "Phone");
     assert_eq!(switch_key("mobile", &section), Some("mobile_enabled"));
+    assert!(
+        switch_starts_in_place(Some(&section)),
+        "the switch's row says it starts the channel at once"
+    );
     let keys: Vec<&str> = section.rows.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(
         keys,
