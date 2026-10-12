@@ -199,12 +199,13 @@ jobs:
         run: desktop/packaging/runtime/package_sources.sh "$VERSION" --out "$PACKAGES"
 
       # After the build, because some tests read the runtime it built or run a tool in an image it
-      # pulled. ImageMagick, with a font for its text, makes the screenshot checks' fixtures.
+      # pulled. ImageMagick makes the screenshot checks' fixtures; its text needs the URW fonts it
+      # names by default, which --no-install-recommends would leave out.
       - name: Install the packaging tests' tools
         if: matrix.arch == 'amd64'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends imagemagick fonts-dejavu-core
+          sudo apt-get install -y -q --no-install-recommends imagemagick fonts-urw-base35
 
       # Every test runs, and each one that fails is named, before the job fails.
       - name: Run every packaging test
