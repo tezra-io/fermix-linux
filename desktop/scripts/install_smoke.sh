@@ -3,26 +3,33 @@
 # Installs a built fermix-desktop package on a clean distribution image and checks that it works
 # there: the package manager installs it with its declared relations, `fermix --version` answers,
 # ldd resolves every object under /usr/lib/fermix-desktop with the toolkit from the private prefix,
-# and the window draws under Xvfb, in the state it shows when Fermix is not running.
+# and the window draws, in the state it shows when Fermix is not running, on each display the image
+# draws on: under Xvfb, and on the newest of each family also on a headless Weston, which is what
+# proves the private libwayland-client.
 #
-#   install_smoke.sh --image <ubuntu:22.04|fedora:44> <package> [--out <dir>]
-#   install_smoke.sh --image <ubuntu:22.04|fedora:44> <package> --print-engine-version
+#   install_smoke.sh --image <image> <package> [--out <dir>]
+#   install_smoke.sh --image <image> <package> --print-plan
 #
-#   --out <dir>   where the screenshot and the logs go, by default
+#   <image>       ubuntu:22.04, ubuntu:24.04, ubuntu:26.04, debian:12, debian:13, fedora:44,
+#                 almalinux:9 or almalinux:10
+#   --out <dir>   where the screenshots and the logs go, by default
 #                 $FERMIX_PACKAGE_CACHE/out/smoke/<image>, with the image's ':' as '-'
+#   --print-plan  print the pinned image, the family, the architecture, the displays and the engine
+#                 version, and stop
 #
-# Each image is pinned by digest here. The package goes into the container by docker cp and is
-# checked there against its sha256; desktop/packaging/smoke_in_container.sh runs the checks; what
-# it writes comes back by docker cp and is checked against the SHA256SUMS it wrote. Its screen dump
-# is then decoded and checked by desktop/packaging/convert_screenshot.sh in one converter image,
-# pinned here with its packages, the same for every distribution, so no image under test decodes
-# its own capture. Both containers are removed on every exit. The images reach their mirrors for
-# the package's dependencies, for Xvfb, and for ImageMagick.
+# Each image is pinned here by the digest of its multi-arch index, so one pin runs natively on an
+# amd64 and an arm64 machine. The smoke runs natively: the package's architecture must be this
+# machine's. The package goes into the container by docker cp and is checked there against its
+# sha256; desktop/packaging/smoke_in_container.sh runs the checks; what it writes comes back by
+# docker cp and is checked against the SHA256SUMS it wrote. Its captures are then checked by
+# desktop/packaging/convert_screenshot.sh in one converter image, pinned here with its packages,
+# the same for every distribution, so no image under test decodes its own capture. Both containers
+# are removed on every exit. The images reach their mirrors for the package's dependencies, for the
+# display tools, and for ImageMagick.
 set -euo pipefail
 shopt -s inherit_errexit
 
-UBUNTU_IMAGE="ubuntu:22.04@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02"
-FEDORA_IMAGE="fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80"
+IMAGES="ubuntu:22.04, ubuntu:24.04, ubuntu:26.04, debian:12, debian:13, fedora:44, almalinux:9 and almalinux:10"
 # The converter: Alpine 3.22 with ImageMagick 7.1.2-15, which reads xwd's 32-bit pixels right.
 CONVERT_IMAGE="alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
 CONVERT_PACKAGES="imagemagick=7.1.2.15-r0 bash=5.2.37-r0"
@@ -30,8 +37,6 @@ SCREEN=1280x800
 # A smoke that has not finished by then has failed; the container is removed either way.
 SMOKE_TIMEOUT_SECONDS=1800
 CONVERT_TIMEOUT_SECONDS=600
-ARCH=amd64
-RPM_ARCH=x86_64
 CACHE_HOME="${XDG_CACHE_HOME:-${HOME:?}/.cache}"
 PACKAGE_CACHE="${FERMIX_PACKAGE_CACHE:-$CACHE_HOME/fermix-desktop-package}"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -48,8 +53,7 @@ fail() {
 }
 
 usage() {
-  fail "usage: install_smoke.sh --image <ubuntu:22.04|fedora:44> <package>" \
-    "[--out <dir> | --print-engine-version]"
+  fail "usage: install_smoke.sh --image <image> <package> [--out <dir> | --print-plan]"
 }
 
 cleanup() {
@@ -61,32 +65,48 @@ cleanup() {
   [ -z "$WORK" ] || rm -rf -- "$WORK"
 }
 
+# Each image's multi-arch index, which names its amd64 and its arm64 image alike.
 pinned_image() {
   case "$1" in
-    ubuntu:22.04) echo "$UBUNTU_IMAGE" ;;
-    fedora:44) echo "$FEDORA_IMAGE" ;;
-    *) fail "the smoke runs on ubuntu:22.04 and fedora:44, not $1" ;;
+    ubuntu:22.04) echo "ubuntu:22.04@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02" ;;
+    ubuntu:24.04) echo "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55" ;;
+    ubuntu:26.04) echo "ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7" ;;
+    debian:12) echo "debian:12@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858" ;;
+    debian:13) echo "debian:13@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5" ;;
+    fedora:44) echo "fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80" ;;
+    almalinux:9) echo "almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16" ;;
+    almalinux:10) echo "almalinux:10@sha256:838c2fafefb1a8a0d7f8cdbc3b0551c2a2b1eb0cd87aad6d62aecadb18311f1b" ;;
+    *) fail "the smoke runs on $IMAGES, not $1" ;;
   esac
 }
 
 family_of() {
   case "$1" in
-    ubuntu:*) echo deb ;;
-    fedora:*) echo rpm ;;
+    ubuntu:* | debian:*) echo deb ;;
+    fedora:* | almalinux:*) echo rpm ;;
   esac
 }
 
-# The engine version a package's file name carries: <engine>[+<n> | +0.dev.<...>].
-engine_version_of() {
-  local package="$1" family="$2" name pattern arch
-  name="$(basename -- "$package")"
-  case "$family" in
-    deb) pattern='^fermix-desktop_([0-9][0-9A-Za-z.+]*)_([a-z0-9_]+)\.deb$' arch="$ARCH" ;;
-    rpm) pattern='^fermix-desktop-([0-9][0-9A-Za-z.+]*)-1\.([a-z0-9_]+)\.rpm$' arch="$RPM_ARCH" ;;
+# The displays <image> draws the window on. The newest of each family also draws on Weston.
+# AlmaLinux 10 draws on Weston alone: RHEL 10 ships no Xvfb, xwd or xwininfo, and its desktop
+# sessions are Wayland's.
+displays_of() {
+  case "$1" in
+    ubuntu:26.04 | fedora:44) echo "x11 wayland" ;;
+    almalinux:10) echo "wayland" ;;
+    *) echo "x11" ;;
   esac
-  [[ "$name" =~ $pattern ]] || fail "$name is not a fermix-desktop package as build_packages.sh names them"
-  [ "${BASH_REMATCH[2]}" = "$arch" ] || fail "$name is not a fermix-desktop package for $ARCH"
-  echo "${BASH_REMATCH[1]%%+*}"
+}
+
+# This machine's architecture, as docker and the deb name it.
+machine_arch() {
+  local machine
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64) echo amd64 ;;
+    aarch64) echo arm64 ;;
+    *) fail "the smoke runs on x86_64 and aarch64 machines, not $machine" ;;
+  esac
 }
 
 check_package() {
@@ -98,33 +118,61 @@ check_package() {
   esac
 }
 
+# "<engine version> <architecture>" from a package's file name, as build_packages.sh names it:
+# fermix-desktop_<engine>[+<n> | +0.dev.<...>]_<arch>.deb, or the same version in
+# fermix-desktop-<version>-1.<arch>.rpm, whose x86_64 and aarch64 are amd64 and arm64.
+name_fields() {
+  local package="$1" family="$2" name pattern arch
+  name="$(basename -- "$package")"
+  case "$family" in
+    deb) pattern='^fermix-desktop_([0-9][0-9A-Za-z.+]*)_([a-z0-9_]+)\.deb$' ;;
+    rpm) pattern='^fermix-desktop-([0-9][0-9A-Za-z.+]*)-1\.([a-z0-9_]+)\.rpm$' ;;
+  esac
+  [[ "$name" =~ $pattern ]] || fail "$name is not a fermix-desktop package as build_packages.sh names them"
+  arch="${BASH_REMATCH[2]}"
+  if [ "$family" = rpm ]; then
+    case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+  fi
+  echo "${BASH_REMATCH[1]%%+*} $arch"
+}
+
 # The smoke container, with the package and the script that checks it copied in.
 create_container() {
-  local pinned="$1" family="$2" package="$3" engine="$4" digest name
+  local pinned="$1" family="$2" package="$3" engine="$4" arch="$5" displays="$6" digest name
   digest="$(sha256sum -- "$package" | cut -d' ' -f1)"
   name="$(basename -- "$package")"
-  docker create --name "fermix-desktop-pkg-package-smoke-$$" --platform "linux/$ARCH" --pull missing \
+  docker create --name "fermix-desktop-pkg-package-smoke-$$" --platform "linux/$arch" --pull missing \
     "$pinned" bash /smoke/smoke_in_container.sh --family "$family" --package "/smoke/$name" \
-    --sha256 "$digest" --engine-version "$engine" > /dev/null
+    --sha256 "$digest" --engine-version "$engine" --displays "$displays" > /dev/null
   CONTAINER="fermix-desktop-pkg-package-smoke-$$"
   tar -cf - --transform 'flags=r;s,^,smoke/,' -C "$(dirname -- "$package")" "$name" \
     -C "$desktop/packaging" smoke_in_container.sh | docker cp - "$CONTAINER:/"
 }
 
-# screen.xwd in <out>, decoded to screenshot.png and checked against window-bounds.txt in the
-# converter; the PNG comes back checked by the sha256 the converter wrote, and joins SHA256SUMS.
-convert_screenshot() {
-  local out="$1" received="$WORK/converted"
+# The captures in <out> checked in the converter, each against its control: the X11 dump decoded
+# into screenshot.png, which comes back checked by the sha256 the converter wrote and joins
+# SHA256SUMS; the Wayland captures, which the smoke container wrote as PNG, as they are.
+convert_screenshots() {
+  local out="$1" arch="$2" displays="$3" received="$WORK/converted" display
+  local -a shown captures=()
+  read -r -a shown <<< "$displays"
+  for display in "${shown[@]}"; do
+    case "$display" in
+      x11) captures+=(screen.xwd window-bounds.txt) ;;
+      wayland) captures+=(wayland-screenshot.png wayland-empty.png) ;;
+    esac
+  done
   # shellcheck disable=SC2016 # expanded in the converter
-  docker create --name "fermix-desktop-pkg-package-convert-$$" --platform "linux/$ARCH" --pull missing \
-    "$CONVERT_IMAGE" sh -euc 'apk add --no-cache --quiet $1 && bash /convert/convert_screenshot.sh /convert/work "$2"' \
-    sh "$CONVERT_PACKAGES" "$SCREEN" > /dev/null
+  docker create --name "fermix-desktop-pkg-package-convert-$$" --platform "linux/$arch" --pull missing \
+    "$CONVERT_IMAGE" sh -euc 'apk add --no-cache --quiet $1 && shift && bash /convert/convert_screenshot.sh /convert/work "$@"' \
+    sh "$CONVERT_PACKAGES" "$SCREEN" "${shown[@]}" > /dev/null
   CONVERTER="fermix-desktop-pkg-package-convert-$$"
-  tar -cf - --transform 'flags=r;s,^\(screen\|window\),work/\1,' --transform 'flags=r;s,^,convert/,' \
+  tar -cf - --transform 'flags=r;s,^\(screen\|window\|wayland\),work/\1,' --transform 'flags=r;s,^,convert/,' \
     -C "$desktop/packaging" convert_screenshot.sh check_screenshot.sh smoke_fixtures/garbled-xwdtopnm.png \
-    -C "$out" screen.xwd window-bounds.txt | docker cp - "$CONVERTER:/"
+    -C "$out" "${captures[@]}" | docker cp - "$CONVERTER:/"
   timeout "$CONVERT_TIMEOUT_SECONDS" docker start --attach "$CONVERTER" ||
-    fail "the converter could not decode and check the screenshot; screen.xwd is in $out"
+    fail "the converter refused the captures in $out"
+  [[ " $displays " == *" x11 "* ]] || return 0
   mkdir -p "$received"
   docker cp "$CONVERTER:/convert/work/screenshot.png" "$received/"
   docker cp "$CONVERTER:/convert/work/screenshot.png.sha256" "$received/"
@@ -132,7 +180,6 @@ convert_screenshot() {
     fail "the screenshot copied out of the converter does not match the sha256 it wrote"
   mv -f -- "$received/screenshot.png" "$out/screenshot.png"
   (cd "$out" && sha256sum screenshot.png >> SHA256SUMS)
-  echo "install_smoke: $out/screenshot.png, decoded and checked in $CONVERT_IMAGE"
 }
 
 # What the container wrote, checked against its SHA256SUMS, moved into <out>.
@@ -157,9 +204,10 @@ keep_failed() {
 }
 
 run_smoke() {
-  local image="$1" family="$2" package="$3" engine="$4" out="$5"
-  create_container "$(pinned_image "$image")" "$family" "$package" "$engine"
-  echo "install_smoke: $(basename -- "$package") on $image" >&2
+  local image="$1" family="$2" package="$3" engine="$4" arch="$5" out="$6" displays
+  displays="$(displays_of "$image")"
+  create_container "$(pinned_image "$image")" "$family" "$package" "$engine" "$arch" "$displays"
+  echo "install_smoke: $(basename -- "$package") on $image, $arch, drawn on $displays" >&2
   if ! timeout "$SMOKE_TIMEOUT_SECONDS" docker start --attach "$CONTAINER"; then
     keep_failed "$out-failed"
     fail "the smoke of $(basename -- "$package") failed on $image; what it wrote is in $out-failed"
@@ -167,16 +215,17 @@ run_smoke() {
   mkdir -p "$PACKAGE_CACHE"
   WORK="$(mktemp -d "$PACKAGE_CACHE/smoke.XXXXXX")"
   copy_out "$out"
-  convert_screenshot "$out"
+  convert_screenshots "$out" "$arch" "$displays"
+  echo "install_smoke: the captures in $out are checked in $CONVERT_IMAGE"
 }
 
 main() {
-  local image="" package="" out="" print=0 family engine
+  local image="" package="" out="" print=0 family fields engine arch machine
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) [ $# -ge 2 ] || usage; image="$2"; shift 2 ;;
       --out) [ $# -ge 2 ] || usage; out="$2"; shift 2 ;;
-      --print-engine-version) print=1; shift ;;
+      --print-plan) print=1; shift ;;
       -*) usage ;;
       *) [ -z "$package" ] || usage; package="$1"; shift ;;
     esac
@@ -185,12 +234,17 @@ main() {
   pinned_image "$image" > /dev/null
   family="$(family_of "$image")"
   check_package "$image" "$package" "$family"
-  engine="$(engine_version_of "$package" "$family")"
+  fields="$(name_fields "$package" "$family")"
+  engine="${fields% *}" arch="${fields#* }"
+  machine="$(machine_arch)"
+  [ "$arch" = "$machine" ] ||
+    fail "$(basename -- "$package") is for $arch, and this machine is $machine: the smoke runs natively"
   if [ "$print" = 1 ]; then
-    echo "$engine"
+    printf 'image %s\nfamily %s\narch %s\ndisplays %s\nengine %s\n' \
+      "$(pinned_image "$image")" "$family" "$arch" "$(displays_of "$image")" "$engine"
     return 0
   fi
-  run_smoke "$image" "$family" "$package" "$engine" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
+  run_smoke "$image" "$family" "$package" "$engine" "$arch" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
 }
 
 trap cleanup EXIT

@@ -14,8 +14,8 @@
 # architectures the package is built for, x86_64 and aarch64.
 #
 # The deb names are Ubuntu 22.04's, the oldest deb target. libcurl4 holds on 24.04 and on Debian
-# 13 too, where libcurl4t64 provides it. The install smoke installs the package on ubuntu:22.04
-# and fedora:44 with apt and dnf, which is what proves each name exists.
+# 13 too, where libcurl4t64 provides it. The install smoke installs the package with apt or dnf
+# on every system the release claims, which is what proves each name exists.
 
 # The C library and the C++ runtime. The boundary gate holds every object to the lock's symbol
 # version ceilings, so no relation needs a version beyond the glibc floor.
