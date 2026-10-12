@@ -21,7 +21,8 @@ sudo dnf install ./fermix-desktop-@VERSION@-1.x86_64.rpm  # or .aarch64.rpm
 Then open Fermix from your applications.
 
 - Installing fermix-desktop replaces the engine-only `fermix` package if it is installed. The
-  engine's files are the same, so a running Fermix service keeps going.
+  engine's files are the same, so a running Fermix service keeps going. apt replaces it on its
+  own; dnf needs to be allowed to: `sudo dnf install --allowerasing ./fermix-desktop-…rpm`.
 - If you used the earlier Flatpak, remove it: `flatpak uninstall --user io.tezra.Fermix`.
 - A machine with no desktop installs the engine-only `fermix` package from
   [tezra-io/fermix](https://github.com/tezra-io/fermix/releases) instead.

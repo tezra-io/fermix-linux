@@ -3,7 +3,8 @@
 # On every push to dev or main that can change a package, and on every pull request that can,
 # one job per architecture compiles the private GTK runtime from RUNTIME.lock.json, builds the
 # deb and the rpm against it carrying the engine desktop/engine/PIN.json pins, and smokes the
-# runtime. The packages are then linted and installed on every system the release claims.
+# runtime, then runs every packaging test. The packages are then linted and installed on every
+# system the release claims.
 #
 # A vX.Y.Z tag, the macOS app's form (or vX.Y.Z+N, a desktop-only rebuild), does all of that,
 # then signs every asset with cosign under this workflow's GitHub identity and stages them on a
@@ -84,44 +85,6 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: desktop/scripts/refuse_published_release.sh "$GITHUB_REPOSITORY" "$TAG"
 
-  gate:
-    name: Packaging tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # The runtime's lock test reads SPDX's lists from the source cache. The tarballs are
-      # keyed by the lock file, which names each by sha256.
-      - name: Cache the locked sources
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/fermix-desktop-runtime/sources
-          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
-
-      - name: Fetch the locked sources
-        run: desktop/packaging/runtime/build_runtime.sh --fetch
-
-      # The screenshot checks' tests make their fixtures with ImageMagick.
-      - name: Install the tests' tools
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends imagemagick
-
-      # Every test runs, and each one that fails is named, before the job fails.
-      - name: Run every packaging test
-        run: |
-          set -uo pipefail
-          mapfile -t tests < <(git ls-files 'desktop/scripts/*_test.sh' 'desktop/packaging/*_test.sh' \
-            'desktop/packaging/runtime/build_runtime_test.sh')
-          [ "${#tests[@]}" -gt 0 ] || { echo "::error::no packaging tests found"; exit 1; }
-          failed=()
-          for test in "${tests[@]}"; do
-            echo "::group::$test"
-            bash "$test" || failed+=("$test")
-            echo "::endgroup::"
-          done
-          for test in "${failed[@]}"; do echo "::error::$test failed"; done
-          [ "${#failed[@]}" -eq 0 ]
-
   build:
     name: Build (${{ matrix.arch }})
     needs: version
@@ -193,6 +156,31 @@ jobs:
       - name: Assemble the runtime sources archive
         if: matrix.arch == 'amd64'
         run: desktop/packaging/runtime/package_sources.sh "$VERSION" --out "$PACKAGES"
+
+      # After the build, because some tests read the runtime it built or run a tool in an image it
+      # pulled. ImageMagick, with a font for its text, makes the screenshot checks' fixtures.
+      - name: Install the packaging tests' tools
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends imagemagick fonts-dejavu-core
+
+      # Every test runs, and each one that fails is named, before the job fails.
+      - name: Run every packaging test
+        if: matrix.arch == 'amd64'
+        run: |
+          set -uo pipefail
+          mapfile -t tests < <(git ls-files 'desktop/scripts/*_test.sh' 'desktop/packaging/*_test.sh' \
+            'desktop/packaging/runtime/build_runtime_test.sh')
+          [ "${#tests[@]}" -gt 0 ] || { echo "::error::no packaging tests found"; exit 1; }
+          failed=()
+          for test in "${tests[@]}"; do
+            echo "::group::$test"
+            bash "$test" || failed+=("$test")
+            echo "::endgroup::"
+          done
+          for test in "${failed[@]}"; do echo "::error::$test failed"; done
+          [ "${#failed[@]}" -eq 0 ]
 
       - name: Upload the packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -305,7 +293,7 @@ jobs:
   sign:
     name: Sign
     if: github.ref_type == 'tag'
-    needs: [version, gate, build, lint, smoke]
+    needs: [version, build, lint, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
