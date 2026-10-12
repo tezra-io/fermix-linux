@@ -5,10 +5,10 @@
 # deb and the rpm against it carrying the engine desktop/engine/PIN.json pins, and smokes the
 # runtime. The packages are then linted and installed on every system the release claims.
 #
-# A fermix-desktop-vX.Y.Z tag (or X.Y.Z+N, a desktop-only rebuild) does all of that, then signs
-# every asset with cosign under this workflow's GitHub identity and stages them on a draft GitHub
-# release. Publishing the draft is a person's act. Creating such a tag is limited by the
-# repository's protected-release-tags ruleset.
+# A vX.Y.Z tag, the macOS app's form (or vX.Y.Z+N, a desktop-only rebuild), does all of that,
+# then signs every asset with cosign under this workflow's GitHub identity and stages them on a
+# draft GitHub release. Publishing the draft is a person's act. Creating such a tag is limited by
+# the repository's protected-release-tags ruleset.
 #
 # Nothing here reuses a runtime from an earlier run: a release compiles the runtime it ships
 # from the lock file of the commit it ships.
@@ -18,7 +18,7 @@ on:
   push:
     branches: [main, dev]
     # Path filters are not applied to tag pushes, so every release tag runs.
-    tags: ["fermix-desktop-v*"]
+    tags: ["v*.*.*"]
     paths:
       - "desktop/**"
       - "LICENSE"
@@ -62,9 +62,9 @@ jobs:
           set -euo pipefail
           engine_version="$(desktop/scripts/engine_pin.py --get engine_version)"
           if [ "$REF_TYPE" = tag ]; then
-            version="${TAG#fermix-desktop-v}"
+            version="${TAG#v}"
             if [ "$version" = "$TAG" ]; then
-              echo "::error::$TAG is not a fermix-desktop-vX.Y.Z tag"
+              echo "::error::$TAG is not a vX.Y.Z tag"
               exit 1
             fi
           else
@@ -102,17 +102,25 @@ jobs:
       - name: Fetch the locked sources
         run: desktop/packaging/runtime/build_runtime.sh --fetch
 
+      # The screenshot checks' tests make their fixtures with ImageMagick.
+      - name: Install the tests' tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends imagemagick
+
+      # Every test runs, and each one that fails is named, before the job fails.
       - name: Run every packaging test
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mapfile -t tests < <(git ls-files 'desktop/scripts/*_test.sh' 'desktop/packaging/*_test.sh' \
             'desktop/packaging/runtime/build_runtime_test.sh')
           [ "${#tests[@]}" -gt 0 ] || { echo "::error::no packaging tests found"; exit 1; }
+          failed=()
           for test in "${tests[@]}"; do
             echo "::group::$test"
-            bash "$test"
+            bash "$test" || failed+=("$test")
             echo "::endgroup::"
           done
+          for test in "${failed[@]}"; do echo "::error::$test failed"; done
+          [ "${#failed[@]}" -eq 0 ]
 
   build:
     name: Build (${{ matrix.arch }})
@@ -165,6 +173,14 @@ jobs:
 
       - name: Draw a libadwaita window from it on ubuntu:22.04
         run: desktop/packaging/runtime/smoke_runtime.sh
+
+      # verify_engine.py reads the engine's rpm in this image and never pulls it itself.
+      - name: Pull the image the engine's rpm is read in
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^RPM_IMAGE = "\(.*\)"$/\1/p' desktop/scripts/verify_engine.py)"
+          [ -n "$image" ] || { echo "::error::verify_engine.py names no RPM_IMAGE"; exit 1; }
+          docker pull "$image"
 
       - name: Build the deb and the rpm
         env:
