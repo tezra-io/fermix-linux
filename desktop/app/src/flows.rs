@@ -111,8 +111,8 @@ impl App {
         self.follow(provider, Door::BrowserSignIn, running).await;
     }
 
-    /// Opens the authorize url through the desktop's browser (the OpenURI portal
-    /// inside Flatpak). If it does not open, the row says so and keeps Copy link.
+    /// Opens the authorize url in the desktop's browser. If it does not open,
+    /// the row says so and keeps Copy link.
     async fn open_browser(&self, provider: &str, job_id: &str, url: &str) {
         let launched = gtk::UriLauncher::new(url)
             .launch_future(Some(&self.shell.window))

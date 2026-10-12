@@ -131,7 +131,6 @@ version = "0.1.0"
 dependencies = [
  "fermix-client",
  "fermix-rive",
- "futures-channel",
  "glib-build-tools",
  "gstreamer",
  "gstreamer-app",

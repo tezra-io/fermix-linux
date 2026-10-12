@@ -1,6 +1,6 @@
 use fermix_client::service::{
-    background_switch, disable_warning, login_answer, service_line, LoginAnswer, ServiceRead,
-    UnitFacts, BACKGROUND_NOTE, VENDOR_UNIT,
+    background_switch, disable_warning, service_line, ServiceRead, UnitFacts, BACKGROUND_NOTE,
+    VENDOR_UNIT,
 };
 
 fn unit(file_state: &str, active: &str) -> UnitFacts {
@@ -114,21 +114,6 @@ fn the_disable_warning_counts_what_it_interrupts_and_never_invents_zero() {
     assert!(disable_warning(Some(1)).contains("1 conversation is in progress"));
     assert!(disable_warning(Some(3)).contains("3 conversations are in progress"));
     assert!(disable_warning(None).contains("could not say"));
-}
-
-#[test]
-fn the_portal_answer_is_kept_only_when_granted() {
-    assert_eq!(login_answer(0, Some(true), true), LoginAnswer::Set(true));
-    assert_eq!(login_answer(0, Some(false), false), LoginAnswer::Set(false));
-    assert_eq!(login_answer(1, None, true), LoginAnswer::Cancelled);
-    assert!(matches!(
-        login_answer(0, Some(false), true),
-        LoginAnswer::Refused(_)
-    ));
-    assert!(matches!(
-        login_answer(2, None, true),
-        LoginAnswer::Refused(_)
-    ));
 }
 
 #[test]

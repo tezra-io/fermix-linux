@@ -1,13 +1,12 @@
-//! "Open at login" when the window runs outside a sandbox (single_package.md
-//! §4). Inside the Flatpak the Background portal writes and deletes the XDG
-//! autostart entry; outside one there is no portal to ask, so the window keeps
-//! the same file itself, and the file is the truth for the switch.
+//! "Open at login" (single_package.md §4): the window keeps the XDG autostart
+//! entry itself, and the file is the truth for the switch.
 
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The entry's file name: the app id, as the portal names it.
+/// The entry's file name: the app id. The Flatpak's Background portal gave its
+/// entry the same name, so the window's entry replaces that one.
 pub const ENTRY_NAME: &str = "io.tezra.Fermix.desktop";
 
 /// Where the entry lives: `$XDG_CONFIG_HOME/autostart`, or `~/.config/autostart`
@@ -25,8 +24,7 @@ pub fn entry_path(config_home: Option<&OsStr>, home: &Path) -> PathBuf {
     config.join("autostart").join(ENTRY_NAME)
 }
 
-/// The entry. At login Fermix starts in the tray, with the command line the
-/// Background portal is given.
+/// The entry. At login Fermix starts in the tray.
 pub fn entry_text() -> &'static str {
     "[Desktop Entry]\n\
      Type=Application\n\

@@ -1,16 +1,12 @@
 //! Home's Background switches. "Run in the background" registers or
-//! unregisters the unit with systemd (spec §6.3); "Open at login" asks the
-//! desktop through its portal inside the Flatpak (§6.6), and outside a sandbox
-//! keeps the autostart entry itself. Neither ever changes the other.
+//! unregisters the unit with systemd (spec §6.3); "Open at login" keeps the
+//! desktop's autostart entry (§6.6). Neither ever changes the other.
 
 use crate::app::App;
 use crate::dialogs::confirm;
-use crate::portal::{remember_login, request_background};
 use crate::systemd::{disable_service, enable_service, read_service};
 use fermix_client::autostart::{entry_path, read_entry, remove_entry, write_entry};
-use fermix_client::service::{
-    background_switch, disable_warning, login_answer, LoginAnswer, ServiceRead,
-};
+use fermix_client::service::{background_switch, disable_warning, ServiceRead};
 use gtk::glib;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -20,31 +16,18 @@ use std::time::Duration;
 const STOP_INTERVAL: Duration = Duration::from_secs(1);
 const STOP_TRIES: u32 = 30;
 
-/// Where the package's binding lives. Readable only with the manifest's
-/// `xdg-config/fermix:ro`; without it the file reads as absent.
+/// Where the package's binding lives.
 fn binding_exists() -> bool {
     glib::home_dir()
         .join(".config/fermix/service.json")
         .exists()
 }
 
-/// Who keeps the "Open at login" entry. The Background portal serves sandboxed
-/// apps; outside a sandbox there is none to ask, so the window writes the
-/// entry itself, and the file is the truth.
-pub enum LoginEntry {
-    Portal,
-    File(PathBuf),
-}
-
-impl LoginEntry {
-    /// Decided once, at startup. `/.flatpak-info` exists only in a Flatpak sandbox.
-    pub fn detect() -> LoginEntry {
-        if Path::new("/.flatpak-info").exists() {
-            return LoginEntry::Portal;
-        }
-        let config_home = std::env::var_os("XDG_CONFIG_HOME");
-        LoginEntry::File(entry_path(config_home.as_deref(), &glib::home_dir()))
-    }
+/// Where the window keeps the "Open at login" entry, decided once at startup.
+/// The window writes the entry itself, and the file is the truth for the switch.
+pub fn login_entry() -> PathBuf {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME");
+    entry_path(config_home.as_deref(), &glib::home_dir())
 }
 
 /// Whether the entry opens Fermix at login. One that cannot be read is logged
@@ -61,9 +44,9 @@ fn read_login_entry(path: &Path) -> bool {
 }
 
 impl App {
-    /// Re-reads what systemd and logind say, whether a binding exists, and
-    /// outside a sandbox the autostart entry. A daemon that answered once
-    /// proves a binding, and disabling keeps it, so that proof outlives the daemon.
+    /// Re-reads what systemd and logind say, whether a binding exists, and the
+    /// autostart entry. A daemon that answered once proves a binding, and
+    /// disabling keeps it, so that proof outlives the daemon.
     pub async fn read_service(&self) {
         let read = read_service().await;
         let file = binding_exists();
@@ -71,10 +54,8 @@ impl App {
         let answered = state.snapshot().is_some();
         state.background.service = Some(read);
         state.background.binding |= file || answered;
-        // Anything may change a file; the portal's answer can only be remembered.
-        if let LoginEntry::File(path) = &self.login {
-            state.background.opens_at_login = read_login_entry(path);
-        }
+        // Anything may change the entry, so it is read again with the rest.
+        state.background.opens_at_login = read_login_entry(&self.login);
     }
 
     /// The switch was moved to `on`. A move that only mirrors what is drawn, or
@@ -179,51 +160,35 @@ impl App {
         );
     }
 
-    /// The "Open at login" switch was moved to `on`.
-    pub async fn set_open_at_login(self: Rc<Self>, on: bool) {
-        {
-            let state = self.state.borrow();
-            let bg = &state.background;
-            if bg.login_change.is_some() || bg.opens_at_login == on {
-                return;
-            }
+    /// The "Open at login" switch was moved to `on`. A move that only mirrors
+    /// what is drawn does nothing.
+    pub fn set_open_at_login(&self, on: bool) {
+        if self.state.borrow().background.opens_at_login == on {
+            return;
         }
-        self.state.borrow_mut().background.login_change = Some(on);
-        self.render();
-        match &self.login {
-            LoginEntry::Portal => self.ask_desktop(on).await,
-            LoginEntry::File(path) => self.keep_entry(path, on),
-        }
-        self.state.borrow_mut().background.login_change = None;
+        self.keep_entry(on);
         self.render();
     }
 
-    /// Whether Fermix opens at login, when the window starts: the portal's
-    /// remembered answer, or the entry itself.
+    /// Whether Fermix opens at login, when the window starts.
     pub fn read_open_at_login(&self) -> bool {
-        match &self.login {
-            LoginEntry::Portal => crate::portal::opens_at_login(),
-            LoginEntry::File(path) => read_login_entry(path),
-        }
+        read_login_entry(&self.login)
     }
 
-    /// At startup: the portal has no getter, so a remembered yes is asked again,
-    /// and an entry the window keeps is written again. Either repairs an entry
-    /// an update left stale, such as the Flatpak's after a move to the package.
-    pub async fn reassert_open_at_login(&self) {
+    /// At startup an entry that opens Fermix is written again, which repairs
+    /// one an update left stale, such as the Flatpak's after a move to the package.
+    pub fn reassert_open_at_login(&self) {
         if !self.state.borrow().background.opens_at_login {
             return;
         }
-        match &self.login {
-            LoginEntry::Portal => self.ask_desktop(true).await,
-            LoginEntry::File(path) => self.keep_entry(path, true),
-        }
+        self.keep_entry(true);
         self.render();
     }
 
-    /// Outside a sandbox: writes the entry to open at login, or removes it, then
-    /// reads back what the file says now.
-    fn keep_entry(&self, path: &Path, on: bool) {
+    /// Writes the entry to open at login, or removes it, then reads back what
+    /// the file says now.
+    fn keep_entry(&self, on: bool) {
+        let path = &self.login;
         let changed = if on {
             write_entry(path)
         } else {
@@ -243,30 +208,20 @@ impl App {
         }
         self.state.borrow_mut().background.opens_at_login = read_login_entry(path);
     }
+}
 
-    async fn ask_desktop(&self, on: bool) {
-        let answer = match request_background(on).await {
-            Ok((code, autostart)) => login_answer(code, autostart, on),
-            Err(e) => {
-                glib::g_warning!("fermix", "the Background portal was not asked: {e}");
-                LoginAnswer::Refused("Your desktop could not change this, so nothing changed.")
-            }
-        };
-        let now = match answer {
-            LoginAnswer::Set(now) => now,
-            LoginAnswer::Cancelled => return,
-            LoginAnswer::Refused(sentence) if on => {
-                self.shell.toast(sentence);
-                false
-            }
-            LoginAnswer::Refused(sentence) => return self.shell.toast(sentence),
-        };
-        self.state.borrow_mut().background.opens_at_login = now;
-        if let Err(e) = remember_login(now) {
-            glib::g_warning!("fermix", "the Open at login answer was not kept: {e}");
-            self.shell.toast(
-                "Fermix could not remember this answer, so the switch may be wrong next time.",
-            );
-        }
+#[cfg(test)]
+mod tests {
+    use super::login_entry;
+    use fermix_client::autostart::entry_path;
+    use gtk::glib;
+
+    /// `dev.sh check` runs the tests inside the GNOME SDK's sandbox, where
+    /// `/.flatpak-info` exists. The window keeps the entry itself all the same.
+    #[test]
+    fn the_window_keeps_its_own_entry_even_in_a_sandbox() {
+        let config_home = std::env::var_os("XDG_CONFIG_HOME");
+        let expected = entry_path(config_home.as_deref(), &glib::home_dir());
+        assert_eq!(login_entry(), expected);
     }
 }

@@ -1,6 +1,3 @@
 /target
 /target-sdk
 /.cargo-sdk
-/.flatpak-builder
-/build-dir
-/repo

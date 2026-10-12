@@ -49,8 +49,8 @@ pub enum Restore {
 }
 
 /// Whether the window's own executable, with links resolved, is the packaged
-/// one. The Flatpak's and a development build's are elsewhere. A window whose
-/// file an upgrade replaced reads as `fermix-desktop (deleted)`, still inside.
+/// one. A development build's is elsewhere. A window whose file an upgrade
+/// replaced reads as `fermix-desktop (deleted)`, still inside.
 pub fn runs_from_package(exe: &Path) -> bool {
     assert!(
         exe.is_absolute(),

@@ -6,8 +6,8 @@
 //! its environment back exactly as it started, so every child inherits the
 //! entry environment whoever starts it: a sign-in's browser, a link in a
 //! reply, the About dialog's licence. After the display exists it adds the
-//! bundled icons under the host's. Run from anywhere else (the Flatpak, a
-//! development build) it changes nothing.
+//! bundled icons under the host's. Run from anywhere else, such as a
+//! development build, it changes nothing.
 
 use fermix_client::runtime_env::{
     gst_registry, packaged_settings, restore_plan, runs_from_package, Environment, PrivatePaths,
@@ -363,11 +363,7 @@ mod tests {
     #[test]
     fn run_from_anywhere_else_the_window_changes_nothing() {
         let entry = Environment::from([("GSETTINGS_SCHEMA_DIR".into(), "/opt/schemas".into())]);
-        for exe in [
-            "/app/bin/fermix-desktop",
-            "/home/someone/src/fermix-linux/desktop/target-sdk/debug/fermix-desktop",
-        ] {
-            assert!(!start_from(&entry, Path::new(exe)), "{exe}");
-        }
+        let exe = "/home/someone/src/fermix-linux/desktop/target-sdk/debug/fermix-desktop";
+        assert!(!start_from(&entry, Path::new(exe)), "{exe}");
     }
 }

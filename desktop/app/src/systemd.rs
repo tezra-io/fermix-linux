@@ -133,8 +133,8 @@ async fn unit_facts(bus: &gio::DBusConnection) -> Result<UnitFacts, glib::Error>
     })
 }
 
-/// logind's `Linger` for this user, or `None` when it could not be asked (the
-/// sandbox may not reach the system bus).
+/// logind's `Linger` for this user, or `None` when it could not be asked, as on
+/// a system bus with no logind.
 async fn linger() -> Option<bool> {
     let read = async {
         let bus = gio::bus_get_future(gio::BusType::System).await?;

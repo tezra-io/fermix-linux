@@ -1,8 +1,9 @@
 # Fermix for Linux
 
-A Rust GTK4 + libadwaita desktop app (gtk4-rs 0.11, libadwaita 0.9, the GNOME 50 Flatpak runtime),
-in `desktop/`. It is only a client of the host's `fermix` daemon, which runs as the `fermix.service`
-user unit:
+A Rust GTK4 + libadwaita desktop app (gtk4-rs 0.11, libadwaita 0.9, GTK 4.22), in `desktop/`. It
+ships in one package, `fermix-desktop`, with its own GTK runtime and the Fermix engine. The window is
+only a client of the engine's daemon, which the same package installs and the `fermix.service` user
+unit runs:
 
 - settings, sign-in and status: `~/.fermix/daemon.sock`, management protocol v2 (a 4-byte big-endian
   length, then JSON);
@@ -18,9 +19,12 @@ desktop/core/       fermix-client: the wire, the state rules and every sentence 
 desktop/app/        fermix-desktop: the window, which draws what core decides
 desktop/app/marks/  vendor marks and the Fermix brand files, byte for byte, with PROVENANCE.json
 desktop/docs        a link into the private design repo (below): the design record the code cites
-desktop/data/       desktop entry and icons
-desktop/io.tezra.Fermix.yml   the Flatpak recipe
-desktop/scripts/dev.sh        build, run and check inside the GNOME 50 SDK
+desktop/rive/       fermix-rive: plays the pet's Rive animation with the vendored Rive C++ runtime
+desktop/data/       desktop entry, D-Bus service, metainfo and icons
+desktop/engine/     PIN.json: the signed engine release the package carries
+desktop/packaging/  the package build's container half, the nFPM template, and the private GTK runtime
+desktop/scripts/    dev.sh (build, run and check inside the GNOME 50 SDK); the package build, the
+                    gates, the engine pin and its verification, the lint and the install smoke
 ```
 
 ## Working rules

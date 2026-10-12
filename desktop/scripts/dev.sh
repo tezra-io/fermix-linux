@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Fast development loop. Builds the app inside the GNOME 50 SDK (Rust extension)
 # with incremental cargo caches kept in this directory, then runs the debug binary
-# on the GNOME 50 runtime with the same sandbox permissions the manifest grants.
+# on the GNOME 50 runtime, since the host's GTK may be older than the app needs.
+# The run is sandboxed and reads the daemon's sockets and binding read-only. Its
+# home is the sandbox's own, so "Open at login" writes its entry there, where the
+# session never reads it, and the entry is gone when the window closes.
 #   scripts/dev.sh build   # compile only
 #   scripts/dev.sh run     # compile, then run against the host daemon
 #   scripts/dev.sh check   # fmt, clippy -D warnings, tests (inside the SDK)

@@ -1,7 +1,7 @@
 # The desktop app's gate, on every push to main or dev and on every pull request:
-# the same `scripts/dev.sh check` a developer runs (rustfmt, clippy with warnings
-# as errors, every test, all inside the GNOME 50 SDK), then the Flatpak built from
-# its manifest and kept as a bundle.
+# the desktop entry validated, then the same `scripts/dev.sh check` a developer
+# runs (rustfmt, clippy with warnings as errors, every test, all inside the
+# GNOME 50 SDK). release.yml builds the packages.
 name: desktop
 
 on:
@@ -44,10 +44,3 @@ jobs:
 
       - name: Format, lint and test
         run: scripts/dev.sh check
-
-      - name: Build the Flatpak
-        uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
-        with:
-          manifest-path: desktop/io.tezra.Fermix.yml
-          bundle: fermix-desktop.flatpak
-          cache-key: flatpak-builder-${{ hashFiles('desktop/Cargo.lock') }}

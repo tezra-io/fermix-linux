@@ -258,7 +258,7 @@ impl BackgroundRows {
         }
     }
 
-    /// While a change runs, each switch shows where it is heading.
+    /// While a change runs, the service's switch shows where it is heading.
     fn render(&self, bg: &Background) {
         let busy = bg.service_change.is_some();
         let drawn = background_switch(bg.service.as_ref(), bg.binding, busy);
@@ -278,9 +278,7 @@ impl BackgroundRows {
         self.service.set_sensitive(drawn.sensitive);
         self.service
             .set_active(bg.service_change.unwrap_or(drawn.on));
-        self.login.set_sensitive(bg.login_change.is_none());
-        self.login
-            .set_active(bg.login_change.unwrap_or(bg.opens_at_login));
+        self.login.set_active(bg.opens_at_login);
     }
 }
 

@@ -9,3 +9,4 @@ Categories=Utility;GTK;
 Keywords=assistant;agent;fermix;chat;
 StartupNotify=true
 SingleMainWindow=true
+DBusActivatable=true

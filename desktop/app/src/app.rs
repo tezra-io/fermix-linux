@@ -3,7 +3,7 @@
 
 use crate::assistant::Assistant;
 use crate::audio::Endpoints;
-use crate::background_flow::LoginEntry;
+use crate::background_flow::login_entry;
 use crate::chat::ChatPage;
 use crate::companion::Companion;
 use crate::conversation::Conversation;
@@ -37,6 +37,7 @@ use gtk::glib::{
 use serde_json::Value;
 use std::cell::RefCell;
 use std::future::Future;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -75,8 +76,8 @@ pub struct App {
     pub application: adw::Application,
     /// The tray icon, once it is on the session bus.
     pub tray: RefCell<Option<Tray>>,
-    /// Who keeps the "Open at login" entry.
-    pub login: LoginEntry,
+    /// Where the window keeps the "Open at login" entry.
+    pub login: PathBuf,
 }
 
 /// `hidden`: started at login, so the window waits in the tray (see `start_tray`).
@@ -147,7 +148,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         providers,
         application: application.clone(),
         tray: RefCell::default(),
-        login: LoginEntry::detect(),
+        login: login_entry(),
     })
 }
 
@@ -188,7 +189,7 @@ fn start(app: &Rc<App>, hidden: bool) {
         if setup_needed {
             first.open_assistant();
         }
-        first.reassert_open_at_login().await;
+        first.reassert_open_at_login();
     });
     start_idle_refresh(app);
 }
@@ -524,7 +525,7 @@ fn install_service_actions(app: &Rc<App>) {
         app.set_background(on).await
     });
     on_value(app, "open-at-login", |app, on: bool| async move {
-        app.set_open_at_login(on).await
+        app.set_open_at_login(on)
     });
     on_plain(app, "voice-fix", |app| async move { app.voice_fix().await });
     on_plain(app, "open-setup-page", |app| async move {

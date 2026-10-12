@@ -36,10 +36,8 @@ pub struct Background {
     pub service_change: Option<bool>,
     /// Why the last change was refused, shown under the switch until the next one.
     pub service_error: Option<String>,
-    /// The last "Open at login" answer the desktop granted.
+    /// Whether the autostart entry opens Fermix at login, as last read.
     pub opens_at_login: bool,
-    /// Where a running "Open at login" request is heading.
-    pub login_change: Option<bool>,
 }
 
 pub enum Connection {

@@ -1,6 +1,5 @@
-//! The background service as systemd reports it (spec §6.2, §6.3) and the
-//! desktop's own login registration (§6.6). Only words and rules live here;
-//! the D-Bus calls are the app's.
+//! The background service as systemd reports it (spec §6.2, §6.3). Only
+//! words and rules live here; the D-Bus calls are the app's.
 
 /// Where the package installs the unit. Any other effective path shadows it.
 pub const VENDOR_UNIT: &str = "/usr/lib/systemd/user/fermix.service";
@@ -41,16 +40,6 @@ pub struct BackgroundSwitch {
     pub sensitive: bool,
     /// The row's subtitle: what the switch does, or why it cannot be used.
     pub note: String,
-}
-
-/// How a Background portal request ended.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LoginAnswer {
-    /// Granted: whether the app now opens at login.
-    Set(bool),
-    /// The person dismissed the desktop's question.
-    Cancelled,
-    Refused(&'static str),
 }
 
 /// "Enabled · running · stays on after logout", or why there is no such line.
@@ -150,22 +139,5 @@ pub fn disable_warning(active: Option<u64>) -> String {
         Some(1) => format!("{stop} 1 conversation is in progress and would be interrupted."),
         Some(n) => format!("{stop} {n} conversations are in progress and would be interrupted."),
         None => format!("{stop} Fermix could not say whether a conversation is in progress."),
-    }
-}
-
-/// Reads the portal's `Response(code, {autostart})` for a request that asked
-/// for `wanted`. Code 0 is granted, 1 cancelled, anything else an error.
-pub fn login_answer(code: u32, autostart: Option<bool>, wanted: bool) -> LoginAnswer {
-    match code {
-        0 => {
-            let now = autostart.unwrap_or(false);
-            if wanted && !now {
-                LoginAnswer::Refused("Your desktop did not allow Fermix to open at login.")
-            } else {
-                LoginAnswer::Set(now)
-            }
-        }
-        1 => LoginAnswer::Cancelled,
-        _ => LoginAnswer::Refused("Your desktop could not change this, so nothing changed."),
     }
 }

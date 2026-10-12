@@ -70,9 +70,8 @@ fn the_packaged_executable_is_the_one_under_the_private_prefix() {
 }
 
 #[test]
-fn the_flatpak_and_a_development_build_are_not_the_package() {
+fn a_development_build_is_not_the_package() {
     for elsewhere in [
-        "/app/bin/fermix-desktop",
         "/home/someone/src/fermix-linux/desktop/target-sdk/debug/fermix-desktop",
         // The link itself never shows: the executable's path is resolved.
         "/usr/bin/fermix-desktop",

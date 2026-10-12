@@ -2,8 +2,8 @@
 //! com.canonical.dbusmenu menu it opens, drawn from core's `TrayView`. Nothing
 //! here decides what the tray says. A click comes back to the controller as a
 //! `TrayEvent`, on the next turn of the main loop so it never runs inside a
-//! D-Bus reply. The item registers under the connection's unique name, which a
-//! sandbox may use without owning a well-known name.
+//! D-Bus reply. The item registers under the connection's unique name and owns
+//! no well-known name of its own.
 
 use fermix_client::tray::{Command, Item, Row, TrayView};
 use gtk::gio::{self, prelude::*};

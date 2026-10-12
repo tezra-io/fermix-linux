@@ -1,6 +1,6 @@
-//! "Open at login" outside a sandbox: where the window keeps its XDG autostart
-//! entry, what the entry says, and how the file reads back. Files are written
-//! only under a temporary `XDG_CONFIG_HOME`.
+//! "Open at login": where the window keeps its XDG autostart entry, what the
+//! entry says, and how the file reads back. Files are written only under a
+//! temporary `XDG_CONFIG_HOME`.
 
 use fermix_client::autostart::{
     entry_opens, entry_path, entry_text, read_entry, remove_entry, write_entry, ENTRY_NAME,
@@ -54,7 +54,7 @@ fn no_other_file_is_ever_removed() {
 }
 
 #[test]
-fn the_entry_starts_fermix_in_the_tray_as_the_portal_was_asked_to() {
+fn the_entry_starts_fermix_in_the_tray() {
     assert_eq!(
         entry_text(),
         "[Desktop Entry]\n\

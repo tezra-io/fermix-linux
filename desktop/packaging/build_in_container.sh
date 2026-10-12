@@ -143,7 +143,8 @@ write_copyright() {
 }
 
 # appstreamcli accepts the installed metainfo, and its one pedantic hint is the app id's capital
-# letter, which the Flatpak's id fixes.
+# letter. The id stays: the window's D-Bus name, its desktop entry, its icons and its autostart
+# entry all carry it.
 check_metainfo() {
   local report hints
   report="$("$PREFIX/bin/appstreamcli" validate --pedantic --no-net \
