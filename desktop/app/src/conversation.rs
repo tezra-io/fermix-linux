@@ -76,7 +76,7 @@ impl App {
         let cwd = home
             .to_str()
             .ok_or_else(|| LinkError::Broken(format!("the home folder is not UTF-8: {home:?}")))?;
-        let link = acp_link::open(&socket, cwd, env!("CARGO_PKG_VERSION")).await?;
+        let link = acp_link::open(&socket, cwd, crate::VERSION).await?;
         let generation = {
             let mut conversation = self.conversation.borrow_mut();
             conversation.link = Some(link.clone());

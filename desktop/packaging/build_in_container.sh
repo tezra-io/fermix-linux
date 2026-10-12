@@ -63,14 +63,16 @@ check_inputs() {
 
 # The window, built with the private toolkit's pkg-config files and glib-compile-resources. The
 # pet's renderer finds EGL and libpng through pkg-config too, so no include or flag variable is set.
-# Its symbols are stripped as well as its debug information, as a packaged binary's are.
+# Its symbols are stripped as well as its debug information, as a packaged binary's are. The
+# package's version is compiled in as FERMIX_DESKTOP_VERSION, and the window reports it.
 build_window() {
-  local arch="$1"
+  local arch="$1" version="$2"
   tar -xf "$RUNTIME/runtime-dev-$arch.tar" -C /
   [ -f "$PREFIX/lib/pkgconfig/gtk4.pc" ] || fail "the dev runtime has no gtk4.pc"
   export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
   export PATH="$PREFIX/bin:$PATH"
   export CARGO_PROFILE_RELEASE_STRIP=symbols
+  export FERMIX_DESKTOP_VERSION="$version"
   (cd "$DESKTOP" && cargo fetch --locked)
   # shellcheck disable=SC2016 # $ORIGIN is the dynamic linker's token
   (cd "$DESKTOP" && cargo rustc --locked --offline --release -p fermix-desktop --bin fermix-desktop \
@@ -272,7 +274,7 @@ main() {
   rpm="fermix-desktop-${version}-1.${rpm_arch}.rpm"
   mkdir -p "$BUILD" "$OUT"
   check_inputs
-  build_window "$arch"
+  build_window "$arch" "$version"
   list_window_crates "$triple"
   stage_tree "$arch" "$version" "$mtime"
   write_copyright

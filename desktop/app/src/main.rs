@@ -51,6 +51,13 @@ use std::ops::ControlFlow;
 use std::rc::Rc;
 
 const APP_ID: &str = "io.tezra.Fermix";
+/// The version the window reports: the package's, which the package build
+/// compiles in, or the crate's in a development build.
+const VERSION: &str = match option_env!("FERMIX_DESKTOP_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+const _: () = assert!(!VERSION.is_empty(), "FERMIX_DESKTOP_VERSION is empty");
 
 fn main() -> glib::ExitCode {
     // First, before GTK and before any thread exists (see runtime_env).
@@ -92,7 +99,7 @@ fn install_app_actions(application: &adw::Application) {
         let dialog = adw::AboutDialog::builder()
             .application_name("Fermix")
             .application_icon(APP_ID)
-            .version(env!("CARGO_PKG_VERSION"))
+            .version(VERSION)
             .developer_name("Tezra")
             .license_type(gtk::License::MitX11)
             .build();
