@@ -85,9 +85,49 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: desktop/scripts/refuse_published_release.sh "$GITHUB_REPOSITORY" "$TAG"
 
+  # Each tarball the lock file names, fetched once for every job that needs it. Upstream hosts
+  # refuse runners at times (freedesktop.org answers 418), so the cache is saved as soon as the
+  # set is complete, whatever happens to the build after, and later runs fetch nothing.
+  sources:
+    name: The locked sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Restore them
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sources
+          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
+
+      # Each is checked against the lock's sha256, and one already here is not fetched again.
+      - name: Fetch what is missing
+        env:
+          FERMIX_RUNTIME_SOURCES: ${{ runner.temp }}/sources
+          FETCH_MAX_ATTEMPTS: "8"
+          FETCH_RETRY_SECONDS: "30"
+        run: desktop/packaging/runtime/build_runtime.sh --fetch
+
+      - name: Save them
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sources
+          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
+
+      - name: Hand them to the builds
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-sources
+          path: ${{ runner.temp }}/sources
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build (${{ matrix.arch }})
-    needs: version
+    needs: [version, sources]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     strategy:
@@ -109,6 +149,7 @@ jobs:
             echo "FERMIX_RUNTIME_OUT=$RUNNER_TEMP/runtime"
             echo "FERMIX_PACKAGE_CACHE=$RUNNER_TEMP/package-cache"
             echo "PACKAGES=$RUNNER_TEMP/packages"
+            echo "FERMIX_RUNTIME_SOURCES=$RUNNER_TEMP/sources"
           } >> "$GITHUB_ENV"
 
       # The runtime's build tree, its image and the window's target directory outgrow the
@@ -125,11 +166,11 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
-      - name: Cache the locked sources
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Collect the locked sources
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: ~/.cache/fermix-desktop-runtime/sources
-          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
+          name: runtime-sources
+          path: ${{ runner.temp }}/sources
 
       - name: Build the private runtime
         run: FERMIX_RUNTIME_JOBS="$(nproc)" desktop/packaging/runtime/build_runtime.sh --container
