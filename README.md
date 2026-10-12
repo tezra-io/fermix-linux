@@ -35,15 +35,14 @@ Then open Fermix from your applications. It takes you through setup.
 - Ubuntu 26.04
 - Debian 12
 - Debian 13
-- Fedora 43
 - Fedora 44
 - RHEL 9, AlmaLinux 9 and Rocky Linux 9
 - RHEL 10, AlmaLinux 10 and Rocky Linux 10
 
-Each is supported on amd64 and arm64, in an X11 or a Wayland session. Systems built on Ubuntu, such
-as Pop!_OS and Linux Mint, install the Ubuntu package. The package needs glibc 2.34 or newer and
-declares it, so apt and dnf refuse it on an older system. It brings its own GTK, so the version of
-GTK on the system does not matter.
+Each is supported on amd64 and arm64, in an X11 or a Wayland session; RHEL 10 and its rebuilds have
+Wayland sessions only. Systems built on Ubuntu, such as Pop!_OS and Linux Mint, install the Ubuntu
+package. The package needs glibc 2.34 or newer and declares it, so apt and dnf refuse it on an older
+system. It brings its own GTK, so the version of GTK on the system does not matter.
 
 ### Verifying a download
 

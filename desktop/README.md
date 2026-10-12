@@ -81,7 +81,8 @@ says what it takes and what it checks.
    ```
 
 3. The lint (lintian and rpmlint) and the install smoke, which installs a package on a clean image
-   and draws the window there:
+   and draws the window there. `--image` takes each system the release claims: ubuntu:22.04,
+   24.04 and 26.04, debian:12 and 13, fedora:44, and almalinux:9 and 10.
 
    ```
    scripts/lint_packages.sh <deb> <rpm> --out <dir>

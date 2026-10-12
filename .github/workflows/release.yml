@@ -293,8 +293,19 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      # Every system the release claims, on both architectures, each on a native runner.
+      # install_smoke.sh pins each image and decides its displays: Xvfb, and Weston too on the
+      # newest of each family (Weston only on almalinux:10, whose sessions are Wayland).
       matrix:
-        image: ["ubuntu:22.04", "fedora:44"]
+        image:
+          - "ubuntu:22.04"
+          - "ubuntu:24.04"
+          - "ubuntu:26.04"
+          - "debian:12"
+          - "debian:13"
+          - "fedora:44"
+          - "almalinux:9"
+          - "almalinux:10"
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,7 +338,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-${{ strategy.job-index }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/smoke
+          # A failed smoke leaves its evidence beside the output, in <out>-failed.
+          path: |
+            ${{ runner.temp }}/smoke
+            ${{ runner.temp }}/smoke-failed
           if-no-files-found: warn
           retention-days: 7
 
