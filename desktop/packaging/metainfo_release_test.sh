@@ -67,7 +67,7 @@ validated() {
 ! grep -qF '<releases' "$metainfo" || fail "the repository's metainfo carries a <releases> of its own"
 
 echo "metainfo_release_test: a release version and a development one"
-versions=(0.12.1 0.12.1+2 0.12.1+0.dev.20261005025130.92f91eb8695c.dirty)
+versions=(0.1.0 0.1.0+dev.20261005025130.92f91eb8695c.dirty)
 mkdir -p "$work/rendered"
 for version in "${versions[@]}"; do
   render "$version" 2026-10-05 "$work/rendered/$version.xml" > /dev/null
@@ -86,23 +86,29 @@ grep -qF 'releases-info-missing' "$work/rendered/reports" ||
   fail "the control drew no releases-info-missing: the hints were not read"
 echo "  ok: the control without a release draws releases-info-missing"
 # Without its releases block, a rendered file is the repository's, byte for byte.
-block='\n  <releases>\n    <release version="0.12.1" date="2026-10-05"/>\n  </releases>\n'
+block='\n  <releases>\n    <release version="0.1.0" date="2026-10-05"/>\n  </releases>\n'
 python3 -c 'import sys; rendered, original, block = sys.argv[1:]
 sys.exit(open(rendered).read().replace(block.encode().decode("unicode_escape"), "", 1) != open(original).read())' \
-  "$work/rendered/0.12.1.xml" "$metainfo" "$block" || fail "rendering changed more than adding the releases block"
+  "$work/rendered/0.1.0.xml" "$metainfo" "$block" || fail "rendering changed more than adding the releases block"
 echo "  ok: nothing but the releases block, before </component>, is added"
 
 echo "metainfo_release_test: what it refuses"
-expect_refusal "a version with a Debian revision" "is not a package version" render 0.12.1-1 2026-10-05 "$work/x.xml"
-expect_refusal "a version with an epoch" "is not a package version" render 1:0.12.1 2026-10-05 "$work/x.xml"
-expect_refusal "a date that is not one" "2026-13-01 is not a date" render 0.12.1 2026-13-01 "$work/x.xml"
-expect_refusal "a time rather than a date" "is not a date" render 0.12.1 2026-10-05T00:00:00Z "$work/x.xml"
-cp "$work/rendered/0.12.1.xml" "$work/released.xml"
+expect_refusal "a version with a Debian revision" "is not a package version" render 0.1.0-1 2026-10-05 "$work/x.xml"
+expect_refusal "a version with an epoch" "is not a package version" render 1:0.1.0 2026-10-05 "$work/x.xml"
+expect_refusal "a rebuild of a version: every change is a new X.Y.Z" "0.1.0+1 is not a package version" \
+  render 0.1.0+1 2026-10-05 "$work/x.xml"
+expect_refusal "the earlier development form" "is not a package version" \
+  render 0.1.0+0.dev.20261005025130.92f91eb8695c 2026-10-05 "$work/x.xml"
+expect_refusal "a development version with no commit" "is not a package version" \
+  render 0.1.0+dev.20261005025130 2026-10-05 "$work/x.xml"
+expect_refusal "a date that is not one" "2026-13-01 is not a date" render 0.1.0 2026-13-01 "$work/x.xml"
+expect_refusal "a time rather than a date" "is not a date" render 0.1.0 2026-10-05T00:00:00Z "$work/x.xml"
+cp "$work/rendered/0.1.0.xml" "$work/released.xml"
 METAINFO="$work/released.xml" expect_refusal "a metainfo that already has releases" "already has <releases>" \
-  render 0.12.1 2026-10-05 "$work/x.xml"
+  render 0.1.0 2026-10-05 "$work/x.xml"
 sed '/<\/component>/d' "$metainfo" > "$work/open.xml"
 METAINFO="$work/open.xml" expect_refusal "a metainfo with no closing component" "one </component>" \
-  render 0.12.1 2026-10-05 "$work/x.xml"
+  render 0.1.0 2026-10-05 "$work/x.xml"
 [ ! -e "$work/x.xml" ] || fail "a refused rendering left a file behind"
 expect_refusal "no arguments" "usage" "$here/metainfo_release.py"
 

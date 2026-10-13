@@ -6,14 +6,14 @@
 # build_packages.sh copies in this checkout's files at /workspace/src, the runtime's outputs at
 # /workspace/inputs/runtime, the verified engine stage at /workspace/inputs/engine, and nFPM's
 # tarball and the digests of everything at /workspace/inputs/tools. This script checks those
-# digests; builds the window against the dev tree with RUNPATH $ORIGIN/../lib; stages the package
-# tree with its documents, the window's manual page and the deb's lintian overrides; generates the
-# copyright file; runs check_private_runtime.sh, check_copyright.sh and
-# appstreamcli on the tree; runs nFPM for the deb and the rpm with the engine's maintainer scripts;
+# digests; builds the window against the dev tree with RUNPATH $ORIGIN/../lib, and holds its
+# crate's version, which it reports, to the package's; stages the package tree with its documents,
+# the window's manual page and the deb's lintian overrides; generates the copyright file; runs
+# check_private_runtime.sh, check_copyright.sh and appstreamcli on the tree; runs nFPM for the deb and the rpm with the engine's maintainer scripts;
 # and then reads both packages back: package_dependencies.py over their declared relations, their
-# names, versions and relations, their maintainer scripts against the engine's, and their file
-# lists against the tree. The packages, the copyright file, the nFPM configuration and the crate
-# list land in /workspace/out with a SHA256SUMS.
+# names, versions and relations, fermix provided at the staged engine's version, their maintainer
+# scripts against the engine's, and their file lists against the tree. The packages, the copyright
+# file, the nFPM configuration and the crate list land in /workspace/out with a SHA256SUMS.
 #
 # Usage: build_in_container.sh --version <version> --arch <amd64|arm64> --mtime <YYYY-MM-DDTHH:MM:SSZ>
 set -euo pipefail
@@ -63,16 +63,14 @@ check_inputs() {
 
 # The window, built with the private toolkit's pkg-config files and glib-compile-resources. The
 # pet's renderer finds EGL and libpng through pkg-config too, so no include or flag variable is set.
-# Its symbols are stripped as well as its debug information, as a packaged binary's are. The
-# package's version is compiled in as FERMIX_DESKTOP_VERSION, and the window reports it.
+# Its symbols are stripped as well as its debug information, as a packaged binary's are.
 build_window() {
-  local arch="$1" version="$2"
+  local arch="$1"
   tar -xf "$RUNTIME/runtime-dev-$arch.tar" -C /
   [ -f "$PREFIX/lib/pkgconfig/gtk4.pc" ] || fail "the dev runtime has no gtk4.pc"
   export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
   export PATH="$PREFIX/bin:$PATH"
   export CARGO_PROFILE_RELEASE_STRIP=symbols
-  export FERMIX_DESKTOP_VERSION="$version"
   (cd "$DESKTOP" && cargo fetch --locked)
   # shellcheck disable=SC2016 # $ORIGIN is the dynamic linker's token
   (cd "$DESKTOP" && cargo rustc --locked --offline --release -p fermix-desktop --bin fermix-desktop \
@@ -87,6 +85,27 @@ list_window_crates() {
     > "$BUILD/metadata.json"
   python3 "$DESKTOP/packaging/window_crates.py" --metadata "$BUILD/metadata.json" \
     --root fermix-desktop --out "$BUILD/window-crates.json" >&2
+}
+
+# The window reports its crate's version, so cargo's reading of the crate has to give the
+# package's version, less a development build's +dev suffix.
+check_app_version() {
+  local version="$1" crate
+  crate="$(jq -er '[.packages[] | select(.name == "fermix-desktop") | .version]
+    | if length == 1 then .[0] else error("not one fermix-desktop crate") end' "$BUILD/metadata.json")" ||
+    fail "cargo's metadata does not name one fermix-desktop crate"
+  [ "$crate" = "${version%%+*}" ] ||
+    fail "the window reports $crate, its crate's version, and the package is $version"
+  log "the window reports $crate, the package's version"
+}
+
+# The version of the engine the stage holds, as verify_engine.py recorded it. The package provides
+# fermix at it.
+staged_engine_version() {
+  local engine
+  engine="$(jq -er '.engine_version | strings' "$ENGINE/engine.json")" ||
+    fail "the engine stage's engine.json names no engine version"
+  echo "$engine"
 }
 
 # The package's own documents: the runtime's manifest; a changelog of one entry, this build, named
@@ -168,11 +187,12 @@ run_gates() {
 # The maintainer scripts are the engine's alone: desktop-file-utils and hicolor-icon-theme refresh
 # the desktop and icon caches from their own triggers on every distribution the package targets.
 run_nfpm() {
-  local version="$1" arch="$2" mtime="$3" deb="$4" rpm="$5"
+  local version="$1" engine="$2" arch="$3" mtime="$4" deb="$5" rpm="$6"
   python3 "$DESKTOP/packaging/nfpm_config.py" --template "$DESKTOP/packaging/nfpm-fermix-desktop.yaml.tmpl" \
     --map "$MAP" --lock "$LOCK" --engine-relations "$ENGINE/relations.json" --root "$ROOT" \
-    --version "$version" --arch "$arch" --mtime "$mtime" --postinstall "$ENGINE/maintainer/postinstall.sh" \
-    --postremove "$ENGINE/maintainer/postremove.sh" --out "$BUILD/nfpm.yaml" >&2
+    --version "$version" --engine-version "$engine" --arch "$arch" --mtime "$mtime" \
+    --postinstall "$ENGINE/maintainer/postinstall.sh" --postremove "$ENGINE/maintainer/postremove.sh" \
+    --out "$BUILD/nfpm.yaml" >&2
   tar -xzf "$TOOLS"/nfpm_*.tar.gz -C "$BUILD" nfpm
   "$BUILD/nfpm" package --config "$BUILD/nfpm.yaml" --packager deb --target "$OUT/$deb" >&2
   "$BUILD/nfpm" package --config "$BUILD/nfpm.yaml" --packager rpm --target "$OUT/$rpm" >&2
@@ -212,24 +232,29 @@ expected_files() {
   sort "$BUILD/rpm-files.unsorted" > "$BUILD/rpm-files"
 }
 
+# Each package is fermix-desktop at the package's version, and provides fermix at the staged
+# engine's version alone.
 check_identity() {
-  local version="$1" arch="$2" rpm_arch="$3" deb_dir="$BUILD/deb/control" rpm="$4" field
+  local version="$1" engine="$2" arch="$3" rpm_arch="$4" rpm="$5" deb_dir="$BUILD/deb/control"
+  local field provides
   for field in "Package: fermix-desktop" "Version: $version" "Architecture: $arch" \
-    "Maintainer: $MAINTAINER" "Provides: fermix (= $version)" "Conflicts: fermix" "Replaces: fermix"; do
+    "Maintainer: $MAINTAINER" "Provides: fermix (= $engine)" "Conflicts: fermix" "Replaces: fermix"; do
     grep -qxF -- "$field" "$deb_dir/control" || fail "the deb's control has no '$field'"
   done
   [ "$(rpm -qp --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}' "$rpm")" = \
     "fermix-desktop $version 1 $rpm_arch" ] || fail "the rpm is not fermix-desktop $version-1.$rpm_arch"
-  rpm -qp --provides "$rpm" | grep -qxF "fermix = $version" || fail "the rpm does not provide fermix = $version"
+  provides="$(rpm -qp --provides "$rpm")"
+  [ "$(grep -E '^fermix( |$)' <<< "$provides")" = "fermix = $engine" ] ||
+    fail "the rpm does not provide fermix = $engine alone: $(tr '\n' ' ' <<< "$provides")"
   [ "$(rpm -qp --conflicts "$rpm")" = fermix ] || fail "the rpm does not conflict with fermix alone"
   [ -z "$(rpm -qp --obsoletes "$rpm")" ] || fail "the rpm obsoletes something: $(rpm -qp --obsoletes "$rpm")"
 }
 
 check_packages() {
-  local version="$1" arch="$2" rpm_arch="$3" deb="$OUT/$4" rpm="$OUT/$5" family
+  local version="$1" engine="$2" arch="$3" rpm_arch="$4" deb="$OUT/$5" rpm="$OUT/$6" family
   read_deb "$deb"
   read_rpm "$rpm"
-  check_identity "$version" "$arch" "$rpm_arch" "$rpm"
+  check_identity "$version" "$engine" "$arch" "$rpm_arch" "$rpm"
   python3 "$DESKTOP/scripts/package_dependencies.py" --root "$ROOT" --map "$MAP" --lock "$LOCK" \
     --deb-control "$BUILD/deb/control/control" --rpm-requires "$BUILD/rpm/requires" >&2
   for family in deb rpm; do
@@ -242,7 +267,8 @@ check_packages() {
   expected_files
   diff -u "$BUILD/files" "$BUILD/deb/files" >&2 || fail "the deb's files are not the staged tree's"
   diff -u "$BUILD/rpm-files" "$BUILD/rpm/files" >&2 || fail "the rpm's files are not the staged tree's"
-  log "both packages are fermix-desktop $version, relations, scripts and files as staged"
+  log "both packages are fermix-desktop $version providing fermix $engine;" \
+    "relations, scripts and files as staged"
 }
 
 write_outputs() {
@@ -254,7 +280,7 @@ write_outputs() {
 }
 
 main() {
-  local version="" arch="" mtime="" triple rpm_arch deb rpm
+  local version="" arch="" mtime="" triple rpm_arch deb rpm engine
   while [ $# -gt 0 ]; do
     case "$1" in
       --version | --arch | --mtime)
@@ -274,13 +300,15 @@ main() {
   rpm="fermix-desktop-${version}-1.${rpm_arch}.rpm"
   mkdir -p "$BUILD" "$OUT"
   check_inputs
-  build_window "$arch" "$version"
+  engine="$(staged_engine_version)"
+  build_window "$arch"
   list_window_crates "$triple"
+  check_app_version "$version"
   stage_tree "$arch" "$version" "$mtime"
   write_copyright
   run_gates
-  run_nfpm "$version" "$arch" "$mtime" "$deb" "$rpm"
-  check_packages "$version" "$arch" "$rpm_arch" "$deb" "$rpm"
+  run_nfpm "$version" "$engine" "$arch" "$mtime" "$deb" "$rpm"
+  check_packages "$version" "$engine" "$arch" "$rpm_arch" "$deb" "$rpm"
   write_outputs "$deb" "$rpm"
 }
 

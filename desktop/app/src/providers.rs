@@ -61,6 +61,7 @@ impl ProvidersPage {
             Connection::Down(problem) => down_view(
                 problem,
                 state.wake_failed,
+                state.background.binding,
                 "Providers are read from Fermix. Start it to see them.",
             ),
         };

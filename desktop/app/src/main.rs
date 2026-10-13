@@ -51,13 +51,9 @@ use std::ops::ControlFlow;
 use std::rc::Rc;
 
 const APP_ID: &str = "io.tezra.Fermix";
-/// The version the window reports: the package's, which the package build
-/// compiles in, or the crate's in a development build.
-const VERSION: &str = match option_env!("FERMIX_DESKTOP_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
-const _: () = assert!(!VERSION.is_empty(), "FERMIX_DESKTOP_VERSION is empty");
+/// The version the window reports. It is the package's: a release is tagged
+/// with the app crate's version, and the engine's is pinned apart from it.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> glib::ExitCode {
     // First, before GTK and before any thread exists (see runtime_env).

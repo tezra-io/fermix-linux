@@ -17,7 +17,9 @@ import re
 import sys
 from xml.etree import ElementTree
 
-VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.]+)?")
+# A release's X.Y.Z, or a development build's X.Y.Z+dev.<UTC time>.<commit>[.dirty], as
+# build_packages.sh writes them.
+VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(\+dev\.[0-9]{14}\.[0-9a-f]{12,40}(\.dirty)?)?")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 CLOSING = "</component>"
 USAGE = ("metainfo_release.py --metainfo <file> --version <package version> --date <YYYY-MM-DD> "
@@ -37,7 +39,9 @@ class Parser(argparse.ArgumentParser):
 
 def check_version(version):
     if not VERSION.fullmatch(version):
-        raise Refusal(f"{version} is not a package version: X.Y.Z, X.Y.Z+N or X.Y.Z+0.dev...")
+        raise Refusal(
+            f"{version} is not a package version: X.Y.Z, or X.Y.Z+dev.<UTC time>.<commit>[.dirty]"
+        )
 
 
 def check_date(date):

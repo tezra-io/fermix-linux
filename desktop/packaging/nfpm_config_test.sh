@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Offline tests for nfpm_config.py: the rendered configuration declares the relations the map, the
-# lock and the engine give it, lists every file and symbolic link of the staged tree with its mode,
-# lists only the directories the package owns, and refuses every input it cannot render whole.
+# Offline tests for nfpm_config.py: the rendered configuration has the app's version and provides
+# fermix at the engine's, declares the relations the map, the lock and the engine give it, lists
+# every file and symbolic link of the staged tree with its mode, lists only the directories the
+# package owns, and refuses every input it cannot render whole.
 #   desktop/packaging/nfpm_config_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -78,7 +79,7 @@ render() {
   "$here/nfpm_config.py" --template "${TEMPLATE:-$here/nfpm-fermix-desktop.yaml.tmpl}" \
     --map "${MAP:-$work/map}" --lock "${LOCK:-$work/lock.json}" \
     --engine-relations "${RELATIONS:-$work/relations.json}" --root "${ROOT:-$work/root}" \
-    --version "$version" --arch "$arch" --mtime 2026-10-04T00:00:00Z \
+    --version "$version" --engine-version "${ENGINE-0.14.0}" --arch "$arch" --mtime 2026-10-04T00:00:00Z \
     --postinstall /scripts/postinstall.sh --postremove /scripts/postremove.sh --out "$out"
 }
 
@@ -95,20 +96,24 @@ libX11.so.6 :: libx11-6 :: libX11.so.6()(64bit)
 EOF
 
 echo "nfpm_config_test: a staged tree, rendered"
-render 0.0.1 amd64 "$work/nfpm.yaml" > /dev/null
+render 0.1.0 amd64 "$work/nfpm.yaml" > /dev/null
 out="$work/nfpm.yaml"
-expect_line "$out" 'version: "0.0.1"'
+expect_line "$out" 'version: "0.1.0"'
 expect_line "$out" 'arch: amd64'
 expect_line "$out" 'mtime: "2026-10-04T00:00:00Z"'
-expect_line "$out" '      - fermix (= 0.0.1)'
-expect_line "$out" '      - fermix = 0.0.1'
+# The package's version is the app's, and it provides fermix at the engine's.
+expect_line "$out" '      - fermix (= 0.14.0)'
+expect_line "$out" '      - fermix = 0.14.0'
+expect_no_line "$out" 'fermix (= 0.1.0)'
+expect_no_line "$out" 'fermix = 0.1.0'
 expect_line "$out" '    depends: ["libc6 (>= 2.34)", "libx11-6", "dconf-service"]'
 expect_line "$out" '    depends: ["libc.so.6(GLIBC_2.34)(64bit)", "libX11.so.6()(64bit)", "dconf"]'
 expect_line "$out" '  postinstall: /scripts/postinstall.sh'
 expect_line "$out" '  postremove: /scripts/postremove.sh'
 expect_no_line "$out" '{{'
 expect_no_line "$out" 'obsoletes'
-echo "  ok: the version, the relations once each in the map's order, and the scripts"
+echo "  ok: the app's version, fermix provided at the engine's, the relations once each in the map's"
+echo "      order, and the scripts"
 
 root="$work/root"
 expect_line "$out" "  - {\"dst\": \"/usr/bin/fermix\", \"file_info\": {\"mode\": 493}, \"src\": \"$root/usr/bin/fermix\", \"type\": \"file\"}"
@@ -153,19 +158,22 @@ echo "  ok: $entries entries, every file and link with its mode, links 0777, the
 echo "      and manual page per packager, the lintian overrides in the deb alone, and only the owned"
 echo "      directories"
 
-echo "nfpm_config_test: a desktop-only rebuild, and the engine's own relations"
+echo "nfpm_config_test: a development build, and the engine's own relations"
 relations "$work/relations-declared.json" '["libyaml-0-2"]' '["libyaml-0.so.2()(64bit)"]'
-RELATIONS="$work/relations-declared.json" render 0.0.1+2 amd64 "$work/rebuild.yaml" > /dev/null
-expect_line "$work/rebuild.yaml" 'version: "0.0.1+2"'
-expect_line "$work/rebuild.yaml" '      - fermix (= 0.0.1+2)'
-expect_line "$work/rebuild.yaml" '    depends: ["libc6 (>= 2.34)", "libx11-6", "dconf-service", "libyaml-0-2"]'
-expect_line "$work/rebuild.yaml" \
+dev=0.1.0+dev.20261004000000.0123456789ab.dirty
+RELATIONS="$work/relations-declared.json" ENGINE=0.15.0 render "$dev" amd64 "$work/dev.yaml" > /dev/null
+expect_line "$work/dev.yaml" "version: \"$dev\""
+expect_line "$work/dev.yaml" '      - fermix (= 0.15.0)'
+expect_line "$work/dev.yaml" '      - fermix = 0.15.0'
+expect_line "$work/dev.yaml" '    depends: ["libc6 (>= 2.34)", "libx11-6", "dconf-service", "libyaml-0-2"]'
+expect_line "$work/dev.yaml" \
   '    depends: ["libc.so.6(GLIBC_2.34)(64bit)", "libX11.so.6()(64bit)", "dconf", "libyaml-0.so.2()(64bit)"]'
-echo "  ok: carried after the host relations"
+echo "  ok: the development version, fermix at the engine it carries, and the engine's relations"
+echo "      after the host relations"
 
 echo "nfpm_config_test: the checked-in map covers the checked-in lock exactly"
 MAP="$here/host_relations.map" LOCK="$here/runtime/RUNTIME.lock.json" \
-  render 0.12.1 amd64 "$work/real.yaml" > /dev/null
+  render 0.1.0 amd64 "$work/real.yaml" > /dev/null
 grep -q 'libc6 (>= 2.34)' "$work/real.yaml" || fail "the real map does not state the glibc floor"
 grep -q '"libpulse0"' "$work/real.yaml" || fail "the real map does not declare libpulse0"
 grep -q '"libstdc++.so.6()(64bit)"' "$work/real.yaml" || fail "the real map does not declare libstdc++"
@@ -174,7 +182,17 @@ echo "  ok: every host library has a row, and every row is a host library"
 echo "nfpm_config_test: inputs it will not render"
 expect_refusal "a version with a hyphen" "'-'" render 0.0.1-1 amd64 "$work/x.yaml"
 expect_refusal "a version with an epoch" "':'" render 1:0.0.1 amd64 "$work/x.yaml"
-expect_refusal "a version that is not X.Y.Z" "not a package version" render v0.0.1 amd64 "$work/x.yaml"
+expect_refusal "a version that is not X.Y.Z" "the version 'v0.0.1' is not X.Y.Z" render v0.0.1 amd64 "$work/x.yaml"
+expect_refusal "a rebuild of a version" "the version '0.1.0+1' is not X.Y.Z" render 0.1.0+1 amd64 "$work/x.yaml"
+expect_refusal "the earlier development form" "the version '0.1.0+0.dev.20261004000000.0123456789ab' is not X.Y.Z" \
+  render 0.1.0+0.dev.20261004000000.0123456789ab amd64 "$work/x.yaml"
+ENGINE=0.14.0-1 expect_refusal "an engine version with a hyphen" "the engine version 0.14.0-1 has a '-'" \
+  render 0.1.0 amd64 "$work/x.yaml"
+ENGINE=1:0.14.0 expect_refusal "an engine version with an epoch" "the engine version 1:0.14.0 has a ':'" \
+  render 0.1.0 amd64 "$work/x.yaml"
+ENGINE=v0.14.0 expect_refusal "an engine tag rather than its version" "the engine version 'v0.14.0' is not X.Y.Z" \
+  render 0.1.0 amd64 "$work/x.yaml"
+ENGINE="" expect_refusal "no engine version" "the engine version '' is not X.Y.Z" render 0.1.0 amd64 "$work/x.yaml"
 expect_refusal "a third architecture" "riscv64" render 0.0.1 riscv64 "$work/x.yaml"
 
 lock "$work/lock-more.json" '"libc.so.6", "ld-linux-x86-64.so.2", "libX11.so.6", "libXnew.so.1"'

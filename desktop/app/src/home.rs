@@ -4,7 +4,7 @@ use crate::state::{Background, Connection, Snapshot, State};
 use adw::prelude::*;
 use fermix_client::overview::{channels_line, duration_words, tools_count, Overview};
 use fermix_client::providers::{connection, Connection as Link};
-use fermix_client::service::{background_switch, service_line};
+use fermix_client::service::{background_switch, service_line, start_command};
 use fermix_client::settings::pane;
 use fermix_client::view::{
     answers_with, attention_rows, status_word, AttentionAction, AttentionRow, DaemonProblem,
@@ -20,6 +20,8 @@ enum Attention {
     Down {
         problem: DaemonProblem,
         wake_failed: bool,
+        /// A binding is known to exist, so a start is the unit's, not the install's.
+        bound: bool,
     },
     Waiting,
 }
@@ -118,7 +120,7 @@ impl HomePage {
     }
 
     pub fn render(&self, state: &State) {
-        self.background.render(&state.background);
+        self.background.render(&state.background, state.waking);
         let line = state
             .background
             .service
@@ -129,7 +131,9 @@ impl HomePage {
             Connection::Connecting => self.render_waiting("Connecting…"),
             Connection::Up(snapshot) => self.render_up(snapshot),
             Connection::Down(_) if state.waking => self.render_waiting("Starting…"),
-            Connection::Down(problem) => self.render_down(problem, state.wake_failed),
+            Connection::Down(problem) => {
+                self.render_down(problem, state.wake_failed, state.background.binding)
+            }
         }
     }
 
@@ -168,12 +172,13 @@ impl HomePage {
         self.tools.set_text(&tools_count(overview).to_string());
     }
 
-    fn render_down(&self, problem: &DaemonProblem, wake_failed: bool) {
+    fn render_down(&self, problem: &DaemonProblem, wake_failed: bool, bound: bool) {
         self.status.set_text(problem.status_word());
         self.clear_values();
         self.show_attention(Attention::Down {
             problem: problem.clone(),
             wake_failed,
+            bound,
         });
     }
 
@@ -259,8 +264,9 @@ impl BackgroundRows {
     }
 
     /// While a change runs, the service's switch shows where it is heading.
-    fn render(&self, bg: &Background) {
-        let busy = bg.service_change.is_some();
+    /// While Fermix is starting it waits, so the two never run at once.
+    fn render(&self, bg: &Background, waking: bool) {
+        let busy = bg.service_change.is_some() || waking;
         let drawn = background_switch(bg.service.as_ref(), bg.binding, busy);
         let note = match (bg.service_change, &bg.service_error) {
             (Some(true), _) => "Turning on…",
@@ -301,7 +307,8 @@ fn attention_widgets(attention: &Attention) -> Vec<gtk::Widget> {
         Attention::Down {
             problem,
             wake_failed,
-        } => vec![down_row(problem, *wake_failed).upcast()],
+            bound,
+        } => vec![down_row(problem, *wake_failed, *bound).upcast()],
         Attention::Waiting => vec![waiting_row().upcast()],
     }
 }
@@ -350,16 +357,14 @@ fn attention_widget(row: &AttentionRow) -> gtk::Widget {
     widget.upcast()
 }
 
-/// A failed start or restart names the terminal command that shows why.
-pub const START_COMMAND: &str = "systemctl --user start fermix";
-
 type DownCopy = (&'static str, String, Option<(&'static str, &'static str)>);
 
-fn down_row(problem: &DaemonProblem, wake_failed: bool) -> adw::ActionRow {
+fn down_row(problem: &DaemonProblem, wake_failed: bool, bound: bool) -> adw::ActionRow {
+    let command = start_command(bound);
     let (title, subtitle, button) = match down_copy(problem) {
         (_, _, Some((_, action))) if wake_failed => (
             "Fermix did not come back",
-            format!("To see why, run {START_COMMAND} in a terminal."),
+            format!("To see why, run {command} in a terminal."),
             Some(("Try again", action)),
         ),
         copy => copy,

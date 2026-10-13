@@ -116,7 +116,8 @@ impl App {
     fn background(&self) -> BackgroundSwitch {
         let state = self.state.borrow();
         let bg = &state.background;
-        background_switch(bg.service.as_ref(), bg.binding, bg.service_change.is_some())
+        let busy = bg.service_change.is_some() || state.waking;
+        background_switch(bg.service.as_ref(), bg.binding, busy)
     }
 
     fn window_action(&self, name: &str, target: Option<&glib::Variant>) {

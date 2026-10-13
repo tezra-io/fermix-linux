@@ -71,6 +71,8 @@ sudo dnf install --allowerasing ./fermix-desktop-<version>-1.x86_64.rpm
 ```
 
 A running Fermix service keeps going, and your settings, memory and history stay where they are.
+The package's version is the app's own, not the engine's: `fermix --version` says which engine it
+carries, and each release's notes name it.
 
 ### Moving from the Flatpak
 

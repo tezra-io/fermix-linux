@@ -3,11 +3,12 @@
 # The half of desktop/scripts/install_smoke.sh that runs in a clean container of one of the images
 # it runs on. It checks the package copied in against its sha256 and installs it with apt or dnf,
 # which brings in exactly what the package declares from the distribution's own archive. Then,
-# before anything else is installed: `fermix --version` answers with the engine's version, and ldd
-# resolves every ELF object under /usr/lib/fermix-desktop, each private library from the prefix. A
-# control copies the window out of the prefix and expects that check to refuse it. Only then are
-# the display tools installed, and the window drawn on each display it is given, in the state it
-# shows when Fermix is not running:
+# before anything else is installed: `fermix --version` answers with the version of the engine the
+# package carries, which is the version the installed package provides fermix at, as dpkg-query or
+# rpm reads it here; and ldd resolves every ELF object under /usr/lib/fermix-desktop, each private
+# library from the prefix. A control copies the window out of the prefix and expects that check to
+# refuse it. Only then are the display tools installed, and the window drawn on each display it is
+# given, in the state it shows when Fermix is not running:
 #   x11      under Xvfb, the screen dumped by xwd in the X server's own format with the window's
 #            bounds;
 #   wayland  on a headless Weston, whose kiosk shell gives the window the whole output, captured by
@@ -16,7 +17,7 @@
 # install_smoke.sh checks every capture in one pinned converter image, the same for every
 # distribution. What this writes lands in /smoke/out with a SHA256SUMS.
 #
-# Usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex> --engine-version <v>
+# Usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>
 #          --displays "<x11 | wayland | x11 wayland>"
 set -eEuo pipefail
 shopt -s inherit_errexit
@@ -68,6 +69,27 @@ install_package() {
       ;;
   esac
   log "installed $(basename -- "$package") and what it declares: see install.log"
+}
+
+# The version the installed fermix-desktop provides fermix at: the one fermix (= <v>) of the deb's
+# Provides, or the one fermix = <v> among the rpm's provides.
+provided_engine() {
+  local family="$1" provides versions
+  case "$family" in
+    deb)
+      # shellcheck disable=SC2016 # dpkg-query's field, not the shell's
+      provides="$(dpkg-query -W -f '${Provides}' fermix-desktop)" || fail "dpkg-query cannot read fermix-desktop"
+      versions="$(tr ',' '\n' <<< "$provides" | sed -n 's/^ *fermix (= \([^ )]*\)) *$/\1/p')"
+      ;;
+    rpm)
+      provides="$(rpm -q --provides fermix-desktop)" || fail "rpm cannot read fermix-desktop"
+      versions="$(sed -n 's/^fermix = \([^ ]*\)$/\1/p' <<< "$provides")"
+      ;;
+    *) fail "the family is deb or rpm, not '$family'" ;;
+  esac
+  [[ "$versions" =~ ^[^[:space:]]+$ ]] ||
+    fail "fermix-desktop does not provide fermix at one version: $(tr '\n' ' ' <<< "$provides")"
+  echo "$versions"
 }
 
 check_engine() {
@@ -353,7 +375,7 @@ write_sums() {
 }
 
 usage() {
-  fail "usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex> --engine-version <v>" \
+  fail "usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>" \
     "--displays \"<x11 | wayland | x11 wayland>\""
 }
 
@@ -364,20 +386,22 @@ main() {
     [ $# -ge 2 ] || usage
     case "$1" in
       --family) family="$2" ;; --package) package="$2" ;; --sha256) digest="$2" ;;
-      --engine-version) engine="$2" ;; --displays) displays="$2" ;;
+      --displays) displays="$2" ;;
       *) usage ;;
     esac
     shift 2
   done
   case "$family" in deb | rpm) ;; *) fail "the family is deb or rpm, not '$family'" ;; esac
   read -r -a words <<< "$displays"
-  [ -n "$package" ] && [ -n "$digest" ] && [ -n "$engine" ] && [ "${#words[@]}" -gt 0 ] ||
+  [ -n "$package" ] && [ -n "$digest" ] && [ "${#words[@]}" -gt 0 ] ||
     fail "every flag needs a value"
   for display in "${words[@]}"; do
     case "$display" in x11 | wayland) ;; *) fail "the displays are x11 and wayland, not '$display'" ;; esac
   done
   mkdir -p "$OUT"
   install_package "$family" "$package" "$digest"
+  engine="$(provided_engine "$family")"
+  log "fermix-desktop provides fermix $engine"
   check_engine "$engine"
   check_libraries
   check_control

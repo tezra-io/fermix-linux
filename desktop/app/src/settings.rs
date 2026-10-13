@@ -253,6 +253,7 @@ impl SettingsPage {
             Connection::Down(problem) => down_view(
                 problem,
                 state.wake_failed,
+                state.background.binding,
                 "Settings are read from Fermix. Start it to change them.",
             ),
             _ => waiting("Connecting to Fermix"),

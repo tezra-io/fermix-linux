@@ -10,7 +10,9 @@
 # does not authorise says so and still exits 0, writing nothing, so a capture is the file it wrote.
 #
 # check_wayland_client, which holds the window to the private libwayland-client; tools_from_epel,
-# which says where an rpm image's test tools come from; and the --displays the script accepts.
+# which says where an rpm image's test tools come from; provided_engine, which reads the engine
+# version `fermix --version` has to answer with from what the installed package provides; and the
+# flags the script accepts.
 #   desktop/packaging/smoke_in_container_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -154,14 +156,54 @@ expect_refusal "a distribution the smoke has no rule for" \
   "the smoke knows where fedora's and almalinux's test tools come from, not rocky's" \
   sourced tools_from_epel "$work/os-rocky"
 
-echo "smoke_in_container_test: the displays it draws on"
+# A stand-in dpkg-query and rpm that answer what fermix-desktop provides with $PROVIDES_FILE: the
+# deb's Provides field, or the rpm's provides one a line.
+mkdir -p "$work/bin"
+export PROVIDES_FILE="$work/provides"
+cat > "$work/bin/dpkg-query" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = '-W -f ${Provides} fermix-desktop' ] || { echo "stand-in dpkg-query was asked: $*" >&2; exit 2; }
+cat "$PROVIDES_FILE"
+STUB
+cat > "$work/bin/rpm" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = '-q --provides fermix-desktop' ] || { echo "stand-in rpm was asked: $*" >&2; exit 2; }
+cat "$PROVIDES_FILE"
+STUB
+chmod 0755 "$work/bin/dpkg-query" "$work/bin/rpm"
+
+# <family> <provides> <engine>: the engine version read from <provides> is <engine>.
+expect_engine() {
+  printf '%s\n' "$2" > "$PROVIDES_FILE"
+  [ "$(sourced provided_engine "$1")" = "$3" ] || fail "the $1's provides '$2' did not give the engine $3"
+}
+
+echo "smoke_in_container_test: the engine version the installed package provides"
+expect_engine deb 'fermix (= 0.14.0)' 0.14.0
+expect_engine deb 'libfoo, fermix (= 0.14.0)' 0.14.0
+expect_engine rpm "$(printf 'fermix = 0.14.0\nfermix-desktop = 0.1.0-1\nfermix-desktop(x86-64) = 0.1.0-1')" 0.14.0
+echo "  ok: 0.14.0, from the deb's Provides and from the rpm's provides"
+for provides in 'fermix' 'fermix-desktop (= 0.1.0)' '' 'fermix (= 0.14.0), fermix (= 0.15.0)'; do
+  printf '%s\n' "$provides" > "$PROVIDES_FILE"
+  expect_refusal "a deb that provides '$provides'" "fermix-desktop does not provide fermix at one version" \
+    sourced provided_engine deb
+done
+for provides in 'fermix-desktop = 0.1.0-1' 'fermix' "$(printf 'fermix = 0.14.0\nfermix = 0.15.0')"; do
+  printf '%s\n' "$provides" > "$PROVIDES_FILE"
+  expect_refusal "an rpm that provides '${provides//$'\n'/, }'" "fermix-desktop does not provide fermix at one version" \
+    sourced provided_engine rpm
+done
+
+echo "smoke_in_container_test: the flags it accepts"
 run_script() {
-  bash "$here/smoke_in_container.sh" --family rpm --package /smoke/p.rpm --sha256 0 --engine-version 0.0.1 "$@"
+  bash "$here/smoke_in_container.sh" --family rpm --package /smoke/p.rpm --sha256 0 "$@"
 }
 expect_refusal "a display it does not know" "the displays are x11 and wayland, not 'mir'" \
   run_script --displays mir
 expect_refusal "one it knows beside one it does not" "not 'mir'" run_script --displays "x11 mir"
 expect_refusal "no display" "every flag needs a value" run_script --displays ""
 expect_refusal "no --displays" "every flag needs a value" run_script
+expect_refusal "an engine version named by the caller: the package says it" "usage" \
+  run_script --displays x11 --engine-version 0.14.0
 
 echo "smoke_in_container_test: ok"

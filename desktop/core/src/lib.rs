@@ -5,6 +5,7 @@ pub mod acp;
 pub mod activity;
 pub mod autostart;
 pub mod capabilities;
+pub mod capped;
 pub mod chat;
 pub mod companion;
 pub mod doctor;

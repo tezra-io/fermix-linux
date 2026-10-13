@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Offline tests for build_packages.sh: the version a build gets and the ones it refuses, a
-# development build under CI, and the runtime inputs it refuses before anything is built. The
-# engine is the fixture engine of fixtures/engine, verified with the stub cosign; the version
-# order is asked of dpkg and rpm themselves, in the pinned ubuntu:22.04 and AlmaLinux 9 images,
-# which have to be pulled already. Nothing here builds, runs nFPM or reaches the network.
+# Offline tests for build_packages.sh: the app's version and how it is read, the version a build
+# gets and the ones it refuses, a development build under CI, and the runtime inputs it refuses
+# before anything is built. The engine is the fixture engine of fixtures/engine, verified with the
+# stub cosign; the version order is asked of dpkg and rpm themselves, in the pinned ubuntu:22.04 and
+# AlmaLinux 9 images, which have to be pulled already. Nothing here builds, runs nFPM or reaches the
+# network.
 #   desktop/scripts/build_packages_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -46,6 +47,39 @@ build() {
   "$here/build_packages.sh" "$@"
 }
 
+# <name> <manifest>: a copy of the script in a tree of its own, under an app manifest of the test's.
+app_tree() {
+  mkdir -p "$work/$1/desktop/scripts" "$work/$1/desktop/app"
+  cp "$here/build_packages.sh" "$work/$1/desktop/scripts/"
+  printf '%s\n' "$2" > "$work/$1/desktop/app/Cargo.toml"
+  echo "$work/$1/desktop/scripts/build_packages.sh"
+}
+
+echo "build_packages_test: the app's version, from the [package] table of its manifest"
+app="$(build --print-app-version)"
+[[ "$app" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "the app's version is '$app', not X.Y.Z"
+next="${app%.*}.$((${app##*.} + 1))"
+echo "  ok: $app, from desktop/app/Cargo.toml"
+manifest='[package]
+name = "fermix-desktop"
+version = "1.2.3"
+edition.workspace = true
+
+[dependencies.gtk]
+version = "0.11"'
+expect_equal "the version of a manifest with another table's version after it" \
+  "$("$(app_tree tables "$manifest")" --print-app-version)" 1.2.3
+echo "  ok: 1.2.3, and not the version of a later table"
+expect_refusal "a version the workspace gives" "does not give its version as one line version = \"X.Y.Z\"" \
+  "$(app_tree workspace "$(printf '[package]\nname = "fermix-desktop"\nversion.workspace = true')")" --print-app-version
+expect_refusal "a prerelease version" "version = \"0.1.0-rc.1\"" \
+  "$(app_tree prerelease "$(printf '[package]\nname = "fermix-desktop"\nversion = "0.1.0-rc.1"')")" --print-app-version
+expect_refusal "a manifest whose [package] has no version" "does not give its version" \
+  "$(app_tree none "$(printf '[package]\nname = "fermix-desktop"\n\n[lib]\nversion = "0.1.0"')")" --print-app-version
+expect_refusal "two versions in [package]" "does not give its version as one line" \
+  "$(app_tree two "$(printf '[package]\nversion = "0.1.0"\nversion = "0.2.0"')")" --print-app-version
+expect_refusal "the app's version asked for with other flags" "usage" build --print-app-version --arch amd64
+
 # The pin of the fixture release, as engine_pin.py writes it.
 "$fixtures/fixture_release.sh" "$work/release" "$DEB" "$RPM" "$COMMIT" v0.0.1
 FIXTURE_GH_RELEASE="$work/release" "$here/engine_pin.py" --pin "$work/pin.json" v0.0.1 > /dev/null
@@ -54,62 +88,73 @@ release() {
 }
 
 echo "build_packages_test: the version of a release build"
-expect_equal "the engine's own version" "$(release --version 0.0.1 --print-version)" 0.0.1
-expect_equal "a desktop-only rebuild" "$(release --version 0.0.1+2 --print-version)" 0.0.1+2
-echo "  ok: 0.0.1 and 0.0.1+2 over the engine the pin names"
-expect_refusal "a version with a Debian revision" "the version 0.0.1-1 has a '-'" \
-  release --version 0.0.1-1 --print-version
-expect_refusal "a version with an epoch" "the version 1:0.0.1 has a ':'" \
-  release --version 1:0.0.1 --print-version
-expect_refusal "a rebuild number that is not a number" "a release version is X.Y.Z or X.Y.Z+N" \
-  release --version 0.0.1+dev --print-version
-expect_refusal "a tag rather than a version" "a release version is X.Y.Z or X.Y.Z+N" \
-  release --version v0.0.1 --print-version
-expect_refusal "a version over another engine" "the pin's engine is 0.0.1" \
-  release --version 0.0.2 --print-version
-expect_refusal "a rebuild over another engine" "the pin's engine is 0.0.1" \
-  release --version 0.0.2+1 --print-version
+expect_equal "a release over the pinned engine 0.0.1" "$(release --version "$app" --print-version)" "$app"
+echo "  ok: $app, the app's, over the engine 0.0.1 the pin names"
+expect_refusal "the pinned engine's version" "the version 0.0.1 is not the app's: desktop/app/Cargo.toml says $app" \
+  release --version 0.0.1 --print-version
+expect_refusal "the app's next version, before the manifest says it" "the version $next is not the app's" \
+  release --version "$next" --print-version
+expect_refusal "a rebuild of the app's version" "a release version is X.Y.Z, and $app+1 is not" \
+  release --version "$app+1" --print-version
+expect_refusal "a version with a Debian revision" "the version $app-1 has a '-'" \
+  release --version "$app-1" --print-version
+expect_refusal "a version with an epoch" "the version 1:$app has a ':'" \
+  release --version "1:$app" --print-version
+expect_refusal "a tag rather than a version" "a release version is X.Y.Z, and v$app is not" \
+  release --version "v$app" --print-version
+expect_refusal "a pin a build cannot trust" "is not one a build can trust" \
+  build --pin "$work/absent.json" --version "$app" --print-version
 
 echo "build_packages_test: a development build"
 expect_refusal "a development build under CI" "CI" \
   env CI=true "$here/build_packages.sh" --dev "$DEB" "$RPM" --print-version
 dev="$(SOURCE_DATE_EPOCH=1791072000 build --dev "$DEB" "$RPM" --print-version)"
-[[ "$dev" =~ ^0\.0\.1\+0\.dev\.20261004000000\.[0-9a-f]{12}(\.dirty)?$ ]] ||
-  fail "the development version is $dev"
+pattern="^${app//./\\.}\\+dev\\.20261004000000\\.[0-9a-f]{12}(\\.dirty)?$"
+[[ "$dev" =~ $pattern ]] || fail "the development version is $dev"
 later="$(SOURCE_DATE_EPOCH=1791072060 build --dev "$DEB" "$RPM" --print-version)"
-echo "  ok: $dev, from the engine's version, the UTC time and this checkout's commit"
+echo "  ok: $dev, from the app's version, the UTC time and this checkout's commit"
+
+# <a> <b> ...: whether dpkg, or rpm, puts each a before its b, in the pinned images.
+dpkg_orders() {
+  docker run --rm --network none --pull never "$DPKG_IMAGE" sh -euc '
+    while [ "$#" -gt 0 ]; do dpkg --compare-versions "$1" lt "$2" || { echo "dpkg: $1 is not before $2"; exit 1; }; shift 2; done
+  ' sh "$@"
+}
+rpm_orders() {
+  docker run --rm --network none --pull never "$RPM_IMAGE" sh -euc '
+    while [ "$#" -gt 0 ]; do
+      [ "$(rpm --eval "%{lua: print(rpm.vercmp(\"$1\", \"$2\"))}")" = -1 ] || { echo "rpm: $1 is not before $2"; exit 1; }
+      shift 2
+    done
+  ' sh "$@"
+}
 
 echo "build_packages_test: dpkg and rpm order the versions the same way"
-order=(0.0.1 "$dev" "$later" 0.0.1+1 0.0.1+2 0.0.2)
+order=("$app" "$dev" "$later" "$next")
 pairs=()
 for ((i = 0; i + 1 < ${#order[@]}; i++)); do
   pairs+=("${order[i]}" "${order[i + 1]}")
 done
-docker run --rm --network none --pull never "$DPKG_IMAGE" sh -euc '
-  while [ "$#" -gt 0 ]; do dpkg --compare-versions "$1" lt "$2" || { echo "dpkg: $1 is not before $2"; exit 1; }; shift 2; done
-' sh "${pairs[@]}" || fail "dpkg orders the versions otherwise"
-docker run --rm --network none --pull never "$RPM_IMAGE" sh -euc '
-  while [ "$#" -gt 0 ]; do
-    [ "$(rpm --eval "%{lua: print(rpm.vercmp(\"$1\", \"$2\"))}")" = -1 ] || { echo "rpm: $1 is not before $2"; exit 1; }
-    shift 2
-  done
-' sh "${pairs[@]}" || fail "rpm orders the versions otherwise"
+dpkg_orders "${pairs[@]}" || fail "dpkg orders the versions otherwise"
+rpm_orders "${pairs[@]}" || fail "rpm orders the versions otherwise"
 echo "  ok: ${order[*]}, in that order, in both"
-# The control: the same two images do disagree, about +dev against +1, which is why a development
-# build is +0.dev.
-docker run --rm --network none --pull never "$DPKG_IMAGE" dpkg --compare-versions 0.0.1+dev.1 gt 0.0.1+1 ||
-  fail "dpkg no longer puts 0.0.1+dev.1 after 0.0.1+1"
-[ "$(docker run --rm --network none --pull never "$RPM_IMAGE" \
-  rpm --eval '%{lua: print(rpm.vercmp("0.0.1+dev.1", "0.0.1+1"))}')" = -1 ] ||
-  fail "rpm no longer puts 0.0.1+dev.1 before 0.0.1+1"
-echo "  ok: and both still disagree about 0.0.1+dev.1 against 0.0.1+1, the form +0.dev avoids"
+# The control: the same checks refuse a development build put before the release it builds on.
+if dpkg_orders "$dev" "$app" > "$work/control"; then
+  fail "dpkg put $dev before $app"
+fi
+grep -qxF "dpkg: $dev is not before $app" "$work/control" || fail "the dpkg control failed otherwise: $(cat "$work/control")"
+if rpm_orders "$dev" "$app" > "$work/control"; then
+  fail "rpm put $dev before $app"
+fi
+grep -qxF "rpm: $dev is not before $app" "$work/control" || fail "the rpm control failed otherwise: $(cat "$work/control")"
+echo "  ok: and both refuse $dev before $app"
 
 echo "build_packages_test: arguments it refuses"
 expect_refusal "no arguments" "usage" "$here/build_packages.sh"
-expect_refusal "both a release and a development build" "usage" build --version 0.0.1 --dev "$DEB" "$RPM"
+expect_refusal "both a release and a development build" "usage" build --version "$app" --dev "$DEB" "$RPM"
 expect_refusal "a development build with one package" "usage" build --dev "$DEB"
-expect_refusal "an unknown flag" "usage" build --version 0.0.1 --sign
-expect_refusal "a third architecture" "riscv64" release --version 0.0.1 --arch riscv64 --print-version
+expect_refusal "an unknown flag" "usage" build --version "$app" --sign
+expect_refusal "a third architecture" "riscv64" release --version "$app" --arch riscv64 --print-version
 
 echo "build_packages_test: runtime inputs it refuses before building"
 runtime="$work/runtime"
