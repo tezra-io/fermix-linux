@@ -1,0 +1,495 @@
+//! Chat: the conversation, drawn from `Transcript`, and the composer under it.
+//! The page never talks to Fermix; its buttons fire window actions and
+//! `conversation.rs` does the work.
+
+mod activity;
+mod entries;
+
+use crate::state::{Connection, State};
+use crate::status::{down_view, waiting, DownPage, DownView};
+use activity::{Live, LiveLine};
+use adw::prelude::*;
+use entries::Drawn;
+use fermix_client::chat::{Phase, Transcript};
+use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
+use gtk::gdk;
+use gtk::glib;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+/// Past this distance from the bottom, new text no longer pulls the view down.
+const STICK_DISTANCE: f64 = 48.0;
+/// What Chat cannot do without Fermix, on the down page.
+const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.";
+
+/// What the page says while Fermix is out of reach: its problem, or that it is
+/// starting. `None` while it answers, or before the first read.
+fn down_state(state: &State) -> Option<DownView> {
+    match &state.connection {
+        Connection::Down(problem) if !state.waking => {
+            Some(down_view(problem, state.wake_failed, NEEDS_FERMIX))
+        }
+        Connection::Down(_) => Some(waiting("Starting Fermix")),
+        Connection::Up(_) | Connection::Connecting => None,
+    }
+}
+
+pub struct ChatPage {
+    pub root: gtk::Stack,
+    conversation: gtk::Stack,
+    empty: adw::StatusPage,
+    list: gtk::Box,
+    /// The live line for a turn with nothing else on screen showing the work.
+    thinking: LiveLine,
+    shown: Rc<RefCell<Vec<Drawn>>>,
+    /// The running turn, which the clock reads each second.
+    turn: Rc<Cell<Option<Turn>>>,
+    clock: Rc<RefCell<Option<glib::SourceId>>>,
+    follow: Follow,
+    input: gtk::TextView,
+    send: gtk::Button,
+    down: DownPage,
+    banner: adw::Banner,
+}
+
+impl ChatPage {
+    pub fn new() -> Self {
+        // Close within a turn; a question opens the next with more room (CSS).
+        let list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        let thinking = LiveLine::new();
+        thinking.row.set_halign(gtk::Align::Start);
+        thinking.row.add_css_class("standalone");
+        thinking.row.set_visible(false);
+        let (follow, conversation, empty) = conversation_area(&list, &thinking.row);
+        let (composer, input, send) = composer();
+        let body = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        let banner = adw::Banner::new("");
+        body.append(&banner);
+        body.append(&conversation);
+        body.append(&composer);
+        let down = DownPage::new();
+        let root = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        root.add_named(&body, Some("chat"));
+        root.add_named(&down.page, Some("down"));
+        ChatPage {
+            root,
+            conversation,
+            empty,
+            list,
+            thinking,
+            shown: Rc::default(),
+            turn: Rc::default(),
+            clock: Rc::default(),
+            follow,
+            input,
+            send,
+            down,
+            banner,
+        }
+    }
+
+    /// `name` is the first name About you holds, for the greeting.
+    pub fn render(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+        let down = down_state(state);
+        if let Some(view) = down.clone().filter(|_| transcript.entries().is_empty()) {
+            self.down.show(view);
+            self.root.set_visible_child_name("down");
+            return;
+        }
+        self.down.reset();
+        self.root.set_visible_child_name("chat");
+        self.show_banner(down.as_ref());
+        self.render_conversation(transcript, state, name);
+    }
+
+    /// With a conversation on screen the page stays, and the banner says why the
+    /// composer waits and offers the way out the down page would.
+    fn show_banner(&self, down: Option<&DownView>) {
+        self.banner.set_revealed(down.is_some());
+        let Some(view) = down else { return };
+        self.banner.set_title(view.title());
+        let (label, action) = view.button().unzip();
+        self.banner.set_button_label(label);
+        self.banner.set_action_name(action);
+    }
+
+    fn render_conversation(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+        // The time of day on this computer's clock; each render follows it.
+        let time = match glib::DateTime::now_local() {
+            Ok(now) => Some(time_of_day(now.hour() as u32)),
+            Err(e) => {
+                glib::g_warning!("fermix", "the local time cannot be read: {e}");
+                None
+            }
+        };
+        self.empty.set_title(&greeting(time, name));
+        let empty = transcript.entries().is_empty();
+        self.conversation
+            .set_visible_child_name(if empty { "empty" } else { "messages" });
+        let turn = Turn::of(transcript);
+        self.turn.set(turn);
+        let live = turn.map(Turn::live);
+        self.show_entries(transcript, live.as_ref());
+        self.thinking.row.set_visible(transcript.thinking());
+        if let Some(live) = &live {
+            self.thinking.thinking(live);
+        }
+        self.keep_time(turn.is_some());
+        self.show_composer(transcript.phase(), state.snapshot().is_some());
+    }
+
+    fn show_composer(&self, phase: Phase, up: bool) {
+        let running = phase != Phase::Idle;
+        let (icon, tooltip, action) = if running {
+            ("media-playback-stop-symbolic", "Stop", "win.stop-reply")
+        } else {
+            ("go-up-symbolic", "Send", "win.send-message")
+        };
+        self.send.set_icon_name(icon);
+        self.send.set_tooltip_text(Some(tooltip));
+        self.send.set_action_name(Some(action));
+        let has_text = self.input.buffer().char_count() > 0;
+        self.send
+            .set_sensitive(up && phase != Phase::Stopping && (running || has_text));
+        self.input.set_editable(up);
+    }
+
+    /// The composer's text, trimmed; the composer keeps it until `clear_input`.
+    pub fn input_text(&self) -> String {
+        let buffer = self.input.buffer();
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .trim()
+            .to_owned()
+    }
+
+    pub fn clear_input(&self) {
+        self.input.buffer().set_text("");
+    }
+
+    pub fn focus_input(&self) {
+        self.input.grab_focus();
+    }
+
+    /// Scrolls to the newest entry and keeps following it, as after sending.
+    pub fn follow_latest(&self) {
+        self.follow.latest();
+    }
+
+    /// Draws what changed: entries already on screen stay, one that streamed
+    /// more in or changed its status is updated in place, and everything from
+    /// the first entry that cannot be is drawn anew.
+    fn show_entries(&self, transcript: &Transcript, live: Option<&Live>) {
+        let entries = transcript.entries();
+        let mut shown = self.shown.borrow_mut();
+        let mut same = 0;
+        for (drawn, entry) in shown.iter_mut().zip(entries) {
+            if drawn.entry != *entry && !drawn.grow(entry) {
+                break;
+            }
+            same += 1;
+        }
+        for stale in shown.drain(same..) {
+            self.list.remove(&stale.row);
+        }
+        for entry in &entries[same..] {
+            let drawn = Drawn::new(entry);
+            self.list.append(&drawn.row);
+            shown.push(drawn);
+        }
+        decorate(&shown, transcript, live);
+    }
+
+    /// Every second while a reply runs, the live line's time moves on. The
+    /// clock stops itself at the first tick with no reply running.
+    fn keep_time(&self, running: bool) {
+        if !running || self.clock.borrow().is_some() {
+            return;
+        }
+        let (turn, shown) = (self.turn.clone(), self.shown.clone());
+        let (thinking, clock) = (self.thinking.clone(), self.clock.clone());
+        let source = glib::timeout_add_seconds_local(1, move || {
+            let Some(turn) = turn.get() else {
+                clock.take();
+                return glib::ControlFlow::Break;
+            };
+            let live = turn.live();
+            thinking.thinking(&live);
+            if let Some(last) = shown.borrow().last() {
+                last.set_live(Some(&live));
+            }
+            glib::ControlFlow::Continue
+        });
+        self.clock.replace(Some(source));
+    }
+}
+
+/// The running turn: when its question was asked, and whether Stop was pressed.
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    started: i64,
+    stopping: bool,
+}
+
+impl Turn {
+    fn of(transcript: &Transcript) -> Option<Turn> {
+        Some(Turn {
+            started: transcript.turn_started()?,
+            stopping: transcript.phase() == Phase::Stopping,
+        })
+    }
+
+    fn live(self) -> Live {
+        Live {
+            stopping: self.stopping,
+            elapsed: glib::real_time() / 1_000_000 - self.started,
+        }
+    }
+}
+
+/// The parts of each entry that follow the rest of the conversation; only the
+/// last entry can be live.
+fn decorate(shown: &[Drawn], transcript: &Transcript, live: Option<&Live>) {
+    let last = shown.len().checked_sub(1);
+    for (index, drawn) in shown.iter().enumerate() {
+        let is_last = Some(index) == last;
+        let time = transcript.time(index).and_then(clock);
+        drawn.decorate(
+            time.as_deref(),
+            is_last && transcript.can_retry(),
+            live.filter(|_| is_last),
+        );
+    }
+}
+
+/// "14:05" in the local time zone.
+fn clock(at: i64) -> Option<String> {
+    match glib::DateTime::from_unix_local(at).and_then(|time| time.format("%H:%M")) {
+        Ok(text) => Some(text.into()),
+        Err(e) => {
+            glib::g_warning!("fermix", "could not show the time {at}: {e}");
+            None
+        }
+    }
+}
+
+fn conversation_area(list: &gtk::Box, live: &gtk::Box) -> (Follow, gtk::Stack, adw::StatusPage) {
+    let column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_top(24)
+        .margin_bottom(24)
+        .margin_start(18)
+        .margin_end(18)
+        .build();
+    column.append(list);
+    column.append(live);
+    let clamp = adw::Clamp::builder()
+        .maximum_size(760)
+        .child(&column)
+        .build();
+    // Natural heights: by default a viewport lays its content out at minimum
+    // height, which squeezes every picture once the conversation outgrows it.
+    let viewport = gtk::Viewport::builder()
+        .vscroll_policy(gtk::ScrollablePolicy::Natural)
+        .child(&clamp)
+        .build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&viewport)
+        .build();
+    let jump = jump_button();
+    let overlay = gtk::Overlay::builder().child(&scroller).build();
+    overlay.add_overlay(&jump);
+    let follow = Follow::new(&scroller, &jump);
+    // The mark and a greeting (plan §3.4); the page fills in the title.
+    let empty = adw::StatusPage::builder()
+        .icon_name("io.tezra.Fermix-symbolic")
+        .description(QUIET_LINE)
+        .css_classes(["chat-empty"])
+        .vexpand(true)
+        .build();
+    let stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .vexpand(true)
+        .build();
+    stack.add_named(&empty, Some("empty"));
+    stack.add_named(&overlay, Some("messages"));
+    (follow, stack, empty)
+}
+
+/// Floats over the conversation's corner while the reader is scrolled up.
+fn jump_button() -> gtk::Button {
+    let button = gtk::Button::builder()
+        .icon_name("go-bottom-symbolic")
+        .tooltip_text("Jump to Latest")
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::End)
+        .margin_end(18)
+        .margin_bottom(12)
+        .visible(false)
+        .css_classes(["circular", "osd"])
+        .build();
+    button.update_property(&[gtk::accessible::Property::Label("Jump to latest message")]);
+    button
+}
+
+/// Keeps the newest entry in view while the reader is at the bottom, leaves
+/// the view alone once they scroll up to read, and offers a way back down.
+struct Follow {
+    stuck: Rc<Cell<bool>>,
+    adjustment: gtk::Adjustment,
+}
+
+impl Follow {
+    fn new(scroller: &gtk::ScrolledWindow, jump: &gtk::Button) -> Follow {
+        let follow = Follow {
+            stuck: Rc::new(Cell::new(true)),
+            adjustment: scroller.vadjustment(),
+        };
+        let (stuck, button) = (follow.stuck.clone(), jump.clone());
+        follow.adjustment.connect_value_changed(move |a| {
+            let at_bottom = a.value() + a.page_size() >= a.upper() - STICK_DISTANCE;
+            stuck.set(at_bottom);
+            button.set_visible(!at_bottom);
+        });
+        let stuck = follow.stuck.clone();
+        follow
+            .adjustment
+            .connect_changed(move |a| scroll_to_end_when_idle(a, &stuck));
+        let (stuck, adjustment) = (follow.stuck.clone(), follow.adjustment.clone());
+        jump.connect_clicked(move |_| {
+            stuck.set(true);
+            adjustment.set_value(adjustment.upper() - adjustment.page_size());
+        });
+        follow
+    }
+
+    fn latest(&self) {
+        self.stuck.set(true);
+        let a = &self.adjustment;
+        a.set_value(a.upper() - a.page_size());
+    }
+}
+
+/// The content grew: follow it down while the reader is at the bottom. The
+/// scroll waits for an idle: this signal comes while the viewport lays out,
+/// and a value set then is only drawn at the next layout.
+fn scroll_to_end_when_idle(adjustment: &gtk::Adjustment, stuck: &Rc<Cell<bool>>) {
+    if !stuck.get() {
+        return;
+    }
+    let (a, stuck) = (adjustment.clone(), stuck.clone());
+    glib::idle_add_local_once(move || {
+        if stuck.get() {
+            a.set_value(a.upper() - a.page_size());
+        }
+    });
+}
+
+fn composer() -> (adw::Clamp, gtk::TextView, gtk::Button) {
+    let input = gtk::TextView::builder()
+        .css_classes(["inline"])
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .top_margin(8)
+        .bottom_margin(8)
+        .hexpand(true)
+        .build();
+    input.update_property(&[gtk::accessible::Property::Label("Message Fermix")]);
+    let placeholder = gtk::Label::builder()
+        .label("Message Fermix")
+        .css_classes(["dimmed"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .margin_top(8)
+        .can_target(false)
+        .build();
+    // An external scrollbar keeps a one-line composer one line tall; a visible
+    // one would impose its own minimum height.
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .propagate_natural_height(true)
+        .max_content_height(200)
+        .child(&input)
+        .build();
+    let field = gtk::Overlay::builder()
+        .child(&scroller)
+        .hexpand(true)
+        .build();
+    field.add_overlay(&placeholder);
+    let send = gtk::Button::builder()
+        .icon_name("go-up-symbolic")
+        .css_classes(["circular", "suggested-action"])
+        .valign(gtk::Align::End)
+        .tooltip_text("Send")
+        .sensitive(false)
+        .build();
+    send.set_action_name(Some("win.send-message"));
+    // Its side margins sit inside the clamp, as the conversation column's do,
+    // so the composer lines up with the bubbles above it.
+    let row = gtk::Box::builder()
+        .spacing(6)
+        .margin_start(18)
+        .margin_end(18)
+        .css_classes(["chat-composer"])
+        .build();
+    row.append(&field);
+    row.append(&send);
+    wire_composer(&input, &placeholder, &send);
+    let clamp = adw::Clamp::builder()
+        .maximum_size(760)
+        .margin_bottom(18)
+        .child(&row)
+        .build();
+    (clamp, input, send)
+}
+
+/// Enter or Ctrl+Enter sends, Shift+Enter starts a new line, Escape stops a
+/// reply, and the placeholder and Send button follow whether there is anything
+/// to send.
+fn wire_composer(input: &gtk::TextView, placeholder: &gtk::Label, send: &gtk::Button) {
+    let (hint, button) = (placeholder.clone(), send.clone());
+    input.buffer().connect_changed(move |buffer| {
+        let empty = buffer.char_count() == 0;
+        hint.set_visible(empty);
+        if button.action_name().as_deref() == Some("win.send-message") {
+            button.set_sensitive(!empty);
+        }
+    });
+    let keys = gtk::EventControllerKey::new();
+    let stop = send.clone();
+    keys.connect_key_pressed(move |controller, key, _, modifiers| {
+        // Escape does what the Stop button does, while it is Stop.
+        if key == gdk::Key::Escape {
+            let stopping = stop.action_name().as_deref() == Some("win.stop-reply");
+            if stopping && stop.is_sensitive() {
+                stop.activate();
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        }
+        let enter = matches!(key, gdk::Key::Return | gdk::Key::KP_Enter);
+        let plain = !modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        if !(enter && plain) {
+            return glib::Propagation::Proceed;
+        }
+        let Some(input) = controller.widget() else {
+            return glib::Propagation::Proceed;
+        };
+        if let Err(e) = input.activate_action("win.send-message", None) {
+            glib::g_debug!("fermix", "nothing to send: {e}");
+        }
+        glib::Propagation::Stop
+    });
+    input.add_controller(keys);
+}

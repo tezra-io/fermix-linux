@@ -1,0 +1,39 @@
+# The fixture engine package, in the shape of the engine's own packaging/linux/nfpm-fermix.yaml.tmpl
+# (tezra-io/fermix) at a few hundred bytes. One file builds both families, as the engine's does.
+# make_fixture_packages.sh renders the checked-in deb and rpm from it.
+name: fermix
+arch: amd64
+platform: linux
+version: "0.0.1"
+version_schema: none
+release: ""
+mtime: "2026-01-01T00:00:00Z"
+maintainer: Tezra <hello@fermix.ai>
+description: The fixture engine package of desktop/scripts/verify_engine_test.sh.
+homepage: https://fermix.ai
+license: MIT
+section: utils
+priority: optional
+
+contents:
+  - src: tree/usr/bin/fermix
+    dst: /usr/bin/fermix
+    file_info:
+      mode: 0755
+      mtime: "2026-01-01T00:00:00Z"
+
+  - src: tree/usr/share/fermix/engine.json
+    dst: /usr/share/fermix/engine.json
+    file_info:
+      mode: 0644
+      mtime: "2026-01-01T00:00:00Z"
+
+  - src: tree/usr/share/doc/fermix/copyright
+    dst: /usr/share/doc/fermix/copyright
+    file_info:
+      mode: 0644
+      mtime: "2026-01-01T00:00:00Z"
+
+scripts:
+  postinstall: maintainer/postinstall.sh
+  postremove: maintainer/postremove.sh

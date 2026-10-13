@@ -1,0 +1,68 @@
+# nFPM configuration of fermix-desktop: the window, the private GTK runtime it links, and the
+# engine as the fermix package installs it. One rendered file builds the deb and the rpm.
+#
+# nfpm_config.py fills every placeholder below and refuses to leave one: the relations from
+# host_relations.map, the runtime lock and the engine's own declared relations, and the contents
+# from the staged tree, one entry for every file and symbolic link in it.
+#
+# The version is used as given (version_schema: none) and release stays empty, so the deb has no
+# Debian revision and nFPM gives the rpm its default release, 1: fermix-desktop_<v>_<arch>.deb and
+# fermix-desktop-<v>-1.<arch>.rpm. A desktop-only rebuild is <engine version>+<n>, which dpkg and
+# rpm both order after <engine version>.
+name: fermix-desktop
+arch: {{ARCH}}
+platform: linux
+version: "{{VERSION}}"
+version_schema: none
+release: ""
+mtime: "{{MTIME}}"
+maintainer: Tezra <hello@fermix.ai>
+# The synopsis has no full stop, and every line of the long description fits in 78 columns, so
+# the deb's control lines, which start with a space, stay within 79.
+description: |
+  Fermix for Linux: the window and the engine
+  Fermix is a personal assistant that runs as a service of your own account.
+  This package carries the engine, the window you set it up and talk to it from,
+  and the GTK the window draws with, so one install is all of Fermix on a
+  desktop. A machine with no desktop installs fermix instead.
+homepage: https://fermix.ai
+license: MIT
+section: utils
+priority: optional
+
+# fermix-desktop is the alternative to the engine-only fermix package, not a layer over it. It
+# provides fermix, so whatever names the engine is satisfied, and conflicts with it, so the two
+# never install together. The deb also replaces fermix, which lets dpkg hand /usr/bin/fermix from
+# one package to the other in one transaction. The rpm has no Obsoletes: that would turn a
+# server's engine-only install into the desktop package on its next upgrade.
+#
+# The host relations are generated, and each one is explained in host_relations.map.
+overrides:
+  deb:
+    provides:
+      - fermix (= {{VERSION}})
+    conflicts:
+      - fermix
+    replaces:
+      - fermix
+    depends: {{DEB_DEPENDS}}
+  rpm:
+    provides:
+      - fermix = {{VERSION}}
+    conflicts:
+      - fermix
+    depends: {{RPM_DEPENDS}}
+
+# Each script is the engine package's own, byte for byte. The desktop and icon caches need none:
+# desktop-file-utils and hicolor-icon-theme refresh them from their own dpkg triggers and rpm file
+# triggers on /usr/share/applications and /usr/share/icons/hicolor.
+scripts:
+  postinstall: {{POSTINSTALL}}
+  postremove: {{POSTREMOVE}}
+
+# Every file and symbolic link of the staged tree, with its mode. Directories are listed only
+# under the two the package owns, /usr/lib/fermix-desktop and /usr/share/doc/fermix-desktop: an rpm
+# that listed /usr/bin or /usr/share would conflict with the filesystem package, and the engine's
+# own rpm lists none of its directories either. nFPM adds the parent directories a deb needs.
+contents:
+{{CONTENTS}}

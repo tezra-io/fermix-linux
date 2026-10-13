@@ -1,0 +1,42 @@
+# rpmlint filters of the fermix-desktop rpm. desktop/scripts/lint_packages.sh runs rpmlint --strict
+# with this file and refuses any message these do not cover; rpmlint itself reports a filter that
+# covers nothing. Each comment is the reason for the filters below it. Every filter names the
+# package and the paths it covers, and accepts E or W, since --strict turns every W into an E.
+
+# The private GTK runtime (desktop/packaging/runtime/), shipped as built. Its manifest records the
+# sha256 and mode of every file, so the package changes none of them.
+
+# nFPM has no %lang attribute, so the toolkit's translations cannot be marked per language; a
+# host's %_install_langs keeps them all, which costs disk only.
+addFilter("^fermix-desktop\.\w+: [EW]: file-not-in-%lang /usr/lib/fermix-desktop/share/locale/")
+# The Adwaita icon theme installs some icons under several names as copies, not links.
+addFilter("^fermix-desktop\.\w+: [EW]: files-duplicate /usr/lib/fermix-desktop/share/icons/Adwaita/")
+# The runtime's two helpers are built with AlmaLinux 9's default flags, without PIE. Raising them is
+# the runtime's next round.
+addFilter("^fermix-desktop\.\w+: [EW]: position-independent-executable-suggested /usr/lib/fermix-desktop/libexec/")
+
+# nFPM writes every rpm symbolic link with mode 0, whatever mode it is given. rpm never applies a
+# link's mode, and the deb has the same links 0777.
+addFilter("^fermix-desktop\.\w+: [EW]: zero-perms /usr/bin/fermix-desktop 0$")
+addFilter("^fermix-desktop\.\w+: [EW]: zero-perms /usr/lib/fermix-desktop/\S+ 0$")
+
+# nFPM writes an rpm %changelog only from a changelog it also writes into the deb as
+# changelog.Debian.gz, the wrong name for this native deb. The package's changelog is
+# /usr/share/doc/fermix-desktop/changelog.gz, a %doc of the rpm.
+addFilter("^fermix-desktop\.\w+: [EW]: no-changelogname-tag$")
+
+# The engine (desktop/scripts/verify_engine.py), installed as the signed fermix rpm installs it,
+# byte for byte, with its files' flags and its scripts. /usr/bin/fermix and cosign are static
+# executables, as their releases build them, and runtime-payload/ holds the musl loader the
+# engine's postinstall copies to /var/lib/fermix/runtimes and gives to root with chown. The fermix
+# rpm flags none of its documents as %doc.
+addFilter("^fermix-desktop\.\w+: [EW]: statically-linked-binary /usr/bin/fermix$")
+addFilter("^fermix-desktop\.\w+: [EW]: statically-linked-binary /usr/lib/fermix/cosign$")
+addFilter("^fermix-desktop\.\w+: [EW]: position-independent-executable-suggested /usr/bin/fermix$")
+addFilter("^fermix-desktop\.\w+: [EW]: position-independent-executable-suggested /usr/lib/fermix/cosign$")
+addFilter("^fermix-desktop\.\w+: [EW]: unstripped-binary-or-object /usr/lib/fermix/cosign$")
+addFilter("^fermix-desktop\.\w+: [EW]: call-to-mktemp /usr/lib/fermix/runtime-payload/libc-musl-\w+\.so$")
+addFilter("^fermix-desktop\.\w+: [EW]: binary-or-shlib-calls-gethostbyname /usr/lib/fermix/runtime-payload/libc-musl-\w+\.so$")
+addFilter("^fermix-desktop\.\w+: [EW]: not-listed-as-documentation /usr/share/doc/fermix/")
+addFilter("^fermix-desktop\.\w+: [EW]: not-listed-as-documentation /usr/share/man/man1/fermix\.1\.gz$")
+addFilter("^fermix-desktop\.\w+: [EW]: dangerous-command-in-%post chown$")

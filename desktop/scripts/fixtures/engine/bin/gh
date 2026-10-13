@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# A stand-in for the GitHub CLI in the offline engine tests, put first on PATH by the test. It answers
+# the two calls the engine scripts make, from a release directory fixture_release.sh wrote at
+# $FIXTURE_GH_RELEASE:
+#
+#   gh api <path>                     prints api/<path>.json, or fails as GitHub's 404 does
+#   gh release download <tag> --repo <repository> --pattern <name> --dir <dir>
+#                                     copies assets/<name> into <dir>, and refuses to overwrite
+#
+# FIXTURE_GH_LOG, when set, receives one line per call. FIXTURE_GH_FAIL_DOWNLOADS=<n> makes the first
+# n downloads fail after leaving a partial file behind, as an interrupted transfer does; it counts
+# downloads through the log, so it needs FIXTURE_GH_LOG.
+set -euo pipefail
+
+release="${FIXTURE_GH_RELEASE:?stub gh: FIXTURE_GH_RELEASE names the fixture release}"
+
+log() {
+  if [ -n "${FIXTURE_GH_LOG:-}" ]; then
+    printf '%s\n' "$*" >> "$FIXTURE_GH_LOG"
+  fi
+}
+
+api() {
+  local path="${1:?stub gh: gh api needs a path}"
+  log "api $path"
+  [ -f "$release/api/$path.json" ] || {
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  }
+  cat "$release/api/$path.json"
+}
+
+# The download count is this call's position among the downloads in the log.
+fail_this_download() {
+  local failures="${FIXTURE_GH_FAIL_DOWNLOADS:-0}" count
+  [ "$failures" -gt 0 ] || return 1
+  count="$(grep -c '^download ' "${FIXTURE_GH_LOG:?stub gh: FIXTURE_GH_FAIL_DOWNLOADS needs FIXTURE_GH_LOG}")"
+  [ "$count" -le "$failures" ]
+}
+
+download() {
+  local tag="${1:?stub gh: release download needs a tag}" repository="" name="" dir=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) repository="$2" ;;
+      --pattern) name="$2" ;;
+      --dir) dir="$2" ;;
+      *)
+        echo "stub gh: unknown release download argument $1" >&2
+        exit 2
+        ;;
+    esac
+    shift 2
+  done
+  [ -n "$repository" ] && [ -n "$name" ] && [ -n "$dir" ] || {
+    echo "stub gh: release download needs --repo, --pattern and --dir" >&2
+    exit 2
+  }
+  log "download $repository $tag $name"
+  [ ! -e "$dir/$name" ] || {
+    echo "gh: $dir/$name already exists" >&2
+    exit 1
+  }
+  if fail_this_download; then
+    printf 'partial' > "$dir/$name"
+    echo "gh: connection reset by peer" >&2
+    exit 1
+  fi
+  [ -f "$release/assets/$name" ] || {
+    echo "gh: no assets match the file pattern" >&2
+    exit 1
+  }
+  cp "$release/assets/$name" "$dir/$name"
+}
+
+case "${1:-} ${2:-}" in
+  "api "*) api "${2:-}" ;;
+  "release download")
+    shift 2
+    download "$@"
+    ;;
+  *)
+    echo "stub gh: only 'api' and 'release download' are implemented, not '$*'" >&2
+    exit 2
+    ;;
+esac

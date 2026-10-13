@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AdwApplication loads style.css from the app's resource base path, and
+     GtkApplication adds icons/ there to the icon theme. -->
+<gresources>
+  <gresource prefix="/io/tezra/Fermix">
+    <file>style.css</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-chat-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/fermix-doctor-symbolic.svg</file>
+    <!-- The mark at the sizes Chat's empty state draws it (marks/PROVENANCE.json, key app_icon_symbolic). -->
+    <file>icons/128x128/apps/io.tezra.Fermix-symbolic.symbolic.png</file>
+    <file>icons/256x256/apps/io.tezra.Fermix-symbolic.symbolic.png</file>
+    <!-- The voice mascot, the macOS app's Rive animation byte for byte (marks/PROVENANCE.json, key pet). -->
+    <file>pet/FermixMascot.riv</file>
+  </gresource>
+</gresources>

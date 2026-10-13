@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "vendored": [
+    {
+      "files": ["desktop/rive/vendor/rive-runtime/*", "desktop/rive/vendor/generated/*"],
+      "name": "the Rive runtime",
+      "license": "MIT",
+      "copyright": ["2020 Rive"],
+      "texts": [{"file": "desktop/rive/vendor/rive-runtime/LICENSE"}],
+      "comment": "The Rive C++ runtime and the shaders generated from it, compiled into the window for the pet, at the commit desktop/rive/vendor/COMMIT names."
+    },
+    {
+      "files": [
+        "desktop/rive/vendor/rive-runtime/renderer/glad/src/*",
+        "desktop/rive/vendor/rive-runtime/renderer/glad/include/glad/*"
+      ],
+      "name": "glad",
+      "license": "CC0-1.0 AND Apache-2.0",
+      "copyright": ["The Khronos Group Inc."],
+      "texts": [],
+      "comment": "The EGL and OpenGL ES loaders glad 2.0.8 generated from the Khronos registry. glad offers what it generates under WTFPL or CC0-1.0, and this package takes it under CC0-1.0; the registry it is generated from is Apache-2.0."
+    },
+    {
+      "files": ["desktop/rive/vendor/rive-runtime/renderer/glad/include/KHR/*"],
+      "name": "khrplatform.h",
+      "license": "MIT-Khronos-old",
+      "copyright": ["2008-2018 The Khronos Group Inc."],
+      "texts": [
+        {
+          "file": "desktop/rive/vendor/rive-runtime/renderer/glad/include/KHR/khrplatform.h",
+          "first_line": 5,
+          "last_line": 24,
+          "strip_prefix": "**"
+        }
+      ],
+      "comment": "The Khronos platform header glad's loaders include."
+    },
+    {
+      "files": ["desktop/rive/vendor/rive-runtime/renderer/glad/include/EGL/*"],
+      "name": "eglplatform.h",
+      "license": "Apache-2.0",
+      "copyright": ["2007-2020 The Khronos Group Inc."],
+      "texts": [],
+      "comment": "The Khronos EGL platform header glad's loaders include."
+    }
+  ]
+}

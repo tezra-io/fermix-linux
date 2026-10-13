@@ -1,0 +1,24 @@
+Link the system libraries rustc names in the order rustc names them.
+
+meson/query-rustc.py dedups rustc's --print=native-static-libs list through a
+Python set, so the order meson links librsvg-2.so against libgcc_s, libm, libc
+and the rest follows the interpreter's string hash seed, which is random per
+process. The DT_NEEDED order in librsvg-2.so, and with it the library's bytes,
+then differ between two builds of the same tree: build_runtime.sh --verify
+found libm before libc in one build and after ld-linux in the next.
+dict.fromkeys drops the duplicates and keeps the order.
+
+Not yet sent upstream; GNOME/librsvg main still has the set. Drop this patch
+when a release orders the list.
+
+--- a/meson/query-rustc.py
++++ b/meson/query-rustc.py
+@@ -49,7 +49,7 @@
+             libs = [removeprefix_fallback(lib, "-l") for lib in libs] # msys2
+             print(
+                 " ".join(
+-                    set(
++                    dict.fromkeys(
+                         libs
+                     )
+                 )

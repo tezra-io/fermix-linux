@@ -1,0 +1,470 @@
+# fermix-desktop's packages, built the way a release builds them.
+#
+# On every push to dev or main that can change a package, and on every pull request that can,
+# one job per architecture compiles the private GTK runtime from RUNTIME.lock.json, builds the
+# deb and the rpm against it carrying the engine desktop/engine/PIN.json pins, and smokes the
+# runtime, then runs every packaging test. The packages are then linted and installed on every
+# system the release claims.
+#
+# A vX.Y.Z tag, the macOS app's form (or vX.Y.Z+N, a desktop-only rebuild), does all of that,
+# then signs every asset with cosign under this workflow's GitHub identity and stages them on a
+# draft GitHub release. Publishing the draft is a person's act. Creating such a tag is limited by
+# the repository's protected-release-tags ruleset.
+#
+# Nothing here reuses a runtime from an earlier run: a release compiles the runtime it ships
+# from the lock file of the commit it ships.
+name: release
+
+on:
+  push:
+    branches: [main, dev]
+    # Path filters are not applied to tag pushes, so every release tag runs.
+    tags: ["v*.*.*"]
+    paths:
+      - "desktop/**"
+      - "LICENSE"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "LICENSE"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # A newer push makes a branch run moot; a tag's run is never cut short.
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  version:
+    name: The version these packages carry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      engine_version: ${{ steps.read.outputs.engine_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A tag names its version, and build_packages.sh holds it to the pin: X.Y.Z is the pinned
+      # engine's version and X.Y.Z+N rebuilds it. A branch builds the pinned engine's version,
+      # which only a tag ever publishes.
+      - name: Read it, and hold it to the engine pin
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          engine_version="$(desktop/scripts/engine_pin.py --get engine_version)"
+          if [ "$REF_TYPE" = tag ]; then
+            version="${TAG#v}"
+            if [ "$version" = "$TAG" ]; then
+              echo "::error::$TAG is not a vX.Y.Z tag"
+              exit 1
+            fi
+          else
+            version="$engine_version"
+          fi
+          version="$(desktop/scripts/build_packages.sh --version "$version" --print-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "engine_version=$engine_version" >> "$GITHUB_OUTPUT"
+          echo "fermix-desktop $version, carrying engine $engine_version"
+
+      # The assets a person has downloaded are the release. Replacing them under the same tag
+      # would make every recorded digest a lie, so a fix is the next version.
+      - name: Refuse a tag whose release is already published
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: desktop/scripts/refuse_published_release.sh "$GITHUB_REPOSITORY" "$TAG"
+
+  # Each tarball the lock file names, fetched once for every job that needs it. Upstream hosts
+  # refuse runners at times (freedesktop.org answers 418), so the cache is saved as soon as the
+  # set is complete, whatever happens to the build after, and later runs fetch nothing.
+  sources:
+    name: The locked sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Restore them
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sources
+          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
+
+      # Each is checked against the lock's sha256, and one already here is not fetched again.
+      - name: Fetch what is missing
+        env:
+          FERMIX_RUNTIME_SOURCES: ${{ runner.temp }}/sources
+          FETCH_MAX_ATTEMPTS: "8"
+          FETCH_RETRY_SECONDS: "30"
+        run: desktop/packaging/runtime/build_runtime.sh --fetch
+
+      - name: Save them
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sources
+          key: runtime-sources-${{ hashFiles('desktop/packaging/runtime/RUNTIME.lock.json') }}
+
+      - name: Hand them to the builds
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-sources
+          path: ${{ runner.temp }}/sources
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: [version, sources]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Under the runner's temporary directory, which a job's own env cannot name.
+      - name: Name the work directories
+        run: |
+          set -euo pipefail
+          {
+            echo "FERMIX_RUNTIME_OUT=$RUNNER_TEMP/runtime"
+            echo "FERMIX_PACKAGE_CACHE=$RUNNER_TEMP/package-cache"
+            echo "PACKAGES=$RUNNER_TEMP/packages"
+            echo "FERMIX_RUNTIME_SOURCES=$RUNNER_TEMP/sources"
+          } >> "$GITHUB_ENV"
+
+      # The runtime's build tree, its image and the window's target directory outgrow the
+      # runner's free space; the preinstalled toolchains this build never uses go first.
+      - name: Make room
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      # verify_engine.py checks every engine package's signature before the build unpacks it.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Collect the locked sources
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: runtime-sources
+          path: ${{ runner.temp }}/sources
+
+      - name: Build the private runtime
+        run: FERMIX_RUNTIME_JOBS="$(nproc)" desktop/packaging/runtime/build_runtime.sh --container
+
+      - name: Draw a libadwaita window from it on ubuntu:22.04
+        run: desktop/packaging/runtime/smoke_runtime.sh
+
+      # verify_engine.py reads the engine's rpm in this image and never pulls it itself.
+      - name: Pull the image the engine's rpm is read in
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^RPM_IMAGE = "\(.*\)"$/\1/p' desktop/scripts/verify_engine.py)"
+          [ -n "$image" ] || { echo "::error::verify_engine.py names no RPM_IMAGE"; exit 1; }
+          docker pull "$image"
+
+      - name: Build the deb and the rpm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: desktop/scripts/build_packages.sh --version "$VERSION" --arch "$ARCH" --out "$PACKAGES"
+
+      # The written offer for the bundled LGPL libraries: the same locked sources build both
+      # architectures, so one archive serves the release.
+      - name: Assemble the runtime sources archive
+        if: matrix.arch == 'amd64'
+        run: desktop/packaging/runtime/package_sources.sh "$VERSION" --out "$PACKAGES"
+
+      # After the build, because some tests read the runtime it built or run a tool in an image it
+      # pulled. ImageMagick makes the screenshot checks' fixtures; its text needs the URW fonts it
+      # names by default, which --no-install-recommends would leave out.
+      - name: Install the packaging tests' tools
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends imagemagick fonts-urw-base35
+
+      # Every test runs, and each one that fails is named, before the job fails.
+      - name: Run every packaging test
+        if: matrix.arch == 'amd64'
+        run: |
+          set -uo pipefail
+          mapfile -t tests < <(git ls-files 'desktop/scripts/*_test.sh' 'desktop/packaging/*_test.sh' \
+            'desktop/packaging/runtime/build_runtime_test.sh')
+          [ "${#tests[@]}" -gt 0 ] || { echo "::error::no packaging tests found"; exit 1; }
+          failed=()
+          for test in "${tests[@]}"; do
+            echo "::group::$test"
+            bash "$test" || failed+=("$test")
+            echo "::endgroup::"
+          done
+          for test in "${failed[@]}"; do echo "::error::$test failed"; done
+          [ "${#failed[@]}" -eq 0 ]
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packages-${{ matrix.arch }}
+          path: |
+            ${{ env.PACKAGES }}/fermix-desktop_*.deb
+            ${{ env.PACKAGES }}/fermix-desktop-*.rpm
+            ${{ env.PACKAGES }}/fermix_desktop_runtime_sources_*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      # What the runtime was built from and what it holds, to compare with another build of the
+      # same lock file.
+      - name: Upload the runtime's manifest and smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-${{ matrix.arch }}
+          path: |
+            ${{ env.FERMIX_RUNTIME_OUT }}/runtime-manifest.json
+            ${{ env.FERMIX_RUNTIME_OUT }}/cache-key
+            ${{ env.FERMIX_RUNTIME_OUT }}/smoke/*.png
+          if-no-files-found: warn
+          retention-days: 7
+
+  lint:
+    name: Lint (${{ matrix.arch }})
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, rpm_arch: x86_64 }
+          - { arch: arm64, rpm_arch: aarch64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packages-${{ matrix.arch }}
+          path: packages
+
+      - name: lintian and rpmlint
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          desktop/scripts/lint_packages.sh "packages/fermix-desktop_${VERSION}_${ARCH}.deb" \
+            "packages/fermix-desktop-${VERSION}-1.${RPM_ARCH}.rpm" --out "$RUNNER_TEMP/lint"
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lint-${{ matrix.arch }}
+          path: ${{ runner.temp }}/lint
+          if-no-files-found: warn
+          retention-days: 7
+
+  smoke:
+    name: Install on ${{ matrix.image }} (${{ matrix.arch }})
+    needs: [version, build]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      # Every system the release claims, on both architectures, each on a native runner.
+      # install_smoke.sh pins each image and decides its displays: Xvfb, and Weston too on the
+      # newest of each family (Weston only on almalinux:10, whose sessions are Wayland).
+      matrix:
+        image:
+          - "ubuntu:22.04"
+          - "ubuntu:24.04"
+          - "ubuntu:26.04"
+          - "debian:12"
+          - "debian:13"
+          - "fedora:44"
+          - "almalinux:9"
+          - "almalinux:10"
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packages-${{ matrix.arch }}
+          path: packages
+
+      - name: Install, start the engine and draw the window
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in
+            ubuntu:* | debian:*) package="packages/fermix-desktop_${VERSION}_${ARCH}.deb" ;;
+            *)
+              rpm_arch=x86_64
+              [ "$ARCH" = amd64 ] || rpm_arch=aarch64
+              package="packages/fermix-desktop-${VERSION}-1.${rpm_arch}.rpm"
+              ;;
+          esac
+          desktop/scripts/install_smoke.sh --image "$IMAGE" "$package" --out "$RUNNER_TEMP/smoke"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-${{ strategy.job-index }}-${{ matrix.arch }}
+          # A failed smoke leaves its evidence beside the output, in <out>-failed.
+          path: |
+            ${{ runner.temp }}/smoke
+            ${{ runner.temp }}/smoke-failed
+          if-no-files-found: warn
+          retention-days: 7
+
+  sign:
+    name: Sign
+    if: github.ref_type == 'tag'
+    needs: [version, build, lint, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: release
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # Named exactly rather than globbed into whatever arrived: two debs, two rpms and the
+      # sources archive, each signed, hashed and verified against this workflow's identity.
+      - name: Sign, hash and verify every asset
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "fermix-desktop_${VERSION}_amd64.deb"
+            "fermix-desktop_${VERSION}_arm64.deb"
+            "fermix-desktop-${VERSION}-1.x86_64.rpm"
+            "fermix-desktop-${VERSION}-1.aarch64.rpm"
+            "fermix_desktop_runtime_sources_${VERSION}.tar.gz"
+          )
+          found="$(find release -maxdepth 1 -type f | wc -l)"
+          [ "$found" -eq "${#assets[@]}" ] || {
+            echo "::error::expected ${#assets[@]} assets, found $found"
+            ls -l release
+            exit 1
+          }
+          for asset in "${assets[@]}"; do
+            path="release/$asset"
+            [ -f "$path" ] || { echo "::error::no $asset"; exit 1; }
+            cosign sign-blob --yes --output-signature "$path.sig" --output-certificate "$path.pem" "$path"
+            (cd release && sha256sum -- "$asset" > "$asset.sha256")
+            cosign verify-blob --certificate "$path.pem" --signature "$path.sig" \
+              --certificate-identity "$CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$path"
+          done
+
+      - name: Upload the signed assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-release
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    name: Stage the draft release
+    if: github.ref_type == 'tag'
+    needs: [version, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+      ENGINE_VERSION: ${{ needs.version.outputs.engine_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the signed assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signed-release
+          path: release
+
+      # Asked again here, because an hour has passed since the version job asked.
+      - name: Refuse a tag whose release is already published
+        run: desktop/scripts/refuse_published_release.sh "$GITHUB_REPOSITORY" "$TAG"
+
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          sed -e "s|@VERSION@|$VERSION|g" -e "s|@ENGINE_VERSION@|$ENGINE_VERSION|g" \
+            -e "s|@TAG@|$TAG|g" -e "s|@REPOSITORY@|$GITHUB_REPOSITORY|g" \
+            desktop/packaging/release_notes.md > "$RUNNER_TEMP/notes.md"
+          if grep -n '@[A-Z_]*@' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::the release notes keep a placeholder"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+
+      # A draft left by an earlier run of this tag gets these assets in place of its own. The step
+      # above has just refused a published release, so the release found here is that draft.
+      - name: Create or refill the draft
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Fermix for Linux $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "Fermix for Linux $VERSION" --notes-file "$RUNNER_TEMP/notes.md" release/*
+          fi
+
+      # The names a downloader asks for are the names staged, and the bytes are the ones signed.
+      - name: Download every asset back and check it
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/back"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/back"
+          (cd release && find . -maxdepth 1 -type f -printf '%f\n' | sort) > "$RUNNER_TEMP/staged"
+          (cd "$RUNNER_TEMP/back" && find . -maxdepth 1 -type f -printf '%f\n' | sort) > "$RUNNER_TEMP/served"
+          diff -u "$RUNNER_TEMP/staged" "$RUNNER_TEMP/served"
+          (cd "$RUNNER_TEMP/back" && sha256sum --check --strict -- *.sha256)
+          echo "the draft serves every asset under its own name, with the signed bytes"

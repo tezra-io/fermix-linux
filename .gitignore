@@ -1,27 +1,10 @@
-# Rust
-/App/Fermix/target/
-/target/
-**/*.rs.bk
+# Build outputs of the app are listed in desktop/.gitignore.
 
-# Build and release outputs
-/dist/
-/App/Fermix/dist*/
-/packaging/out/
-/output/
-
-# Local design captures and scratch
-/docs/design/captures/*.local.*
-/.cache/
-
-# Python bytecode, from the gates that are python
-__pycache__/
-*.pyc
+# Design docs: a link into the private fermix-design-docs repo
+/desktop/docs
 
 # Editors and OS
 .DS_Store
 .idea/
 .vscode/
 *.swp
-
-# Session working notes with machine-local paths; the design docs beside it are the record
-/docs/design/HANDOFF.md

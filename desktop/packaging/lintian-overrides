@@ -1,0 +1,64 @@
+# Lintian overrides of the fermix-desktop deb, installed as /usr/share/lintian/overrides/
+# fermix-desktop. desktop/scripts/lint_packages.sh refuses any tag these do not cover, and any
+# override that covers nothing. Each comment is the reason lintian shows for the overrides below it.
+
+# The private GTK runtime (desktop/packaging/runtime/), shipped as built. Its manifest records the
+# sha256 and mode of every file, so the package changes none of them.
+
+# The layout puts the whole private prefix, bin/ and libexec/ included, under
+# /usr/lib/fermix-desktop, where every object finds its libraries through $ORIGIN/../lib and the
+# toolkit finds its modules.
+fermix-desktop: executable-in-usr-lib [usr/lib/fermix-desktop/*]
+fermix-desktop: repeated-path-segment lib [usr/lib/fermix-desktop/lib/]
+# The runtime is private by design: the window links its own GTK, libadwaita and their libraries,
+# never the host's, and nothing outside the package links them.
+fermix-desktop: embedded-library * [usr/lib/fermix-desktop/lib/*]
+# meson installs shared libraries 0755, which is also what Fedora expects, and one tree serves both
+# packages. The runtime records the modes; its next round can install them 0644.
+fermix-desktop: shared-library-is-executable 0755 [usr/lib/fermix-desktop/lib/*]
+# The runtime is built with AlmaLinux 9's default flags: no -z now, no _FORTIFY_SOURCE, no PIE for
+# its two helpers, and gcc's .comment kept. Raising them is the runtime's next round. The window's
+# own C library calls come from Rust's standard library and the Rive renderer, which are not built
+# with _FORTIFY_SOURCE either.
+fermix-desktop: hardening-no-bindnow [usr/lib/fermix-desktop/*]
+fermix-desktop: hardening-no-fortify-functions [usr/lib/fermix-desktop/*]
+fermix-desktop: hardening-no-pie [usr/lib/fermix-desktop/libexec/*]
+fermix-desktop: binary-has-unneeded-section .comment [usr/lib/fermix-desktop/*]
+# Upstream code, as its projects release it: GStreamer, GTK, libjpeg and libxml2 call exit(), and
+# three GStreamer plugins and cairo-gobject call nothing from the C library directly.
+fermix-desktop: exit-in-shared-library [usr/lib/fermix-desktop/lib/*]
+fermix-desktop: library-not-linked-against-libc [usr/lib/fermix-desktop/lib/*]
+# Upstream strings. In the window they are comments of the vendored Rive shaders, which are
+# compiled in as text.
+fermix-desktop: spelling-error-in-binary * [usr/lib/fermix-desktop/*]
+# The Adwaita icons GTK draws with, found through the private prefix's own share/, not the host's.
+fermix-desktop: image-file-in-usr-lib [usr/lib/fermix-desktop/share/icons/Adwaita/*]
+# adwaita-icon-theme installs its licence beside its icons; the package's copyright file carries
+# the same text.
+fermix-desktop: extra-license-file [usr/lib/fermix-desktop/share/licenses/*]
+
+# The engine (desktop/scripts/verify_engine.py), installed as the signed fermix package installs it,
+# byte for byte. /usr/bin/fermix and cosign are static executables, as their releases build them,
+# and runtime-payload/ holds the musl loader the engine's postinstall copies to
+# /var/lib/fermix/runtimes.
+fermix-desktop: statically-linked-binary [usr/bin/fermix]
+fermix-desktop: statically-linked-binary [usr/lib/fermix/cosign]
+fermix-desktop: unstripped-binary-or-object [usr/lib/fermix/cosign]
+fermix-desktop: executable-in-usr-lib [usr/lib/fermix/cosign]
+fermix-desktop: binary-has-unneeded-section .comment [usr/bin/fermix]
+fermix-desktop: binary-has-unneeded-section .comment [usr/lib/fermix/runtime-payload/*]
+fermix-desktop: shared-library-lacks-prerequisites [usr/lib/fermix/runtime-payload/*]
+fermix-desktop: spelling-error-in-binary * [usr/bin/fermix:*]
+fermix-desktop: spelling-error-in-binary * [usr/lib/fermix/cosign:*]
+# The postrm is the engine's, byte for byte, and does nothing on purpose: removing Fermix keeps the
+# trusted loader store under /var/lib/fermix (M38 §1.3, §2.2) and touches no account's service
+# manager. It ships as the fermix package ships it, so a later engine's postrm comes in unchanged.
+fermix-desktop: maintainer-script-empty [postrm]
+
+# The copyright file is generated, and the same file ships in the rpm, where no
+# /usr/share/common-licenses exists to point to: it carries every licence text in full, verbatim,
+# old addresses and spellings included.
+fermix-desktop: copyright-file-contains-full-gpl-license
+fermix-desktop: copyright-file-contains-full-apache-2-license
+fermix-desktop: old-fsf-address-in-copyright-file
+fermix-desktop: spelling-error-in-copyright *

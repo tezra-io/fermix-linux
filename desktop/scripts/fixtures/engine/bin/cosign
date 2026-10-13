@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# A stand-in for `cosign verify-blob` in the offline engine tests, put first on PATH by the test.
+#
+# It keeps the three refusals the real one makes, over fixture files fixture_release.sh writes: the
+# certificate (.pem) is two lines, the identity and the issuer it was minted for, and the signature
+# (.sig) is the blob's sha256. A blob signed for another tag, by another issuer, or whose bytes
+# changed after signing is refused, so a test proves verify_engine.py asked for the pinned identity
+# and issuer rather than only that it ran something called cosign.
+#
+# FIXTURE_COSIGN_LOG, when set, receives the identity and the blob of each call.
+set -euo pipefail
+
+refuse() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+[ "${1:-}" = "verify-blob" ] || {
+  echo "stub cosign: only verify-blob is implemented, not '${1:-}'" >&2
+  exit 2
+}
+shift
+
+certificate="" signature="" identity="" issuer="" blob=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --certificate) certificate="$2" ;;
+    --signature) signature="$2" ;;
+    --certificate-identity) identity="$2" ;;
+    --certificate-oidc-issuer) issuer="$2" ;;
+    --*)
+      echo "stub cosign: unknown flag $1" >&2
+      exit 2
+      ;;
+    *)
+      blob="$1"
+      shift
+      continue
+      ;;
+  esac
+  shift 2
+done
+
+for value in "$certificate" "$signature" "$identity" "$issuer" "$blob"; do
+  [ -n "$value" ] || {
+    echo "stub cosign: --certificate, --signature, --certificate-identity, --certificate-oidc-issuer and a blob are all required" >&2
+    exit 2
+  }
+done
+
+if [ -n "${FIXTURE_COSIGN_LOG:-}" ]; then
+  printf '%s %s\n' "$identity" "$(basename "$blob")" >> "$FIXTURE_COSIGN_LOG"
+fi
+
+[ "$(sed -n 1p "$certificate")" = "$identity" ] ||
+  refuse "none of the expected identities matched what was in the certificate, got subjects [$(sed -n 1p "$certificate")]"
+[ "$(sed -n 2p "$certificate")" = "$issuer" ] ||
+  refuse "expected oidc issuer not found in certificate, got $(sed -n 2p "$certificate")"
+[ "$(cat "$signature")" = "$(sha256sum "$blob" | cut -d' ' -f1)" ] ||
+  refuse "invalid signature when validating ASN.1 encoded signature"
+echo "Verified OK" >&2

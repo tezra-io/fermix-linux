@@ -1,0 +1,3 @@
+#!/bin/sh
+# The fixture engine. verify_engine_test.sh only unpacks it; nothing runs it.
+echo "fermix fixture engine 0.0.1"

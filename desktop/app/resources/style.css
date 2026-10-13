@@ -1,0 +1,288 @@
+/* The few looks libadwaita has no class for. Colours come from its variables,
+   so light, dark and high contrast all follow the system. */
+
+.chat-user {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  border-radius: 18px 18px 4px 18px;
+  padding: 8px 14px;
+}
+
+.chat-code {
+  background-color: color-mix(in srgb, currentColor 7%, transparent);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.chat-quote {
+  border-left: 3px solid color-mix(in srgb, currentColor 25%, transparent);
+  padding-left: 10px;
+}
+
+.chat-composer {
+  background-color: var(--card-bg-color);
+  border-radius: 20px;
+  padding: 4px 4px 4px 12px;
+  box-shadow: 0 0 0 1px var(--border-color);
+}
+
+.chat-composer:focus-within {
+  box-shadow: 0 0 0 2px var(--accent-bg-color);
+}
+
+/* Chat's empty state: the mark at low contrast above the greeting (plan §3.4). */
+statuspage.chat-empty .icon {
+  opacity: 0.5;
+}
+
+/* A settings row whose last write the daemon refused: its sentence replaces the footer. */
+.setting-refused .subtitle {
+  color: var(--error-color);
+  opacity: 1;
+}
+
+/* A vendor mark that carries its own ground fills its slot, clipped to the slot's radius. */
+.plugin-mark-bleed {
+  border-radius: 8px;
+}
+
+/* The companion window: the mascot floats with its own shadow on a see-through
+   window. Its focus ring follows the mascot's ellipse. Only the call controls
+   have a ground, a small pill like the macOS pet's. */
+window.fermix-companion {
+  background: none;
+}
+
+.fermix-companion-mascot {
+  border-radius: 50%;
+}
+
+.fermix-companion-mascot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 50%, transparent);
+  outline-offset: -2px;
+}
+
+.fermix-companion-dock {
+  background-color: color-mix(in srgb, var(--window-bg-color) 92%, transparent);
+  border-radius: 999px;
+  padding: 3px 6px;
+  box-shadow: 0 0 0 1px var(--border-color), 0 2px 6px rgb(0 0 0 / 18%);
+}
+
+.fermix-companion-dock button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+/* Muted, as the macOS pet tints its mute control. */
+.fermix-companion-dock button.toggle:checked {
+  color: var(--warning-color);
+}
+
+/* Without a compositor: a plain tile in the window's colour, edged like a card. */
+window.fermix-companion.opaque {
+  background-color: var(--window-bg-color);
+  box-shadow: inset 0 0 0 1px var(--border-color);
+}
+
+/* Chat: Fermix's replies sit in a bubble of their own, opposite the person's,
+   the corner nearest the speaker squared off. A soft shadow lifts it off a
+   light page; on a dark one the edge alone does. */
+.chat-reply,
+.chat-file {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border-radius: 18px 18px 18px 4px;
+  padding: 10px 14px;
+  box-shadow: 0 0 0 1px var(--border-color), 0 1px 2px rgb(0 0 0 / 6%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .chat-reply,
+  .chat-file {
+    box-shadow: 0 0 0 1px var(--border-color);
+  }
+}
+
+/* Close within a turn, with room above each question that opens the next. */
+.chat-row.person:not(:first-child) {
+  margin-top: 18px;
+}
+
+.chat-failure {
+  background-color: color-mix(in srgb, var(--error-bg-color) 12%, transparent);
+  border-radius: 18px;
+  padding: 10px 14px;
+}
+
+.chat-picture-button {
+  padding: 0;
+  border-radius: 14px;
+}
+
+.chat-picture {
+  border-radius: 14px;
+}
+
+/* A message's copy button shows while the pointer is on the message. */
+.chat-row .chat-hover {
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+
+.chat-row:hover .chat-hover,
+.chat-row .chat-hover:focus-visible {
+  opacity: 1;
+}
+
+.chat-code > button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: -4px -8px -4px 0;
+}
+
+/* The thinking orb: a small sphere in the accent colour, breathing. Only
+   transform and opacity move; the glow holds still, since GTK would blur a
+   moving shadow again every frame. */
+.chat-orb {
+  min-width: 14px;
+  min-height: 14px;
+  border-radius: 999px;
+  background-image: radial-gradient(circle at 35% 30%,
+    color-mix(in srgb, var(--accent-bg-color) 45%, white) 0%,
+    var(--accent-bg-color) 55%,
+    color-mix(in srgb, var(--accent-bg-color) 70%, black) 100%);
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
+  animation: chat-orb-breathe 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes chat-orb-breathe {
+  from {
+    transform: scale(0.9);
+    opacity: 0.85;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* The live line: the orb's slot, then what Fermix is doing at body size. */
+.chat-live {
+  min-height: 28px;
+}
+
+/* Where a tool group's header would put it, so the line keeps its place when
+   the group takes over. */
+.chat-live.standalone {
+  margin-left: 5px;
+}
+
+/* Round the orb while a tool runs: a thin arc of accent, turning, with a gap
+   between it and the orb. The border is always there, so the slot keeps its
+   size whether the ring shows or not. */
+.chat-ring {
+  min-width: 20px;
+  min-height: 20px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.chat-ring.turning {
+  border-top-color: var(--accent-color);
+  border-right-color: color-mix(in srgb, var(--accent-color) 35%, transparent);
+  animation: chat-ring-turn 1s linear infinite;
+}
+
+@keyframes chat-ring-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chat-live-phrase {
+  opacity: 0.75;
+  animation: chat-live-pulse 2.4s ease-in-out infinite alternate;
+}
+
+.chat-live-phrase.still {
+  animation: none;
+}
+
+@keyframes chat-live-pulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 0.9;
+  }
+}
+
+/* A group of tools, or a thought: its header is the live line, then the
+   folded line with a chevron, and opens to what is under it, hung from a thin
+   rule under the orb. */
+.chat-disclosure {
+  min-height: 28px;
+  padding: 2px 8px 2px 4px;
+  border-radius: 8px;
+  font-weight: normal;
+}
+
+.chat-chevron {
+  min-width: 22px;
+  transition: transform 150ms ease-out;
+}
+
+.chat-disclosure.open .chat-chevron {
+  transform: rotate(90deg);
+}
+
+.chat-disclosure-body {
+  margin-left: 14px;
+  padding: 2px 0 4px 16px;
+  border-left: 2px solid var(--border-color);
+}
+
+.chat-tool-row {
+  min-height: 24px;
+}
+
+.chat-tool-name {
+  opacity: 0.85;
+}
+
+/* Asked for less motion: nothing breathes or turns, and a tool's ring is a
+   faint full circle. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-orb,
+  .chat-ring.turning,
+  .chat-live-phrase {
+    animation: none;
+  }
+
+  .chat-ring.turning {
+    border-color: color-mix(in srgb, var(--accent-color) 40%, transparent);
+  }
+}
+
+/* High contrast: a flat disc with an edge, and text at full strength. */
+@media (prefers-contrast: more) {
+  .chat-orb {
+    background-image: none;
+    background-color: var(--accent-bg-color);
+    box-shadow: 0 0 0 1px var(--window-fg-color);
+  }
+
+  .chat-live-phrase {
+    opacity: 1;
+    animation: none;
+  }
+}
+
+/* The wordmark heads the sidebar on the left: pulled past the header bar's own
+   padding so its first letter lines up with the rows' icons below it. */
+.sidebar-wordmark {
+  margin-left: -7px;
+}

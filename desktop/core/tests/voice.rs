@@ -1,0 +1,515 @@
+//! What the Voice page says before a call can begin (spec_voice §4.3): one row,
+//! the first that applies, from what the daemon reports and what the last
+//! connection attempt found.
+
+use fermix_client::mascot::Expression;
+use fermix_client::model::SetupState;
+use fermix_client::overview::RealtimeFacts;
+use fermix_client::realtime::client::ConnectError;
+use fermix_client::realtime::protocol::ServerError;
+use fermix_client::realtime::session::{Input, Mode, Palette, Session};
+use fermix_client::voice::{
+    call_status, expression, lost_microphone_sentence, main_window_close, voice_gate, GateAction,
+    MainWindowClose, Microphone, Reach, Source, VoiceFacts, VoiceGate, MICROPHONE_LOST,
+    NO_MICROPHONE,
+};
+use serde_json::json;
+
+fn state(failures: serde_json::Value, reasons: serde_json::Value) -> SetupState {
+    let required = reasons.as_array().is_some_and(|r| !r.is_empty());
+    serde_json::from_value(json!({
+        "readiness": {"status": "ready", "failures": failures},
+        "restart": {"required": required, "reasons": reasons},
+        "providers": [],
+        "channels": [],
+        "features": {"voice": true, "voice_notes": false, "meetings": false, "computer_use": false},
+        "coexistence": {"config_state": "clear"}
+    }))
+    .unwrap()
+}
+
+fn realtime(enabled: bool, status: &str) -> RealtimeFacts {
+    serde_json::from_value(json!({"enabled": enabled, "status": status, "socket_alive": enabled}))
+        .unwrap()
+}
+
+fn gate(
+    state: Option<&SetupState>,
+    realtime: Option<&RealtimeFacts>,
+    reach: Reach,
+) -> (String, Option<GateAction>, bool) {
+    gate_with(state, realtime, reach, &Microphone::Unknown)
+}
+
+fn gate_with(
+    state: Option<&SetupState>,
+    realtime: Option<&RealtimeFacts>,
+    reach: Reach,
+    microphone: &Microphone,
+) -> (String, Option<GateAction>, bool) {
+    let g = voice_gate(&VoiceFacts {
+        state,
+        realtime,
+        reach,
+        microphone,
+    });
+    (g.sentence, g.action, g.ready)
+}
+
+#[test]
+fn a_daemon_that_does_not_answer_comes_first() {
+    let (sentence, action, ready) = gate(None, None, Reach::Untried);
+    assert_eq!(sentence, "Fermix is not running.");
+    assert_eq!(action, Some(GateAction::StartFermix));
+    assert!(!ready);
+}
+
+/// The button beside the sentence says what to do, so the sentence only says
+/// what is so.
+#[test]
+fn voice_off_offers_to_turn_it_on() {
+    let s = state(json!([]), json!([]));
+    let (sentence, action, _) = gate(Some(&s), Some(&realtime(false, "disabled")), Reach::Untried);
+    assert_eq!(sentence, "Voice is off.");
+    assert_eq!(action, Some(GateAction::TurnOn));
+}
+
+#[test]
+fn a_voice_change_waiting_for_restart_outranks_voice_off() {
+    let reasons = json!([{"section": "realtime", "sentence": "Voice settings changed since Fermix started."}]);
+    let s = state(json!([]), reasons);
+    let (sentence, action, _) = gate(Some(&s), Some(&realtime(false, "disabled")), Reach::Untried);
+    assert_eq!(sentence, "Voice settings changed since Fermix started.");
+    assert_eq!(action, Some(GateAction::Restart));
+}
+
+#[test]
+fn a_missing_key_says_a_sign_in_does_not_cover_voice() {
+    let failure = json!([{"component": "realtime:openai", "gating": false, "pane": "voice", "detail_key": "realtime:openai"}]);
+    let s = state(failure, json!([]));
+    let (sentence, action, _) = gate(
+        Some(&s),
+        Some(&realtime(true, "setup_required")),
+        Reach::Untried,
+    );
+    assert_eq!(
+        sentence,
+        "Voice needs an OpenAI API key. A ChatGPT or Claude sign-in does not cover it."
+    );
+    assert_eq!(action, Some(GateAction::AddKey));
+}
+
+#[test]
+fn a_provider_change_waits_for_restart_once_voice_is_on() {
+    let reasons = json!([{"section": "providers", "sentence": "Provider settings changed since Fermix started."}]);
+    let s = state(json!([]), reasons);
+    let (sentence, action, _) = gate(Some(&s), Some(&realtime(true, "ready")), Reach::Untried);
+    assert_eq!(sentence, "Provider settings changed since Fermix started.");
+    assert_eq!(action, Some(GateAction::Restart));
+}
+
+#[test]
+fn voice_on_without_its_socket_suggests_a_restart() {
+    let s = state(json!([]), json!([]));
+    let expected = "Fermix has not opened its voice connection.";
+    let (sentence, action, _) = gate(Some(&s), Some(&realtime(true, "degraded")), Reach::Untried);
+    assert_eq!(sentence, expected);
+    assert_eq!(action, Some(GateAction::Restart));
+    let (sentence, _, _) = gate(Some(&s), Some(&realtime(true, "ready")), Reach::NoSocket);
+    assert_eq!(sentence, expected);
+}
+
+#[test]
+fn a_version_refusal_names_the_side_to_update() {
+    let s = state(json!([]), json!([]));
+    let on = realtime(true, "ready");
+    let (old, action, _) = gate(Some(&s), Some(&on), Reach::ClientTooOld);
+    assert_eq!(old, "Update this app to talk to this version of Fermix.");
+    assert_eq!(action, None);
+    let (new, _, _) = gate(Some(&s), Some(&on), Reach::ClientTooNew);
+    assert_eq!(new, "Update Fermix to talk to this app.");
+    let (busy, _, _) = gate(Some(&s), Some(&on), Reach::Busy);
+    assert_eq!(
+        busy,
+        "Four other voice clients are already connected to Fermix."
+    );
+}
+
+#[test]
+fn everything_in_place_is_ready() {
+    let s = state(json!([]), json!([]));
+    let (sentence, action, ready) = gate(Some(&s), Some(&realtime(true, "ready")), Reach::Untried);
+    assert_eq!(sentence, "Ready");
+    assert_eq!(action, None);
+    assert!(ready);
+}
+
+#[test]
+fn without_an_overview_the_setup_state_says_whether_voice_is_on() {
+    let mut s = state(json!([]), json!([]));
+    s.features.voice = false;
+    let (_, action, _) = gate(Some(&s), None, Reach::Untried);
+    assert_eq!(action, Some(GateAction::TurnOn));
+}
+
+fn refusal(frame: serde_json::Value) -> ConnectError {
+    let error: ServerError = serde_json::from_value(frame).unwrap();
+    ConnectError::Rejected(Box::new(error))
+}
+
+#[test]
+fn a_refused_connection_names_what_stands_in_the_way() {
+    assert_eq!(
+        Reach::from_connect(&ConnectError::NotFound),
+        Reach::NoSocket
+    );
+    assert_eq!(Reach::from_connect(&ConnectError::Refused), Reach::NoSocket);
+    let old =
+        refusal(json!({"reason": "unsupported_protocol_version", "direction": "client_too_old"}));
+    assert_eq!(Reach::from_connect(&old), Reach::ClientTooOld);
+    let new =
+        refusal(json!({"reason": "unsupported_protocol_version", "direction": "client_too_new"}));
+    assert_eq!(Reach::from_connect(&new), Reach::ClientTooNew);
+    let busy = refusal(json!({"reason": "max_clients_reached"}));
+    assert_eq!(Reach::from_connect(&busy), Reach::Busy);
+}
+
+#[test]
+fn a_connection_that_merely_failed_leaves_the_gate_alone() {
+    assert_eq!(Reach::from_connect(&ConnectError::Timeout), Reach::Untried);
+    let io = ConnectError::Io(std::io::Error::other("broken pipe"));
+    assert_eq!(Reach::from_connect(&io), Reach::Untried);
+    let other = refusal(json!({"reason": "provider_refused"}));
+    assert_eq!(Reach::from_connect(&other), Reach::Untried);
+}
+
+#[test]
+fn the_mascot_follows_what_voice_is_doing() {
+    assert_eq!(expression(Mode::Listening), Expression::Listening);
+    assert_eq!(expression(Mode::Speaking), Expression::Speaking);
+    for mode in [
+        Mode::Thinking,
+        Mode::ToolUse,
+        Mode::Connecting,
+        Mode::Reconnecting,
+    ] {
+        assert_eq!(expression(mode), Expression::Thinking, "{mode:?}");
+    }
+    for mode in [Mode::Offline, Mode::Idle, Mode::Muted, Mode::Error] {
+        assert_eq!(expression(mode), Expression::Idle, "{mode:?}");
+    }
+}
+
+fn usb() -> Microphone {
+    Microphone::Named("USB Microphone".into())
+}
+
+fn ready_gate() -> VoiceGate {
+    let s = state(json!([]), json!([]));
+    let on = realtime(true, "ready");
+    let g = voice_gate(&VoiceFacts {
+        state: Some(&s),
+        realtime: Some(&on),
+        reach: Reach::Untried,
+        microphone: &Microphone::Unknown,
+    });
+    assert!(g.ready);
+    g
+}
+
+fn blocked_gate() -> VoiceGate {
+    let g = voice_gate(&VoiceFacts {
+        state: None,
+        realtime: None,
+        reach: Reach::Untried,
+        microphone: &Microphone::Unknown,
+    });
+    assert!(!g.ready);
+    g
+}
+
+/// The line under the mascot: a mode's word beside its icon, or a sentence.
+#[test]
+fn before_a_call_the_line_rests_on_ready() {
+    let ready = call_status(&Session::new(), &ready_gate(), &usb());
+    assert_eq!(ready.text, "Ready");
+    assert_eq!(ready.icon, Some("call-start-symbolic"));
+    assert_eq!(ready.palette, Palette::Secondary);
+}
+
+/// What stands in the way is said once, under the mascot, as a plain sentence
+/// with no icon and no alarm: it is a setup state, not a failure.
+#[test]
+fn what_stands_in_the_way_is_the_line_under_the_mascot() {
+    let blocked = call_status(&Session::new(), &blocked_gate(), &usb());
+    assert_eq!(blocked.text, "Fermix is not running.");
+    assert_eq!(blocked.icon, None);
+    assert_eq!(blocked.palette, Palette::Faint);
+}
+
+/// The gate only stops a new call; one that is up shows what the call is doing.
+#[test]
+fn during_a_call_the_gate_steps_aside() {
+    let mut session = Session::new();
+    session.apply(Input::Begin);
+    session.apply(Input::Connected);
+    assert!(session.in_call());
+    let line = call_status(&session, &blocked_gate(), &usb());
+    assert_eq!(line.text, "Connecting…");
+    assert_eq!(line.icon, Some("content-loading-symbolic"));
+}
+
+/// A failure is a sentence too: the words say it, so no icon shouts it.
+#[test]
+fn a_refusal_the_gate_does_not_cover_shows_as_the_sessions_sentence() {
+    let mut session = Session::new();
+    session.apply(Input::Begin);
+    session.apply(Input::ConnectFailed(refusal(
+        json!({"reason": "provider_refused"}),
+    )));
+    let line = call_status(&session, &ready_gate(), &usb());
+    assert_eq!(line.text, "OpenAI refused the voice call.");
+    assert_eq!(line.icon, None);
+    assert_eq!(line.palette, Palette::Error);
+}
+
+/// Every sentence the app owns fits under the mascot on a couple of lines and
+/// leaves the doing to the button beside it.
+#[test]
+fn the_apps_own_sentences_stay_short() {
+    let s = state(json!([]), json!([]));
+    let sentences = [
+        gate(None, None, Reach::Untried).0,
+        gate(Some(&s), Some(&realtime(false, "disabled")), Reach::Untried).0,
+        gate(Some(&s), Some(&realtime(true, "degraded")), Reach::Untried).0,
+        gate(Some(&s), Some(&realtime(true, "ready")), Reach::Busy).0,
+        gate_with(
+            Some(&s),
+            Some(&realtime(true, "ready")),
+            Reach::Untried,
+            &Microphone::Missing,
+        )
+        .0,
+    ];
+    for sentence in sentences {
+        assert!(sentence.len() <= 80, "{sentence}");
+        assert!(sentence.ends_with('.'), "{sentence}");
+        assert!(
+            !sentence.contains("Restart") && !sentence.contains("Turn it on"),
+            "{sentence}"
+        );
+    }
+}
+
+#[test]
+fn a_call_that_found_no_microphone_says_so_until_one_is_back() {
+    let mut session = Session::new();
+    for input in [Input::Begin, Input::End, Input::Connected, Input::Begin] {
+        session.apply(input);
+    }
+    session.apply(Input::AudioFailed(NO_MICROPHONE.into()));
+    for unsure in [Microphone::Missing, Microphone::Unknown] {
+        let line = call_status(&session, &ready_gate(), &unsure);
+        assert_eq!(
+            (line.text.as_str(), line.icon, line.palette),
+            (NO_MICROPHONE, None, Palette::Error),
+            "{unsure:?}"
+        );
+    }
+    let back = call_status(&session, &ready_gate(), &usb());
+    assert_eq!(
+        (back.text.as_str(), back.palette),
+        ("Ready", Palette::Secondary)
+    );
+}
+
+fn source(name: &str, monitor: bool, default: bool) -> Source {
+    Source {
+        name: name.into(),
+        monitor,
+        default,
+    }
+}
+
+#[test]
+fn a_call_records_from_the_sound_servers_default_input() {
+    let sources = [
+        source("Monitor of Speakers", true, false),
+        source("Built-in Audio", false, false),
+        source("fifine Microphone", false, true),
+    ];
+    assert_eq!(
+        Microphone::from_sources(&sources),
+        Microphone::Named("fifine Microphone".into())
+    );
+}
+
+#[test]
+fn copies_of_outputs_are_not_microphones() {
+    assert_eq!(Microphone::from_sources(&[]), Microphone::Missing);
+    let monitors = [
+        source("Monitor of Speakers", true, true),
+        source("Monitor of HDMI", true, false),
+    ];
+    assert_eq!(Microphone::from_sources(&monitors), Microphone::Missing);
+}
+
+#[test]
+fn a_default_copy_of_an_output_is_named_because_a_call_records_it() {
+    let sources = [
+        source("Built-in Audio", false, false),
+        source("Monitor of Speakers", true, true),
+    ];
+    assert_eq!(
+        Microphone::from_sources(&sources),
+        Microphone::Named("Monitor of Speakers".into())
+    );
+}
+
+#[test]
+fn without_a_default_the_first_microphone_is_named() {
+    let sources = [
+        source("Monitor of Speakers", true, false),
+        source("USB Microphone", false, false),
+        source("Built-in Audio", false, false),
+    ];
+    assert_eq!(
+        Microphone::from_sources(&sources),
+        Microphone::Named("USB Microphone".into())
+    );
+}
+
+#[test]
+fn a_missing_microphone_blocks_the_call_and_nothing_here_fixes_it() {
+    let s = state(json!([]), json!([]));
+    let on = realtime(true, "ready");
+    let (sentence, action, ready) =
+        gate_with(Some(&s), Some(&on), Reach::Untried, &Microphone::Missing);
+    assert_eq!(sentence, "No microphone is connected.");
+    assert_eq!(action, None);
+    assert!(!ready);
+}
+
+#[test]
+fn a_named_or_unknown_microphone_leaves_the_call_ready() {
+    let s = state(json!([]), json!([]));
+    let on = realtime(true, "ready");
+    let named = Microphone::Named("fifine Microphone".into());
+    for microphone in [&named, &Microphone::Unknown] {
+        let (sentence, _, ready) = gate_with(Some(&s), Some(&on), Reach::Untried, microphone);
+        assert_eq!(sentence, "Ready");
+        assert!(ready);
+    }
+}
+
+#[test]
+fn what_the_daemon_or_the_versions_block_comes_before_the_microphone() {
+    let s = state(json!([]), json!([]));
+    let off = realtime(false, "disabled");
+    let (_, action, _) = gate_with(Some(&s), Some(&off), Reach::Untried, &Microphone::Missing);
+    assert_eq!(action, Some(GateAction::TurnOn));
+    let on = realtime(true, "ready");
+    let (sentence, _, _) = gate_with(
+        Some(&s),
+        Some(&on),
+        Reach::ClientTooOld,
+        &Microphone::Missing,
+    );
+    assert_eq!(
+        sentence,
+        "Update this app to talk to this version of Fermix."
+    );
+}
+
+#[test]
+fn the_microphone_row_names_the_device_or_says_none_or_unknown() {
+    let named = Microphone::Named("fifine Microphone".into());
+    assert_eq!(named.label(), "fifine Microphone");
+    assert_eq!(Microphone::Missing.label(), "None");
+    assert_eq!(Microphone::Unknown.label(), "Unknown");
+}
+
+#[test]
+fn plugging_a_microphone_in_reopens_the_call() {
+    let s = state(json!([]), json!([]));
+    let on = realtime(true, "ready");
+    let before = gate_with(Some(&s), Some(&on), Reach::Untried, &Microphone::Missing);
+    let plugged = Microphone::from_sources(&[source("fifine Microphone", false, true)]);
+    let after = gate_with(Some(&s), Some(&on), Reach::Untried, &plugged);
+    assert!(!before.2 && after.2);
+}
+
+#[test]
+fn a_daemon_gap_outranks_a_missing_microphone() {
+    let (sentence, _, _) = gate_with(None, None, Reach::Untried, &Microphone::Missing);
+    assert_eq!(sentence, "Fermix is not running.");
+}
+
+/// Windows are the presence model (spec_voice §1.6): a hidden companion never keeps Fermix,
+/// or a call, running out of sight.
+#[test]
+fn closing_the_main_window_quits_unless_the_companion_or_the_tray_is_on_screen() {
+    assert_eq!(main_window_close(true, false), MainWindowClose::Hide);
+    assert_eq!(main_window_close(true, true), MainWindowClose::Hide);
+    // Only the tray icon is left: nothing on screen would show a call, so one ends.
+    assert_eq!(main_window_close(false, true), MainWindowClose::ToTray);
+    // Nothing is left on screen at all, so Fermix quits rather than run unseen.
+    assert_eq!(main_window_close(false, false), MainWindowClose::Quit);
+}
+
+#[test]
+fn a_named_microphone_is_lost_once_the_list_no_longer_has_it() {
+    let fifine = Microphone::Named("fifine Microphone".into());
+    let plugged = [
+        source("Built-in Audio", false, false),
+        source("fifine Microphone", false, true),
+    ];
+    assert!(!fifine.lost_in(&plugged));
+    // Another input left over, even as the new default, is not the one the call recorded.
+    assert!(fifine.lost_in(&[source("Built-in Audio", false, true)]));
+    assert!(fifine.lost_in(&[source("Monitor of Speakers", true, true)]));
+    assert!(fifine.lost_in(&[]));
+}
+
+#[test]
+fn an_unknown_microphone_is_lost_only_when_the_list_names_none() {
+    assert!(Microphone::Unknown.lost_in(&[source("Monitor of Speakers", true, true)]));
+    assert!(!Microphone::Unknown.lost_in(&[source("Built-in Audio", false, true)]));
+    assert!(!Microphone::Missing.lost_in(&[]));
+}
+
+/// A headset changing profile drops its microphone for a moment: the grace lets it come
+/// back. Past the grace a call never goes on recording from an input nobody chose. Being back
+/// in the list is enough: the provider's default flag lags the server's (see `refresh`).
+#[test]
+fn past_the_grace_a_call_ends_unless_its_own_microphone_is_back() {
+    let fifine = Microphone::Named("fifine Microphone".into());
+    let back = [
+        source("Built-in Audio", false, true),
+        source("fifine Microphone", false, false),
+    ];
+    assert_eq!(lost_microphone_sentence(&fifine, &back), None);
+    assert_eq!(lost_microphone_sentence(&fifine, &[]), Some(NO_MICROPHONE));
+    let speakers = [source("Monitor of Speakers", true, true)];
+    assert_eq!(
+        lost_microphone_sentence(&fifine, &speakers),
+        Some(NO_MICROPHONE)
+    );
+    let builtin = [source("Built-in Audio", false, true)];
+    assert_eq!(
+        lost_microphone_sentence(&fifine, &builtin),
+        Some(MICROPHONE_LOST)
+    );
+    assert_eq!(
+        lost_microphone_sentence(&Microphone::Unknown, &[]),
+        Some(NO_MICROPHONE)
+    );
+    assert_eq!(
+        lost_microphone_sentence(&Microphone::Unknown, &builtin),
+        None
+    );
+    assert_eq!(
+        MICROPHONE_LOST,
+        "The microphone was disconnected, so the call ended."
+    );
+}
