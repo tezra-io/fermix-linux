@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Refuses a release tag whose GitHub release is already published. A tag is vX.Y.Z, the macOS
-# app's form, or vX.Y.Z+N for a desktop-only rebuild.
+# app's form, where X.Y.Z is the app's version; there is no rebuild suffix, since every change to
+# what a release ships is a new X.Y.Z.
 #
-#   refuse_published_release.sh <owner/name> <vX.Y.Z[+N]>
+#   refuse_published_release.sh <owner/name> <vX.Y.Z>
 #
 # The assets a person has downloaded are the release, so a published release is never refilled:
 # a fix is the next version. A tag with no release, or with a draft, passes. Any answer that does
@@ -41,11 +42,11 @@ release_state() {
 }
 
 main() {
-  [ $# -eq 2 ] || fail "usage: refuse_published_release.sh <owner/name> <vX.Y.Z[+N]>"
+  [ $# -eq 2 ] || fail "usage: refuse_published_release.sh <owner/name> <vX.Y.Z>"
   local repository="$1" tag="$2" state
   [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "$repository is not owner/name"
-  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?$ ]] ||
-    fail "$tag is not a release tag"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    fail "$tag is not a release tag, vX.Y.Z"
   # Assigned first, so a state it could not read stops here rather than reading as "published".
   state="$(release_state "$repository" "$tag")"
   [ "$state" = unpublished ] ||

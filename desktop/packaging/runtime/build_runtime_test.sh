@@ -121,10 +121,14 @@ test_other_refusals() {
     || fail "smoke_runtime.sh accepted an unknown argument"
   refuses "no version given" "$SOURCES" || fail "package_sources.sh accepted a run with no version"
   local bad
-  for bad in 1.2.3-1 1.2.3:4 1.2 nightly; do
+  for bad in 1.2.3-1 1.2.3:4 1.2 nightly 1.2.3+1 1.2.3+0.dev.20261004000000.0123456789ab; do
     refuses "the version '$bad'" "$SOURCES" "$bad" \
       || fail "package_sources.sh accepted the version '$bad'"
   done
+  # A development build's version passes, and the run stops at its missing cache instead.
+  refuses "no download cache" "$SOURCES" 1.2.3+dev.20261004000000.0123456789ab.dirty --no-fetch \
+    --sources "$WORK/missing-cache" --runtime "$runtime" --out "$WORK/out" \
+    || fail "package_sources.sh refused a development build's version"
   refuses "unknown argument" "$SOURCES" 1.2.3 --unknown-argument \
     || fail "package_sources.sh accepted an unknown argument"
   refuses "no download cache" "$SOURCES" 1.2.3 --no-fetch --sources "$WORK/missing-cache" \

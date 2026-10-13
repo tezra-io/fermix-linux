@@ -6,10 +6,11 @@
 # runtime, then runs every packaging test. The packages are then linted and installed on every
 # system the release claims.
 #
-# A vX.Y.Z tag, the macOS app's form (or vX.Y.Z+N, a desktop-only rebuild), does all of that,
-# then signs every asset with cosign under this workflow's GitHub identity and stages them on a
-# draft GitHub release. Publishing the draft is a person's act. Creating such a tag is limited by
-# the repository's protected-release-tags ruleset.
+# A vX.Y.Z tag does all of that, then signs every asset with cosign under this workflow's GitHub
+# identity and stages them on a draft GitHub release. Publishing the draft is a person's act.
+# Creating such a tag is limited by the repository's protected-release-tags ruleset. As with the
+# macOS app, X.Y.Z is the app's own version, from desktop/app/Cargo.toml; the engine it carries
+# is pinned apart from it.
 #
 # Nothing here reuses a runtime from an earlier run: a release compiles the runtime it ships
 # from the lock file of the commit it ships.
@@ -50,10 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # A tag names its version, and build_packages.sh holds it to the pin: X.Y.Z is the pinned
-      # engine's version and X.Y.Z+N rebuilds it. A branch builds the pinned engine's version,
-      # which only a tag ever publishes.
-      - name: Read it, and hold it to the engine pin
+      # A tag names its version, and build_packages.sh holds it to the app's version and checks
+      # the engine pin. A branch builds the app's version, which only a tag ever publishes.
+      - name: Read it, and hold it to the app's version and the engine pin
         id: read
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,7 +69,7 @@ jobs:
               exit 1
             fi
           else
-            version="$engine_version"
+            version="$(desktop/scripts/build_packages.sh --print-app-version)"
           fi
           version="$(desktop/scripts/build_packages.sh --version "$version" --print-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"

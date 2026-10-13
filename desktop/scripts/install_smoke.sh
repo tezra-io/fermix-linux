@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # Installs a built fermix-desktop package on a clean distribution image and checks that it works
-# there: the package manager installs it with its declared relations, `fermix --version` answers,
-# ldd resolves every object under /usr/lib/fermix-desktop with the toolkit from the private prefix,
-# and the window draws, in the state it shows when Fermix is not running, on each display the image
-# draws on: under Xvfb, and on the newest of each family also on a headless Weston, which is what
-# proves the private libwayland-client.
+# there: the package manager installs it with its declared relations, `fermix --version` answers
+# with the version the installed package provides fermix at, ldd resolves every object under
+# /usr/lib/fermix-desktop with the toolkit from the private prefix, and the window draws, in the
+# state it shows when Fermix is not running, on each display the image draws on: under Xvfb, and on
+# the newest of each family also on a headless Weston, which is what proves the private
+# libwayland-client.
 #
 #   install_smoke.sh --image <image> <package> [--out <dir>]
 #   install_smoke.sh --image <image> <package> --print-plan
@@ -14,14 +15,15 @@
 #                 almalinux:9 or almalinux:10
 #   --out <dir>   where the screenshots and the logs go, by default
 #                 $FERMIX_PACKAGE_CACHE/out/smoke/<image>, with the image's ':' as '-'
-#   --print-plan  print the pinned image, the family, the architecture, the displays and the engine
-#                 version, and stop
+#   --print-plan  print the pinned image, the family, the architecture and the displays, and stop
 #
 # Each image is pinned here by the digest of its multi-arch index, so one pin runs natively on an
 # amd64 and an arm64 machine. The smoke runs natively: the package's architecture must be this
-# machine's. The package goes into the container by docker cp and is checked there against its
-# sha256; desktop/packaging/smoke_in_container.sh runs the checks; what it writes comes back by
-# docker cp and is checked against the SHA256SUMS it wrote. Its captures are then checked by
+# machine's. The package's version is the app's, so its name does not say which engine it carries:
+# the container reads that from what the installed package provides. The package goes into the
+# container by docker cp and is checked there against its sha256;
+# desktop/packaging/smoke_in_container.sh runs the checks; what it writes comes back by docker cp
+# and is checked against the SHA256SUMS it wrote. Its captures are then checked by
 # desktop/packaging/convert_screenshot.sh in one converter image, pinned here with its packages,
 # the same for every distribution, so no image under test decodes its own capture. Both containers
 # are removed on every exit. The images reach their mirrors for the package's dependencies, for the
@@ -118,10 +120,10 @@ check_package() {
   esac
 }
 
-# "<engine version> <architecture>" from a package's file name, as build_packages.sh names it:
-# fermix-desktop_<engine>[+<n> | +0.dev.<...>]_<arch>.deb, or the same version in
-# fermix-desktop-<version>-1.<arch>.rpm, whose x86_64 and aarch64 are amd64 and arm64.
-name_fields() {
+# The architecture in a package's file name, as build_packages.sh names it:
+# fermix-desktop_<version>_<arch>.deb, or fermix-desktop-<version>-1.<arch>.rpm, whose x86_64 and
+# aarch64 are amd64 and arm64.
+package_arch() {
   local package="$1" family="$2" name pattern arch
   name="$(basename -- "$package")"
   case "$family" in
@@ -133,17 +135,17 @@ name_fields() {
   if [ "$family" = rpm ]; then
     case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
   fi
-  echo "${BASH_REMATCH[1]%%+*} $arch"
+  echo "$arch"
 }
 
 # The smoke container, with the package and the script that checks it copied in.
 create_container() {
-  local pinned="$1" family="$2" package="$3" engine="$4" arch="$5" displays="$6" digest name
+  local pinned="$1" family="$2" package="$3" arch="$4" displays="$5" digest name
   digest="$(sha256sum -- "$package" | cut -d' ' -f1)"
   name="$(basename -- "$package")"
   docker create --name "fermix-desktop-pkg-package-smoke-$$" --platform "linux/$arch" --pull missing \
     "$pinned" bash /smoke/smoke_in_container.sh --family "$family" --package "/smoke/$name" \
-    --sha256 "$digest" --engine-version "$engine" --displays "$displays" > /dev/null
+    --sha256 "$digest" --displays "$displays" > /dev/null
   CONTAINER="fermix-desktop-pkg-package-smoke-$$"
   tar -cf - --transform 'flags=r;s,^,smoke/,' -C "$(dirname -- "$package")" "$name" \
     -C "$desktop/packaging" smoke_in_container.sh | docker cp - "$CONTAINER:/"
@@ -204,9 +206,9 @@ keep_failed() {
 }
 
 run_smoke() {
-  local image="$1" family="$2" package="$3" engine="$4" arch="$5" out="$6" displays
+  local image="$1" family="$2" package="$3" arch="$4" out="$5" displays
   displays="$(displays_of "$image")"
-  create_container "$(pinned_image "$image")" "$family" "$package" "$engine" "$arch" "$displays"
+  create_container "$(pinned_image "$image")" "$family" "$package" "$arch" "$displays"
   echo "install_smoke: $(basename -- "$package") on $image, $arch, drawn on $displays" >&2
   if ! timeout "$SMOKE_TIMEOUT_SECONDS" docker start --attach "$CONTAINER"; then
     keep_failed "$out-failed"
@@ -220,7 +222,7 @@ run_smoke() {
 }
 
 main() {
-  local image="" package="" out="" print=0 family fields engine arch machine
+  local image="" package="" out="" print=0 family arch machine
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) [ $# -ge 2 ] || usage; image="$2"; shift 2 ;;
@@ -234,17 +236,16 @@ main() {
   pinned_image "$image" > /dev/null
   family="$(family_of "$image")"
   check_package "$image" "$package" "$family"
-  fields="$(name_fields "$package" "$family")"
-  engine="${fields% *}" arch="${fields#* }"
+  arch="$(package_arch "$package" "$family")"
   machine="$(machine_arch)"
   [ "$arch" = "$machine" ] ||
     fail "$(basename -- "$package") is for $arch, and this machine is $machine: the smoke runs natively"
   if [ "$print" = 1 ]; then
-    printf 'image %s\nfamily %s\narch %s\ndisplays %s\nengine %s\n' \
-      "$(pinned_image "$image")" "$family" "$arch" "$(displays_of "$image")" "$engine"
+    printf 'image %s\nfamily %s\narch %s\ndisplays %s\n' \
+      "$(pinned_image "$image")" "$family" "$arch" "$(displays_of "$image")"
     return 0
   fi
-  run_smoke "$image" "$family" "$package" "$engine" "$arch" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
+  run_smoke "$image" "$family" "$package" "$arch" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
 }
 
 trap cleanup EXIT

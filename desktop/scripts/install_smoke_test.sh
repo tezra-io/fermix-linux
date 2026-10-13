@@ -42,7 +42,7 @@ mkdir -p "$work/packages"
 for name in "fermix-desktop_0.0.1_$native.deb" "fermix-desktop-0.0.1-1.$native_rpm.rpm" \
   "fermix_0.0.1_$native.deb" "fermix-desktop_0.0.1-1_$native.deb" "fermix-desktop_0.0.1_$other.deb" \
   "fermix-desktop-0.0.1-1.$other_rpm.rpm" "fermix-desktop_0.0.1_i386.deb" \
-  "fermix-desktop_0.0.1+0.dev.20261004000000.0123456789ab.dirty_$native.deb"; do
+  "fermix-desktop_0.0.1+dev.20261004000000.0123456789ab.dirty_$native.deb"; do
   printf 'not a package\n' > "$work/packages/$name"
 done
 deb="$work/packages/fermix-desktop_0.0.1_$native.deb"
@@ -89,7 +89,9 @@ expect_refusal "a deb for an architecture the release does not build" \
   smoke --image debian:12 "$work/packages/fermix-desktop_0.0.1_i386.deb"
 
 # <image> <family> <displays>: the plan the smoke prints for <image> names it pinned by a digest,
-# then the family, this machine's architecture, the displays it draws on, and the engine, 0.0.1.
+# then the family, this machine's architecture and the displays it draws on. It names no engine:
+# the engine version `fermix --version` must answer with is what the installed package provides,
+# read in the container.
 expect_plan() {
   local image="$1" family="$2" displays="$3" package plan first
   package="$deb"
@@ -98,7 +100,7 @@ expect_plan() {
   first="${plan%%$'\n'*}"
   [[ "$first" == "image $image@sha256:"* ]] && [[ "${first#*@sha256:}" =~ ^[0-9a-f]{64}$ ]] ||
     fail "$image is not pinned by a digest in its plan: $plan"
-  [ "${plan#*$'\n'}" = "$(printf 'family %s\narch %s\ndisplays %s\nengine 0.0.1' "$family" "$native" "$displays")" ] ||
+  [ "${plan#*$'\n'}" = "$(printf 'family %s\narch %s\ndisplays %s' "$family" "$native" "$displays")" ] ||
     fail "$image's plan is not $family on $native drawing on $displays: $plan"
   echo "  ok: $image: $family on $native, drawn on $displays"
 }
@@ -113,11 +115,11 @@ expect_plan fedora:44 rpm "x11 wayland"
 expect_plan almalinux:9 rpm "x11"
 expect_plan almalinux:10 rpm "wayland"
 
-echo "install_smoke_test: the engine version a package name carries"
-dev="$work/packages/fermix-desktop_0.0.1+0.dev.20261004000000.0123456789ab.dirty_$native.deb"
-grep -qx 'engine 0.0.1' <<< "$(smoke --image ubuntu:22.04 "$dev" --print-plan)" ||
-  fail "a development deb's engine version is not 0.0.1"
-echo "  ok: 0.0.1 from a development deb, as from the release deb and rpm above"
+echo "install_smoke_test: a development package"
+dev="$work/packages/fermix-desktop_0.0.1+dev.20261004000000.0123456789ab.dirty_$native.deb"
+[ "$(smoke --image ubuntu:22.04 "$dev" --print-plan | tail -n 1)" = "displays x11" ] ||
+  fail "a development deb has no plan for ubuntu:22.04"
+echo "  ok: planned like a release deb"
 
 [ -z "$(docker ps -aq --filter 'name=^fermix-desktop-pkg-package-smoke-')" ] ||
   fail "a refused smoke left a container"

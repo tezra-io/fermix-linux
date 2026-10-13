@@ -20,7 +20,8 @@
 #   desktop/packaging/runtime/package_sources.sh <version> [--out <dir>] [--sources <dir>]
 #                                                [--runtime <dir>] [--no-fetch]
 #
-#   <version>    X.Y.Z or X.Y.Z+N, matching the package it accompanies
+#   <version>    the version of the package it accompanies: X.Y.Z, or a development
+#                build's X.Y.Z+dev.<UTC time>.<commit>[.dirty]
 #   --out        where to write the archive; default ~/.cache/fermix-desktop-runtime/out
 #   --sources    the download cache; default ~/.cache/fermix-desktop-runtime/sources
 #   --runtime    the runtime build's outputs, for runtime-crates.tar.gz,
@@ -95,8 +96,8 @@ check_version() {
     *-*) fail "the version '$VERSION' carries a Debian revision, and this archive may not" ;;
     *:*) fail "the version '$VERSION' carries an rpm epoch, and this archive may not" ;;
   esac
-  grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?$' <<< "$VERSION" \
-    || fail "the version '$VERSION' is neither X.Y.Z nor X.Y.Z+N"
+  grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\+dev\.[0-9]{14}\.[0-9a-f]{12,40}(\.dirty)?)?$' <<< "$VERSION" \
+    || fail "the version '$VERSION' is neither X.Y.Z nor X.Y.Z+dev.<UTC time>.<commit>[.dirty]"
 }
 
 require_inputs() {

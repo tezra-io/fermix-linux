@@ -5,10 +5,11 @@
 # host_relations.map, the runtime lock and the engine's own declared relations, and the contents
 # from the staged tree, one entry for every file and symbolic link in it.
 #
-# The version is used as given (version_schema: none) and release stays empty, so the deb has no
-# Debian revision and nFPM gives the rpm its default release, 1: fermix-desktop_<v>_<arch>.deb and
-# fermix-desktop-<v>-1.<arch>.rpm. A desktop-only rebuild is <engine version>+<n>, which dpkg and
-# rpm both order after <engine version>.
+# The version is the app's own: X.Y.Z for a release, or a development build's
+# <app version>+dev.<...>, which dpkg and rpm both order after the app's version. It is used as
+# given (version_schema: none) and release stays empty, so the deb has no Debian revision and nFPM
+# gives the rpm its default release, 1: fermix-desktop_<v>_<arch>.deb and
+# fermix-desktop-<v>-1.<arch>.rpm.
 name: fermix-desktop
 arch: {{ARCH}}
 platform: linux
@@ -31,8 +32,9 @@ section: utils
 priority: optional
 
 # fermix-desktop is the alternative to the engine-only fermix package, not a layer over it. It
-# provides fermix, so whatever names the engine is satisfied, and conflicts with it, so the two
-# never install together. The deb also replaces fermix, which lets dpkg hand /usr/bin/fermix from
+# provides fermix at the version of the engine it carries, so whatever names the engine is
+# satisfied and sees the engine's real version, and conflicts with fermix, so the two never
+# install together. The deb also replaces fermix, which lets dpkg hand /usr/bin/fermix from
 # one package to the other in one transaction. The rpm has no Obsoletes: that would turn a
 # server's engine-only install into the desktop package on its next upgrade.
 #
@@ -40,7 +42,7 @@ priority: optional
 overrides:
   deb:
     provides:
-      - fermix (= {{VERSION}})
+      - fermix (= {{ENGINE_VERSION}})
     conflicts:
       - fermix
     replaces:
@@ -48,7 +50,7 @@ overrides:
     depends: {{DEB_DEPENDS}}
   rpm:
     provides:
-      - fermix = {{VERSION}}
+      - fermix = {{ENGINE_VERSION}}
     conflicts:
       - fermix
     depends: {{RPM_DEPENDS}}

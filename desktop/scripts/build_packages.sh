@@ -4,23 +4,31 @@
 # window, the private GTK runtime under /usr/lib/fermix-desktop, and the engine exactly as the fermix
 # package installs it.
 #
-#   build_packages.sh --version <X.Y.Z[+N]> [--pin <PIN.json>] [--engine-download <dir>] [options]
+#   build_packages.sh --version <X.Y.Z> [--pin <PIN.json>] [--engine-download <dir>] [options]
 #   build_packages.sh --dev <engine .deb> <engine .rpm> [options]
+#   build_packages.sh --print-app-version
 #
 #   --arch <amd64|arm64>   the architecture, amd64 by default
 #   --runtime <dir>        the runtime's outputs, by default $FERMIX_RUNTIME_OUT or
 #                          ~/.cache/fermix-desktop-runtime/out
 #   --out <dir>            where the packages go, by default $FERMIX_PACKAGE_CACHE/out
 #   --print-version        print the version the packages would have, and build nothing
+#   --print-app-version    print the app's version and nothing else; it takes no other flag
 #
-# A release build carries the engine desktop/engine/PIN.json pins, downloaded by fetch_engine.sh
-# unless --engine-download names a directory that already holds it, and verified by
-# verify_engine.py either way. Its version is the engine's, or <engine version>+<n> for a
-# desktop-only rebuild. A development build carries a local, unsigned engine package, is refused
-# under CI, and is versioned <engine version>+0.dev.<UTC time>.<commit>[.dirty]. dpkg and rpm both
-# order that after the engine's own version and before its first rebuild, <engine version>+1; with
-# +dev and no 0 they would disagree, since dpkg puts a letter after a digit and rpm a digit after
-# a letter.
+# The package's version is the app's own, as the macOS app's is: the version in the [package]
+# table of desktop/app/Cargo.toml, which the window reports as its crate's version. It is read
+# there and nowhere else; the release workflow asks for it with --print-app-version. The engine is
+# pinned apart from it, and the package provides fermix at the engine's version, so whatever
+# names the engine sees the engine's real version.
+#
+# A release build's version is X.Y.Z, and it must be the app's: a release is tagged vX.Y.Z, and
+# every change to what a release ships, a new engine pin among them, is a new X.Y.Z. It carries
+# the engine desktop/engine/PIN.json pins, which engine_pin.py --check holds to the published
+# release, downloaded by fetch_engine.sh unless --engine-download names a directory that already
+# holds it, and verified by verify_engine.py either way. A development build carries a local,
+# unsigned engine package, is refused under CI, and is versioned
+# <app version>+dev.<UTC time>.<commit>[.dirty], which dpkg and rpm both order after the app's
+# version and before the next.
 #
 # The build runs in the runtime's build image ($FERMIX_PACKAGE_IMAGE), so the window compiles
 # against exactly the toolkit the package ships. Everything goes in and out by docker cp, checked
@@ -50,6 +58,7 @@ RUNTIME_FILES=(runtime-manifest.json runtime-licenses.json runtime-licenses.tar.
 here=$(cd "$(dirname "$0")" && pwd)
 desktop=$(dirname "$here")
 repo=$(dirname "$desktop")
+APP_MANIFEST="$desktop/app/Cargo.toml"
 
 # What the EXIT trap removes: it runs after every function has returned.
 CONTAINER=""
@@ -61,9 +70,9 @@ fail() {
 }
 
 usage() {
-  fail "usage: build_packages.sh (--version <X.Y.Z[+N]> [--pin <file>] [--engine-download <dir>] |" \
+  fail "usage: build_packages.sh (--version <X.Y.Z> [--pin <file>] [--engine-download <dir>] |" \
     "--dev <engine .deb> <engine .rpm>) [--arch <amd64|arm64>] [--runtime <dir>] [--out <dir>]" \
-    "[--print-version]"
+    "[--print-version], or build_packages.sh --print-app-version"
 }
 
 cleanup() {
@@ -88,27 +97,38 @@ refuse_marks() {
   done
 }
 
-# A release is the pinned engine's version, or a desktop-only rebuild of it.
+# The app's version, X.Y.Z: the one version line of the [package] table of <manifest>, the app
+# crate's Cargo.toml. Any other form of it, inherited from the workspace or with a prerelease, is
+# refused rather than guessed at.
+app_version() {
+  local manifest="$1" lines
+  [ -f "$manifest" ] || fail "there is no app manifest at $manifest"
+  lines="$(awk '/^[[:space:]]*\[/ { table = $0; next }
+    table == "[package]" && /^[[:space:]]*version[[:space:]]*[.=]/' "$manifest")"
+  [[ "$lines" =~ ^version[[:space:]]*=[[:space:]]*\"([0-9]+\.[0-9]+\.[0-9]+)\"[[:space:]]*$ ]] ||
+    fail "the [package] table of $manifest does not give its version as one line version = \"X.Y.Z\":" \
+      "${lines:-it has none}"
+  echo "${BASH_REMATCH[1]}"
+}
+
+# A release is the app's version, over an engine pin a build can trust.
 release_version() {
-  local version="$1" pin="$2" engine
+  local version="$1" app="$2" pin="$3"
   refuse_marks "$version"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?$ ]] ||
-    fail "a release version is X.Y.Z or X.Y.Z+N, and $version is neither"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "a release version is X.Y.Z, and $version is not"
+  [ "$version" = "$app" ] ||
+    fail "the version $version is not the app's: desktop/app/Cargo.toml says $app"
   "$here/engine_pin.py" --pin "$pin" --check || fail "the engine pin $pin is not one a build can trust"
-  engine="$("$here/engine_pin.py" --pin "$pin" --get engine_version)"
-  [ "${version%%+*}" = "$engine" ] ||
-    fail "the version $version is not the pinned engine's: the pin's engine is $engine"
   echo "$version"
 }
 
-# <engine version>+0.dev.<UTC time>.<commit>[.dirty], from the staged engine and this checkout.
+# <app version>+dev.<UTC time>.<commit>[.dirty], from the app's version and this checkout.
 dev_version() {
-  local stage="$1" epoch="$2" engine stamp commit status version
-  engine="$(jq -er '.engine_version' "$stage/engine.json")" || fail "the dev stage names no engine version"
+  local app="$1" epoch="$2" stamp commit status version
   stamp="$(date -u -d "@$epoch" +%Y%m%d%H%M%S)"
   commit="$(git -C "$repo" rev-parse --short=12 HEAD)" || fail "$repo is not a git checkout"
   status="$(git -C "$repo" status --porcelain)" || fail "git cannot read the state of $repo"
-  version="$engine+0.dev.$stamp.$commit"
+  version="$app+dev.$stamp.$commit"
   [ -z "$status" ] || version="$version.dirty"
   refuse_marks "$version"
   echo "$version"
@@ -235,7 +255,12 @@ build() {
 main() {
   local mode="" version="" deb="" rpm="" pin="$desktop/engine/PIN.json" download="" arch=amd64
   local runtime="${FERMIX_RUNTIME_OUT:-$CACHE_HOME/fermix-desktop-runtime/out}"
-  local out="$PACKAGE_CACHE/out" print=0 stage epoch mtime
+  local out="$PACKAGE_CACHE/out" print=0 app stage epoch mtime
+  if [ "${1:-}" = --print-app-version ]; then
+    [ $# -eq 1 ] || usage
+    app_version "$APP_MANIFEST"
+    return 0
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) [ $# -ge 2 ] && [ -z "$mode" ] || usage; mode=release version="$2"; shift 2 ;;
@@ -256,8 +281,9 @@ main() {
   if [ "$mode" = dev ] && [ -n "${CI+set}" ]; then
     fail "a development build carries an unsigned engine and is refused under CI"
   fi
+  app="$(app_version "$APP_MANIFEST")"
   if [ "$mode" = release ] && [ "$print" = 1 ]; then
-    release_version "$version" "$pin"
+    release_version "$version" "$app" "$pin"
     return 0
   fi
   [ "$print" = 1 ] || check_runtime "$runtime" "$arch"
@@ -265,13 +291,13 @@ main() {
   WORK="$(mktemp -d "$PACKAGE_CACHE/work.XXXXXX")"
   stage="$WORK/engine"
   if [ "$mode" = release ]; then
-    version="$(release_version "$version" "$pin")"
+    version="$(release_version "$version" "$app" "$pin")"
     stage_release_engine "$pin" "$download" "$stage" "$arch"
     epoch="${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct)}"
   else
     "$here/verify_engine.py" --dev "$stage" "$deb" "$rpm" >&2
     epoch="${SOURCE_DATE_EPOCH:-$(date -u +%s)}"
-    version="$(dev_version "$stage" "$epoch")"
+    version="$(dev_version "$app" "$epoch")"
   fi
   if [ "$print" = 1 ]; then
     echo "$version"

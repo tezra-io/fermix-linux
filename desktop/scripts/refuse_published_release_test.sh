@@ -9,7 +9,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 REPO=tezra-io/fermix-linux
-TAG=v0.14.0
+TAG=v0.1.0
 
 fail() {
   echo "refuse_published_release_test: $*" >&2
@@ -55,7 +55,6 @@ expect_refusal() {
 echo "refuse_published_release_test: what may be released"
 expect_pass "a tag with no published release" 404 "" "$REPO" "$TAG"
 grep -qxF "api repos/$REPO/releases/tags/$TAG" "$STUB_LOG" || fail "gh was not asked for the tag's release: $(cat "$STUB_LOG")"
-expect_pass "a desktop-only rebuild's tag" 404 "" "$REPO" v0.14.0+1
 expect_pass "a tag whose release is still a draft" 200 '{"draft": true}' "$REPO" "$TAG"
 
 echo "refuse_published_release_test: what may not"
@@ -64,9 +63,10 @@ expect_refusal "a server error" "cannot tell" 502 "" "$REPO" "$TAG"
 ! grep -qF "already published" "$work/stderr" || fail "a server error was reported as a published release"
 expect_refusal "an answer with no draft field" "cannot tell" 200 '{"name": "x"}' "$REPO" "$TAG"
 expect_refusal "an answer that is not JSON" "cannot tell" 200 'not json' "$REPO" "$TAG"
-expect_refusal "a tag with another prefix" "not a release tag" 404 "" "$REPO" fermix-desktop-v0.14.0
-expect_refusal "a prerelease tag" "not a release tag" 404 "" "$REPO" v0.14.0-rc.1
-expect_refusal "a tag with no patch number" "not a release tag" 404 "" "$REPO" v0.14
+expect_refusal "a tag with another prefix" "not a release tag" 404 "" "$REPO" fermix-desktop-v0.1.0
+expect_refusal "a prerelease tag" "not a release tag" 404 "" "$REPO" v0.1.0-rc.1
+expect_refusal "a rebuild's tag: every change is a new X.Y.Z" "not a release tag" 404 "" "$REPO" v0.1.0+1
+expect_refusal "a tag with no patch number" "not a release tag" 404 "" "$REPO" v0.1
 expect_refusal "a repository that is not owner/name" "owner/name" 404 "" "fermix-linux" "$TAG"
 expect_refusal "a missing tag" "usage" 404 "" "$REPO"
 

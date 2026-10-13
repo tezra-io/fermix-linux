@@ -3,8 +3,13 @@
 
     nfpm_config.py --template <tmpl> --map <host_relations.map> --lock <RUNTIME.lock.json>
                    --engine-relations <stage>/relations.json --root <staged tree>
-                   --version <version> --arch <amd64|arm64> --mtime <YYYY-MM-DDTHH:MM:SSZ>
-                   --postinstall <file> --postremove <file> --out <file>
+                   --version <version> --engine-version <version> --arch <amd64|arm64>
+                   --mtime <YYYY-MM-DDTHH:MM:SSZ> --postinstall <file> --postremove <file>
+                   --out <file>
+
+The version is the package's, which is the app's own; the engine version is that of the engine the
+package carries, and the package provides fermix at it, so whatever names the engine sees the
+engine's real version. Neither may carry a Debian revision or an rpm epoch.
 
 The relations: every host library of the lock through its row in the map, every @ row of the map,
 then the engine package's own declared relations, each once, in that order. The map and the lock
@@ -35,6 +40,7 @@ ARCHES = ("amd64", "arm64")
 PLACEHOLDER = re.compile(r"{{([A-Z_]+)}}")
 PLACEHOLDERS = {
     "VERSION",
+    "ENGINE_VERSION",
     "ARCH",
     "MTIME",
     "DEB_DEPENDS",
@@ -43,7 +49,18 @@ PLACEHOLDERS = {
     "POSTREMOVE",
     "CONTENTS",
 }
-VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.]+)?")
+# What each version may be, and the forms a refusal names. The package's is a release's X.Y.Z or a
+# development build's, as build_packages.sh writes them; the engine's is what its package says.
+VERSIONS = {
+    "version": (
+        re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(\+dev\.[0-9]{14}\.[0-9a-f]{12,40}(\.dirty)?)?"),
+        "X.Y.Z, or X.Y.Z+dev.<UTC time>.<commit>[.dirty]",
+    ),
+    "engine version": (
+        re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.]+)?"),
+        "X.Y.Z, or X.Y.Z+<suffix>",
+    ),
+}
 MTIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 MAP_FIELDS = 3
 # The directories the package owns, so the only ones it lists. Every other directory it installs
@@ -57,8 +74,8 @@ REQUIRED = ("usr/bin/fermix", "usr/lib/fermix-desktop/bin/fermix-desktop")
 UNSAFE_BITS = stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX | stat.S_IWGRP | stat.S_IWOTH
 USAGE = (
     "nfpm_config.py --template <tmpl> --map <map> --lock <lock> --engine-relations <json> "
-    "--root <dir> --version <v> --arch <arch> --mtime <time> --postinstall <file> "
-    "--postremove <file> --out <file>"
+    "--root <dir> --version <v> --engine-version <v> --arch <arch> --mtime <time> "
+    "--postinstall <file> --postremove <file> --out <file>"
 )
 
 
@@ -88,18 +105,21 @@ def read_json(path):
         raise Refusal(f"{path} is not valid JSON: {error}") from error
 
 
-def check_version(version):
+def check_version(version, name):
+    """<name> is what a refusal calls the version, and a key of VERSIONS."""
+    pattern, forms = VERSIONS[name]
     for mark in ("-", ":"):
         if mark in version:
             raise Refusal(
-                f"the version {version} has a '{mark}': no Debian revision and no rpm epoch"
+                f"the {name} {version} has a '{mark}': no Debian revision and no rpm epoch"
             )
-    if not VERSION.fullmatch(version):
-        raise Refusal(f"{version} is not a package version: X.Y.Z, or X.Y.Z+<suffix>")
+    if not pattern.fullmatch(version):
+        raise Refusal(f"the {name} '{version}' is not {forms}")
 
 
 def check_arguments(arguments):
-    check_version(arguments.version)
+    check_version(arguments.version, "version")
+    check_version(arguments.engine_version, "engine version")
     if arguments.arch not in ARCHES:
         raise Refusal(f"fermix-desktop is built for amd64 and arm64, not {arguments.arch}")
     if not MTIME.fullmatch(arguments.mtime):
@@ -237,6 +257,7 @@ def configuration(arguments):
     entries = contents(os.path.abspath(arguments.root))
     values = {
         "VERSION": arguments.version,
+        "ENGINE_VERSION": arguments.engine_version,
         "ARCH": arguments.arch,
         "MTIME": arguments.mtime,
         "DEB_DEPENDS": json.dumps(once(deb + engine_deb)),
@@ -257,8 +278,8 @@ def write(path, text):
 
 def parse_arguments(argv):
     parser = Parser(prog="nfpm_config.py", add_help=False)
-    for name in ("template", "map", "lock", "engine-relations", "root", "version", "arch",
-                 "mtime", "postinstall", "postremove", "out"):  # fmt: skip
+    for name in ("template", "map", "lock", "engine-relations", "root", "version", "engine-version",
+                 "arch", "mtime", "postinstall", "postremove", "out"):  # fmt: skip
         parser.add_argument(f"--{name}", required=True)
     return parser.parse_args(argv)
 
@@ -271,7 +292,10 @@ def main(argv):
     except Refusal as refusal:
         print(f"nfpm_config: {refusal}", file=sys.stderr)
         return 1
-    print(f"nfpm_config: {arguments.out}, fermix-desktop {arguments.version}, {count} entries")
+    print(
+        f"nfpm_config: {arguments.out}, fermix-desktop {arguments.version} carrying engine "
+        f"{arguments.engine_version}, {count} entries"
+    )
     return 0
 
 

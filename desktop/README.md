@@ -50,9 +50,8 @@ there. The PulseAudio socket carries voice calls. The sandbox has its own home, 
 writes its entry there, where the session never reads it; the packaged window keeps
 `~/.config/autostart/io.tezra.Fermix.desktop` itself.
 
-A development build reports the crate's version. The package build compiles in the package's
-version as `FERMIX_DESKTOP_VERSION`: the About dialog shows it, and the chat connection gives it to
-the engine.
+The window reports its crate's version, from `app/Cargo.toml`, which is also the package's (see
+[Releasing](#releasing)): the About dialog shows it, and the chat connection gives it to the engine.
 
 ## Build the packages
 
@@ -70,13 +69,14 @@ says what it takes and what it checks.
    packaging/runtime/smoke_runtime.sh
    ```
 
-2. The packages, carrying the engine `engine/PIN.json` pins. A release version is the pinned
-   engine's, or `<engine version>+<n>` for a desktop-only rebuild. `--dev` carries a local engine
-   build instead, is versioned `<engine version>+0.dev.<time>.<commit>`, and is refused under CI.
-   The packages go to `--out <dir>`, by default `~/.cache/fermix-desktop-package/out`.
+2. The packages, carrying the engine `engine/PIN.json` pins. Their version is the app's own, the
+   X.Y.Z of `app/Cargo.toml`, which `--print-app-version` prints; a release build refuses any
+   other. They provide `fermix` at the pinned engine's version. `--dev` carries a local engine build
+   instead, is versioned `<app version>+dev.<time>.<commit>`, and is refused under CI. The
+   packages go to `--out <dir>`, by default `~/.cache/fermix-desktop-package/out`.
 
    ```
-   scripts/build_packages.sh --version 0.14.0 [--arch arm64]
+   scripts/build_packages.sh --version "$(scripts/build_packages.sh --print-app-version)" [--arch arm64]
    scripts/build_packages.sh --dev <engine .deb> <engine .rpm>
    ```
 
@@ -91,7 +91,8 @@ says what it takes and what it checks.
    ```
 
 To carry a new engine release, `scripts/engine_pin.py <tag>` writes `engine/PIN.json` from that
-release of `tezra-io/fermix`.
+release of `tezra-io/fermix`. That changes what the package ships, so it goes out under a new app
+version.
 
 The packaging tests are the `*_test.sh` files beside the scripts. A few run a tool in a container,
 from an image already pulled and with no network. `release.yml` runs every one of them, and the
@@ -109,19 +110,26 @@ every pull request that can change a package. For amd64 and arm64 each, it build
 the lock file, smokes it, and builds both packages. Then it lints them, installs them on every
 supported system, and runs the packaging tests. A release adds a tag to that.
 
-1. When the engine releases, pin it with `scripts/engine_pin.py <tag>`; `engine_pin.py --check`
-   holds the pin to the published release. The release version is the pinned engine's, X.Y.Z. A
-   desktop-only fix to a released version is X.Y.Z+N.
-2. Merge `dev` into `main` through a pull request, with `release.yml` green on it.
-3. Tag the merge on `main` as `vX.Y.Z` (or `vX.Y.Z+N`), the form the macOS app's tags take, and
-   push the tag. The repository's tag ruleset limits who can. The workflow refuses a tag whose
-   version is not the pin's, and a tag whose release is already published.
-4. The tag's run signs every asset with cosign under the workflow's identity
+1. The release version is the app's own, X.Y.Z, the `version` in `app/Cargo.toml`, as the macOS
+   app's is its marketing version. It does not follow the engine's. A release bumps it there, on
+   `dev`, and `Cargo.lock` with it: `scripts/dev.sh check` rewrites the lock's entry, and the
+   package build, which runs cargo with `--locked`, refuses a lock that disagrees. Every change to
+   what a release ships is a new X.Y.Z: there is no rebuild suffix.
+2. Pinning a new engine is a step of its own: `scripts/engine_pin.py <tag>` writes
+   `engine/PIN.json`, and `engine_pin.py --check` holds the pin to the published release. It
+   changes what the package carries, so it needs a new app version. The packages provide `fermix`
+   at the pinned engine's version, and the release notes name it.
+3. Merge `dev` into `main` through a pull request, with `release.yml` green on it.
+4. Tag the merge on `main` as `vX.Y.Z`, the form the macOS app's tags take, and push the tag. The
+   repository's tag ruleset limits who can. The workflow refuses a tag that is not the app's
+   version, an engine pin `engine_pin.py --check` refuses, and a tag whose release is already
+   published.
+5. The tag's run signs every asset with cosign under the workflow's identity
    (`.github/workflows/release.yml@refs/tags/vX.Y.Z`), writes a `.sha256` beside each, and stages
    them on a draft release with notes from `packaging/release_notes.md`. It then downloads each
    asset back and checks it. The assets are both packages for both architectures and
    `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`.
-5. Read the draft, then publish it. A published release is never refilled: a fix is the next
+6. Read the draft, then publish it. A published release is never refilled: a fix is the next
    version.
 
 ## Facts the code relies on (measured against fermix 0.11.0)
