@@ -6,7 +6,9 @@ use crate::app::App;
 use crate::dialogs::confirm;
 use crate::systemd::{disable_service, enable_service, read_service};
 use fermix_client::autostart::{entry_path, read_entry, remove_entry, write_entry};
-use fermix_client::service::{background_switch, disable_warning, ServiceRead};
+use fermix_client::service::{
+    background_switch, binding_path, disable_warning, read_binding, Binding, ServiceRead,
+};
 use gtk::glib;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -16,11 +18,11 @@ use std::time::Duration;
 const STOP_INTERVAL: Duration = Duration::from_secs(1);
 const STOP_TRIES: u32 = 30;
 
-/// Where the package's binding lives.
-fn binding_exists() -> bool {
-    glib::home_dir()
-        .join(".config/fermix/service.json")
-        .exists()
+/// Where the CLI keeps this account's binding, by this window's own
+/// `XDG_CONFIG_HOME`, which is the one the CLI it runs inherits.
+pub fn binding_file() -> PathBuf {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME");
+    binding_path(config_home.as_deref(), &glib::home_dir())
 }
 
 /// Where the window keeps the "Open at login" entry, decided once at startup.
@@ -49,7 +51,7 @@ impl App {
     /// disabling keeps it, so that proof outlives the daemon.
     pub async fn read_service(&self) {
         let read = read_service().await;
-        let file = binding_exists();
+        let file = read_binding(&binding_file()) == Binding::Present;
         let mut state = self.state.borrow_mut();
         let answered = state.snapshot().is_some();
         state.background.service = Some(read);
@@ -59,12 +61,13 @@ impl App {
     }
 
     /// The switch was moved to `on`. A move that only mirrors what is drawn, or
-    /// arrives while a change runs, does nothing.
+    /// arrives while a change or a start runs, does nothing.
     pub async fn set_background(self: Rc<Self>, on: bool) {
         let drawn = {
             let state = self.state.borrow();
             let bg = &state.background;
-            background_switch(bg.service.as_ref(), bg.binding, bg.service_change.is_some())
+            let busy = bg.service_change.is_some() || state.waking;
+            background_switch(bg.service.as_ref(), bg.binding, busy)
         };
         if !drawn.sensitive || drawn.on == on {
             return;
@@ -81,16 +84,19 @@ impl App {
     }
 
     async fn enable_background(&self) {
-        let (linger, up) = {
+        let (linger, up, bound) = {
             let state = self.state.borrow();
             let linger = match &state.background.service {
                 Some(ServiceRead::Unit { linger, .. }) => *linger,
                 _ => None,
             };
-            (linger, state.snapshot().is_some())
+            (linger, state.snapshot().is_some(), state.background.binding)
         };
         self.state.borrow_mut().background.service_change = Some(true);
         self.render();
+        if !bound {
+            return self.set_up_background().await;
+        }
         if let Err(sentence) = enable_service(linger).await {
             glib::g_warning!(
                 "fermix",
@@ -105,6 +111,18 @@ impl App {
         }
         self.refresh().await;
         self.shell.toast("Background service enabled");
+    }
+
+    /// With no binding yet, turning the switch on is the engine's own
+    /// activation, `fermix service install`, which writes the binding and
+    /// enables and starts the service. A binding it would refuse keeps its
+    /// sentence under the switch.
+    async fn set_up_background(&self) {
+        if let Err(sentence) = self.start_engine().await {
+            return self.service_refused(sentence);
+        }
+        self.wait_for_daemon(None, "Background service enabled")
+            .await;
     }
 
     async fn disable_background(&self) {

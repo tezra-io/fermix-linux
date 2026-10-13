@@ -2,17 +2,20 @@
 //! it to answer again, and open its setup page for panes this app has not built.
 
 use crate::app::App;
+use crate::background_flow::binding_file;
 use crate::dialogs::confirm;
 use crate::systemd::{systemd, UnitVerb};
+use fermix_client::capped;
 use fermix_client::management::CallError;
-use gtk::glib;
+use fermix_client::service::{install_outcome, read_binding, Binding, INSTALL_ARGV, INSTALL_CAP};
+use gtk::{gio, glib};
 use std::rc::Rc;
 use std::time::Duration;
 
 /// Waiting for the daemon after a start or restart: every second, for at most
 /// 90 s, the CLI's own ceiling (M38 §4.1).
-const WAKE_INTERVAL: Duration = Duration::from_secs(1);
-const WAKE_TRIES: u32 = 90;
+pub const WAKE_INTERVAL: Duration = Duration::from_secs(1);
+pub const WAKE_TRIES: u32 = 90;
 /// What any restart does, where the daemon names no reason of its own.
 pub const INTERRUPTS: &str =
     "Fermix stops and starts again. Anything it is doing right now is interrupted.";
@@ -92,8 +95,40 @@ impl App {
         }
     }
 
+    /// Start Fermix, wherever it is offered: the engine's own activation, then
+    /// the wait for it to answer.
     pub async fn start_service(self: Rc<Self>) {
-        self.ask_systemd(UnitVerb::Start, "Fermix started").await;
+        if let Err(sentence) = self.start_engine().await {
+            return self
+                .shell
+                .toast(&format!("Fermix did not start: {sentence}"));
+        }
+        self.wait_for_daemon(None, "Fermix started").await;
+    }
+
+    /// The engine's own activation (M38 §4.5): `fermix service install` on a
+    /// fresh account, which writes the binding, enables the service and waits
+    /// for it to answer; the unit started on a bound one. A binding the CLI
+    /// would refuse is refused here with its sentence, and nothing runs.
+    /// `waking` is set while it runs. A refusal ends it as a failed wake; on
+    /// success the caller's `wait_for_daemon` ends it.
+    pub async fn start_engine(&self) -> Result<(), String> {
+        let binding = read_binding(&binding_file());
+        if let Binding::Unreadable(sentence) = binding {
+            return Err(sentence);
+        }
+        self.set_waking(true, false);
+        self.render();
+        let started = match binding {
+            Binding::Absent => install().await,
+            _ => systemd(UnitVerb::Start).await,
+        };
+        if let Err(sentence) = &started {
+            glib::g_warning!("fermix", "Fermix did not start: {sentence}");
+            self.set_waking(false, true);
+            self.refresh().await;
+        }
+        started
     }
 
     pub async fn restart_service(self: Rc<Self>) {
@@ -162,5 +197,15 @@ impl App {
             self.shell
                 .toast("Your browser did not open the setup page.");
         }
+    }
+}
+
+/// Runs `fermix service install --json` on a worker thread and reads its
+/// answer. Its progress lines go to this app's own stderr. At `INSTALL_CAP`
+/// the command and everything it started are killed.
+async fn install() -> Result<(), String> {
+    match gio::spawn_blocking(|| capped::run(&INSTALL_ARGV, INSTALL_CAP)).await {
+        Ok(ended) => install_outcome(ended),
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }

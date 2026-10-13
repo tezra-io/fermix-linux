@@ -2,8 +2,9 @@
 //! starting, not running, not responding, or too old or too new for this app.
 //! Redrawn only when what it says changes.
 
-use crate::home::{action_button, START_COMMAND};
+use crate::home::action_button;
 use adw::prelude::*;
+use fermix_client::service::start_command;
 use fermix_client::view::DaemonProblem;
 use std::cell::RefCell;
 
@@ -12,8 +13,8 @@ pub struct DownView {
     icon: &'static str,
     title: &'static str,
     description: String,
-    /// Shows the terminal command that tells why Fermix did not start.
-    command: bool,
+    /// The terminal command that tells why Fermix did not start.
+    command: Option<&'static str>,
     waiting: bool,
     /// (label, action)
     button: Option<(&'static str, &'static str)>,
@@ -35,7 +36,7 @@ pub fn waiting(title: &'static str) -> DownView {
         icon: "network-offline-symbolic",
         title,
         description: String::new(),
-        command: false,
+        command: None,
         waiting: true,
         button: None,
     }
@@ -43,7 +44,13 @@ pub fn waiting(title: &'static str) -> DownView {
 
 /// `needs_it` says what this surface cannot do without Fermix, for the
 /// not-running case ("Providers are read from Fermix. Start it to see them.").
-pub fn down_view(problem: &DaemonProblem, wake_failed: bool, needs_it: &str) -> DownView {
+/// `bound` picks the command a failed start names, as Home does.
+pub fn down_view(
+    problem: &DaemonProblem,
+    wake_failed: bool,
+    bound: bool,
+    needs_it: &str,
+) -> DownView {
     let (title, description, button) = match problem {
         DaemonProblem::UpdateNeeded(sentence) => ("Update needed", sentence.clone(), None),
         DaemonProblem::NotRunning => (
@@ -65,7 +72,7 @@ pub fn down_view(problem: &DaemonProblem, wake_failed: bool, needs_it: &str) -> 
         icon,
         title,
         description,
-        command: false,
+        command: None,
         waiting: false,
         button,
     };
@@ -73,7 +80,7 @@ pub fn down_view(problem: &DaemonProblem, wake_failed: bool, needs_it: &str) -> 
         Some((_, action)) if wake_failed => DownView {
             title: "Fermix did not come back",
             description: "To see why, run this in a terminal:".to_owned(),
-            command: true,
+            command: Some(start_command(bound)),
             button: Some(("Try again", action)),
             ..view
         },
@@ -117,9 +124,9 @@ fn down_child(view: &DownView) -> gtk::Widget {
         .spacing(18)
         .halign(gtk::Align::Center)
         .build();
-    if view.command {
+    if let Some(command) = view.command {
         let command = gtk::Label::builder()
-            .label(START_COMMAND)
+            .label(command)
             .selectable(true)
             .css_classes(["monospace"])
             .build();
@@ -136,4 +143,30 @@ fn down_child(view: &DownView) -> gtk::Widget {
         child.append(&button);
     }
     child.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::down_view;
+    use fermix_client::service::{INSTALL_COMMAND, START_COMMAND};
+    use fermix_client::view::DaemonProblem;
+
+    #[test]
+    fn a_failed_start_names_the_command_the_account_starts_with() {
+        let unbound = down_view(&DaemonProblem::NotRunning, true, false, "");
+        assert_eq!(unbound.command, Some(INSTALL_COMMAND));
+        let bound = down_view(&DaemonProblem::NotRunning, true, true, "");
+        assert_eq!(bound.command, Some(START_COMMAND));
+        assert_eq!(bound.title(), "Fermix did not come back");
+    }
+
+    #[test]
+    fn no_command_is_named_until_a_start_has_failed() {
+        for bound in [true, false] {
+            let view = down_view(&DaemonProblem::NotRunning, false, bound, "");
+            assert_eq!(view.command, None);
+        }
+        let update = down_view(&DaemonProblem::UpdateNeeded("x".into()), true, false, "");
+        assert_eq!(update.command, None);
+    }
 }

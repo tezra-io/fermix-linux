@@ -1,11 +1,14 @@
-//! The setup assistant (M38 §5.5): Welcome, Connect your AI, About you,
-//! Applying and Ready, as pages in one dialog over the window. It opens while
-//! Fermix says setup is required; closing it marks nothing done, and Home keeps
-//! offering to continue. Its rules live in `fermix_client::onboarding`.
+//! The setup assistant (M38 §5.5): Welcome, Starting, Connect your AI, About
+//! you, Applying and Ready, as pages in one dialog over the window. It opens on
+//! a fresh account and while Fermix says setup is required; closing it marks
+//! nothing done, and Home keeps offering to continue. Its rules live in
+//! `fermix_client::onboarding`.
 
 use crate::providers::ProvidersPage;
 use adw::prelude::*;
-use fermix_client::onboarding::{DEFAULT_STYLE, STYLES};
+use fermix_client::onboarding::{
+    DEFAULT_STYLE, STARTING_ANSWER, STARTING_NOTE, STARTING_SERVICE, STARTING_TITLE, STYLES,
+};
 use fermix_client::phone::SETUP_ROW;
 use gtk::glib;
 
@@ -16,6 +19,14 @@ pub struct AboutFields {
     pub assistant: adw::EntryRow,
     /// The daemon's reason when the save was refused.
     pub error: gtk::Label,
+}
+
+/// Starting's two steps: the engine's own activation, then this window's read.
+pub struct StartingRows {
+    pub service: Step,
+    pub answer: Step,
+    pub error: gtk::Label,
+    pub retry: gtk::Button,
 }
 
 pub struct ApplyingRows {
@@ -77,6 +88,7 @@ pub struct Assistant {
     /// Connect your AI is the Providers list itself, drawn a second time.
     pub providers: ProvidersPage,
     pub connect_next: gtk::Button,
+    pub starting: StartingRows,
     pub about: AboutFields,
     pub applying: ApplyingRows,
     pub ready: adw::StatusPage,
@@ -88,11 +100,13 @@ impl Assistant {
     pub fn new() -> Assistant {
         let providers = ProvidersPage::new();
         let connect_next = pill("Continue", "win.assistant-next");
+        let (starting, starting_page) = starting_page();
         let (about, about_page) = about_page();
         let (applying, applying_page) = applying_page();
         let (ready, phone, ready_page) = ready_page();
         let nav = adw::NavigationView::new();
         nav.add(&welcome_page());
+        nav.add(&starting_page);
         nav.add(&page(
             "connect",
             "Connect your AI",
@@ -113,6 +127,7 @@ impl Assistant {
             nav,
             providers,
             connect_next,
+            starting,
             about,
             applying,
             ready,
@@ -120,12 +135,16 @@ impl Assistant {
         }
     }
 
-    /// Shows one stage, keeping Back to the stages before it.
+    /// Shows one stage, keeping Back to the stages before it. Starting is not
+    /// one of them once it has been left, since Back over it would run it
+    /// again: the stage it leads to sits straight after Welcome.
     pub fn show(&self, tag: &str) {
-        if self.nav.visible_page().and_then(|p| p.tag()).as_deref() == Some(tag) {
-            return;
+        let shown = self.nav.visible_page().and_then(|p| p.tag());
+        match shown.as_deref() {
+            Some(shown) if shown == tag => {}
+            Some("starting") => self.nav.replace_with_tags(&["welcome", tag]),
+            _ => self.nav.push_by_tag(tag),
         }
-        self.nav.push_by_tag(tag);
     }
 }
 
@@ -235,25 +254,41 @@ fn about_page() -> (AboutFields, adw::NavigationPage) {
     (fields, page)
 }
 
+/// Starting runs once Begin finds no daemon answering. Its page cannot be
+/// popped: Back over it would run it again.
+fn starting_page() -> (StartingRows, adw::NavigationPage) {
+    let service = Step::new(STARTING_SERVICE);
+    let answer = Step::new(STARTING_ANSWER);
+    answer.row.set_visible(false);
+    let group = adw::PreferencesGroup::builder()
+        .description(STARTING_NOTE)
+        .build();
+    group.add(&service.row);
+    group.add(&answer.row);
+    let (error, retry, errors) = failure_group();
+    let content = adw::PreferencesPage::new();
+    content.add(&group);
+    content.add(&errors);
+    let rows = StartingRows {
+        service,
+        answer,
+        error,
+        retry,
+    };
+    let page = page("starting", STARTING_TITLE, &content, None);
+    page.set_can_pop(false);
+    (rows, page)
+}
+
 fn applying_page() -> (ApplyingRows, adw::NavigationPage) {
     let save = Step::new("Saving your details");
     let restart = Step::new("Restarting Fermix to apply them");
     let group = adw::PreferencesGroup::new();
     group.add(&save.row);
     group.add(&restart.row);
-    let error = error_label();
-    let retry = gtk::Button::builder()
-        .label("Try again")
-        .halign(gtk::Align::Start)
-        .visible(false)
-        .build();
-    // Retry re-reads where setup stands; it never writes About you again unasked.
-    retry.set_action_name(Some("win.assistant-next"));
+    let (error, retry, errors) = failure_group();
     let content = adw::PreferencesPage::new();
     content.add(&group);
-    let errors = adw::PreferencesGroup::new();
-    errors.add(&error);
-    errors.add(&retry);
     content.add(&errors);
     let rows = ApplyingRows {
         save,
@@ -262,6 +297,22 @@ fn applying_page() -> (ApplyingRows, adw::NavigationPage) {
         retry,
     };
     (rows, page("applying", "Applying", &content, None))
+}
+
+/// Why a stage stopped, and Try again. Retry re-reads where setup stands; it
+/// never writes About you again unasked.
+fn failure_group() -> (gtk::Label, gtk::Button, adw::PreferencesGroup) {
+    let error = error_label();
+    let retry = gtk::Button::builder()
+        .label("Try again")
+        .halign(gtk::Align::Start)
+        .visible(false)
+        .build();
+    retry.set_action_name(Some("win.assistant-next"));
+    let group = adw::PreferencesGroup::new();
+    group.add(&error);
+    group.add(&retry);
+    (error, retry, group)
 }
 
 /// The last screen. Its phone row, between the other two, opens Channels with the Phone dialog

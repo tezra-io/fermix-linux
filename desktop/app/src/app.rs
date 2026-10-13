@@ -3,7 +3,7 @@
 
 use crate::assistant::Assistant;
 use crate::audio::Endpoints;
-use crate::background_flow::login_entry;
+use crate::background_flow::{binding_file, login_entry};
 use crate::chat::ChatPage;
 use crate::companion::Companion;
 use crate::conversation::Conversation;
@@ -26,7 +26,9 @@ use adw::prelude::*;
 use fermix_client::greeting::{about_you_name, ABOUT_YOU};
 use fermix_client::management::{CallError, PROTOCOL_VERSION};
 use fermix_client::model::{Hello, SetupState};
+use fermix_client::onboarding::{opening, Launch, Opening};
 use fermix_client::overview::Overview;
+use fermix_client::service::read_binding;
 use fermix_client::view::{daemon_problem, hello_problem, Activity, Recent};
 use fermix_client::voice::Microphone;
 use gtk::gio;
@@ -176,19 +178,11 @@ fn start(app: &Rc<App>, hidden: bool) {
         app.shell.window.present();
     }
     app.start_tray(hidden);
+    let launch = if hidden { Launch::Login } else { Launch::User };
     let first = app.clone();
     glib::spawn_future_local(async move {
         first.refresh().await;
-        first.land();
-        // Until setup is finished the assistant opens with the window (M38 §5.5).
-        let setup_needed = first
-            .state
-            .borrow()
-            .snapshot()
-            .is_some_and(|s| s.state.readiness.status != "ready");
-        if setup_needed {
-            first.open_assistant();
-        }
+        first.open_first(launch);
         first.reassert_open_at_login();
     });
     start_idle_refresh(app);
@@ -314,10 +308,26 @@ impl App {
         });
     }
 
-    /// After the first read: Chat when Fermix is ready, Home when it needs
-    /// setting up. Leaves the window alone if the user has already moved.
+    /// After the first read, what the window opens on, as `opening` decides it
+    /// from how the window was started, the binding and the daemon's answer.
+    fn open_first(self: &Rc<Self>, launch: Launch) {
+        let binding = read_binding(&binding_file());
+        let first = opening(
+            launch,
+            &binding,
+            self.state.borrow().snapshot().map(|s| &s.state),
+        );
+        match first {
+            Opening::Welcome => self.open_assistant(),
+            Opening::Recovery(sentence) => self.open_recovery(&sentence),
+            Opening::Chat => self.land(),
+            Opening::Home => {}
+        }
+    }
+
+    /// Chat, unless the user has already moved off Home.
     fn land(&self) {
-        if self.shell.visible_page().as_deref() != Some("home") || !self.is_ready() {
+        if self.shell.visible_page().as_deref() != Some("home") {
             return;
         }
         self.shell.show_page("chat");

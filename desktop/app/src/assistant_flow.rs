@@ -1,12 +1,18 @@
-//! The setup assistant's controller: which stage to show, the one About you
-//! write, the restart when one is needed, and the finish gate (M38 §5.5).
+//! The setup assistant's controller: which stage to show, Starting when Fermix
+//! is not answering, the one About you write, the restart when one is needed,
+//! and the finish gate (M38 §5.5).
 
 use crate::app::App;
 use crate::assistant::{Assistant, Mark};
 use crate::dialogs::form_dialog;
+use crate::service::{WAKE_INTERVAL, WAKE_TRIES};
+use crate::state::Connection;
 use adw::prelude::*;
 use fermix_client::management::CallError;
-use fermix_client::onboarding::{finish_gate, landing, personalization_answer, Stage};
+use fermix_client::onboarding::{
+    already_answered, finish_gate, landing, personalization_answer, starting_silent, Stage,
+    STOPPED_ANSWERING,
+};
 use fermix_client::phone::{offers_phone, Intent};
 use fermix_client::view::answers_with;
 use gtk::glib;
@@ -15,7 +21,8 @@ use std::time::Instant;
 
 fn tag(stage: Stage) -> &'static str {
     match stage {
-        Stage::Welcome | Stage::Starting => "welcome",
+        Stage::Welcome => "welcome",
+        Stage::Starting => "starting",
         Stage::Connect => "connect",
         Stage::AboutYou => "about",
         Stage::Applying => "applying",
@@ -57,24 +64,101 @@ impl App {
         assistant.connect_next.set_sensitive(connected);
     }
 
+    /// Opens the assistant stopped on Starting with `sentence`, why the binding
+    /// cannot be used. Nothing is started: Try again reads the binding again.
+    pub fn open_recovery(self: &Rc<Self>, sentence: &str) {
+        self.open_assistant();
+        self.with_assistant(|a| a.starting.service.mark(Mark::Failed));
+        self.starting_failed(sentence);
+    }
+
     /// Moves to the first stage with work left, from what Fermix reports now.
+    /// With nothing answering, Starting brings Fermix up first.
     pub async fn assistant_advance(self: Rc<Self>) {
         self.refresh().await;
-        let stage = match self.state.borrow().snapshot() {
-            Some(snapshot) => landing(&snapshot.state),
-            None => {
-                return self
-                    .shell
-                    .toast("Fermix is not answering. Start it from Home.")
-            }
-        };
-        if stage == Stage::Applying {
-            return self.assistant_apply(false).await;
+        let stage = self
+            .state
+            .borrow()
+            .snapshot()
+            .map(|snapshot| landing(&snapshot.state));
+        match stage {
+            Some(stage) => self.assistant_land(stage).await,
+            None => self.assistant_start().await,
         }
-        if stage == Stage::Ready {
-            return self.assistant_finish_gate().await;
+    }
+
+    async fn assistant_land(self: Rc<Self>, stage: Stage) {
+        match stage {
+            Stage::Applying => self.assistant_apply(false).await,
+            Stage::Ready => self.assistant_finish_gate().await,
+            _ => self.with_assistant(|a| a.show(tag(stage))),
         }
-        self.with_assistant(|a| a.show(tag(stage)));
+    }
+
+    /// Starting: the engine's own activation, then the wait for it to answer
+    /// this window, each on its row, then on to where setup stands. A failure
+    /// stays on the page with its sentence and Try again. A start already
+    /// under way, such as a second press, is left to finish, and a daemon that
+    /// answered but cannot serve this window stops it before anything runs, or
+    /// names why the wait failed.
+    async fn assistant_start(self: Rc<Self>) {
+        if self.state.borrow().waking {
+            return glib::g_debug!("fermix", "Fermix is already starting");
+        }
+        self.with_assistant(|a| {
+            a.show("starting");
+            a.starting.error.set_visible(false);
+            a.starting.retry.set_visible(false);
+            a.starting.service.mark(Mark::Working);
+            a.starting.answer.row.set_visible(false);
+        });
+        if let Some(sentence) = self.answered_unusable() {
+            self.with_assistant(|a| {
+                a.starting.service.mark(Mark::Done);
+                a.starting.answer.row.set_visible(true);
+                a.starting.answer.mark(Mark::Failed);
+            });
+            return self.starting_failed(&sentence);
+        }
+        if let Err(sentence) = self.start_engine().await {
+            self.with_assistant(|a| a.starting.service.mark(Mark::Failed));
+            return self.starting_failed(&sentence);
+        }
+        self.with_assistant(|a| {
+            a.starting.service.mark(Mark::Done);
+            a.starting.answer.row.set_visible(true);
+            a.starting.answer.mark(Mark::Working);
+        });
+        if !self.wait_for_daemon(None, "Fermix started").await {
+            self.with_assistant(|a| a.starting.answer.mark(Mark::Failed));
+            let sentence = self
+                .answered_unusable()
+                .unwrap_or_else(|| starting_silent(WAKE_INTERVAL * WAKE_TRIES));
+            return self.starting_failed(&sentence);
+        }
+        self.with_assistant(|a| a.starting.answer.mark(Mark::Done));
+        let stage = self.state.borrow().snapshot().map(|s| landing(&s.state));
+        match stage {
+            Some(stage) => self.assistant_land(stage).await,
+            None => self.starting_failed(STOPPED_ANSWERING),
+        }
+    }
+
+    /// What the daemon said when it answered but cannot serve this window.
+    fn answered_unusable(&self) -> Option<String> {
+        match &self.state.borrow().connection {
+            Connection::Down(problem) => already_answered(problem),
+            _ => None,
+        }
+    }
+
+    fn starting_failed(&self, sentence: &str) {
+        self.with_assistant(|a| {
+            a.show("starting");
+            a.starting.error.set_text(sentence);
+            a.starting.error.set_visible(true);
+            a.starting.retry.set_visible(true);
+        });
     }
 
     /// Applying: the About you write when `write`, then a restart if Fermix
@@ -170,7 +254,7 @@ impl App {
             let state = self.state.borrow();
             let Some(snapshot) = state.snapshot() else {
                 drop(state);
-                return self.applying_failed("Fermix stopped answering.");
+                return self.applying_failed(STOPPED_ANSWERING);
             };
             finish_gate(snapshot.distribution.as_deref(), &snapshot.state)
                 .map(|()| answers_with(&snapshot.state))

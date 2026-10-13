@@ -26,9 +26,12 @@ const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.
 /// starting. `None` while it answers, or before the first read.
 fn down_state(state: &State) -> Option<DownView> {
     match &state.connection {
-        Connection::Down(problem) if !state.waking => {
-            Some(down_view(problem, state.wake_failed, NEEDS_FERMIX))
-        }
+        Connection::Down(problem) if !state.waking => Some(down_view(
+            problem,
+            state.wake_failed,
+            state.background.binding,
+            NEEDS_FERMIX,
+        )),
         Connection::Down(_) => Some(waiting("Starting Fermix")),
         Connection::Up(_) | Connection::Connecting => None,
     }

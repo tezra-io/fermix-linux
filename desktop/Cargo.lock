@@ -117,6 +117,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "earshot",
+ "libc",
  "pulldown-cmark",
  "qrcode",
  "rqrr",
