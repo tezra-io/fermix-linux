@@ -4,7 +4,7 @@
 //! Rows decode tolerantly, so a newer daemon's fields and kinds never break it.
 
 use crate::management::CallError;
-use crate::model::{ListedModel, RestartState};
+use crate::model::{ChannelRow, ListedModel, RestartState};
 use crate::view::daemon_problem;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -487,6 +487,31 @@ pub fn switch_key<'a>(channel: &str, section: &'a SectionRows) -> Option<&'a str
         .iter()
         .find(|r| r.kind == Kind::Toggle && r.key == key)
         .map(|r| r.key.as_str())
+}
+
+/// The id of the section holding a channel's settings.
+pub fn channel_section(channel: &str) -> String {
+    format!("channels.{channel}")
+}
+
+/// The channels this computer can run. Readiness lists every channel the engine
+/// knows, but the daemon publishes a channel's section only where it exists, so
+/// off a Mac there is none for iMessage. A row's title and switch come from its
+/// section, so nothing is listed before the sections are read.
+pub fn offered_channels<'a>(
+    channels: &'a [ChannelRow],
+    sections: Option<&[Section]>,
+) -> Vec<&'a ChannelRow> {
+    let Some(sections) = sections else {
+        return Vec::new();
+    };
+    channels
+        .iter()
+        .filter(|c| {
+            let id = channel_section(&c.name);
+            sections.iter().any(|s| s.id == id)
+        })
+        .collect()
 }
 
 /// A channel's state in words. The daemon publishes only a status atom.

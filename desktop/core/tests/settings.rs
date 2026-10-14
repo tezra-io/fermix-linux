@@ -2,12 +2,13 @@
 //! that turn a row into what a control shows and what a control sends back.
 
 use fermix_client::management::{decode_response, CallError, Refusal};
-use fermix_client::model::ModelPage;
+use fermix_client::model::{ChannelRow, ModelPage, SetupState};
 use fermix_client::settings::{
     channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, pane, placeholder, read_failure, sections_for, switch_key, text_answer,
-    unlisted_models, value_width, with_listing, ApplyResult, Kind, ReloadResult, Row, SectionRows,
-    Sections, FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES, WIDEST_VALUE_CHARS,
+    number_view, offered_channels, pane, placeholder, read_failure, sections_for, switch_key,
+    text_answer, unlisted_models, value_width, with_listing, ApplyResult, Kind, ReloadResult, Row,
+    SectionRows, Sections, FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES,
+    WIDEST_VALUE_CHARS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -327,6 +328,38 @@ fn a_channel_says_off_needs_setup_or_connected() {
     assert_eq!(channel_word(false, None), "Off");
     assert_eq!(channel_word(true, Some("setup_required")), "Needs setup");
     assert_eq!(channel_word(true, Some("ok")), "Connected");
+}
+
+fn names(channels: Vec<&ChannelRow>) -> Vec<&str> {
+    channels.iter().map(|c| c.name.as_str()).collect()
+}
+
+/// Readiness lists every channel the engine knows, but the daemon publishes a channel's section
+/// only where the channel exists: off a Mac it publishes none for iMessage. The fixtures are a
+/// Mac's, so a Linux host's sections are theirs without that one.
+#[test]
+fn a_channel_is_listed_only_where_the_daemon_publishes_its_section() {
+    let state: SetupState = decode("setup_state_get");
+    let mac: Sections = decode("settings_sections");
+    let all: Vec<&str> = state.channels.iter().map(|c| c.name.as_str()).collect();
+    assert!(all.contains(&"imessage"), "{all:?}");
+    assert_eq!(
+        names(offered_channels(&state.channels, Some(&mac.sections))),
+        all
+    );
+
+    let mut linux = mac.clone();
+    linux.sections.retain(|s| s.id != "channels.imessage");
+    let offered = names(offered_channels(&state.channels, Some(&linux.sections)));
+    let expected: Vec<&str> = all.iter().copied().filter(|c| *c != "imessage").collect();
+    assert_eq!(offered, expected);
+}
+
+/// A row's title and switch come from its section, so nothing is listed before the sections are.
+#[test]
+fn no_channel_is_listed_before_the_sections_are_read() {
+    let state: SetupState = decode("setup_state_get");
+    assert!(offered_channels(&state.channels, None).is_empty());
 }
 
 /// A channel's switch is its `<channel>_enabled` toggle, wherever the section puts it; the phone
