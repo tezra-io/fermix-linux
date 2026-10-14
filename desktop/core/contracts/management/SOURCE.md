@@ -12,9 +12,8 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `f8a1578c171fb8b2da13d4ebe07c23babaad689f` (2026-10-11, "fix(mobile): a phone must prove
-  its secure hardware before you are asked to pair it"), the last commit to touch
-  `priv/management`
+- Commit: `6bc9d6998247edb9c4b926c97714f88c11a61a9d` (2026-10-14, "feat(doctor): Doctor says when the
+  primary provider is down"), the last commit to touch `priv/management`
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

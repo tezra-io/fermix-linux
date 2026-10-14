@@ -28,16 +28,19 @@ pub enum Activity {
     Switching,
     /// The daemon's own sentence for why the last action failed.
     Failed(String),
+    /// The last action completed, and the daemon's sentence says what it could
+    /// not do: a ChatGPT sign-in that left the default model unchecked.
+    Caveat(String),
     Cancelled,
 }
 
 impl Activity {
-    /// Work the app is still waiting on. `Failed` and `Cancelled` only explain the
-    /// last action, so they must never hold back a refresh.
+    /// Work the app is still waiting on. `Failed`, `Caveat` and `Cancelled` only
+    /// explain the last action, so they must never hold back a refresh.
     pub fn in_flight(&self) -> bool {
         !matches!(
             self,
-            Activity::Idle | Activity::Failed(_) | Activity::Cancelled
+            Activity::Idle | Activity::Failed(_) | Activity::Caveat(_) | Activity::Cancelled
         )
     }
 }
@@ -104,17 +107,25 @@ pub enum Suffix {
     },
 }
 
+/// How a row marks its subtitle: not at all, as a caveat, or as a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    Plain,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowView {
     pub subtitle: String,
-    pub is_error: bool,
+    pub notice: Notice,
     pub suffix: Suffix,
 }
 
 pub fn row_view(row: &ProviderRow, activity: &Activity, recent: Option<Recent>) -> RowView {
-    let resting = |subtitle: String, is_error: bool| RowView {
+    let resting = |subtitle: String, notice: Notice| RowView {
         subtitle,
-        is_error,
+        notice,
         suffix: idle_suffix(row),
     };
     match activity {
@@ -138,16 +149,20 @@ pub fn row_view(row: &ProviderRow, activity: &Activity, recent: Option<Recent>) 
         Activity::SigningOut => busy("Signing out", CopyLink::None, false),
         Activity::RemovingKey => busy("Removing the key", CopyLink::None, false),
         Activity::Switching => busy("Switching", CopyLink::None, false),
-        Activity::Failed(sentence) => resting(sentence.clone(), true),
-        Activity::Cancelled => resting("Sign-in cancelled".into(), false),
-        Activity::Idle => resting(with_primary(row, resting_sentence(row, recent)), false),
+        Activity::Failed(sentence) => resting(sentence.clone(), Notice::Error),
+        Activity::Caveat(sentence) => resting(sentence.clone(), Notice::Warning),
+        Activity::Cancelled => resting("Sign-in cancelled".into(), Notice::Plain),
+        Activity::Idle => resting(
+            with_primary(row, resting_sentence(row, recent)),
+            Notice::Plain,
+        ),
     }
 }
 
 fn busy(subtitle: &str, copy_link: CopyLink, cancel: bool) -> RowView {
     RowView {
         subtitle: subtitle.into(),
-        is_error: false,
+        notice: Notice::Plain,
         suffix: Suffix::Busy { copy_link, cancel },
     }
 }

@@ -274,8 +274,9 @@ impl App {
         state.recent.remove(provider);
     }
 
-    /// Shows how the last action ended (failed, cancelled) on its row for
-    /// `RECENT_FOR`, then lets the row relax unless something newer replaced it.
+    /// Shows how the last action ended (failed, cancelled, completed with a
+    /// caveat) on its row for `RECENT_FOR`, then lets the row relax unless
+    /// something newer replaced it.
     pub fn settle(self: &Rc<Self>, provider: &str, ended: Activity) {
         assert!(
             !ended.in_flight(),

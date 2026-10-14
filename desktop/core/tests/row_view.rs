@@ -3,7 +3,7 @@
 
 use fermix_client::model::ProviderRow;
 use fermix_client::providers::{Door, ImportSource};
-use fermix_client::view::{row_view, Activity, CopyLink, Lead, MenuItem, Recent, Suffix};
+use fermix_client::view::{row_view, Activity, CopyLink, Lead, MenuItem, Notice, Recent, Suffix};
 use serde_json::json;
 
 fn row(id: &str, auth_modes: &[&str], auth_mode: &str) -> ProviderRow {
@@ -54,7 +54,7 @@ fn job(door: Door, phase: &str) -> Activity {
 fn chatgpt_not_signed_in_leads_with_continue_with_chatgpt() {
     let v = row_view(&codex(), &Activity::Idle, None);
     assert_eq!(v.subtitle, "Not signed in");
-    assert!(!v.is_error);
+    assert_eq!(v.notice, Notice::Plain);
     assert_eq!(
         v.suffix,
         resting(Some((Door::BrowserSignIn, "Continue with ChatGPT")), vec![])
@@ -257,7 +257,7 @@ fn a_failure_shows_the_daemons_sentence_as_an_error_and_the_door_again() {
         None,
     );
     assert_eq!(v.subtitle, "The sign-in was declined.");
-    assert!(v.is_error);
+    assert_eq!(v.notice, Notice::Error);
     assert!(matches!(
         v.suffix,
         Suffix::Resting {
@@ -270,11 +270,34 @@ fn a_failure_shows_the_daemons_sentence_as_an_error_and_the_door_again() {
     ));
 }
 
+/// A sign-in that completed with a caveat (no default model checked) says the
+/// daemon's sentence as a warning, and the row keeps its connected menu.
+#[test]
+fn a_caveat_is_said_as_a_warning_on_a_connected_row() {
+    let sentence = "The default model was not checked against your ChatGPT account.";
+    let v = row_view(
+        &signed_in(codex()),
+        &Activity::Caveat(sentence.into()),
+        Some(Recent::SignedIn),
+    );
+    assert_eq!(v.subtitle, sentence);
+    assert_eq!(v.notice, Notice::Warning);
+    assert!(matches!(
+        &v.suffix,
+        Suffix::Resting { more, .. } if more.contains(&MenuItem::SignOut)
+    ));
+}
+
+#[test]
+fn a_caveat_only_explains_the_last_action() {
+    assert!(!Activity::Caveat("anything".into()).in_flight());
+}
+
 #[test]
 fn a_cancelled_sign_in_says_so() {
     let v = row_view(&codex(), &Activity::Cancelled, None);
     assert_eq!(v.subtitle, "Sign-in cancelled");
-    assert!(!v.is_error);
+    assert_eq!(v.notice, Notice::Plain);
 }
 
 #[test]

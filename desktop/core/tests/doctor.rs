@@ -394,6 +394,29 @@ fn the_live_local_example_decodes_and_its_sign_in_row_opens_providers() {
     assert_eq!(live.checks[1].fix(), None);
 }
 
+/// The engine's local run gained `provider_health`: the primary provider's
+/// recent calls, judged without a request. Its row needs nothing of its own here.
+#[test]
+fn the_provider_health_row_is_named_and_its_failure_opens_providers() {
+    let check: Check = serde_json::from_value(json!({
+        "id":"provider_health","category":"connectivity","severity":"critical",
+        "applicability":"configured","origin":"engine","status":"failed",
+        "summary":"OpenAI Codex: all 6 calls in the last 41 minutes failed; the latest got \
+                   HTTP 520 from Cloudflare in front of the provider, with an HTML error page \
+                   instead of an API answer",
+        "evidence":{"source_name":"provider health","source_status":"fail"},
+        "remediation_code":"provider_health.failed",
+        "remediation":{"title":"The primary provider is not answering",
+                       "body":"Every recent call to it failed, so Fermix cannot reply. Wait for \
+                               it to recover, or make another provider primary.",
+                       "action":{"kind":"settings_pane","target":"providers"}},
+        "duration_ms":1,"finished_at":"2026-10-14T05:00:00Z"}))
+    .unwrap();
+    assert_eq!(check_title(&check.id), "Provider health");
+    assert_eq!(check.status, CheckStatus::Failed);
+    assert_eq!(check.fix().unwrap().label(), "Open Providers");
+}
+
 #[test]
 fn polling_is_bounded_by_the_budget_and_a_hard_cap() {
     assert_eq!(POLL_MS, 500);

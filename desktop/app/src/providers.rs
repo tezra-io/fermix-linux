@@ -9,7 +9,7 @@ use crate::status::{down_view, waiting, DownPage};
 use adw::prelude::*;
 use fermix_client::model::ProviderRow;
 use fermix_client::providers::{connection, Connection as Link, Door};
-use fermix_client::view::{row_view, CopyLink, MenuItem, RowView, Suffix};
+use fermix_client::view::{row_view, CopyLink, MenuItem, Notice, RowView, Suffix};
 use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::time::Instant;
@@ -156,9 +156,9 @@ fn update_row(row: &Row, provider: &ProviderRow, view: RowView) {
         .spacing(6)
         .valign(gtk::Align::Center)
         .build();
-    if view.is_error {
+    if let Some(class) = notice_class(view.notice) {
         let warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
-        warning.add_css_class("error");
+        warning.add_css_class(class);
         fresh.append(&warning);
     }
     for widget in suffix_widgets(provider, &view.suffix) {
@@ -166,6 +166,15 @@ fn update_row(row: &Row, provider: &ProviderRow, view: RowView) {
     }
     swap_suffix(&row.suffix, &fresh);
     *row.last.borrow_mut() = Some(view);
+}
+
+/// The stock style class of the icon that marks a row's subtitle, if any.
+fn notice_class(notice: Notice) -> Option<&'static str> {
+    match notice {
+        Notice::Plain => None,
+        Notice::Warning => Some("warning"),
+        Notice::Error => Some("error"),
+    }
 }
 
 /// Crossfades to `fresh`. The child still fading out from the last swap is
