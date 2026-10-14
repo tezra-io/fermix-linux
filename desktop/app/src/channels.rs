@@ -11,7 +11,9 @@ use crate::settings::SettingsData;
 use adw::prelude::*;
 use fermix_client::model::ChannelRow;
 use fermix_client::phone::{self, CHANNEL};
-use fermix_client::settings::{self as settings_rules, channel_word, sections_for, Section};
+use fermix_client::settings::{
+    self as settings_rules, channel_section, channel_word, offered_channels, sections_for, Section,
+};
 use gtk::glib::{self, variant::ToVariant};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -64,8 +66,12 @@ impl ChannelsPane {
         view
     }
 
+    /// Only the channels this computer can run are listed (`offered_channels`).
     pub fn render(&self, channels: &[ChannelRow], data: &SettingsData, locked: bool) {
-        let lines: Vec<Line> = channels.iter().map(|c| line(c, data, locked)).collect();
+        let lines: Vec<Line> = offered_channels(channels, data.sections.as_deref())
+            .into_iter()
+            .map(|c| line(c, data, locked))
+            .collect();
         if *self.shown.borrow() == lines {
             return;
         }
@@ -81,13 +87,9 @@ impl ChannelsPane {
     }
 }
 
-pub fn section_id(channel: &str) -> String {
-    format!("channels.{channel}")
-}
-
 /// The channel's switch, once its section has been read.
 pub fn switch_key(data: &SettingsData, channel: &str) -> Option<String> {
-    let rows = data.rows.get(&section_id(channel))?;
+    let rows = data.rows.get(&channel_section(channel))?;
     settings_rules::switch_key(channel, rows).map(str::to_owned)
 }
 
@@ -119,7 +121,7 @@ fn words(
 }
 
 fn line(channel: &ChannelRow, data: &SettingsData, locked: bool) -> Line {
-    let section = section_id(&channel.name);
+    let section = channel_section(&channel.name);
     let title = data
         .sections
         .iter()
@@ -187,7 +189,7 @@ fn channel_switch(line: &Line, key: &str, on: bool) -> gtk::Switch {
         "Turn {} on or off",
         line.title
     ))]);
-    let (section, key) = (section_id(&line.name), key.to_owned());
+    let (section, key) = (channel_section(&line.name), key.to_owned());
     switch.connect_active_notify(move |switch| {
         let value = Value::Bool(switch.is_active()).to_string();
         let target = (section.as_str(), key.as_str(), value).to_variant();

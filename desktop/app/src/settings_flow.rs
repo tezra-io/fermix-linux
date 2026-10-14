@@ -3,7 +3,7 @@
 //! refusal lands under the row it names; nothing here retries.
 
 use crate::app::App;
-use crate::channels::{section_id, switch_key};
+use crate::channels::switch_key;
 use crate::descriptor::{Keep, SectionView};
 use crate::dialogs::{leave, secret_dialog, SecretPrompt};
 use crate::secret_save::set_secret;
@@ -13,7 +13,8 @@ use fermix_client::model::ProviderRow;
 use fermix_client::providers::{uses_chatgpt_plan, MANAGE_USAGE, MANAGE_USAGE_HINT, USING_PLAN};
 use fermix_client::secrets::refused_sentence;
 use fermix_client::settings::{
-    matching_panes, pane, read_failure, sections_for, unlisted_models, Kind, MODELS_UNLISTED,
+    channel_section, matching_panes, pane, read_failure, sections_for, unlisted_models, Kind,
+    MODELS_UNLISTED,
 };
 use gtk::glib;
 use serde_json::{Map, Value};
@@ -350,7 +351,7 @@ impl App {
     }
 
     pub fn channel_setup(self: &Rc<Self>, channel: &str) {
-        let section = section_id(channel);
+        let section = channel_section(channel);
         let data = self.settings_data.borrow();
         let title = data
             .sections
