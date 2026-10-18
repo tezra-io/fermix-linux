@@ -1,8 +1,7 @@
 //! How a turn's work reads on the Chat page: each tool's name, what the live
 //! line says while it runs, and the line a finished group folds into.
 
-use fermix_client::acp::ToolKind;
-use fermix_client::activity::{elapsed, live_meta, live_phrase, summary, tool_words};
+use fermix_client::activity::{elapsed, live_meta, live_phrase, summary, tool_words, ToolKind};
 use fermix_client::chat::{RunState, ToolRun};
 
 fn run(name: &str, state: RunState, started: i64, ended: Option<i64>) -> ToolRun {

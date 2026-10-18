@@ -1,7 +1,6 @@
 //! The Fermix desktop app's connection to the daemon. Pure Rust and blocking:
 //! the app runs each call off the GTK main thread, and this crate tests on any host.
 
-pub mod acp;
 pub mod activity;
 pub mod autostart;
 pub mod capabilities;

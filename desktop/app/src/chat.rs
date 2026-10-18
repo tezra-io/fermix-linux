@@ -1,18 +1,22 @@
-//! Chat: the conversation, drawn from `Transcript`, and the composer under it.
-//! The page never talks to Fermix; its buttons fire window actions and
-//! `conversation.rs` does the work.
+//! Chat: the conversation, drawn from `chat::view` of the chat wire's timeline,
+//! the cards waiting for the owner's answer, and the composer under them. The
+//! page never talks to Fermix; its buttons fire window actions and
+//! `chat_session.rs` does the work.
 
 mod activity;
+mod approvals;
 mod blocks;
 mod entries;
 mod table_scroller;
 
+use crate::chat_session::ChatWire;
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{Phase, Transcript};
+use fermix_client::chat::{view, LiveTurn, View};
+use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
@@ -55,6 +59,9 @@ pub struct ChatPage {
     send: gtk::Button,
     down: DownPage,
     banner: adw::Banner,
+    approvals: approvals::Cards,
+    /// The oldest seq drawn, to keep the reader's place when older rows come in above.
+    first_seq: Cell<Option<u64>>,
 }
 
 impl ChatPage {
@@ -70,12 +77,14 @@ impl ChatPage {
         thinking.row.set_visible(false);
         let (follow, conversation, empty) = conversation_area(&list, &thinking.row);
         let (composer, input, send) = composer();
+        let approvals = approvals::Cards::new();
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
         let banner = adw::Banner::new("");
         body.append(&banner);
         body.append(&conversation);
+        body.append(&approvals.widget);
         body.append(&composer);
         let down = DownPage::new();
         let root = gtk::Stack::builder()
@@ -97,35 +106,57 @@ impl ChatPage {
             send,
             down,
             banner,
+            approvals,
+            first_seq: Cell::default(),
         }
     }
 
     /// `name` is the first name About you holds, for the greeting.
-    pub fn render(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+    pub fn render(&self, wire: &ChatWire, state: &State, name: Option<&str>) {
+        let shown = view(&wire.chat);
         let down = down_state(state);
-        if let Some(view) = down.clone().filter(|_| transcript.entries().is_empty()) {
-            self.down.show(view);
+        if let Some(down) = down.clone().filter(|_| shown.entries.is_empty()) {
+            self.down.show(down);
             self.root.set_visible_child_name("down");
             return;
         }
         self.down.reset();
         self.root.set_visible_child_name("chat");
-        self.show_banner(down.as_ref());
-        self.render_conversation(transcript, state, name);
+        self.show_banner(down.as_ref(), &wire.session.shown());
+        self.approvals.show(&wire.chat);
+        self.render_conversation(&shown, state, name);
     }
 
     /// With a conversation on screen the page stays, and the banner says why the
-    /// composer waits and offers the way out the down page would.
-    fn show_banner(&self, down: Option<&DownView>) {
-        self.banner.set_revealed(down.is_some());
-        let Some(view) = down else { return };
-        self.banner.set_title(view.title());
-        let (label, action) = view.button().unzip();
-        self.banner.set_button_label(label);
-        self.banner.set_action_name(action);
+    /// composer waits and offers the way out the down page would. With Fermix up,
+    /// it says why the chat is not connected, in the session's words.
+    fn show_banner(&self, down: Option<&DownView>, shown: &Shown) {
+        if let Some(view) = down {
+            self.banner.set_revealed(true);
+            self.banner.set_title(view.title());
+            let (label, action) = view.button().unzip();
+            self.banner.set_button_label(label);
+            self.banner.set_action_name(action);
+            return;
+        }
+        let sentence = match shown {
+            Shown::NoChat => Some(NO_CHAT.to_owned()),
+            Shown::Disconnected(sentence) | Shown::Refused(sentence) => Some(sentence.clone()),
+            Shown::Idle | Shown::Connecting | Shown::Connected => None,
+        };
+        self.banner.set_revealed(sentence.is_some());
+        self.banner
+            .set_title(sentence.as_deref().unwrap_or_default());
+        self.banner.set_button_label(None);
+        self.banner.set_action_name(None);
     }
 
-    fn render_conversation(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+    /// Whether the newest entry is on screen, so the shared read frontier may move.
+    pub fn reading_latest(&self) -> bool {
+        self.root.is_mapped() && self.follow.stuck.get()
+    }
+
+    fn render_conversation(&self, shown: &View, state: &State, name: Option<&str>) {
         // The time of day on this computer's clock; each render follows it.
         let time = match glib::DateTime::now_local() {
             Ok(now) => Some(time_of_day(now.hour() as u32)),
@@ -135,23 +166,28 @@ impl ChatPage {
             }
         };
         self.empty.set_title(&greeting(time, name));
-        let empty = transcript.entries().is_empty();
+        let empty = shown.entries.is_empty();
         self.conversation
             .set_visible_child_name(if empty { "empty" } else { "messages" });
-        let turn = Turn::of(transcript);
+        let turn = shown.turn.map(Turn::of);
         self.turn.set(turn);
         let live = turn.map(Turn::live);
-        self.show_entries(transcript, live.as_ref());
-        self.thinking.row.set_visible(transcript.thinking());
+        if self.first_seq.replace(shown.first_seq) > shown.first_seq {
+            self.follow.keep_place();
+        }
+        self.show_entries(shown, live.as_ref());
+        self.thinking.row.set_visible(shown.thinking);
         if let Some(live) = &live {
             self.thinking.thinking(live);
         }
         self.keep_time(turn.is_some());
-        self.show_composer(transcript.phase(), state.snapshot().is_some());
+        self.show_composer(shown.turn, state.snapshot().is_some());
     }
 
-    fn show_composer(&self, phase: Phase, up: bool) {
-        let running = phase != Phase::Idle;
+    /// Send, or Stop while a turn this app started runs.
+    fn show_composer(&self, turn: Option<LiveTurn>, up: bool) {
+        let running = turn.is_some_and(|turn| turn.can_stop);
+        let stopping = turn.is_some_and(|turn| turn.stopping);
         let (icon, tooltip, action) = if running {
             ("media-playback-stop-symbolic", "Stop", "win.stop-reply")
         } else {
@@ -162,7 +198,7 @@ impl ChatPage {
         self.send.set_action_name(Some(action));
         let has_text = self.input.buffer().char_count() > 0;
         self.send
-            .set_sensitive(up && phase != Phase::Stopping && (running || has_text));
+            .set_sensitive(up && !stopping && (running || has_text));
         self.input.set_editable(up);
     }
 
@@ -191,8 +227,8 @@ impl ChatPage {
     /// Draws what changed: entries already on screen stay, one that streamed
     /// more in or changed its status is updated in place, and everything from
     /// the first entry that cannot be is drawn anew.
-    fn show_entries(&self, transcript: &Transcript, live: Option<&Live>) {
-        let entries = transcript.entries();
+    fn show_entries(&self, shown_view: &View, live: Option<&Live>) {
+        let entries = &shown_view.entries;
         let mut shown = self.shown.borrow_mut();
         let mut same = 0;
         for (drawn, entry) in shown.iter_mut().zip(entries) {
@@ -209,7 +245,7 @@ impl ChatPage {
             self.list.append(&drawn.row);
             shown.push(drawn);
         }
-        decorate(&shown, transcript, live);
+        decorate(&shown, shown_view, live);
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -244,11 +280,11 @@ struct Turn {
 }
 
 impl Turn {
-    fn of(transcript: &Transcript) -> Option<Turn> {
-        Some(Turn {
-            started: transcript.turn_started()?,
-            stopping: transcript.phase() == Phase::Stopping,
-        })
+    fn of(turn: LiveTurn) -> Turn {
+        Turn {
+            started: turn.started,
+            stopping: turn.stopping,
+        }
     }
 
     fn live(self) -> Live {
@@ -261,22 +297,22 @@ impl Turn {
 
 /// The parts of each entry that follow the rest of the conversation; only the
 /// last entry can be live.
-fn decorate(shown: &[Drawn], transcript: &Transcript, live: Option<&Live>) {
+fn decorate(shown: &[Drawn], view: &View, live: Option<&Live>) {
     let last = shown.len().checked_sub(1);
     for (index, drawn) in shown.iter().enumerate() {
         let is_last = Some(index) == last;
-        let time = transcript.time(index).and_then(clock);
-        drawn.decorate(
-            time.as_deref(),
-            is_last && transcript.can_retry(),
-            live.filter(|_| is_last),
-        );
+        let time = view.times.get(index).cloned().flatten();
+        let time = time.as_deref().and_then(clock);
+        drawn.decorate(time.as_deref(), live.filter(|_| is_last));
     }
 }
 
-/// "14:05" in the local time zone.
-fn clock(at: i64) -> Option<String> {
-    match glib::DateTime::from_unix_local(at).and_then(|time| time.format("%H:%M")) {
+/// "14:05" in the local time zone, from the daemon's RFC 3339 time.
+fn clock(at: &str) -> Option<String> {
+    let parsed = glib::DateTime::from_iso8601(at, None)
+        .and_then(|time| time.to_local())
+        .and_then(|time| time.format("%H:%M"));
+    match parsed {
         Ok(text) => Some(text.into()),
         Err(e) => {
             glib::g_warning!("fermix", "could not show the time {at}: {e}");
@@ -315,6 +351,15 @@ fn conversation_area(list: &gtk::Box, live: &gtk::Box) -> (Follow, gtk::Stack, a
     let overlay = gtk::Overlay::builder().child(&scroller).build();
     overlay.add_overlay(&jump);
     let follow = Follow::new(&scroller, &jump);
+    // The reader reached the oldest row drawn: ask for the page before it.
+    scroller.connect_edge_reached(|scroller, edge| {
+        if edge != gtk::PositionType::Top {
+            return;
+        }
+        if let Err(e) = scroller.activate_action("win.chat-older", None) {
+            glib::g_warning!("fermix", "could not ask for older messages: {e}");
+        }
+    });
     // The mark and a greeting (plan §3.4); the page fills in the title.
     let empty = adw::StatusPage::builder()
         .icon_name("io.tezra.Fermix-symbolic")
@@ -376,6 +421,17 @@ impl Follow {
             adjustment.set_value(adjustment.upper() - adjustment.page_size());
         });
         follow
+    }
+
+    /// Rows are about to come in above: keep the reader where they were, by their distance
+    /// from the bottom, once the new rows are laid out.
+    fn keep_place(&self) {
+        if self.stuck.get() {
+            return;
+        }
+        let a = self.adjustment.clone();
+        let from_bottom = a.upper() - a.value();
+        glib::idle_add_local_once(move || a.set_value(a.upper() - from_bottom));
     }
 
     fn latest(&self) {

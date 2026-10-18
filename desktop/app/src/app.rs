@@ -5,8 +5,8 @@ use crate::assistant::Assistant;
 use crate::audio::Endpoints;
 use crate::background_flow::{binding_file, login_entry};
 use crate::chat::ChatPage;
+use crate::chat_session::ChatWire;
 use crate::companion::Companion;
-use crate::conversation::Conversation;
 use crate::daemon::Daemon;
 use crate::doctor::DoctorPage;
 use crate::home::HomePage;
@@ -50,7 +50,7 @@ pub struct App {
     pub shell: Shell,
     pub daemon: Daemon,
     pub state: RefCell<State>,
-    pub conversation: RefCell<Conversation>,
+    pub wire: RefCell<ChatWire>,
     pub chat: ChatPage,
     pub settings: SettingsPage,
     pub settings_data: RefCell<SettingsData>,
@@ -131,7 +131,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         shell,
         daemon: Daemon::new(),
         state: RefCell::new(State::new()),
-        conversation: RefCell::default(),
+        wire: RefCell::default(),
         chat,
         settings,
         settings_data: RefCell::default(),
@@ -186,17 +186,15 @@ fn start(app: &Rc<App>, hidden: bool) {
         first.reassert_open_at_login();
     });
     start_idle_refresh(app);
+    app.chat_connect();
 }
 
 impl App {
     pub fn render(&self) {
         let state = self.state.borrow();
         let name = about_you_name(self.settings_data.borrow().rows.get(ABOUT_YOU));
-        self.chat.render(
-            &self.conversation.borrow().transcript,
-            &state,
-            name.as_deref(),
-        );
+        self.chat
+            .render(&self.wire.borrow(), &state, name.as_deref());
         self.home.render(&state);
         self.providers.render(&state, Instant::now());
         // Before Settings, which draws the Phones step's rows once the step has added them.
@@ -405,6 +403,12 @@ fn follow_visible_page(app: &Rc<App>) {
                 Some("doctor") => app.doctor.shown(),
                 Some("logs") => app.logs.shown(),
                 Some("companion") => app.voice_page_shown(),
+                // The newest row may have come in while Chat was away: it is read now. The
+                // page maps after this notify, so the check waits for an idle.
+                Some("chat") => {
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || app.chat_seen());
+                }
                 _ => {}
             }
         });
@@ -545,15 +549,15 @@ fn install_service_actions(app: &Rc<App>) {
 }
 
 fn install_chat_actions(app: &Rc<App>) {
-    on_plain(app, "send-message", |app| async move {
-        app.send_message().await
-    });
+    on_plain(app, "send-message", |app| async move { app.send_message() });
     on_plain(app, "stop-reply", |app| async move { app.stop_reply() });
-    on_plain(
-        app,
-        "retry-reply",
-        |app| async move { app.retry_reply().await },
-    );
+    on_plain(app, "chat-older", |app| async move { app.chat_older() });
+    on(app, "chat-approve", |app, id: String| async move {
+        app.answer_approval(&id, true)
+    });
+    on(app, "chat-deny", |app, id: String| async move {
+        app.answer_approval(&id, false)
+    });
     on_plain(app, "new-chat", |app| async move {
         app.shell.show_page("chat");
         app.new_conversation()

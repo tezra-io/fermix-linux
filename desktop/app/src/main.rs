@@ -1,7 +1,6 @@
 //! Fermix for Linux: set up Fermix and chat with it. A client of the daemon
 //! that the `fermix` package runs; it holds no config and no secrets of its own.
 
-mod acp_link;
 mod app;
 mod assistant;
 mod assistant_flow;
@@ -11,8 +10,9 @@ mod capability_flow;
 mod capability_panes;
 mod channels;
 mod chat;
+mod chat_link;
+mod chat_session;
 mod companion;
-mod conversation;
 mod daemon;
 mod descriptor;
 mod dialogs;

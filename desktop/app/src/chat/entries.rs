@@ -1,30 +1,20 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
-//! the tools it ran, its collapsed thoughts, pictures, and failures. A streamed
-//! entry grows in place, so a chunk never redraws what is already on screen.
+//! the tools it ran, the files a row names, and failures. A streamed entry
+//! grows in place, so a chunk never redraws what is already on screen.
 
-use super::activity::{Group, Live, Thought};
+use super::activity::{Group, Live};
 use super::blocks::Shown;
 use adw::prelude::*;
-use fermix_client::acp::Image;
-use fermix_client::chat::{picture_file_name, picture_width, Entry};
+use fermix_client::chat::Entry;
 use fermix_client::markdown::{Block, Draft};
-use gtk::{gdk, gio, glib};
+use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// A picture in the conversation fits a square this many pixels wide.
-const PICTURE_BOUND: i32 = 420;
-/// The picture viewer opens no larger than this, and no smaller than `VIEWER_MIN`.
-const VIEWER_MAX: (i32, i32) = (1000, 760);
-const VIEWER_MIN: (i32, i32) = (360, 280);
-/// The viewer's header bar, which the picture's height does not include.
-const HEADER_HEIGHT: i32 = 47;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
     Person,
     Fermix,
-    Middle,
 }
 
 /// One drawn entry: its row in the list, the time under it, and the parts
@@ -39,12 +29,8 @@ pub struct Drawn {
 enum Parts {
     Fixed,
     Reply(Reply),
-    Thought(Thought),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
-    Failure {
-        retry: gtk::Button,
-    },
 }
 
 struct Reply {
@@ -75,7 +61,6 @@ impl Drawn {
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
             (Parts::Reply(reply), Entry::Assistant(text)) => reply.grow(text),
-            (Parts::Thought(thought), Entry::Thought(text)) => thought.grow(text),
             (Parts::Tools(group), Entry::Tools(runs)) => {
                 if !group.grow(runs) {
                     return false;
@@ -88,23 +73,18 @@ impl Drawn {
     }
 
     /// What depends on the rest of the conversation: the time under the entry,
-    /// whether a failure offers Retry, and whether the turn is still on it.
-    pub fn decorate(&self, time: Option<&str>, retry: bool, live: Option<&Live>) {
+    /// and whether the turn is still on it.
+    pub fn decorate(&self, time: Option<&str>, live: Option<&Live>) {
         self.time.set_visible(time.is_some());
         self.time.set_text(time.unwrap_or_default());
-        if let Parts::Failure { retry: button } = &self.parts {
-            button.set_visible(retry);
-        }
         self.set_live(live);
     }
 
     /// The parts that follow the running turn, which the page's clock also
     /// updates every second.
     pub fn set_live(&self, live: Option<&Live>) {
-        match (&self.parts, &self.entry) {
-            (Parts::Thought(thought), _) => thought.set_live(live),
-            (Parts::Tools(group), Entry::Tools(runs)) => group.set_live(runs, live),
-            _ => {}
+        if let (Parts::Tools(group), Entry::Tools(runs)) = (&self.parts, &self.entry) {
+            group.set_live(runs, live);
         }
     }
 }
@@ -126,26 +106,16 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
                 Parts::Reply(reply),
             )
         }
-        Entry::Thought(text) => {
-            let thought = Thought::new(text);
-            (
-                Side::Fermix,
-                thought.widget(),
-                None,
-                Parts::Thought(thought),
-            )
+        Entry::Sending(text) => (Side::Person, sending_bubble(text), None, Parts::Fixed),
+        Entry::Media { line, person } => {
+            let side = if *person { Side::Person } else { Side::Fermix };
+            (side, media_line(line), None, Parts::Fixed)
         }
-        Entry::Image(image) => (Side::Fermix, picture(image), None, Parts::Fixed),
-        Entry::Attachment(name) => (Side::Fermix, attachment(name), None, Parts::Fixed),
         Entry::Tools(runs) => {
             let group = Group::new(runs);
             (Side::Fermix, group.widget(), None, Parts::Tools(group))
         }
-        Entry::Notice(text) => (Side::Middle, notice_line(text), None, Parts::Fixed),
-        Entry::Failure(text) => {
-            let (widget, retry) = failure(text);
-            (Side::Fermix, widget, None, Parts::Failure { retry })
-        }
+        Entry::Failure(text) => (Side::Fermix, failure(text), None, Parts::Fixed),
     }
 }
 
@@ -159,7 +129,6 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
     let align = match side {
         Side::Person => gtk::Align::End,
         Side::Fermix => gtk::Align::Start,
-        Side::Middle => gtk::Align::Center,
     };
     let line = gtk::Box::builder().spacing(6).halign(align).build();
     if let Some(source) = &source {
@@ -186,7 +155,6 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
     let side_class = match side {
         Side::Person => "person",
         Side::Fermix => "fermix",
-        Side::Middle => "middle",
     };
     let row = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -257,6 +225,14 @@ fn user_bubble(text: &str) -> gtk::Widget {
     label.upcast()
 }
 
+/// A question on its way: the person's bubble, dimmed, until the daemon accepts it.
+fn sending_bubble(text: &str) -> gtk::Widget {
+    let bubble = user_bubble(text);
+    bubble.set_opacity(0.6);
+    bubble.set_tooltip_text(Some("Sending"));
+    bubble
+}
+
 impl Reply {
     fn new(text: &str) -> Reply {
         let body = gtk::Box::builder()
@@ -306,169 +282,9 @@ impl Reply {
     }
 }
 
-fn picture(image: &Image) -> gtk::Widget {
-    let bytes = glib::Bytes::from(&image.bytes[..]);
-    match gdk::Texture::from_bytes(&bytes) {
-        Ok(texture) => picture_button(&texture, image).upcast(),
-        Err(e) => {
-            glib::g_warning!("fermix", "a {} picture did not decode: {e}", image.mime);
-            let line = format!(
-                "Fermix sent a picture this app cannot open ({}).",
-                image.mime
-            );
-            quiet_line("image-missing-symbolic", &line)
-        }
-    }
-}
-
-/// The picture scaled to fit the conversation; a click opens it full size.
-fn picture_button(texture: &gdk::Texture, image: &Image) -> gtk::Button {
-    let picture = gtk::Picture::builder()
-        .paintable(texture)
-        .can_shrink(true)
-        .content_fit(gtk::ContentFit::ScaleDown)
-        .alternative_text("Picture from Fermix")
-        .overflow(gtk::Overflow::Hidden)
-        .css_classes(["chat-picture"])
-        .build();
-    let width = picture_width(texture.width(), texture.height(), PICTURE_BOUND);
-    let clamp = adw::Clamp::builder()
-        .maximum_size(width)
-        .tightening_threshold(width)
-        .child(&picture)
-        .build();
-    let button = gtk::Button::builder()
-        .child(&clamp)
-        .tooltip_text("Open full size")
-        .css_classes(["flat", "chat-picture-button"])
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label(
-        "Picture from Fermix. Open full size",
-    )]);
-    let (texture, image) = (texture.clone(), image.clone());
-    button.connect_clicked(move |button| open_viewer(button, &texture, &image));
-    button
-}
-
-fn open_viewer(anchor: &gtk::Button, texture: &gdk::Texture, image: &Image) {
-    let picture = gtk::Picture::builder()
-        .paintable(texture)
-        .can_shrink(true)
-        .content_fit(gtk::ContentFit::Contain)
-        .alternative_text("Picture from Fermix")
-        .hexpand(true)
-        .vexpand(true)
-        .build();
-    let header = adw::HeaderBar::new();
-    header.pack_start(&save_picture_button(image));
-    header.pack_start(&copy_picture_button(texture));
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&header);
-    view.set_content(Some(&picture));
-    let dialog = adw::Dialog::builder()
-        .title("Picture")
-        .content_width(texture.width().clamp(VIEWER_MIN.0, VIEWER_MAX.0))
-        .content_height((texture.height() + HEADER_HEIGHT).clamp(VIEWER_MIN.1, VIEWER_MAX.1))
-        .child(&view)
-        .build();
-    dialog.present(Some(anchor));
-}
-
-fn copy_picture_button(texture: &gdk::Texture) -> gtk::Button {
-    let button = gtk::Button::builder()
-        .icon_name("edit-copy-symbolic")
-        .tooltip_text("Copy")
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label("Copy picture")]);
-    let texture = texture.clone();
-    button.connect_clicked(move |button| {
-        button.clipboard().set_texture(&texture);
-        toast(button, "Copied");
-    });
-    button
-}
-
-fn save_picture_button(image: &Image) -> gtk::Button {
-    let button = gtk::Button::builder()
-        .icon_name("document-save-as-symbolic")
-        .tooltip_text("Save As…")
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label("Save picture as")]);
-    let image = image.clone();
-    button.connect_clicked(move |button| {
-        let (button, image) = (button.clone(), image.clone());
-        glib::spawn_future_local(async move { save_picture(&button, &image).await });
-    });
-    button
-}
-
-/// Writes the picture's own bytes where the person chooses, through the portal.
-async fn save_picture(anchor: &gtk::Button, image: &Image) {
-    let window = anchor.root().and_downcast::<gtk::Window>();
-    let dialog = gtk::FileDialog::builder()
-        .title("Save Picture")
-        .initial_name(picture_file_name(&image.mime))
-        .modal(true)
-        .build();
-    let file = match dialog.save_future(window.as_ref()).await {
-        Ok(file) => file,
-        Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
-        Err(e) => {
-            glib::g_warning!("fermix", "the save dialog failed: {e}");
-            return toast(anchor, "The save dialog did not open.");
-        }
-    };
-    let written = file
-        .replace_contents_future(
-            image.bytes.to_vec(),
-            None,
-            false,
-            gio::FileCreateFlags::REPLACE_DESTINATION,
-        )
-        .await;
-    match written {
-        Ok(_) => toast(anchor, "Picture saved"),
-        Err((_, e)) => {
-            glib::g_warning!("fermix", "saving the picture failed: {e}");
-            toast(
-                anchor,
-                &format!("The picture was not saved: {}", e.message()),
-            );
-        }
-    }
-}
-
-/// A file Fermix sent that ACP cannot carry: named, and said plainly.
-fn attachment(name: &str) -> gtk::Widget {
-    let icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
-    icon.set_valign(gtk::Align::Center);
-    let title = gtk::Label::builder()
-        .label(name)
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
-        .max_width_chars(40)
-        .selectable(true)
-        .css_classes(["heading"])
-        .build();
-    let note = gtk::Label::builder()
-        .label("Fermix has this file but cannot send it here yet.")
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["dimmed", "caption"])
-        .build();
-    let text = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .build();
-    text.append(&title);
-    text.append(&note);
-    let chip = gtk::Box::builder()
-        .spacing(12)
-        .css_classes(["chat-file"])
-        .build();
-    chip.append(&icon);
-    chip.append(&text);
-    chip.upcast()
+/// A file a row names, by kind and name, until the strip draws it.
+fn media_line(line: &str) -> gtk::Widget {
+    quiet_line("mail-attachment-symbolic", line)
 }
 
 fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
@@ -486,18 +302,8 @@ fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
     row.upcast()
 }
 
-fn notice_line(text: &str) -> gtk::Widget {
-    gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .justify(gtk::Justification::Center)
-        .css_classes(["dimmed", "caption"])
-        .build()
-        .upcast()
-}
-
-/// Why the reply did not come, and a way to ask again while that can help.
-fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
+/// Why the reply did not come, and where the reason is.
+fn failure(text: &str) -> gtk::Widget {
     let icon = gtk::Image::from_icon_name("dialog-error-symbolic");
     icon.add_css_class("error");
     icon.set_valign(gtk::Align::Start);
@@ -506,11 +312,6 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .wrap(true)
         .xalign(0.0)
         .selectable(true)
-        .build();
-    let retry = gtk::Button::builder()
-        .label("Retry")
-        .action_name("win.retry-reply")
-        .visible(false)
         .build();
     // The reason for any failure is in the daemon's log, which Logs shows.
     let logs = gtk::Button::builder()
@@ -523,7 +324,6 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .spacing(6)
         .halign(gtk::Align::Start)
         .build();
-    actions.append(&retry);
     actions.append(&logs);
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -537,5 +337,5 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .build();
     bubble.append(&icon);
     bubble.append(&column);
-    (bubble.upcast(), retry)
+    bubble.upcast()
 }
