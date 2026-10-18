@@ -3,10 +3,11 @@
 //! entry grows in place, so a chunk never redraws what is already on screen.
 
 use super::activity::{Group, Live, Thought};
+use super::blocks::Shown;
 use adw::prelude::*;
 use fermix_client::acp::Image;
 use fermix_client::chat::{picture_file_name, picture_width, Entry};
-use fermix_client::markdown::{render, Block};
+use fermix_client::markdown::{Block, Draft};
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -48,7 +49,10 @@ enum Parts {
 
 struct Reply {
     body: gtk::Box,
-    blocks: Vec<(Block, gtk::Widget, Option<gtk::Label>)>,
+    blocks: Vec<(Block, Shown)>,
+    /// The reply's Markdown parsed so far, so a streamed piece re-parses only
+    /// the part still being written.
+    draft: Draft,
     /// The Markdown the copy button copies, kept current while the reply grows.
     source: Rc<RefCell<String>>,
 }
@@ -209,7 +213,7 @@ fn message_actions(line: &gtk::Box, source: Source) -> gio::SimpleActionGroup {
 }
 
 /// Added to a message label's own right-click menu (Copy, Select All).
-fn message_menu() -> gio::Menu {
+pub(super) fn message_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Copy Message"), Some("message.copy"));
     menu
@@ -227,7 +231,7 @@ fn copy_button(source: Source) -> gtk::Button {
     button
 }
 
-fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
+pub(super) fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
     widget.clipboard().set_text(text);
     toast(widget, "Copied");
 }
@@ -265,134 +269,41 @@ impl Reply {
         let mut reply = Reply {
             body,
             blocks: Vec::new(),
+            draft: Draft::default(),
             source: Rc::default(),
         };
         reply.grow(text);
         reply
     }
 
-    /// Unchanged blocks stay, a changed text block is updated in place, and
-    /// anything after it is redrawn.
+    /// Unchanged blocks stay, the first changed one is updated in place when
+    /// it is the same kind, and anything after it is redrawn.
     fn grow(&mut self, text: &str) {
-        let fresh = render(text);
+        let tail = self.draft.update(text);
+        let fresh: Vec<&Block> = self.draft.settled().iter().chain(&tail).collect();
         let same = self
             .blocks
             .iter()
             .zip(&fresh)
-            .take_while(|((old, _, _), new)| old == *new)
+            .take_while(|((old, _), new)| old == **new)
             .count();
         let mut next = same;
-        if let (Some((old, _, Some(label))), Some(new)) =
-            (self.blocks.get_mut(same), fresh.get(same))
-        {
-            if set_in_place(label, old, new) {
-                *old = new.clone();
+        if let (Some((old, shown)), Some(new)) = (self.blocks.get_mut(same), fresh.get(same)) {
+            if shown.update(old, new) {
+                *old = (*new).clone();
                 next += 1;
             }
         }
-        for (_, widget, _) in self.blocks.drain(next..) {
-            self.body.remove(&widget);
+        for (_, shown) in self.blocks.drain(next..) {
+            self.body.remove(&shown.widget);
         }
         for block in fresh.into_iter().skip(next) {
-            let (widget, label) = block_widget(&block);
-            self.body.append(&widget);
-            self.blocks.push((block, widget, label));
+            let shown = Shown::new(block);
+            self.body.append(&shown.widget);
+            self.blocks.push((block.clone(), shown));
         }
         self.source.replace(text.to_owned());
     }
-}
-
-fn set_in_place(label: &gtk::Label, old: &Block, new: &Block) -> bool {
-    match (old, new) {
-        (Block::Text(_), Block::Text(markup)) | (Block::Quote(_), Block::Quote(markup)) => {
-            label.set_markup(markup);
-            true
-        }
-        (Block::Code(_), Block::Code(text)) => {
-            label.set_text(text);
-            true
-        }
-        _ => false,
-    }
-}
-
-/// A reply's text, no wider than reads comfortably.
-fn text_label(markup: &str) -> gtk::Label {
-    let label = gtk::Label::builder()
-        .wrap(true)
-        .wrap_mode(gtk::pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .selectable(true)
-        .max_width_chars(90)
-        .extra_menu(&message_menu())
-        .build();
-    label.set_markup(markup);
-    label
-}
-
-fn block_widget(block: &Block) -> (gtk::Widget, Option<gtk::Label>) {
-    match block {
-        Block::Text(markup) => {
-            let label = text_label(markup);
-            (label.clone().upcast(), Some(label))
-        }
-        Block::Heading(level, markup) => {
-            let size = match level {
-                1 => "x-large",
-                2 => "large",
-                _ => "medium",
-            };
-            let label = text_label(&format!(
-                "<span size=\"{size}\" weight=\"bold\">{markup}</span>"
-            ));
-            (label.upcast(), None)
-        }
-        Block::Quote(markup) => {
-            let label = text_label(markup);
-            label.add_css_class("chat-quote");
-            label.add_css_class("dimmed");
-            (label.clone().upcast(), Some(label))
-        }
-        Block::Code(text) => code_block(text),
-        Block::Rule => (
-            gtk::Separator::new(gtk::Orientation::Horizontal).upcast(),
-            None,
-        ),
-    }
-}
-
-/// Monospace, scrolled sideways when wide, with its own copy button.
-fn code_block(text: &str) -> (gtk::Widget, Option<gtk::Label>) {
-    let label = gtk::Label::builder()
-        .label(text)
-        .xalign(0.0)
-        .selectable(true)
-        .extra_menu(&message_menu())
-        .css_classes(["monospace"])
-        .build();
-    let scroller = gtk::ScrolledWindow::builder()
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .hexpand(true)
-        .child(&label)
-        .build();
-    let copy = gtk::Button::builder()
-        .icon_name("edit-copy-symbolic")
-        .tooltip_text("Copy code")
-        .valign(gtk::Align::Start)
-        .css_classes(["flat", "circular"])
-        .build();
-    copy.update_property(&[gtk::accessible::Property::Label("Copy code")]);
-    let source = label.clone();
-    copy.connect_clicked(move |button| copy_text(button, &source.text()));
-    let block = gtk::Box::builder()
-        .spacing(6)
-        .css_classes(["chat-code"])
-        .build();
-    block.append(&scroller);
-    block.append(&copy);
-    (block.upcast(), Some(label))
 }
 
 fn picture(image: &Image) -> gtk::Widget {

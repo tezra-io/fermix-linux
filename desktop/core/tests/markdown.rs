@@ -1,7 +1,7 @@
 //! Replies arrive as Markdown. They are drawn as Pango markup blocks, and every
 //! byte of model text is escaped before it becomes markup.
 
-use fermix_client::markdown::{render, Block};
+use fermix_client::markdown::{render, Block, Cell, Draft, Item, Table};
 
 #[test]
 fn plain_text_is_one_escaped_paragraph() {
@@ -38,8 +38,8 @@ fn headings_paragraphs_and_lists_are_separate_blocks() {
         [
             Block::Heading(1, "Plan".into()),
             Block::Text("First para.".into()),
-            Block::Text("•  one\n•  two <b>2</b>".into()),
-            Block::Text("1.  a\n2.  b".into()),
+            Block::List(vec![item(0, "•", "one"), item(0, "•", "two <b>2</b>")]),
+            Block::List(vec![item(0, "1.", "a"), item(0, "2.", "b")]),
         ]
     );
 }
@@ -84,11 +84,131 @@ fn soft_and_hard_breaks_keep_the_lines() {
 }
 
 #[test]
-fn a_table_is_kept_as_monospace_text_one_row_per_line() {
+fn a_table_keeps_its_cells_with_their_markup_and_text() {
     assert_eq!(
-        render("| a | bb |\n|---|---|\n| 1 | 2 |\n"),
-        [Block::Code("a | bb\n1 | 2".into())]
+        render("| a | **bb** |\n|---|---|\n| 1 & 2 | [x](https://x.io) |\n"),
+        [Block::Table(Table {
+            head: vec![cell("a", "a"), cell("<b>bb</b>", "bb")],
+            rows: vec![vec![
+                cell("1 &amp; 2", "1 & 2"),
+                cell("<a href=\"https://x.io\">x</a>", "x"),
+            ]],
+        })]
     );
+}
+
+#[test]
+fn a_table_copies_as_tab_separated_lines() {
+    let blocks = render("| a | b |\n|---|---|\n| 1 | `2` |\n| 3 |  |\n");
+    let [Block::Table(table)] = &blocks[..] else {
+        panic!("one table, got {blocks:?}");
+    };
+    assert_eq!(table.tab_text(), "a\tb\n1\t2\n3\t");
+}
+
+#[test]
+fn a_nested_list_keeps_each_item_on_its_own_row_with_its_depth() {
+    assert_eq!(
+        render("1. one\n   - inner *x*\n   - [ ] task\n2. two\n\n   more\n"),
+        [Block::List(vec![
+            item(0, "1.", "one"),
+            item(1, "•", "inner <i>x</i>"),
+            item(1, "☐", "task"),
+            item(0, "2.", "two\nmore"),
+        ])]
+    );
+}
+
+#[test]
+fn a_code_block_inside_a_list_splits_it_around_the_code() {
+    assert_eq!(
+        render("- a\n\n  ```\n  x\n  ```\n- b\n"),
+        [
+            Block::List(vec![item(0, "•", "a")]),
+            Block::Code("x".into()),
+            Block::List(vec![item(0, "•", "b")]),
+        ]
+    );
+}
+
+#[test]
+fn a_list_inside_a_quote_stays_in_the_quote() {
+    assert_eq!(
+        render("> - a\n> - b\n"),
+        [Block::Quote("•  a\n•  b".into())]
+    );
+}
+
+fn item(depth: u8, marker: &str, markup: &str) -> Item {
+    Item {
+        depth,
+        marker: marker.into(),
+        markup: markup.into(),
+    }
+}
+
+fn cell(markup: &str, text: &str) -> Cell {
+    Cell {
+        markup: markup.into(),
+        text: text.into(),
+    }
+}
+
+const LONG_REPLY: &str = "# Plan\n\nIntro with a [link](https://a.io) and https://b.io/x.\n\n\
+- one\n- two\n\n  still two\n- three\n\n\
+1. first\n2. second\n\n10 apples is a lot.\n\n\
+> quoted\n> more\n\n\
+```rust\nfn main() {\n\n    let x = 1;\n}\n```\n\n\
+| col | other |\n|-----|-------|\n| 1 | two |\n| 3 | *four* |\n\n\
+<pre>\n\nraw\n</pre>\n\nTail paragraph.\n\n---\n\nLast.";
+
+#[test]
+fn a_draft_fed_piece_by_piece_always_matches_a_whole_parse() {
+    for step in [1, 2, 3, 7, 16] {
+        let mut draft = Draft::default();
+        let mut end = 0;
+        while end < LONG_REPLY.len() {
+            end = (end + step).min(LONG_REPLY.len());
+            while !LONG_REPLY.is_char_boundary(end) {
+                end += 1;
+            }
+            let text = &LONG_REPLY[..end];
+            let tail = draft.update(text);
+            let drawn: Vec<Block> = draft.settled().iter().cloned().chain(tail).collect();
+            assert_eq!(drawn, render(text), "step {step}, at {end} bytes");
+        }
+    }
+}
+
+#[test]
+fn a_draft_settles_what_a_blank_line_closed() {
+    let mut draft = Draft::default();
+    draft.update("First.\n\nSecond.\n\nThi");
+    assert_eq!(
+        draft.settled(),
+        [Block::Text("First.".into()), Block::Text("Second.".into())]
+    );
+}
+
+#[test]
+fn a_draft_with_a_reference_definition_parses_whole() {
+    let text = "See [a].\n\nMore.\n\n[a]: https://a.io\n";
+    let mut draft = Draft::default();
+    let mut drawn = Vec::new();
+    for end in 1..=text.len() {
+        let tail = draft.update(&text[..end]);
+        drawn = draft.settled().iter().cloned().chain(tail).collect();
+    }
+    assert_eq!(drawn, render(text));
+}
+
+#[test]
+fn a_draft_given_a_different_text_starts_over() {
+    let mut draft = Draft::default();
+    draft.update("Old.\n\nGone.\n\nx");
+    let tail = draft.update("New.");
+    assert!(draft.settled().is_empty());
+    assert_eq!(tail, [Block::Text("New.".into())]);
 }
 
 #[test]

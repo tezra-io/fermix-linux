@@ -3,7 +3,9 @@
 //! `conversation.rs` does the work.
 
 mod activity;
+mod blocks;
 mod entries;
+mod table_scroller;
 
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage, DownView};
