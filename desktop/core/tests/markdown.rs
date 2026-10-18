@@ -1,7 +1,7 @@
 //! Replies arrive as Markdown. They are drawn as Pango markup blocks, and every
 //! byte of model text is escaped before it becomes markup.
 
-use fermix_client::markdown::{render, Block, Cell, Draft, Item, Table};
+use fermix_client::markdown::{render, Block, Cell, Draft, Item, Table, CODE_SPAN_OPEN};
 
 #[test]
 fn plain_text_is_one_escaped_paragraph() {
@@ -11,15 +11,47 @@ fn plain_text_is_one_escaped_paragraph() {
     );
 }
 
+/// A code span as the renderer draws it: monospace on the faint fill.
+fn span(code: &str) -> String {
+    format!("{CODE_SPAN_OPEN}{code}</tt></span>")
+}
+
+fn code(language: Option<&str>, text: &str) -> Block {
+    Block::Code {
+        language: language.map(str::to_owned),
+        text: text.into(),
+    }
+}
+
 #[test]
 fn emphasis_code_and_links_become_markup() {
     assert_eq!(
         render("**bold** *it* `x<y` [site](https://example.com/?a=1&b=\"2\")"),
-        [Block::Text(
-            "<b>bold</b> <i>it</i> <tt>x&lt;y</tt> <a href=\"https://example.com/?a=1&amp;b=&quot;2&quot;\">site</a>"
-                .into()
-        )]
+        [Block::Text(format!(
+            "<b>bold</b> <i>it</i> {} <a href=\"https://example.com/?a=1&amp;b=&quot;2&quot;\">site</a>",
+            span("x&lt;y")
+        ))]
     );
+}
+
+/// A light grey at 18% lands on a white card at 238 and on a dark one (51) at 71: a step
+/// stronger than a code block's 7% panel in both, as the macOS app's span fill is.
+#[test]
+fn a_code_span_sits_on_a_faint_fill_that_reads_in_light_and_dark() {
+    assert!(CODE_SPAN_OPEN.contains("bgcolor=\"#a0a0a0\""));
+    assert!(CODE_SPAN_OPEN.contains("bgalpha=\"18%\""));
+    assert!(CODE_SPAN_OPEN.ends_with("<tt>"));
+}
+
+#[test]
+fn a_fence_names_its_language_by_the_first_word_of_its_info() {
+    assert_eq!(
+        render("```python title=x\nprint(1)\n```"),
+        [code(Some("python"), "print(1)")]
+    );
+    assert_eq!(render("```C++\nint x;\n```"), [code(Some("C++"), "int x;")]);
+    assert_eq!(render("```\nplain\n```"), [code(None, "plain")]);
+    assert_eq!(render("    indented\n"), [code(None, "indented")]);
 }
 
 #[test]
@@ -50,17 +82,14 @@ fn a_code_block_keeps_its_text_raw_for_a_monospace_view() {
         render("Run:\n\n```sh\necho <hi> && ls\n```\n"),
         [
             Block::Text("Run:".into()),
-            Block::Code("echo <hi> && ls".into())
+            code(Some("sh"), "echo <hi> && ls")
         ]
     );
 }
 
 #[test]
 fn an_unfinished_code_fence_mid_stream_still_renders() {
-    assert_eq!(
-        render("```\nlet x = 1;"),
-        [Block::Code("let x = 1;".into())]
-    );
+    assert_eq!(render("```\nlet x = 1;"), [code(None, "let x = 1;")]);
 }
 
 #[test]
@@ -125,7 +154,7 @@ fn a_code_block_inside_a_list_splits_it_around_the_code() {
         render("- a\n\n  ```\n  x\n  ```\n- b\n"),
         [
             Block::List(vec![item(0, "•", "a")]),
-            Block::Code("x".into()),
+            code(None, "x"),
             Block::List(vec![item(0, "•", "b")]),
         ]
     );
@@ -244,13 +273,15 @@ fn text_already_linked_or_in_code_is_not_linked_again() {
     assert_eq!(
         render("[https://a.io](https://a.io) `https://b.io` <https://c.io>"),
         [Block::Text(
-            "<a href=\"https://a.io\">https://a.io</a> <tt>https://b.io</tt> <a href=\"https://c.io\">https://c.io</a>"
-                .into()
+            format!(
+                "<a href=\"https://a.io\">https://a.io</a> {} <a href=\"https://c.io\">https://c.io</a>",
+                span("https://b.io")
+            )
         )]
     );
     assert_eq!(
         render("```\ncurl https://d.io\n```"),
-        [Block::Code("curl https://d.io".into())]
+        [code(None, "curl https://d.io")]
     );
 }
 

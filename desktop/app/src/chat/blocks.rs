@@ -1,10 +1,13 @@
 //! A reply's blocks as widgets. A block still streaming is updated in place:
 //! a paragraph's label gets the longer text, and a list or table keeps the rows
-//! that did not change and redraws only from the first one that did.
+//! that did not change and redraws only from the first one that did. A code
+//! block is coloured in the theme's own hues, again whenever it turns light or
+//! dark.
 
 use super::entries::{copy_text, message_menu};
 use super::table_scroller::TableScroller;
 use adw::prelude::*;
+use fermix_client::markdown::highlight::{self, Inks};
 use fermix_client::markdown::{Block, Cell, Item, Table};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,6 +27,7 @@ pub struct Shown {
 enum Part {
     Fixed,
     Label(gtk::Label),
+    Code(CodeText),
     List(ListRows),
     Table(TableGrid),
 }
@@ -49,7 +53,7 @@ impl Shown {
                 label.add_css_class("dimmed");
                 label_part(label)
             }
-            Block::Code(text) => code_block(text),
+            Block::Code { language, text } => code_block(language.as_deref(), text),
             Block::List(items) => {
                 let rows = ListRows::new(items);
                 Shown {
@@ -77,8 +81,14 @@ impl Shown {
                 label.set_markup(markup);
                 true
             }
-            (Part::Label(label), Block::Code(_), Block::Code(text)) => {
-                label.set_text(text);
+            (
+                Part::Code(code),
+                Block::Code { language: was, .. },
+                Block::Code { language, text },
+            ) if was == language => {
+                code.text.replace(text.clone());
+                let dark = adw::StyleManager::default().is_dark();
+                paint_code(&code.label, text, language.as_deref(), dark);
                 true
             }
             (Part::List(rows), Block::List(old), Block::List(new)) => {
@@ -119,33 +129,109 @@ fn text_label(markup: &str) -> gtk::Label {
     label
 }
 
-/// Monospace, scrolled sideways when wide, with its own copy button.
-fn code_block(text: &str) -> Shown {
+/// A code block's code, and the text it draws, which Copy copies as written.
+struct CodeText {
+    label: gtk::Label,
+    text: Rc<RefCell<String>>,
+}
+
+/// Monospace and wrapped at the reply's width, coloured, its language named
+/// above it where its fence named one, with its own copy button.
+fn code_block(language: Option<&str>, text: &str) -> Shown {
     let label = gtk::Label::builder()
-        .label(text)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .xalign(0.0)
+        .hexpand(true)
         .selectable(true)
         .extra_menu(&message_menu())
         .css_classes(["monospace"])
         .build();
-    let scroller = sideways_scroller(&label);
-    let source = label.clone();
-    let panel = panel(&scroller, "Copy code", move || source.text().to_string());
+    let text = Rc::new(RefCell::new(text.to_owned()));
+    let dark = adw::StyleManager::default().is_dark();
+    paint_code(&label, &text.borrow(), language, dark);
+    follow_theme(&label, &text, language);
+    let name = language.map(highlight::language_name);
+    let column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .hexpand(true)
+        .accessible_role(gtk::AccessibleRole::Group)
+        .build();
+    let spoken = name
+        .as_ref()
+        .map_or("Code".to_owned(), |name| format!("Code, {name}"));
+    column.update_property(&[gtk::accessible::Property::Label(&spoken)]);
+    if let Some(name) = name {
+        column.append(&code_caption(&name));
+    }
+    column.append(&label);
+    let source = text.clone();
+    let panel = panel(&column, "Copy code", move || source.borrow().clone());
     Shown {
         widget: panel.upcast(),
-        part: Part::Label(label),
+        part: Part::Code(CodeText { label, text }),
     }
 }
 
-/// Content that never wraps, scrolled sideways when wider than the reply.
-fn sideways_scroller(content: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder()
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .hexpand(true)
-        .child(content)
-        .build()
+/// The language's name over its code, small and quiet; the block's own name
+/// says it to a screen reader instead.
+fn code_caption(name: &str) -> gtk::Label {
+    let caption = gtk::Label::builder()
+        .label(name)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["caption", "dimmed"])
+        .build();
+    caption.set_accessible_role(gtk::AccessibleRole::Presentation);
+    caption
+}
+
+fn paint_code(label: &gtk::Label, text: &str, language: Option<&str>, dark: bool) {
+    label.set_markup(&highlight::markup(text, language, &code_inks(dark)));
+}
+
+/// Colours `label` again whenever the theme turns light or dark, for as long
+/// as it lives.
+fn follow_theme(label: &gtk::Label, text: &Rc<RefCell<String>>, language: Option<&str>) {
+    let style = adw::StyleManager::default();
+    let weak = label.downgrade();
+    let text = text.clone();
+    let language = language.map(str::to_owned);
+    let handler = style.connect_dark_notify(move |style| {
+        if let Some(label) = weak.upgrade() {
+            paint_code(&label, &text.borrow(), language.as_deref(), style.is_dark());
+        }
+    });
+    // The style manager outlives every reply, so the handler goes with the label.
+    let handler = std::cell::Cell::new(Some(handler));
+    label.connect_destroy(move |_| {
+        if let Some(handler) = handler.take() {
+            adw::StyleManager::default().disconnect(handler);
+        }
+    });
+}
+
+/// The theme's own purple, green and yellow, as libadwaita draws each as text
+/// on a light or a dark page: muted enough to read as code without competing
+/// with the reply, and never the blue a link or the accent is. They are the
+/// hues the macOS app's code takes.
+fn code_inks(dark: bool) -> Inks {
+    let hex = |accent: adw::AccentColor| {
+        let ink = accent.to_standalone_rgba(dark);
+        let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            byte(ink.red()),
+            byte(ink.green()),
+            byte(ink.blue())
+        )
+    };
+    Inks {
+        keyword: hex(adw::AccentColor::Purple),
+        string: hex(adw::AccentColor::Green),
+        number: hex(adw::AccentColor::Yellow),
+    }
 }
 
 /// The soft panel code and tables share: the content, and a copy button

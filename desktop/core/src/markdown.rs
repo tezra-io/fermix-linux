@@ -4,10 +4,18 @@
 //! bare web address in the text is a link too, as in any messenger.
 
 mod draft;
+pub mod highlight;
 
 pub use draft::Draft;
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream};
+use pulldown_cmark::{
+    CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, TextMergeStream,
+};
+
+/// Opens a code span: monospace on a faint fill. A light grey at low alpha reads as a fill on a
+/// light card and a dark one alike, so a rendered reply needs no redraw when the theme turns.
+/// A span closes with `</tt></span>`.
+pub const CODE_SPAN_OPEN: &str = "<span bgcolor=\"#a0a0a0\" bgalpha=\"18%\"><tt>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -20,8 +28,12 @@ pub enum Block {
     Heading(u8, String),
     /// Markup, drawn indented and dim.
     Quote(String),
-    /// Raw text for a monospace view: never markup.
-    Code(String),
+    /// A fenced or indented code block. `language` is the first word of a fence's info, as
+    /// written (`python`, `C++`), or `None`; `text` is raw, never markup.
+    Code {
+        language: Option<String>,
+        text: String,
+    },
     Rule,
 }
 
@@ -92,6 +104,15 @@ fn escape_attribute(text: &str) -> String {
     escape(text).replace('"', "&quot;").replace('\'', "&apos;")
 }
 
+/// The first word of a fence's info (`python` of "python title=x"); an indented block, or a
+/// fence with no info, names none.
+fn fence_language(kind: &CodeBlockKind<'_>) -> Option<String> {
+    match kind {
+        CodeBlockKind::Fenced(info) => info.split_whitespace().next().map(str::to_owned),
+        CodeBlockKind::Indented => None,
+    }
+}
+
 fn clickable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     ["https://", "http://", "mailto:"]
@@ -106,6 +127,8 @@ struct Renderer {
     text: String,
     /// Raw text of the code block being built.
     raw: Option<String>,
+    /// The language the open code block's fence names.
+    language: Option<String>,
     table: Option<TableDraft>,
     /// One entry per open list: the next number, or None for bullets.
     lists: Vec<Option<u64>>,
@@ -148,9 +171,10 @@ impl Renderer {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.flush_text();
                 self.raw = Some(String::new());
+                self.language = fence_language(&kind);
             }
             Tag::Table(_) => {
                 self.flush_text();
@@ -215,7 +239,11 @@ impl Renderer {
         }
         match self.raw.as_mut() {
             Some(raw) => raw.push_str(code),
-            None => self.text.push_str(&format!("<tt>{}</tt>", escape(code))),
+            None => {
+                self.text.push_str(CODE_SPAN_OPEN);
+                self.text.push_str(&escape(code));
+                self.text.push_str("</tt></span>");
+            }
         }
     }
 
@@ -355,8 +383,9 @@ impl Renderer {
 
     fn end_code(&mut self) {
         let raw = self.raw.take().unwrap_or_default();
-        let body = raw.strip_suffix('\n').unwrap_or(&raw).to_owned();
-        self.blocks.push(Block::Code(body));
+        let text = raw.strip_suffix('\n').unwrap_or(&raw).to_owned();
+        let language = self.language.take();
+        self.blocks.push(Block::Code { language, text });
     }
 
     /// Ends the text being built: a list's rows so far inside a list drawn as
