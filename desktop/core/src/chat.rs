@@ -5,6 +5,7 @@
 use crate::activity::ToolKind;
 use crate::chat_wire::protocol::{MediaRef, Row};
 use crate::chat_wire::timeline::{self, Chat, ToolState};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -57,11 +58,32 @@ pub struct LiveTurn {
     pub can_stop: bool,
 }
 
-/// The page's entries, each with the daemon's time for it (RFC 3339) where it has one.
+/// What an entry draws, which stays the same while the entry grows or is read again: the page
+/// keeps each entry's widget by it, so rows arriving above or below leave the rest drawn.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Key {
+    /// A held row's words, by seq.
+    Row(u64),
+    /// The `index`th file a held row names.
+    Media(u64, usize),
+    /// A reply a turn streams, by the turn and its place among the turn's replies (a turn may
+    /// send more than one): its draft, and then the held row it became.
+    Reply(String, usize),
+    /// A question still sending, by its `client_msg_id`.
+    Sending(String),
+    /// The running turn's tools, by the turn.
+    Tools(String),
+    Failure,
+}
+
+/// The page's entries, each with its key, the daemon's time for it (RFC 3339) where it has
+/// one, and the held row it draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
     pub entries: Vec<Entry>,
+    pub keys: Vec<Key>,
     pub times: Vec<Option<String>>,
+    pub seqs: Vec<Option<u64>>,
     pub turn: Option<LiveTurn>,
     /// A turn runs and nothing on screen shows its work yet: the page shows its own live line.
     pub thinking: bool,
@@ -70,9 +92,11 @@ pub struct View {
 }
 
 impl View {
-    fn push(&mut self, entry: Entry, time: Option<String>) {
+    fn push(&mut self, entry: Entry, key: Key, time: Option<String>, seq: Option<u64>) {
         self.entries.push(entry);
+        self.keys.push(key);
         self.times.push(time);
+        self.seqs.push(seq);
     }
 }
 
@@ -81,8 +105,16 @@ pub fn view(chat: &Chat) -> View {
         first_seq: chat.rows.first().map(|held| held.row.server_seq),
         ..View::default()
     };
+    // A turn's replies are numbered in the order their rows are held; its draft takes the next
+    // number, which its row will have.
+    let mut replies: HashMap<&str, usize> = HashMap::new();
     for held in &chat.rows {
-        push_row(&mut view, &held.row);
+        let reply = held.turn_id.as_deref().map(|turn| {
+            let count = replies.entry(turn).or_default();
+            *count += 1;
+            Key::Reply(turn.to_owned(), *count - 1)
+        });
+        push_row(&mut view, &held.row, reply);
     }
     let held_ids: Vec<&str> = chat
         .rows
@@ -93,34 +125,44 @@ pub fn view(chat: &Chat) -> View {
         // An approval's route is a command, not a question: it draws no bubble.
         let question = out.approval_id.is_none();
         if question && !held_ids.contains(&out.client_msg_id.as_str()) {
-            view.push(Entry::Sending(out.text.clone()), None);
+            let key = Key::Sending(out.client_msg_id.clone());
+            view.push(Entry::Sending(out.text.clone()), key, None, None);
         }
     }
-    push_turn(&mut view, chat);
+    let drafted = chat
+        .turn
+        .as_ref()
+        .and_then(|turn| replies.get(turn.turn_id.as_str()));
+    push_turn(&mut view, chat, drafted.copied().unwrap_or(0));
     if let Some(error) = &chat.last_error {
-        view.push(Entry::Failure(error.clone()), None);
+        view.push(Entry::Failure(error.clone()), Key::Failure, None, None);
     }
     view
 }
 
-fn push_row(view: &mut View, row: &Row) {
+/// A held row's words, then each file it names. `reply` is its key as a reply this connection
+/// streamed; any other row's words are keyed by its seq.
+fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
     let text = row.text.trim();
-    let time = row.ts.clone();
+    let (time, seq) = (row.ts.clone(), row.server_seq);
     if !text.is_empty() {
         let entry = match row.role.as_str() {
             "user" => Entry::User(text.to_owned()),
             _ => Entry::Assistant(row.text.clone()),
         };
-        view.push(entry, time.clone());
+        let key = reply.unwrap_or(Key::Row(seq));
+        view.push(entry, key, time.clone(), Some(seq));
     }
     let person = row.role == "user";
-    for media in &row.media_refs {
+    for (index, media) in row.media_refs.iter().enumerate() {
         let line = media_line(media);
-        view.push(Entry::Media { line, person }, time.clone());
+        let key = Key::Media(seq, index);
+        view.push(Entry::Media { line, person }, key, time.clone(), Some(seq));
     }
 }
 
-fn push_turn(view: &mut View, chat: &Chat) {
+/// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.
+fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
     let Some(turn) = &chat.turn else {
         return;
     };
@@ -141,10 +183,12 @@ fn push_turn(view: &mut View, chat: &Chat) {
             started: run.started,
             ended: run.ended,
         });
-        view.push(Entry::Tools(runs.collect()), None);
+        let key = Key::Tools(turn.turn_id.clone());
+        view.push(Entry::Tools(runs.collect()), key, None, None);
     }
     if !turn.draft.is_empty() {
-        view.push(Entry::Assistant(turn.draft.clone()), None);
+        let key = Key::Reply(turn.turn_id.clone(), replied);
+        view.push(Entry::Assistant(turn.draft.clone()), key, None, None);
     }
     view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
 }
@@ -162,37 +206,5 @@ pub fn media_line(media: &MediaRef) -> String {
     match &media.filename {
         Some(name) => format!("{kind} · {name}"),
         None => kind.to_owned(),
-    }
-}
-
-/// The width to draw a `width` by `height` picture at so it fits a `bound`
-/// pixel square, never larger than itself and never zero wide.
-pub fn picture_width(width: i32, height: i32, bound: i32) -> i32 {
-    assert!(
-        width > 0 && height > 0 && bound > 0,
-        "a picture that has no size: {width}x{height} in {bound}"
-    );
-    let for_height = i64::from(bound) * i64::from(width) / i64::from(height);
-    let fitted = i64::from(width)
-        .min(i64::from(bound))
-        .min(for_height)
-        .max(1);
-    i32::try_from(fitted).expect("no wider than the picture itself")
-}
-
-/// The name a saved picture starts with: its type's usual extension, and none
-/// when the type is not a plain word, since the agent chose it.
-pub fn picture_file_name(mime: &str) -> String {
-    let subtype = mime.strip_prefix("image/").unwrap_or_default();
-    let extension = match subtype {
-        "jpeg" => "jpg",
-        "svg+xml" => "svg",
-        other => other,
-    };
-    let plain = !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric());
-    if plain {
-        format!("Fermix image.{extension}")
-    } else {
-        "Fermix image".into()
     }
 }

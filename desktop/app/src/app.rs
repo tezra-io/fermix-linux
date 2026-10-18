@@ -169,6 +169,7 @@ fn start(app: &Rc<App>, hidden: bool) {
     app.state.borrow_mut().background.opens_at_login = opens_at_login;
     install_actions(app);
     follow_visible_page(app);
+    mark_read_when_active(app);
     keep_alive_with_window(app);
     crate::voice_flow::install_companion(app);
     crate::voice_flow::install_call_actions(app);
@@ -229,15 +230,25 @@ impl App {
             Connection::Up(snapshot) => Some(snapshot.pid.clone()),
             _ => None,
         };
-        {
+        let came_up = {
             let mut state = self.state.borrow_mut();
+            let was_up = matches!(state.connection, Connection::Up(_));
             if matches!(connection, Connection::Up(_)) {
                 state.wake_failed = false;
             }
             state.connection = connection;
-        }
+            pid.is_some() && !was_up
+        };
         self.read_service().await;
         self.render();
+        if came_up {
+            // A daemon just reached has its chat now, not at the backoff's next attempt. Through
+            // the window action, since `chat_connect` needs the `Rc` this `&self` lacks.
+            let window = &self.shell.window;
+            if let Err(e) = WidgetExt::activate_action(window, "win.chat-connect", None) {
+                glib::g_warning!("fermix", "could not connect the chat: {e}");
+            }
+        }
         if let Some(pid) = pid {
             self.follow_daemon_process(pid).await;
             self.read_about_you().await;
@@ -403,15 +414,31 @@ fn follow_visible_page(app: &Rc<App>) {
                 Some("doctor") => app.doctor.shown(),
                 Some("logs") => app.logs.shown(),
                 Some("companion") => app.voice_page_shown(),
-                // The newest row may have come in while Chat was away: it is read now. The
-                // page maps after this notify, so the check waits for an idle.
+                // Chat connects as it comes into view, also after a refusal (the engine may
+                // have been updated since). The newest row may have come in while Chat was
+                // away: it is read now. The page maps after this notify, so both wait for an
+                // idle.
                 Some("chat") => {
                     let app = app.clone();
-                    glib::idle_add_local_once(move || app.chat_seen());
+                    glib::idle_add_local_once(move || {
+                        app.chat_connect();
+                        app.chat_seen();
+                    });
                 }
                 _ => {}
             }
         });
+}
+
+/// The newest row is read only while the window is the one in use: coming back to it marks
+/// what arrived meanwhile.
+fn mark_read_when_active(app: &Rc<App>) {
+    let weak = Rc::downgrade(app);
+    app.shell.window.connect_is_active_notify(move |_| {
+        if let Some(app) = weak.upgrade() {
+            app.chat_seen();
+        }
+    });
 }
 
 /// The window owns the controller: actions and timers hold only weak references,
@@ -552,15 +579,16 @@ fn install_chat_actions(app: &Rc<App>) {
     on_plain(app, "send-message", |app| async move { app.send_message() });
     on_plain(app, "stop-reply", |app| async move { app.stop_reply() });
     on_plain(app, "chat-older", |app| async move { app.chat_older() });
+    on_plain(app, "chat-seen", |app| async move { app.chat_seen() });
+    on_plain(app, "chat-on-screen", |app| async move {
+        app.chat_rows_on_screen()
+    });
+    on_plain(app, "chat-connect", |app| async move { app.chat_connect() });
     on(app, "chat-approve", |app, id: String| async move {
         app.answer_approval(&id, true)
     });
     on(app, "chat-deny", |app, id: String| async move {
         app.answer_approval(&id, false)
-    });
-    on_plain(app, "new-chat", |app| async move {
-        app.shell.show_page("chat");
-        app.new_conversation()
     });
 }
 
@@ -570,7 +598,6 @@ fn install_accels(app: &Rc<App>) {
         .window
         .application()
         .expect("the window belongs to the application");
-    application.set_accels_for_action("win.new-chat", &["<Ctrl>n"]);
     application.set_accels_for_action("win.open-settings", &["<Ctrl>comma"]);
     application.set_accels_for_action("win.find-setting", &["<Ctrl>f"]);
     for (index, (page, _, _)) in shell::PAGES.iter().enumerate() {

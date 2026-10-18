@@ -573,10 +573,12 @@ fn places(value: &Value) -> Option<&Vec<Value>> {
     value.get("places")?.as_array()
 }
 
-/// One line, without its `\n`, as an event.
+/// One line, without its `\n`, as an event. Every NUL in its strings is made U+FFFD here, the
+/// one place the daemon's text enters.
 pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
-    let value: Value =
+    let mut value: Value =
         serde_json::from_slice(line).map_err(|e| DecodeError::NotJson(e.to_string()))?;
+    replace_nul(&mut value);
     if !value.is_object() {
         return Err(DecodeError::NotAnObject);
     }
@@ -592,6 +594,20 @@ pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
         kind,
         why: e.to_string(),
     })
+}
+
+/// JSON may carry a NUL (`\u0000`); a GTK label cannot (GLib panics on one in a debug build and
+/// cuts the text at it in a release one), so each becomes U+FFFD. Each value is looked at once.
+fn replace_nul(value: &mut Value) {
+    let mut waiting = vec![value];
+    while let Some(value) = waiting.pop() {
+        match value {
+            Value::String(text) if text.contains('\0') => *text = text.replace('\0', "\u{FFFD}"),
+            Value::Array(items) => waiting.extend(items.iter_mut()),
+            Value::Object(fields) => waiting.extend(fields.values_mut()),
+            _ => {}
+        }
+    }
 }
 
 /// Whether `text` is a media ref the daemon would accept in `media_fetch`: 64 lowercase hex.

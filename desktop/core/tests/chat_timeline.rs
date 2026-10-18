@@ -131,7 +131,7 @@ fn a_live_row_is_shown_when_next_dropped_when_old_and_a_gap_pulls_once() {
 }
 
 #[test]
-fn a_page_merges_by_seq_and_reports_a_row_that_changed() {
+fn a_page_merges_by_seq_and_a_changed_row_takes_the_pages_content() {
     let mut chat = holding(2);
     receive(&mut chat, live(4, "gap"));
     let sent = receive(
@@ -150,8 +150,6 @@ fn a_page_merges_by_seq_and_reports_a_row_that_changed() {
     assert!(sent.is_empty());
     assert_eq!(seqs(&chat), [1, 2, 3, 4]);
     assert_eq!(chat.rows[1].row.text, "changed");
-    let reshape = chat.reshape.as_ref().expect("a changed row reshapes");
-    assert_eq!(reshape.seqs, BTreeSet::from([2]));
 }
 
 #[test]

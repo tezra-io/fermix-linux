@@ -3,7 +3,9 @@
 //! It is the one owner of the chat's connection: `chat_session.rs` opens it, reads it in one
 //! loop, and sends through it.
 
-use fermix_client::chat_wire::protocol::{decode_line, line_buffer, ClientEvent, ServerEvent};
+use fermix_client::chat_wire::protocol::{
+    decode_line, line_buffer, ClientEvent, LineTooLong, ServerEvent,
+};
 use fermix_client::realtime::protocol::LineBuffer;
 use gtk::gio::{self, prelude::*};
 use gtk::glib;
@@ -35,6 +37,8 @@ pub struct Link {
     lines: RefCell<VecDeque<Vec<u8>>>,
     queue: RefCell<VecDeque<String>>,
     writing: Cell<bool>,
+    /// Why our own write failed and shut the connection, for the read that ends with it.
+    write_failure: RefCell<Option<String>>,
 }
 
 /// Connects to the chat socket. The handshake is the caller's.
@@ -56,16 +60,15 @@ pub async fn connect(socket: &Path) -> Result<Rc<Link>, LinkError> {
         lines: RefCell::default(),
         queue: RefCell::default(),
         writing: Cell::new(false),
+        write_failure: RefCell::default(),
     }))
 }
 
 impl Link {
     /// Queues one event; events go out in order, one write at a time. One too long for the
-    /// daemon's cap is not sent, and says so.
-    pub fn send(self: &Rc<Self>, event: &ClientEvent) -> Result<(), LinkError> {
-        let line = event
-            .line()
-            .map_err(|e| LinkError::Broken(format!("a {} byte line", e.0)))?;
+    /// daemon's cap is not sent, and says so; the connection is fine.
+    pub fn send(self: &Rc<Self>, event: &ClientEvent) -> Result<(), LineTooLong> {
+        let line = event.line()?;
         self.queue.borrow_mut().push_back(line);
         if self.writing.replace(true) {
             return Ok(());
@@ -85,8 +88,9 @@ impl Link {
                 .write_all_future(line.into_bytes(), glib::Priority::DEFAULT)
                 .await;
             if let Err((_, e)) = written {
-                // The read loop sees the broken connection and reconnects.
+                // The read loop sees the broken connection, says why, and reconnects.
                 glib::g_warning!("fermix", "chat write failed: {e}");
+                self.write_failure.replace(Some(format!("write: {e}")));
                 self.queue.borrow_mut().clear();
                 self.close();
                 break;
@@ -105,11 +109,15 @@ impl Link {
                     .map(Some)
                     .map_err(|e| LinkError::Broken(format!("decode: {e:?}")));
             }
-            let bytes = self
+            let read = self
                 .input
                 .read_bytes_future(READ_CHUNK, glib::Priority::DEFAULT)
-                .await
-                .map_err(|e| LinkError::Broken(format!("read: {e}")))?;
+                .await;
+            // Our own failed write shut the socket: that, not the daemon, ended the read.
+            if let Some(why) = self.write_failure.take() {
+                return Err(LinkError::Broken(why));
+            }
+            let bytes = read.map_err(|e| LinkError::Broken(format!("read: {e}")))?;
             if bytes.is_empty() {
                 return Ok(None);
             }

@@ -1,11 +1,11 @@
 //! The Chat page's entries, read off the chat wire's timeline: held rows, questions still
 //! sending, the running turn with its tools, and the last failure.
 
-use fermix_client::chat::{media_line, view, Entry, RunState};
+use fermix_client::chat::{media_line, view, Entry, Key, RunState};
 use fermix_client::chat_wire::protocol::{decode_line, MediaRef, ServerEvent};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 fn event(value: Value) -> ServerEvent {
     decode_line(value.to_string().as_bytes()).expect("a test event decodes")
@@ -197,31 +197,172 @@ fn every_file_kind_has_a_word() {
     assert_eq!(media_line(&media("file", "text/plain")), "File");
 }
 
-#[test]
-fn a_picture_is_drawn_no_wider_than_fits_its_box_and_never_enlarged() {
-    use fermix_client::chat::picture_width;
-    assert_eq!(picture_width(800, 400, 440), 440, "wide: the box's width");
-    assert_eq!(picture_width(400, 800, 440), 220, "tall: the box's height");
-    assert_eq!(picture_width(100, 50, 440), 100, "small: its own size");
-    assert_eq!(picture_width(1, 10_000, 440), 1, "never nothing");
+fn receive(chat: &mut Chat, value: Value) {
+    timeline::receive(chat, event(value), 0);
 }
 
-#[test]
-#[should_panic(expected = "has no size")]
-fn a_picture_without_a_size_is_a_bug() {
-    fermix_client::chat::picture_width(0, 10, 440);
+fn page_of(seqs: impl IntoIterator<Item = u64>, head: u64, older: Option<u64>) -> Value {
+    let messages: Vec<Value> = seqs
+        .into_iter()
+        .map(|seq| {
+            json!({"server_seq": seq, "role": "user", "content": format!("Message {seq}"),
+            "kind": "text", "ts": "2026-09-25T09:00:00Z", "media_refs": []})
+        })
+        .collect();
+    let mut page = json!({"type": "history_page", "profile_id": "main", "messages": messages,
+        "history_head_seq": head});
+    if let Some(before) = older {
+        page["next_before_seq"] = json!(before);
+    }
+    page
 }
 
+/// The page keeps each entry's widget by its key, and reads which held row each entry draws.
 #[test]
-fn a_saved_picture_is_named_for_its_type() {
-    use fermix_client::chat::picture_file_name;
-    assert_eq!(picture_file_name("image/png"), "Fermix image.png");
-    assert_eq!(picture_file_name("image/jpeg"), "Fermix image.jpg");
-    assert_eq!(picture_file_name("image/svg+xml"), "Fermix image.svg");
-    assert_eq!(picture_file_name("image/webp"), "Fermix image.webp");
-    assert_eq!(
-        picture_file_name("image/../../x"),
-        "Fermix image",
-        "a type that is not a plain word names no extension"
+fn every_entry_has_a_key_of_its_own_and_names_the_row_it_draws() {
+    let mut chat = connected();
+    let voice = json!({"client_msg_id": "linux-1", "media_refs": [
+        {"ref": "a", "kind": "audio", "mime": "audio/ogg", "size_bytes": 1}]});
+    row(&mut chat, 1, "user", "Hi", voice);
+    row(&mut chat, 2, "assistant", "Hello", json!({}));
+    timeline::send(&mut chat, "And?", "linux-2".into());
+    receive(
+        &mut chat,
+        json!({"type": "turn_error", "turn_id": "t0", "code": "interrupted", "message": "x"}),
     );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-2"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "tool_event", "turn_id": "t1", "tool": "web_search", "phase": "start"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "So"}),
+    );
+    let shown = view(&chat);
+    assert_eq!(
+        shown.keys,
+        [
+            Key::Row(1),
+            Key::Media(1, 0),
+            Key::Row(2),
+            Key::Sending("linux-2".into()),
+            Key::Tools("t1".into()),
+            Key::Reply("t1".into(), 0),
+            Key::Failure,
+        ]
+    );
+    assert_eq!(shown.keys.len(), shown.entries.len());
+    assert_eq!(
+        shown.seqs,
+        [Some(1), Some(1), Some(2), None, None, None, None]
+    );
+}
+
+/// The streamed reply and the row it becomes are one widget, also after the row is read again.
+#[test]
+fn a_reply_keeps_its_key_from_its_first_words_to_the_row_it_becomes() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Hi",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Hel"}),
+    );
+    let streaming = view(&chat);
+    assert_eq!(streaming.keys, [Key::Row(1), Key::Reply("t1".into(), 0)]);
+    assert_eq!(streaming.seqs, [Some(1), None]);
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2, "text": "Hello"}),
+    );
+    let held = view(&chat);
+    assert_eq!(held.keys, streaming.keys);
+    assert_eq!(held.seqs, [Some(1), Some(2)]);
+    // Away and back: the row on screen is read again and keeps its key.
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::from([2]));
+    receive(&mut chat, page_of([], 2, None));
+    let mut reread = page_of([2], 2, None);
+    reread["messages"][0]["role"] = json!("assistant");
+    reread["messages"][0]["content"] = json!("Hello again");
+    receive(&mut chat, reread);
+    let again = view(&chat);
+    assert_eq!(again.entries[1], Entry::Assistant("Hello again".into()));
+    assert_eq!(again.keys, streaming.keys);
+}
+
+/// A page read backward lands above: every entry already drawn keeps its key and its order.
+#[test]
+fn a_page_read_backward_adds_keys_above_and_keeps_every_key_below() {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    receive(&mut chat, page_of(51..=100, 100, Some(51)));
+    let before = view(&chat).keys;
+    assert_eq!(before.first(), Some(&Key::Row(51)));
+    assert!(!timeline::pull_older(&mut chat).is_empty());
+    receive(&mut chat, page_of(1..=50, 100, None));
+    let after = view(&chat).keys;
+    assert_eq!(after.len(), 100);
+    assert_eq!(after.first(), Some(&Key::Row(1)));
+    assert!(after.ends_with(&before));
+}
+
+/// A turn may send `text_done` more than once (PROTOCOL.md): each of its replies keeps a key of
+/// its own, and the next one streaming takes the key its row will have.
+#[test]
+fn every_reply_of_a_turn_has_a_key_of_its_own() {
+    let unique = |keys: &[Key]| keys.iter().collect::<HashSet<_>>().len() == keys.len();
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Hi",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2, "text": "First"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Sec"}),
+    );
+    let streaming = view(&chat);
+    assert!(unique(&streaming.keys), "{:?}", streaming.keys);
+    assert_eq!(
+        streaming.keys,
+        [
+            Key::Row(1),
+            Key::Reply("t1".into(), 0),
+            Key::Reply("t1".into(), 1)
+        ]
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 3, "text": "Second"}),
+    );
+    let held = view(&chat);
+    assert!(unique(&held.keys), "{:?}", held.keys);
+    assert_eq!(held.keys, streaming.keys, "the draft's key is its row's");
 }

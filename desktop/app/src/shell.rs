@@ -50,8 +50,6 @@ pub struct Shell {
     pub restart: gtk::Button,
     /// "Continue setup", shown while Fermix says setup is required.
     pub continue_setup: gtk::Button,
-    /// "New conversation", shown only on Chat.
-    pub new_chat: gtk::Button,
     sidebar_page: adw::NavigationPage,
     shape: SidebarShape,
     pinned: gtk::ListBox,
@@ -72,9 +70,8 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     let (sidebar, mut rail) = sidebar_list();
     let (pinned, settings_row) = pinned_list();
     rail.push(settings_row);
-    let (restart, continue_setup, new_chat) = header_buttons();
+    let (restart, continue_setup) = header_buttons();
     let content_header = adw::HeaderBar::new();
-    content_header.pack_start(&new_chat);
     content_header.pack_end(&primary_menu());
     content_header.pack_end(&restart);
     content_header.pack_end(&continue_setup);
@@ -108,7 +105,6 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         sidebar,
         restart,
         continue_setup,
-        new_chat,
         sidebar_page,
         shape,
         pinned,
@@ -158,8 +154,8 @@ fn rail_mark() -> gtk::Image {
         .build()
 }
 
-/// The header's trailing actions and New conversation, all hidden until wanted.
-fn header_buttons() -> (gtk::Button, gtk::Button, gtk::Button) {
+/// The header's trailing actions, both hidden until wanted.
+fn header_buttons() -> (gtk::Button, gtk::Button) {
     let restart = gtk::Button::builder()
         .label("Restart Fermix…")
         .css_classes(["suggested-action"])
@@ -172,13 +168,7 @@ fn header_buttons() -> (gtk::Button, gtk::Button, gtk::Button) {
         .visible(false)
         .build();
     continue_setup.set_action_name(Some("win.open-assistant"));
-    let new_chat = gtk::Button::builder()
-        .icon_name("chat-message-new-symbolic")
-        .tooltip_text("New conversation")
-        .visible(false)
-        .build();
-    new_chat.set_action_name(Some("win.new-chat"));
-    (restart, continue_setup, new_chat)
+    (restart, continue_setup)
 }
 
 /// The window, which folds the sidebar away when narrow.
@@ -370,7 +360,6 @@ pub fn follows_selection(list: &gtk::ListBox) -> bool {
 
 fn primary_menu() -> gtk::MenuButton {
     let menu = gio::Menu::new();
-    menu.append(Some("New Conversation"), Some("win.new-chat"));
     menu.append(Some("Settings"), Some("win.open-settings"));
     menu.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
     menu.append(Some("About Fermix"), Some("app.about"));
@@ -400,7 +389,6 @@ impl Shell {
         self.pinned.unselect_all();
         *self.last_page.borrow_mut() = name.to_owned();
         self.content.set_title(title);
-        self.new_chat.set_visible(name == "chat");
         let index = PAGES
             .iter()
             .position(|(n, _, _)| *n == name)
@@ -420,7 +408,6 @@ impl Shell {
         self.sidebar_page.set_title("Settings");
         self.shape.fit();
         self.content.set_title(title);
-        self.new_chat.set_visible(false);
         *self.last_pane.borrow_mut() = slug.to_owned();
         select_named(&self.settings_list, slug);
         self.split.set_show_content(true);

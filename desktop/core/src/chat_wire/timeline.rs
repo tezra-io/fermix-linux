@@ -86,13 +86,6 @@ pub struct HeldApproval {
     pub expires_at: i64,
 }
 
-/// Held rows whose content changed in place, for the page to keep its reader's place.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reshape {
-    pub id: u64,
-    pub seqs: BTreeSet<u64>,
-}
-
 /// The one history read out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pull {
@@ -119,7 +112,6 @@ pub struct Chat {
     pub approvals: Vec<HeldApproval>,
     /// The latest failure, in a sentence, until the next send.
     pub last_error: Option<String>,
-    pub reshape: Option<Reshape>,
     connected: bool,
     pull: Option<Pull>,
     older_waiting: Option<u64>,
@@ -530,7 +522,7 @@ fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
     let answered = chat.pull.take();
     let page_seqs: BTreeSet<u64> = page.messages.iter().map(|row| row.server_seq).collect();
     let newest = page_seqs.last().copied();
-    let replaced = put_rows(chat, page.messages);
+    put_rows(chat, page.messages);
     chat.cursor = chat.cursor.max(newest.unwrap_or(0));
     chat.head = page.history_head_seq;
     if let Some(Pull::Page(Cursor::BeforeSeq(_))) = answered {
@@ -543,10 +535,6 @@ fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
         chat.rows_to_read
             .extend(asked.into_iter().filter(|seq| *seq > reached));
     }
-    if !replaced.is_empty() {
-        let id = chat.reshape.as_ref().map_or(0, |reshape| reshape.id) + 1;
-        chat.reshape = Some(Reshape { id, seqs: replaced });
-    }
     if chat.cursor < chat.head {
         let cursor = Cursor::AfterSeq(chat.cursor);
         return read_page(chat, cursor);
@@ -554,31 +542,19 @@ fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
     send_waiting(chat)
 }
 
-/// Puts a page's rows over the held ones; returns the seqs whose row now draws differently.
-fn put_rows(chat: &mut Chat, rows: Vec<Row>) -> BTreeSet<u64> {
-    let mut replaced = BTreeSet::new();
+/// Puts a page's rows over the held ones by seq. A held row keeps the turn it was streamed in,
+/// so the page draws it as the same reply; one whose content changed is drawn again by its key.
+fn put_rows(chat: &mut Chat, rows: Vec<Row>) {
     for row in rows {
         let seq = row.server_seq;
         match chat
             .rows
             .binary_search_by_key(&seq, |held| held.row.server_seq)
         {
-            Ok(index) if draws_alike(&chat.rows[index].row, &row) => chat.rows[index].row = row,
-            Ok(index) => {
-                replaced.insert(seq);
-                chat.rows[index].row = row;
-            }
+            Ok(index) => chat.rows[index].row = row,
             Err(index) => chat.rows.insert(index, HeldRow { row, turn_id: None }),
         }
     }
-    replaced
-}
-
-fn draws_alike(held: &Row, page: &Row) -> bool {
-    held.text == page.text
-        && held.media_refs == page.media_refs
-        && held.link_previews == page.link_previews
-        && held.blocks == page.blocks
 }
 
 /// Reads a page from `cursor`, when no read is out.

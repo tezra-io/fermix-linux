@@ -5,6 +5,7 @@
 use fermix_client::markdown::highlight::{
     language_name, languages, markup, tokens, Inks, Token, TokenKind,
 };
+use fermix_client::markdown::{render, Block};
 
 /// The stretches of `text` in `tag`'s syntax, as (kind, the text it covers).
 fn spans<'a>(text: &'a str, tag: Option<&str>) -> Vec<(TokenKind, &'a str)> {
@@ -204,5 +205,26 @@ fn the_markup_colours_the_stretches_and_escapes_every_byte() {
     assert_eq!(
         markup("<plain> & text", None, &inks()),
         "&lt;plain&gt; &amp; text"
+    );
+}
+
+/// Windows line ends and tabs: the parse makes each `\r\n` a `\n` (so the label and Copy hold the
+/// same text) and keeps tabs; the markup escapes neither away, a tab starts a comment as a
+/// space does, and a `\r` still left in code ends one as a `\n` does.
+#[test]
+fn line_ends_and_tabs_pass_through_render_and_the_markup() {
+    let blocks = render("```rust\r\n\tlet x = 1;\t// c\r\nfn\r\n```");
+    let [Block::Code { language, text }] = blocks.as_slice() else {
+        panic!("one code block");
+    };
+    assert_eq!(text, "\tlet x = 1;\t// c\nfn");
+    assert_eq!(
+        markup(text, language.as_deref(), &inks()),
+        "\t<span foreground=\"#aa00aa\">let</span> x = <span foreground=\"#aa5500\">1</span>;\t\
+         <span alpha=\"55%\">// c</span>\n<span foreground=\"#aa00aa\">fn</span>"
+    );
+    assert_eq!(
+        markup("\t// c\r\nfn", Some("rust"), &inks()),
+        "\t<span alpha=\"55%\">// c</span>\r\n<span foreground=\"#aa00aa\">fn</span>"
     );
 }

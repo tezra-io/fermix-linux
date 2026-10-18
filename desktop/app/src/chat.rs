@@ -15,12 +15,13 @@ use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{view, LiveTurn, View};
+use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
@@ -50,7 +51,8 @@ pub struct ChatPage {
     list: gtk::Box,
     /// The live line for a turn with nothing else on screen showing the work.
     thinking: LiveLine,
-    shown: Rc<RefCell<Vec<Drawn>>>,
+    shown: Rc<RefCell<Vec<Placed>>>,
+    on_screen: Rc<OnScreen>,
     /// The running turn, which the clock reads each second.
     turn: Rc<Cell<Option<Turn>>>,
     clock: Rc<RefCell<Option<glib::SourceId>>>,
@@ -76,6 +78,8 @@ impl ChatPage {
         thinking.row.add_css_class("standalone");
         thinking.row.set_visible(false);
         let (follow, conversation, empty) = conversation_area(&list, &thinking.row);
+        let shown = Rc::default();
+        let on_screen = OnScreen::new(&shown, &follow.scroller);
         let (composer, input, send) = composer();
         let approvals = approvals::Cards::new();
         let body = gtk::Box::builder()
@@ -98,7 +102,8 @@ impl ChatPage {
             empty,
             list,
             thinking,
-            shown: Rc::default(),
+            shown,
+            on_screen,
             turn: Rc::default(),
             clock: Rc::default(),
             follow,
@@ -151,9 +156,20 @@ impl ChatPage {
         self.banner.set_action_name(None);
     }
 
-    /// Whether the newest entry is on screen, so the shared read frontier may move.
+    /// Whether the newest entry is on screen in the window the person is using, so the shared
+    /// read frontier may move: not while the window is behind another or on another workspace.
     pub fn reading_latest(&self) -> bool {
-        self.root.is_mapped() && self.follow.stuck.get()
+        let active = self
+            .root
+            .root()
+            .and_downcast::<gtk::Window>()
+            .is_some_and(|window| window.is_active());
+        active && self.root.is_mapped() && self.follow.stuck.get()
+    }
+
+    /// The held rows drawn on screen now; none while the conversation is not.
+    pub fn rows_on_screen(&self) -> BTreeSet<u64> {
+        self.on_screen.seqs()
     }
 
     fn render_conversation(&self, shown: &View, state: &State, name: Option<&str>) {
@@ -176,6 +192,7 @@ impl ChatPage {
             self.follow.keep_place();
         }
         self.show_entries(shown, live.as_ref());
+        self.on_screen.notice();
         self.thinking.row.set_visible(shown.thinking);
         if let Some(live) = &live {
             self.thinking.thinking(live);
@@ -224,28 +241,58 @@ impl ChatPage {
         self.follow.latest();
     }
 
-    /// Draws what changed: entries already on screen stay, one that streamed
-    /// more in or changed its status is updated in place, and everything from
-    /// the first entry that cannot be is drawn anew.
-    fn show_entries(&self, shown_view: &View, live: Option<&Live>) {
-        let entries = &shown_view.entries;
+    /// Draws what changed, each entry kept by its key: one already on screen stays where it
+    /// is, one that streamed more in or changed is updated in place, a new one is drawn at its
+    /// place, and one gone is removed. A page read backward is a prepend: nothing below it
+    /// is drawn again.
+    fn show_entries(&self, view: &View, live: Option<&Live>) {
         let mut shown = self.shown.borrow_mut();
-        let mut same = 0;
-        for (drawn, entry) in shown.iter_mut().zip(entries) {
-            if drawn.entry != *entry && !drawn.grow(entry) {
-                break;
+        let mut kept = self.take_kept(&mut shown, &view.keys);
+        let mut previous: Option<gtk::Widget> = None;
+        let placed = view.keys.iter().zip(&view.entries).zip(&view.seqs);
+        for ((key, entry), seq) in placed {
+            let drawn = match kept.remove(key) {
+                Some(drawn) => self.redrawn(drawn, entry),
+                None => Drawn::new(entry),
+            };
+            place(&self.list, &drawn.row, previous.as_ref());
+            previous = Some(drawn.row.clone().upcast());
+            shown.push(Placed {
+                key: key.clone(),
+                seq: *seq,
+                drawn,
+            });
+        }
+        // Every key kept is one the view has, and the loop took each at its first place.
+        debug_assert!(kept.is_empty(), "an entry kept that the view does not have");
+        decorate(&shown, view, live);
+    }
+
+    /// Empties `shown` into its entries by key, and removes from the list each entry `keys`
+    /// no longer has, and any second entry under one key.
+    fn take_kept(&self, shown: &mut Vec<Placed>, keys: &[Key]) -> HashMap<Key, Drawn> {
+        let wanted: HashSet<&Key> = keys.iter().collect();
+        let mut kept = HashMap::with_capacity(shown.len());
+        for placed in shown.drain(..) {
+            if !wanted.contains(&placed.key) {
+                self.list.remove(&placed.drawn.row);
+                continue;
             }
-            same += 1;
+            if let Some(twin) = kept.insert(placed.key, placed.drawn) {
+                self.list.remove(&twin.row);
+            }
         }
-        for stale in shown.drain(same..) {
-            self.list.remove(&stale.row);
+        kept
+    }
+
+    /// `drawn` grown into `entry`, or drawn anew when it cannot be: a different kind of entry
+    /// under the same key, or a row read again that draws differently.
+    fn redrawn(&self, mut drawn: Drawn, entry: &Entry) -> Drawn {
+        if drawn.entry == *entry || drawn.grow(entry) {
+            return drawn;
         }
-        for entry in &entries[same..] {
-            let drawn = Drawn::new(entry);
-            self.list.append(&drawn.row);
-            shown.push(drawn);
-        }
-        decorate(&shown, shown_view, live);
+        self.list.remove(&drawn.row);
+        Drawn::new(entry)
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -264,7 +311,7 @@ impl ChatPage {
             let live = turn.live();
             thinking.thinking(&live);
             if let Some(last) = shown.borrow().last() {
-                last.set_live(Some(&live));
+                last.drawn.set_live(Some(&live));
             }
             glib::ControlFlow::Continue
         });
@@ -295,15 +342,36 @@ impl Turn {
     }
 }
 
+/// One entry on screen: its key, the held row it draws, and its widgets.
+struct Placed {
+    key: Key,
+    seq: Option<u64>,
+    drawn: Drawn,
+}
+
+/// Puts `row` straight after `after`, or first for `None`, moving it only when it is not
+/// there already.
+fn place(list: &gtk::Box, row: &gtk::Box, after: Option<&gtk::Widget>) {
+    if row.parent().is_none() {
+        list.insert_child_after(row, after);
+        return;
+    }
+    if row.prev_sibling().as_ref() != after {
+        list.reorder_child_after(row, after);
+    }
+}
+
 /// The parts of each entry that follow the rest of the conversation; only the
 /// last entry can be live.
-fn decorate(shown: &[Drawn], view: &View, live: Option<&Live>) {
+fn decorate(shown: &[Placed], view: &View, live: Option<&Live>) {
     let last = shown.len().checked_sub(1);
-    for (index, drawn) in shown.iter().enumerate() {
+    for (index, placed) in shown.iter().enumerate() {
         let is_last = Some(index) == last;
         let time = view.times.get(index).cloned().flatten();
         let time = time.as_deref().and_then(clock);
-        drawn.decorate(time.as_deref(), live.filter(|_| is_last));
+        placed
+            .drawn
+            .decorate(time.as_deref(), live.filter(|_| is_last));
     }
 }
 
@@ -394,9 +462,11 @@ fn jump_button() -> gtk::Button {
 
 /// Keeps the newest entry in view while the reader is at the bottom, leaves
 /// the view alone once they scroll up to read, and offers a way back down.
+/// Coming back to the bottom marks the newest row read.
 struct Follow {
     stuck: Rc<Cell<bool>>,
     adjustment: gtk::Adjustment,
+    scroller: gtk::ScrolledWindow,
 }
 
 impl Follow {
@@ -404,21 +474,28 @@ impl Follow {
         let follow = Follow {
             stuck: Rc::new(Cell::new(true)),
             adjustment: scroller.vadjustment(),
+            scroller: scroller.clone(),
         };
         let (stuck, button) = (follow.stuck.clone(), jump.clone());
         follow.adjustment.connect_value_changed(move |a| {
             let at_bottom = a.value() + a.page_size() >= a.upper() - STICK_DISTANCE;
-            stuck.set(at_bottom);
+            let was = stuck.replace(at_bottom);
             button.set_visible(!at_bottom);
+            if at_bottom && !was {
+                newest_seen(&button);
+            }
         });
         let stuck = follow.stuck.clone();
         follow
             .adjustment
             .connect_changed(move |a| scroll_to_end_when_idle(a, &stuck));
         let (stuck, adjustment) = (follow.stuck.clone(), follow.adjustment.clone());
-        jump.connect_clicked(move |_| {
-            stuck.set(true);
+        jump.connect_clicked(move |button| {
+            let was = stuck.replace(true);
             adjustment.set_value(adjustment.upper() - adjustment.page_size());
+            if !was {
+                newest_seen(button);
+            }
         });
         follow
     }
@@ -438,6 +515,106 @@ impl Follow {
         self.stuck.set(true);
         let a = &self.adjustment;
         a.set_value(a.upper() - a.page_size());
+    }
+}
+
+/// The reader is back at the newest row: the window marks it read.
+fn newest_seen(widget: &impl IsA<gtk::Widget>) {
+    if let Err(e) = widget.activate_action("win.chat-seen", None) {
+        glib::g_warning!("fermix", "could not mark the newest message read: {e}");
+    }
+}
+
+/// Which held rows are drawn on screen, told to the window each time that changes, so a row a
+/// reconnect may have changed is read again as the reader comes to it (macOS `rowsOnScreen`).
+struct OnScreen {
+    shown: Rc<RefCell<Vec<Placed>>>,
+    scroller: gtk::ScrolledWindow,
+    /// What the window was last told; empty while the conversation is off screen.
+    told: RefCell<BTreeSet<u64>>,
+    /// A look is due at the next idle, once the layout has settled.
+    due: Cell<bool>,
+}
+
+impl OnScreen {
+    fn new(shown: &Rc<RefCell<Vec<Placed>>>, scroller: &gtk::ScrolledWindow) -> Rc<OnScreen> {
+        let on_screen = Rc::new(OnScreen {
+            shown: shown.clone(),
+            scroller: scroller.clone(),
+            told: RefCell::default(),
+            due: Cell::new(false),
+        });
+        let adjustment = scroller.vadjustment();
+        let weak = Rc::downgrade(&on_screen);
+        adjustment.connect_value_changed(move |_| notice(&weak));
+        let weak = Rc::downgrade(&on_screen);
+        adjustment.connect_changed(move |_| notice(&weak));
+        let weak = Rc::downgrade(&on_screen);
+        scroller.connect_map(move |_| notice(&weak));
+        let told = Rc::downgrade(&on_screen);
+        scroller.connect_unmap(move |_| {
+            if let Some(on_screen) = told.upgrade() {
+                on_screen.told.take();
+            }
+        });
+        on_screen
+    }
+
+    /// Something moved: once the layout settles, the window hears of a change.
+    fn notice(self: &Rc<Self>) {
+        if self.due.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(on_screen) = weak.upgrade() else {
+                return;
+            };
+            on_screen.due.set(false);
+            on_screen.tell();
+        });
+    }
+
+    fn tell(&self) {
+        let seqs = self.seqs();
+        if *self.told.borrow() == seqs {
+            return;
+        }
+        self.told.replace(seqs);
+        if let Err(e) = self.scroller.activate_action("win.chat-on-screen", None) {
+            glib::g_warning!("fermix", "could not report the messages on screen: {e}");
+        }
+    }
+
+    /// The held rows whose entries overlap the scroller's view now. Entries stand in order
+    /// down the list, so the first on screen is found by halving.
+    fn seqs(&self) -> BTreeSet<u64> {
+        if !self.scroller.is_mapped() {
+            return BTreeSet::new();
+        }
+        let height = self.scroller.height() as f32;
+        let span = |placed: &Placed| {
+            let bounds = placed.drawn.row.compute_bounds(&self.scroller)?;
+            Some((bounds.y(), bounds.y() + bounds.height()))
+        };
+        let shown = self.shown.borrow();
+        let above = |placed: &Placed| span(placed).is_some_and(|(_, bottom)| bottom <= 0.0);
+        let first = shown.partition_point(above);
+        shown[first..]
+            .iter()
+            .map_while(|placed| {
+                span(placed)
+                    .filter(|(top, _)| *top < height)
+                    .map(|_| placed)
+            })
+            .filter_map(|placed| placed.seq)
+            .collect()
+    }
+}
+
+fn notice(on_screen: &std::rc::Weak<OnScreen>) {
+    if let Some(on_screen) = on_screen.upgrade() {
+        on_screen.notice();
     }
 }
 

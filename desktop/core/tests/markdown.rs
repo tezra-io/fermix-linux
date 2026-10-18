@@ -54,6 +54,16 @@ fn a_fence_names_its_language_by_the_first_word_of_its_info() {
     assert_eq!(render("    indented\n"), [code(None, "indented")]);
 }
 
+/// A fence's tag is plain text by contract, never markup: it reaches the block as written, and
+/// the app sets it as a label's text.
+#[test]
+fn a_fence_tag_with_markup_in_it_reaches_the_block_as_written() {
+    assert_eq!(
+        render("```<b>x</b>\ncode\n```"),
+        [code(Some("<b>x</b>"), "code")]
+    );
+}
+
 #[test]
 fn a_link_to_anything_but_the_web_or_mail_stays_plain_text() {
     assert_eq!(

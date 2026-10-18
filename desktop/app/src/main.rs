@@ -131,7 +131,6 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let chat = adw::ShortcutsSection::new(Some("Chat"));
     chat.add(adw::ShortcutsItem::new("Send", "Return"));
     chat.add(adw::ShortcutsItem::new("New line", "<Shift>Return"));
-    chat.add(adw::ShortcutsItem::new("New conversation", "<Ctrl>n"));
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new(
         "Keyboard shortcuts",

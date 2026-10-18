@@ -194,3 +194,50 @@ fn the_line_buffer_takes_a_page_past_the_voice_caps_and_stops_a_runaway() {
         Err(DecodeError::FrameTooLarge(_))
     ));
 }
+
+/// JSON may carry a NUL (`\u0000`), a GTK label cannot: GLib panics on one in a debug build and
+/// cuts the text at it in a release one. Every string the daemon sends arrives with each NUL
+/// made U+FFFD, so no label downstream ever sees one.
+#[test]
+fn a_nul_in_any_text_the_daemon_sends_arrives_as_a_replacement_character() {
+    let ServerEvent::Row(held) = decode(row(json!({"text": "before\u{0}after"}))) else {
+        panic!("a row");
+    };
+    assert_eq!(held.text, "before\u{FFFD}after");
+    let delta = json!({"type": "text_delta", "turn_id": "t\u{0}1", "text": "so\u{0}far"});
+    let ServerEvent::TextDelta { turn_id, text } = decode(delta) else {
+        panic!("a delta");
+    };
+    assert_eq!(
+        (turn_id.as_str(), text.as_str()),
+        ("t\u{FFFD}1", "so\u{FFFD}far")
+    );
+    let page = json!({"type": "history_page", "profile_id": "main", "history_head_seq": 1,
+        "messages": [{"server_seq": 1, "role": "user", "content": "\u{0}", "media_refs": []}]});
+    let ServerEvent::HistoryPage(page) = decode(page) else {
+        panic!("a page");
+    };
+    assert_eq!(page.messages[0].text, "\u{FFFD}");
+}
+
+/// A NUL inside a fence, in its tag and in its code, reaches the code block replaced too.
+#[test]
+fn a_nul_in_a_fence_reaches_the_code_block_replaced() {
+    use fermix_client::markdown::{highlight, render, Block as Drawn};
+    let fence = "```py\u{0}\nx = 1\u{0}\n```";
+    let ServerEvent::Row(held) = decode(row(json!({"text": fence}))) else {
+        panic!("a row");
+    };
+    let blocks = render(&held.text);
+    let [Drawn::Code { language, text }] = blocks.as_slice() else {
+        panic!("one code block");
+    };
+    assert_eq!(language.as_deref(), Some("py\u{FFFD}"));
+    assert_eq!(text, "x = 1\u{FFFD}");
+    let inks = highlight::Inks {
+        keyword: "#aa00aa".into(),
+        string: "#00aa00".into(),
+        number: "#aa5500".into(),
+    };
+    assert!(!highlight::markup(text, language.as_deref(), &inks).contains('\0'));
+}

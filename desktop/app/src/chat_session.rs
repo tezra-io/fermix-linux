@@ -9,14 +9,10 @@ use fermix_client::chat_wire::protocol::{ClientEvent, Row, ServerEvent};
 use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use gtk::glib;
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
 /// Events read while waiting for `server_hello` before the attempt is given up.
 const HANDSHAKE_READ_CAP: usize = 16;
-/// Held rows read again after a reconnect: the newest, which are the ones on screen when the
-/// reader follows the conversation.
-const REREAD_ROWS: usize = 50;
 
 #[derive(Default)]
 pub struct ChatWire {
@@ -25,7 +21,8 @@ pub struct ChatWire {
     link: Option<Rc<Link>>,
     /// Bumped whenever the link is dropped, so a reader of an older link stops.
     generation: u64,
-    retry: Option<glib::SourceId>,
+    /// The backoff's timer while it waits; an attempt started sooner removes it.
+    backoff: Option<glib::SourceId>,
     expiry: Option<glib::SourceId>,
 }
 
@@ -52,13 +49,16 @@ fn message_id() -> String {
 }
 
 impl App {
-    /// Starts the chat's connection unless one runs or waits out its backoff.
+    /// Starts the chat's connection now unless an attempt runs or it is connected: after a
+    /// refusal, and before a waiting backoff is over, whose timer then goes.
     pub fn chat_connect(self: &Rc<Self>) {
         let generation = {
             let mut wire = self.wire.borrow_mut();
-            wire.retry = None;
             if !wire.session.start() {
                 return;
+            }
+            if let Some(backoff) = wire.backoff.take() {
+                backoff.remove();
             }
             wire.generation
         };
@@ -121,11 +121,12 @@ impl App {
     }
 
     fn negotiated(self: &Rc<Self>, link: Rc<Link>, generation: u64) {
+        // What the daemon changed while away is read again for the rows on screen; the rest
+        // as the reader comes to them (`chat_rows_on_screen`).
+        let on_screen = self.chat.rows_on_screen();
         let events = {
             let mut wire = self.wire.borrow_mut();
             wire.link = Some(link.clone());
-            let held = wire.chat.rows.iter().rev().take(REREAD_ROWS);
-            let on_screen: BTreeSet<u64> = held.map(|held| held.row.server_seq).collect();
             timeline::negotiated(&mut wire.chat, &on_screen)
         };
         self.chat_send(events);
@@ -190,8 +191,14 @@ impl App {
             return;
         };
         let app = self.clone();
-        let source = glib::timeout_add_local_once(wait, move || app.chat_connect());
-        self.wire.borrow_mut().retry = Some(source);
+        let source = glib::timeout_add_local_once(wait, move || {
+            // Fired: there is no timer left to remove.
+            app.wire.borrow_mut().backoff = None;
+            app.chat_connect();
+        });
+        if let Some(stale) = self.wire.borrow_mut().backoff.replace(source) {
+            stale.remove();
+        }
     }
 
     /// Sends the timeline's answers on the live link. Without one, the timeline keeps what
@@ -225,15 +232,6 @@ impl App {
         self.chat.focus_input();
     }
 
-    /// Starts a fresh conversation with the agent: the engine's `/new`. The timeline stays.
-    pub fn new_conversation(self: &Rc<Self>) {
-        let events = timeline::send(&mut self.wire.borrow_mut().chat, "/new", message_id());
-        self.chat_send(events);
-        self.chat.follow_latest();
-        self.render();
-        self.chat.focus_input();
-    }
-
     pub fn stop_reply(&self) {
         let events = timeline::stop(&mut self.wire.borrow_mut().chat);
         self.chat_send(events);
@@ -255,7 +253,14 @@ impl App {
         self.chat_send(events);
     }
 
-    /// Moves the shared read frontier while the newest row is on screen.
+    /// Held rows came on screen: those a reconnect may have changed are read again, once.
+    pub fn chat_rows_on_screen(&self) {
+        let seqs = self.chat.rows_on_screen();
+        let events = timeline::rows_on_screen(&mut self.wire.borrow_mut().chat, &seqs);
+        self.chat_send(events);
+    }
+
+    /// Moves the shared read frontier while the newest row is on screen in the active window.
     pub fn chat_seen(&self) {
         if !self.chat.reading_latest() {
             return;
