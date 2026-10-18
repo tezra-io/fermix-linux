@@ -3,8 +3,8 @@
 
 use fermix_client::mobile::MobileStatus;
 use fermix_client::reach::{
-    line, moves, Follow, Kind, Line, Newest, BACKOFF_MS, DORMANT, HELPER_MISSING, NOT_CONNECTED,
-    POLLS, READY, STARTING,
+    line, moves, Follow, Kind, Line, BACKOFF_MS, DORMANT, HELPER_MISSING, NOT_CONNECTED, POLLS,
+    READY, STARTING,
 };
 use serde_json::{json, Value};
 
@@ -116,18 +116,4 @@ fn a_follow_waits_a_second_doubles_per_refusal_up_to_thirty_and_stops_at_its_las
         follow.answered();
     }
     assert!(follow.exhausted(), "{POLLS} reads in all");
-}
-
-#[test]
-fn only_the_newest_read_asked_lands() {
-    let mut newest = Newest::default();
-    let first = newest.ask();
-    let second = newest.ask();
-    assert!(newest.lands(second));
-    assert!(
-        !newest.lands(first),
-        "an older answer never overwrites a newer one"
-    );
-    let third = newest.ask();
-    assert!(newest.lands(third));
 }

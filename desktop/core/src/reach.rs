@@ -114,27 +114,3 @@ impl Follow {
         self.refusals == 1
     }
 }
-
-/// Reads of `mobile.status` run side by side and can answer out of order. Each read takes a
-/// number when it is asked, and an answer lands only if no later-asked read has landed first.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Newest {
-    asked: u64,
-    landed: u64,
-}
-
-impl Newest {
-    pub fn ask(&mut self) -> u64 {
-        self.asked += 1;
-        self.asked
-    }
-
-    /// Whether the answer to read `number` lands; if it does, older ones no longer can.
-    pub fn lands(&mut self, number: u64) -> bool {
-        if number <= self.landed {
-            return false;
-        }
-        self.landed = number;
-        true
-    }
-}

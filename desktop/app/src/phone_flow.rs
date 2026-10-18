@@ -17,6 +17,7 @@ use fermix_client::phone::{
 use fermix_client::reach::{self, Follow};
 use fermix_client::settings::read_failure;
 use fermix_client::view::channel_title;
+use futures_channel::oneshot;
 use gtk::glib;
 use serde_json::{Map, Value};
 use std::rc::Rc;
@@ -481,15 +482,21 @@ impl App {
         }
     }
 
-    /// One `mobile.status` read. Its answer is kept only if no read asked after it has landed,
-    /// and a refusal leaves reach from anywhere as it was last read.
+    /// One `mobile.status` read, asked once the read before it has landed. A refusal leaves
+    /// reach from anywhere as it was last read.
     async fn read_mobile_status(&self) -> Result<MobileStatus, CallError> {
-        let number = self.settings_data.borrow_mut().phone_status_newest.ask();
+        let (landed, turn) = oneshot::channel();
+        let previous = self
+            .settings_data
+            .borrow_mut()
+            .phone_status_read
+            .replace(turn);
+        if let Some(previous) = previous {
+            // A cancelled sender is a read whose future was dropped; its turn is over all the same.
+            let _ = previous.await;
+        }
         let answer = self.daemon.call(|m| m.mobile_status()).await;
         let mut data = self.settings_data.borrow_mut();
-        if !data.phone_status_newest.lands(number) {
-            return answer;
-        }
         match &answer {
             Ok(status) => {
                 data.phone_remote = status.remote.clone();
@@ -497,6 +504,9 @@ impl App {
             }
             Err(e) => data.phone_status = Some(Err(read_failure(e))),
         }
+        drop(data);
+        // Nobody waiting is the newest read; there is no one to hand the turn to.
+        let _ = landed.send(());
         answer
     }
 
