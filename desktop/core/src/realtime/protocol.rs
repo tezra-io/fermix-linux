@@ -398,23 +398,45 @@ pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
 }
 
 /// Splits the inbound byte stream into lines, holding at most one unfinished line.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LineBuffer {
     pending: Vec<u8>,
+    max_frame: usize,
+    max_unscanned: usize,
+}
+
+impl Default for LineBuffer {
+    fn default() -> LineBuffer {
+        LineBuffer::with_caps(MAX_FRAME_BYTES, MAX_UNSCANNED_BYTES)
+    }
 }
 
 impl LineBuffer {
+    /// The voice wire's caps: `MAX_FRAME_BYTES` and `MAX_UNSCANNED_BYTES`.
     pub fn new() -> LineBuffer {
         LineBuffer::default()
     }
 
+    /// A buffer for another wire's caps: the longest line, and the most unscanned bytes held.
+    pub fn with_caps(max_frame: usize, max_unscanned: usize) -> LineBuffer {
+        assert!(
+            max_frame > 0 && max_frame <= max_unscanned,
+            "caps out of order"
+        );
+        LineBuffer {
+            pending: Vec::new(),
+            max_frame,
+            max_unscanned,
+        }
+    }
+
     /// Adds what was read and returns every line it completed, in order, without newlines and
-    /// without empty lines. A burst past `MAX_UNSCANNED_BYTES` is refused before scanning; a
-    /// line past `MAX_FRAME_BYTES` is refused, including one whose newline has not come yet.
-    /// After an error the buffer is empty, and the connection is over.
+    /// without empty lines. A burst past the unscanned cap is refused before scanning; a line
+    /// past the frame cap is refused, including one whose newline has not come yet. After an
+    /// error the buffer is empty, and the connection is over.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
         let total = self.pending.len() + bytes.len();
-        if total > MAX_UNSCANNED_BYTES {
+        if total > self.max_unscanned {
             self.pending.clear();
             return Err(DecodeError::BufferTooLarge(total));
         }
@@ -422,7 +444,7 @@ impl LineBuffer {
         let mut lines = Vec::new();
         let mut start = 0;
         while let Some(length) = self.pending[start..].iter().position(|&b| b == b'\n') {
-            if length > MAX_FRAME_BYTES {
+            if length > self.max_frame {
                 self.pending.clear();
                 return Err(DecodeError::FrameTooLarge(length));
             }
@@ -433,7 +455,7 @@ impl LineBuffer {
         }
         self.pending.drain(..start);
         let unfinished = self.pending.len();
-        if unfinished > MAX_FRAME_BYTES {
+        if unfinished > self.max_frame {
             self.pending.clear();
             return Err(DecodeError::FrameTooLarge(unfinished));
         }

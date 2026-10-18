@@ -7,6 +7,7 @@ pub mod autostart;
 pub mod capabilities;
 pub mod capped;
 pub mod chat;
+pub mod chat_wire;
 pub mod companion;
 pub mod doctor;
 pub mod frame;
