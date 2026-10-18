@@ -5,6 +5,7 @@
 use crate::activity::ToolKind;
 use crate::chat_wire::protocol::{MediaRef, Row};
 use crate::chat_wire::timeline::{self, Chat, ToolState};
+use crate::places::{cards, Card};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,8 +13,12 @@ pub enum Entry {
     User(String),
     /// A question the daemon has not accepted yet.
     Sending(String),
-    /// Markdown, growing while it streams.
-    Assistant(String),
+    /// Markdown, growing while it streams, and the cards of the places it links, which come with
+    /// its row (none while it streams).
+    Assistant {
+        text: String,
+        places: Vec<Card>,
+    },
     /// A file a row names, as one line ("Voice note", "Picture · lamp.jpg"), on the side of
     /// whoever wrote the row.
     Media {
@@ -148,7 +153,10 @@ fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
     if !text.is_empty() {
         let entry = match row.role.as_str() {
             "user" => Entry::User(text.to_owned()),
-            _ => Entry::Assistant(row.text.clone()),
+            _ => Entry::Assistant {
+                text: row.text.clone(),
+                places: cards(&row.blocks),
+            },
         };
         let key = reply.unwrap_or(Key::Row(seq));
         view.push(entry, key, time.clone(), Some(seq));
@@ -188,7 +196,11 @@ fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
     }
     if !turn.draft.is_empty() {
         let key = Key::Reply(turn.turn_id.clone(), replied);
-        view.push(Entry::Assistant(turn.draft.clone()), key, None, None);
+        let draft = Entry::Assistant {
+            text: turn.draft.clone(),
+            places: Vec::new(),
+        };
+        view.push(draft, key, None, None);
     }
     view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
 }

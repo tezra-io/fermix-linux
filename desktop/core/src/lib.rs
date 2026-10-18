@@ -23,6 +23,7 @@ pub mod onboarding;
 pub mod overview;
 pub mod pairing;
 pub mod phone;
+pub mod places;
 pub mod plugins;
 pub mod providers;
 pub mod reach;

@@ -7,6 +7,7 @@ mod activity;
 mod approvals;
 mod blocks;
 mod entries;
+mod places;
 mod table_scroller;
 
 use crate::chat_session::ChatWire;

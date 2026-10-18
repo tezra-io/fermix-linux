@@ -4,6 +4,7 @@
 use fermix_client::chat::{media_line, view, Entry, Key, RunState};
 use fermix_client::chat_wire::protocol::{decode_line, MediaRef, ServerEvent};
 use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::places::Card;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
@@ -34,6 +35,38 @@ fn row(chat: &mut Chat, seq: u64, role: &str, text: &str, extra: Value) {
     timeline::receive(chat, event(row), 0);
 }
 
+/// A reply with no places.
+fn reply(text: &str) -> Entry {
+    Entry::Assistant {
+        text: text.into(),
+        places: Vec::new(),
+    }
+}
+
+/// The places a reply's entry carries, by name.
+fn place_names(entry: &Entry) -> Vec<&str> {
+    let Entry::Assistant { places, .. } = entry else {
+        panic!("a reply: {entry:?}");
+    };
+    places
+        .iter()
+        .map(|card: &Card| card.name.as_str())
+        .collect()
+}
+
+const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
+
+/// The vendored places block of the reply to `turn`, as JSON.
+fn fixture_blocks(turn: &str) -> Value {
+    for line in SERVER.lines() {
+        let event: Value = serde_json::from_str(line).expect("a fixture line is JSON");
+        if event["type"] == "text_done" && event["turn_id"] == turn {
+            return event["blocks"].clone();
+        }
+    }
+    panic!("no text_done for {turn} in the fixtures");
+}
+
 #[test]
 fn an_empty_chat_has_no_entries_and_no_turn() {
     let shown = view(&Chat::default());
@@ -50,10 +83,7 @@ fn rows_read_as_the_person_and_fermix_with_their_times() {
     let shown = view(&chat);
     assert_eq!(
         shown.entries,
-        [
-            Entry::User("Hi".into()),
-            Entry::Assistant("Hello **there**".into())
-        ]
+        [Entry::User("Hi".into()), reply("Hello **there**")]
     );
     assert_eq!(shown.times[0].as_deref(), Some("2026-09-25T09:00:00Z"));
     assert_eq!(shown.first_seq, Some(1));
@@ -114,7 +144,7 @@ fn a_turn_thinks_then_shows_its_tools_and_its_draft() {
     assert_eq!(runs[0].name, "web_search");
     assert_eq!(runs[0].state, RunState::Running);
     assert_eq!(runs[0].started, 101);
-    assert_eq!(shown.entries[1], Entry::Assistant("Here".into()));
+    assert_eq!(shown.entries[1], reply("Here"));
 }
 
 #[test]
@@ -302,7 +332,7 @@ fn a_reply_keeps_its_key_from_its_first_words_to_the_row_it_becomes() {
     reread["messages"][0]["content"] = json!("Hello again");
     receive(&mut chat, reread);
     let again = view(&chat);
-    assert_eq!(again.entries[1], Entry::Assistant("Hello again".into()));
+    assert_eq!(again.entries[1], reply("Hello again"));
     assert_eq!(again.keys, streaming.keys);
 }
 
@@ -365,4 +395,85 @@ fn every_reply_of_a_turn_has_a_key_of_its_own() {
     let held = view(&chat);
     assert!(unique(&held.keys), "{:?}", held.keys);
     assert_eq!(held.keys, streaming.keys, "the draft's key is its row's");
+}
+
+/// A reply's places come with its row: none while it streams, its cards from `text_done` on, in
+/// the same entry under the same key, so the reply grows its cards in place.
+#[test]
+fn a_streamed_reply_gains_its_places_at_text_done_under_its_key() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Coffee?",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Two quiet ones"}),
+    );
+    let streaming = view(&chat);
+    assert_eq!(streaming.entries[1], reply("Two quiet ones"));
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2,
+        "text": "Two quiet ones", "blocks": fixture_blocks("turn-mac-6")}),
+    );
+    let done = view(&chat);
+    assert_eq!(done.keys, streaming.keys);
+    assert_eq!(
+        place_names(&done.entries[1]),
+        ["Example Coffee", "Quiet Grounds"]
+    );
+}
+
+#[test]
+fn a_row_read_from_history_or_read_again_carries_its_places() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "assistant",
+        "Two in Suwanee",
+        json!({"blocks": fixture_blocks("turn-mac-7")}),
+    );
+    let first = view(&chat);
+    assert_eq!(
+        place_names(&first.entries[0]),
+        ["Example Taqueria", "Second Cantina"]
+    );
+    // Away and back: the row read again with other places changes under the same key.
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::from([1]));
+    receive(&mut chat, page_of([], 1, None));
+    let mut reread = page_of([1], 1, None);
+    reread["messages"][0]["role"] = json!("assistant");
+    reread["messages"][0]["content"] = json!("Two in Suwanee");
+    reread["messages"][0]["blocks"] = fixture_blocks("turn-mac-6");
+    receive(&mut chat, reread);
+    let again = view(&chat);
+    assert_eq!(again.keys, first.keys);
+    assert_eq!(
+        place_names(&again.entries[0]),
+        ["Example Coffee", "Quiet Grounds"]
+    );
+}
+
+#[test]
+fn a_person_s_row_never_draws_places() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Here",
+        json!({"blocks": fixture_blocks("turn-mac-6")}),
+    );
+    assert_eq!(view(&chat).entries, [Entry::User("Here".into())]);
 }

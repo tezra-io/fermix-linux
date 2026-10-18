@@ -428,10 +428,39 @@ pub struct Place {
     pub distance: Option<Distance>,
 }
 
+/// A point on the globe. Coordinates off it would open a map of nowhere, so they do not decode,
+/// and the place is skipped like any other that does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "RawLocation")]
 pub struct Location {
     pub latitude: f64,
     pub longitude: f64,
+}
+
+#[derive(Deserialize)]
+struct RawLocation {
+    latitude: f64,
+    longitude: f64,
+}
+
+impl TryFrom<RawLocation> for Location {
+    type Error = String;
+
+    /// Each coordinate inside its range, bounds included; NaN and infinity are in no range.
+    fn try_from(raw: RawLocation) -> Result<Self, Self::Error> {
+        let on_globe =
+            (-90.0..=90.0).contains(&raw.latitude) && (-180.0..=180.0).contains(&raw.longitude);
+        if !on_globe {
+            return Err(format!(
+                "{},{} is off the globe",
+                raw.latitude, raw.longitude
+            ));
+        }
+        Ok(Location {
+            latitude: raw.latitude,
+            longitude: raw.longitude,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

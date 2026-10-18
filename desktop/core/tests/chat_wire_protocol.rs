@@ -98,6 +98,37 @@ fn an_unknown_block_and_a_place_without_coordinates_are_skipped() {
     assert_eq!(row.skipped, 2, "the unknown block and the place");
 }
 
+/// A place off the globe would open a map of nowhere: its coordinates are refused at decode, so
+/// it is skipped and counted like any other place that does not fit.
+#[test]
+fn a_place_off_the_globe_is_skipped_and_counted() {
+    let at = |latitude: f64, longitude: f64| {
+        json!({"name": format!("{latitude},{longitude}"),
+               "location": {"latitude": latitude, "longitude": longitude}})
+    };
+    let extra = json!({"blocks": [{"type": "places", "places": [
+        at(90.0, 180.0), at(-90.0, -180.0),
+        at(90.000001, 0.0), at(-90.000001, 0.0), at(0.0, 180.000001), at(0.0, -180.000001),
+        at(1e300, 0.0), at(0.0, 1e300)
+    ]}]});
+    let ServerEvent::Row(row) = decode(row(extra)) else {
+        panic!("a row");
+    };
+    let [Block::Places(places)] = row.blocks.as_slice() else {
+        panic!("the places block");
+    };
+    let names: Vec<&str> = places.iter().map(|place| place.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["90,180", "-90,-180"],
+        "the bounds themselves are on the globe"
+    );
+    assert_eq!(
+        row.skipped, 6,
+        "each place just past a bound, and 1e300 either way"
+    );
+}
+
 #[test]
 fn a_rating_count_written_as_a_float_keeps_its_place() {
     let extra = json!({"blocks": [{"type": "places", "places": [

@@ -1,12 +1,15 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
-//! the tools it ran, the files a row names, and failures. A streamed entry
-//! grows in place, so a chunk never redraws what is already on screen.
+//! with the cards of the places a reply links under it, the tools it ran, the
+//! files a row names, and failures. A streamed entry grows in place, so a chunk
+//! never redraws what is already on screen.
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
+use super::places::Places;
 use adw::prelude::*;
 use fermix_client::chat::Entry;
 use fermix_client::markdown::{Block, Draft};
+use fermix_client::places::Card;
 use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,12 +44,18 @@ struct Reply {
     draft: Draft,
     /// The Markdown the copy button copies, kept current while the reply grows.
     source: Rc<RefCell<String>>,
+    /// The cards of the places it links, under the bubble; they come with its row.
+    places: Places,
 }
 
 impl Drawn {
     pub fn new(entry: &Entry) -> Drawn {
         let (side, body, source, parts) = draw_body(entry);
         let (row, time) = row(side, &body, source);
+        if let Parts::Reply(reply) = &parts {
+            // Between the bubble's line and the time under it.
+            row.insert_child_after(&reply.places.widget, row.first_child().as_ref());
+        }
         Drawn {
             entry: entry.clone(),
             row,
@@ -60,7 +69,10 @@ impl Drawn {
     /// drawn anew.
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
-            (Parts::Reply(reply), Entry::Assistant(text)) => reply.grow(text),
+            (Parts::Reply(reply), Entry::Assistant { text, places }) => {
+                reply.grow(text);
+                reply.places.show(places);
+            }
             (Parts::Tools(group), Entry::Tools(runs)) => {
                 if !group.grow(runs) {
                     return false;
@@ -96,8 +108,8 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
             let source = Rc::new(RefCell::new(text.clone()));
             (Side::Person, user_bubble(text), Some(source), Parts::Fixed)
         }
-        Entry::Assistant(text) => {
-            let reply = Reply::new(text);
+        Entry::Assistant { text, places } => {
+            let reply = Reply::new(text, places);
             let source = reply.source.clone();
             (
                 Side::Fermix,
@@ -204,7 +216,7 @@ pub(super) fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
     toast(widget, "Copied");
 }
 
-fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
+pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Err(e) = widget.activate_action("win.toast", Some(&text.to_variant())) {
         glib::g_warning!("fermix", "could not show the toast {text:?}: {e}");
     }
@@ -234,7 +246,7 @@ fn sending_bubble(text: &str) -> gtk::Widget {
 }
 
 impl Reply {
-    fn new(text: &str) -> Reply {
+    fn new(text: &str, places: &[Card]) -> Reply {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -247,8 +259,10 @@ impl Reply {
             blocks: Vec::new(),
             draft: Draft::default(),
             source: Rc::default(),
+            places: Places::new(),
         };
         reply.grow(text);
+        reply.places.show(places);
         reply
     }
 
