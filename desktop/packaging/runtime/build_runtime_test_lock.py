@@ -24,8 +24,8 @@ REQUIRED = {
     "graphene", "pango", "gdk-pixbuf", "webp-pixbuf-loader", "libxml2", "librsvg",
     "libxmlb", "appstream", "wayland", "wayland-protocols", "libepoxy", "gtk",
     "libadwaita", "dconf", "adwaita-icon-theme", "abseil-cpp",
-    "webrtc-audio-processing", "gstreamer", "gst-plugins-base", "gst-plugins-good",
-    "gst-plugins-bad",
+    "webrtc-audio-processing", "gstreamer", "libogg", "opus", "gst-plugins-base",
+    "gst-plugins-good", "gst-plugins-bad",
 }
 # Components the runtime decided against; see README.md.
 REFUSED = {"glycin", "orc"}
@@ -126,13 +126,21 @@ AUDITED = {
         "refs": {}, "standard": []},
     "dconf": {"license": "LGPL-2.1-or-later AND LGPL-2.0-or-later", "files": [],
               "refs": {}, "standard": LGPL_2_0},
+    # COPYING names the holders; the excerpts carry the two-clause notice, and
+    # the holders of compiled two-clause code COPYING leaves out (Google, Arm).
+    "opus": {"license": "BSD-3-Clause AND BSD-2-Clause",
+             "files": ["celt/kiss_fft.c", "celt/laplace.c", "celt/mathops.c",
+                       "src/mapping_matrix.c", "src/mlp.c"],
+             "refs": {}, "standard": []},
     "adwaita-icon-theme": {"license": "(CC-BY-SA-3.0 OR LGPL-3.0-only) AND CC-BY-SA-4.0",
                            "files": [], "refs": {}, "standard": ["CC-BY-SA-4.0"]},
     # gst/gsturi.c compiles FreeBSD's strcasestr: meson never defines
     # HAVE_STRCASESTR.
     "gstreamer": dict(GSTREAMER, license=GSTREAMER["license"] + " AND BSD-3-Clause",
                       files=["gst/gsturi.c"]),
-    "gst-plugins-base": GSTREAMER,
+    # ext/ogg/vorbis_parse.c, compiled into the ogg plugin, is liboggz's.
+    "gst-plugins-base": dict(GSTREAMER, license=GSTREAMER["license"] + " AND BSD-3-Clause",
+                             files=["ext/ogg/vorbis_parse.c"]),
     "gst-plugins-good": GSTREAMER,
     "gst-plugins-bad": GSTREAMER,
 }
@@ -346,6 +354,7 @@ def check_set(lock):
             ("appstream", "libadwaita"), ("abseil-cpp", "webrtc-audio-processing"),
             ("webrtc-audio-processing", "gst-plugins-bad"),
             ("gstreamer", "gst-plugins-base"), ("gst-plugins-base", "gst-plugins-good"),
+            ("libogg", "gst-plugins-base"), ("opus", "gst-plugins-base"),
             ("gdk-pixbuf", "webp-pixbuf-loader"), ("wayland", "gtk"),
             ("gdk-pixbuf", "librsvg"), ("libxml2", "librsvg"), ("pango", "librsvg")):
         if order(before) > order(after):
@@ -396,7 +405,8 @@ def check_flags(lock):
     enables = {
         "gstreamer": ["-Dtools=enabled"],
         "gst-plugins-base": ["-Dapp=enabled", "-Daudioconvert=enabled",
-                             "-Daudioresample=enabled", "-Daudiotestsrc=enabled"],
+                             "-Daudioresample=enabled", "-Daudiotestsrc=enabled",
+                             "-Dogg=enabled", "-Dopus=enabled"],
         "gst-plugins-good": ["-Dpulse=enabled", "-Dlevel=enabled"],
         "gst-plugins-bad": ["-Dwebrtcdsp=enabled"],
     }

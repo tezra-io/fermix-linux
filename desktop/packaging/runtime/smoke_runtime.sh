@@ -26,8 +26,9 @@ CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime"
 OUT_DIR="${FERMIX_RUNTIME_OUT:-$CACHE_HOME/out}"
 BUILD_IMAGE="${FERMIX_RUNTIME_IMAGE:-fermix-desktop-pkg-runtime-build}"
 SMOKE_IMAGE="${FERMIX_RUNTIME_SMOKE_IMAGE:-ubuntu@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02}"
-# Every element desktop/app/src/audio.rs makes, and level.
-ELEMENTS="pulsesrc pulsesink webrtcdsp webrtcechoprobe level audioconvert audioresample capsfilter audiotestsrc fakesink appsrc appsink"
+# Every element desktop/app/src/audio.rs makes, level, and the demuxer and
+# decoder of a phone's voice note (Ogg/Opus).
+ELEMENTS="pulsesrc pulsesink webrtcdsp webrtcechoprobe level audioconvert audioresample capsfilter audiotestsrc fakesink appsrc appsink oggdemux opusdec"
 
 # What the EXIT trap removes. A trap runs after every function has returned.
 WORK=""
