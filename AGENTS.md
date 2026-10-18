@@ -8,7 +8,7 @@ unit runs:
 - settings, sign-in and status: `~/.fermix/daemon.sock`, management protocol v2 (a 4-byte big-endian
   length, then JSON);
 - chat: `~/.fermix/acp.sock`, a `{"fermix_bridge":1,...}` handshake line, then ACP v1 NDJSON;
-- voice: `~/.fermix/realtime.sock`, NDJSON, protocol 2, with PCM16 audio at 24 kHz.
+- voice: `~/.fermix/realtime.sock`, NDJSON, protocol 3 (Grok's playback reports), with PCM16 audio at 24 kHz.
 
 This is the repo's only agent-instruction file. Never add a `CLAUDE.md`, `.claude/CLAUDE.md` or
 `CLAUDE.local.md`.

@@ -1,8 +1,11 @@
 //! The reply's audio on its way to the speaker: a bounded ring of PCM16 samples that the
 //! socket's reader thread fills and GStreamer's streaming thread empties, through
 //! `Arc<Mutex<PlaybackQueue>>`. It also counts what reached the pipeline since the utterance
-//! anchor, which is what `interrupt` reports (spec §1.7), and holds the level maths.
+//! anchor, which is what `interrupt` reports (spec §1.7), what has played of each playback id
+//! (`PlaybackIds`, a Grok call's `playback_progress`), and holds the level maths.
 
+use crate::realtime::playback_ids::PlaybackIds;
+use crate::realtime::protocol::PlaybackProgress;
 use std::collections::VecDeque;
 
 /// PCM16 LE mono, in both directions.
@@ -20,6 +23,7 @@ pub struct PlaybackQueue {
     /// The front samples that were already queued when the anchor reset: the tail of the
     /// utterance before it, so they are not counted when they play.
     before_anchor: usize,
+    ids: PlaybackIds,
 }
 
 /// What one `pull` did.
@@ -36,20 +40,21 @@ impl PlaybackQueue {
         PlaybackQueue::default()
     }
 
-    /// Queues a decoded `audio_delta` and returns how many samples were dropped to stay within
-    /// `MAX_QUEUED_SAMPLES`, oldest first. A trailing odd byte is not a sample and is ignored.
-    pub fn push_pcm16(&mut self, bytes: &[u8]) -> usize {
-        let incoming = bytes.len() / 2;
-        let dropped = (self.samples.len() + incoming).saturating_sub(MAX_QUEUED_SAMPLES);
-        let from_queue = dropped.min(self.samples.len());
-        self.samples.drain(..from_queue);
-        self.before_anchor = self.before_anchor.saturating_sub(from_queue);
+    /// Queues a decoded `audio_delta`, sent under `playback_id` if it carries one, and returns
+    /// how many samples were dropped to stay within `MAX_QUEUED_SAMPLES`, oldest first. A
+    /// trailing odd byte is not a sample and is ignored.
+    ///
+    /// A dropped sample counts as played: the daemon waits on every sample it sent under an id,
+    /// and keeps about ten seconds on the app, so a Grok call never reaches the bound.
+    pub fn push_pcm16(&mut self, bytes: &[u8], playback_id: Option<&str>) -> usize {
         let (pairs, _odd) = bytes.as_chunks::<2>();
-        let kept = pairs
-            .iter()
-            .skip(dropped - from_queue)
-            .map(|pair| i16::from_le_bytes(*pair));
-        self.samples.extend(kept);
+        self.samples
+            .extend(pairs.iter().map(|pair| i16::from_le_bytes(*pair)));
+        self.ids.queued(playback_id, pairs.len() as u64);
+        let dropped = self.samples.len().saturating_sub(MAX_QUEUED_SAMPLES);
+        self.samples.drain(..dropped);
+        self.before_anchor = self.before_anchor.saturating_sub(dropped);
+        self.ids.played(dropped as u64);
         dropped
     }
 
@@ -65,6 +70,7 @@ impl PlaybackQueue {
         let earlier = real.min(self.before_anchor);
         self.before_anchor -= earlier;
         self.played += (real - earlier) as u64;
+        self.ids.played(real as u64);
         Pull {
             real,
             drained: had_audio && self.samples.is_empty(),
@@ -72,10 +78,23 @@ impl PlaybackQueue {
     }
 
     /// Drops everything queued (`playback_stop`, Stop, End) and resets the anchor. A flush is
-    /// not a drain: the next pull reports `drained: false`.
+    /// not a drain: the next pull reports `drained: false`. What had played of each playback
+    /// id stays played, and the rest is lost.
     pub fn clear(&mut self) {
         self.samples.clear();
+        self.ids.flushed();
         self.reset_anchor();
+    }
+
+    /// Empties the queue for a new call, whose playback ids are its own.
+    pub fn start_call(&mut self) {
+        self.clear();
+        self.ids = PlaybackIds::default();
+    }
+
+    /// What changed for each playback id since the last call to this.
+    pub fn take_progress(&mut self) -> Vec<PlaybackProgress> {
+        self.ids.report()
     }
 
     /// Starts counting a new utterance, from after what is queued now.

@@ -15,6 +15,17 @@ pub struct SetupState {
     pub coexistence: Coexistence,
 }
 
+impl SetupState {
+    /// A provider's name as the daemon gives it, or its id when the daemon lists no such
+    /// provider.
+    pub fn provider_label<'a>(&'a self, id: &'a str) -> &'a str {
+        self.providers
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(id, |p| p.label.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChannelRow {
     pub name: String,

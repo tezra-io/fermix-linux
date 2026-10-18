@@ -628,7 +628,7 @@ mod tests {
 
     fn queue_with(samples: usize) -> Arc<Mutex<PlaybackQueue>> {
         let mut queue = PlaybackQueue::new();
-        queue.push_pcm16(&vec![0x20; samples * 2]);
+        queue.push_pcm16(&vec![0x20; samples * 2], None);
         Arc::new(Mutex::new(queue))
     }
 
@@ -798,7 +798,7 @@ mod tests {
             playback
                 .lock()
                 .expect("unpoisoned")
-                .push_pcm16(&[0x20; 960]);
+                .push_pcm16(&[0x20; 960], None);
             assert!(run_until(context, PATIENCE, || seen.drained.get() == 2));
             assert!(seen.failures.borrow().is_empty());
             call.stop();
@@ -829,7 +829,7 @@ mod tests {
             playback
                 .lock()
                 .expect("unpoisoned")
-                .push_pcm16(&[0x20; 960]);
+                .push_pcm16(&[0x20; 960], None);
             run_for(context, Duration::from_millis(500));
             assert_eq!(seen.blocks().len(), blocks, "on_mic after stop");
             assert!(seen.failures.borrow().is_empty(), "on_failure after stop");

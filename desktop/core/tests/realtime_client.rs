@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const HELLO: &str = r#"{"type":"server_hello","min_version":1,"max_version":2}"#;
+const HELLO: &str = r#"{"type":"server_hello","min_version":1,"max_version":3}"#;
 
 /// The daemon's side of one connection.
 struct Peer {
@@ -41,7 +41,7 @@ impl Peer {
     fn greet(&mut self) {
         assert_eq!(
             self.read(),
-            json!({"type": "client_hello", "protocol_version": 2})
+            json!({"type": "client_hello", "protocol_version": 3})
         );
         self.send(HELLO);
     }
@@ -81,7 +81,7 @@ impl FakeDaemon {
     }
 
     fn connect(&self) -> Result<(Outbox, Inbox), ConnectError> {
-        connect(&self.socket, Box::new(|_: &[u8]| {}))
+        connect(&self.socket, Box::new(|_: &[u8], _: Option<&str>| {}))
     }
 
     fn finish(self) {
@@ -106,7 +106,7 @@ fn the_handshake_sends_one_hello_and_the_connection_then_carries_control_frames(
 fn a_daemon_that_finds_the_app_too_old_rejects_it_with_its_direction() {
     let daemon = FakeDaemon::start(|mut peer| {
         peer.read();
-        peer.send(r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_old","client_version":2,"min_version":3,"max_version":3}"#);
+        peer.send(r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_old","client_version":3,"min_version":4,"max_version":4}"#);
     });
     let Err(ConnectError::Rejected(error)) = daemon.connect() else {
         panic!("the refusal must reach the caller")
@@ -120,7 +120,7 @@ fn a_daemon_that_finds_the_app_too_old_rejects_it_with_its_direction() {
 fn a_daemon_that_finds_the_app_too_new_rejects_it_with_its_direction() {
     let daemon = FakeDaemon::start(|mut peer| {
         peer.read();
-        peer.send(r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_new","client_version":2,"min_version":1,"max_version":1}"#);
+        peer.send(r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_new","client_version":3,"min_version":1,"max_version":2}"#);
     });
     let Err(ConnectError::Rejected(error)) = daemon.connect() else {
         panic!("the refusal must reach the caller")
@@ -130,10 +130,10 @@ fn a_daemon_that_finds_the_app_too_new_rejects_it_with_its_direction() {
 }
 
 #[test]
-fn a_server_hello_whose_window_excludes_2_is_refused_by_the_app_itself() {
+fn a_server_hello_whose_window_excludes_3_is_refused_by_the_app_itself() {
     for (window, direction) in [
-        ((3, 4), Direction::ClientTooOld),
-        ((1, 1), Direction::ClientTooNew),
+        ((4, 5), Direction::ClientTooOld),
+        ((1, 2), Direction::ClientTooNew),
     ] {
         let daemon = FakeDaemon::start(move |mut peer| {
             peer.read();
@@ -143,7 +143,7 @@ fn a_server_hello_whose_window_excludes_2_is_refused_by_the_app_itself() {
             ));
         });
         let Err(ConnectError::Rejected(error)) = daemon.connect() else {
-            panic!("a window without 2 is no connection")
+            panic!("a window without 3 is no connection")
         };
         assert_eq!(error.reason, "unsupported_protocol_version");
         assert_eq!(error.direction, Some(direction));
@@ -185,7 +185,10 @@ fn the_handshake_timeout_is_three_seconds() {
 #[test]
 fn a_missing_socket_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
-    let result = connect(&dir.path().join("realtime.sock"), Box::new(|_: &[u8]| {}));
+    let result = connect(
+        &dir.path().join("realtime.sock"),
+        Box::new(|_: &[u8], _: Option<&str>| {}),
+    );
     assert!(matches!(result, Err(ConnectError::NotFound)), "{result:?}");
 }
 
@@ -194,7 +197,7 @@ fn a_socket_nobody_listens_on_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("realtime.sock");
     drop(UnixListener::bind(&socket).unwrap());
-    let result = connect(&socket, Box::new(|_: &[u8]| {}));
+    let result = connect(&socket, Box::new(|_: &[u8], _: Option<&str>| {}));
     assert!(matches!(result, Err(ConnectError::Refused)), "{result:?}");
 }
 
@@ -212,16 +215,20 @@ fn a_daemon_that_hangs_up_during_the_handshake_is_an_io_error() {
 }
 
 #[test]
-fn audio_goes_to_on_audio_and_the_inbox_hears_only_its_size_and_level() {
+fn audio_goes_to_on_audio_with_its_playback_id_and_the_inbox_hears_only_its_size_and_level() {
     let daemon = FakeDaemon::start(|mut peer| {
         peer.greet();
         let audio = STANDARD.encode([0x00, 0x40, 0x00, 0xc0]);
-        peer.send(&format!(r#"{{"type":"audio_delta","audio":"{audio}"}}"#));
+        peer.send(&format!(
+            r#"{{"type":"audio_delta","playback_id":"p1","audio":"{audio}"}}"#
+        ));
         peer.send(r#"{"type":"state","state":"speaking"}"#);
         peer.read();
     });
     let (heard, audio) = mpsc::channel();
-    let on_audio = Box::new(move |bytes: &[u8]| heard.send(bytes.to_vec()).unwrap());
+    let on_audio = Box::new(move |bytes: &[u8], id: Option<&str>| {
+        heard.send((bytes.to_vec(), id.map(str::to_owned))).unwrap()
+    });
     let (outbox, inbox) = connect(&daemon.socket, on_audio).unwrap();
 
     let Incoming::Audio { bytes, rms } = inbox.recv() else {
@@ -229,7 +236,10 @@ fn audio_goes_to_on_audio_and_the_inbox_hears_only_its_size_and_level() {
     };
     assert_eq!(bytes, 4);
     assert!((rms - 0.5).abs() < 1e-3, "{rms}");
-    assert_eq!(audio.try_recv().unwrap(), vec![0x00, 0x40, 0x00, 0xc0]);
+    assert_eq!(
+        audio.try_recv().unwrap(),
+        (vec![0x00, 0x40, 0x00, 0xc0], Some("p1".to_owned()))
+    );
     assert_eq!(
         inbox.recv(),
         Incoming::Event(ServerEvent::State {

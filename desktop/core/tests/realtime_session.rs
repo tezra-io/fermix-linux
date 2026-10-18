@@ -122,7 +122,7 @@ fn the_handshake_completing_begins_the_asked_for_call_with_the_gate_shut() {
         vec![
             Effect::Arm(false),
             Effect::MuteMic(false),
-            Effect::FlushPlayback,
+            Effect::NewPlayback,
             Effect::StartAudio,
             Effect::Send(ClientEvent::CallStart),
             Effect::WatchCallStart(1),
@@ -419,11 +419,11 @@ fn leaving_speaking_resets_the_utterance_anchor() {
 }
 
 #[test]
-fn playback_stop_flushes_clears_the_tail_and_returns_to_the_microphone() {
+fn playback_stop_flushes_reports_what_played_and_returns_to_the_microphone() {
     let mut session = listening();
     audio(&mut session, 0.5);
     let effects = event(&mut session, ServerEvent::PlaybackStop);
-    assert_eq!(effects, vec![Effect::FlushPlayback]);
+    assert_eq!(effects, vec![Effect::FlushPlayback, Effect::ReportPlayback]);
     assert!(!session.speaking_tail());
     assert_eq!(session.mode(), Mode::Listening);
 }
@@ -586,6 +586,26 @@ fn cancel_is_sent_only_for_a_running_task_on_the_live_engine() {
         ServerEvent::Task(task(1, TaskStatus::Pending)),
     );
     assert!(!session.can_cancel_task(), "nothing to call off yet");
+}
+
+#[test]
+fn a_grok_call_can_cancel_its_task_as_a_live_call_does() {
+    let mut session = listening();
+    event(
+        &mut session,
+        ServerEvent::CallReady(CallReady {
+            engine: "xai_realtime".into(),
+            call_id: "voice_live:18".into(),
+            provider_session_id: None,
+            expires_at: None,
+            captions: true,
+        }),
+    );
+    event(
+        &mut session,
+        ServerEvent::Task(task(1, TaskStatus::Running)),
+    );
+    assert!(session.can_cancel_task());
 }
 
 // Call facts: call_ready, the transcript, usage
@@ -905,9 +925,10 @@ fn mute_outside_a_call_does_nothing() {
     assert!(!session.muted());
 }
 
-/// `played_ms` is read before the flush: clearing the queue resets its anchor.
+/// `played_ms` is read before the flush: clearing the queue resets its anchor. What played of
+/// each playback id goes out before `interrupt`, which is where a Grok call cuts the reply.
 #[test]
-fn stop_flushes_locally_then_sends_interrupt_with_what_was_played() {
+fn stop_flushes_locally_reports_playback_then_sends_interrupt_with_what_was_played() {
     let mut session = listening();
     audio(&mut session, 0.5);
     let effects = session.apply(Input::Stop { played_ms: 1_500 });
@@ -915,6 +936,7 @@ fn stop_flushes_locally_then_sends_interrupt_with_what_was_played() {
         effects,
         vec![
             Effect::FlushPlayback,
+            Effect::ReportPlayback,
             Effect::Send(ClientEvent::Interrupt {
                 audio_end_ms: Some(1_500)
             }),
@@ -1240,6 +1262,9 @@ fn the_reason_to_sentence_table() {
         "line_too_large",
         "not_connected",
         "unsupported_by_engine",
+        "unknown_playback",
+        "playback_regressed",
+        "playback_beyond_sent",
     ];
     for reason in violations {
         assert_eq!(
@@ -1251,14 +1276,22 @@ fn the_reason_to_sentence_table() {
     let rows = [
         (
             "not_configured",
-            "Add the OpenAI API key in Providers settings, or turn voice off. \
-             A ChatGPT sign-in does not cover voice; it needs an OpenAI API key.",
+            "Add the voice provider's API key in Voice settings, or turn voice off. \
+             A subscription sign-in does not cover voice; it needs an API key.",
         ),
         (
             "provider_send_failed: {:http, 401}",
-            "OpenAI refused the voice call: {:http, 401}.",
+            "The voice provider refused the call: {:http, 401}.",
         ),
-        ("provider_disconnected", "The connection to OpenAI dropped."),
+        (
+            "provider_disconnected",
+            "The connection to the voice provider dropped.",
+        ),
+        ("call_in_progress", "Another voice call is already up."),
+        (
+            "playback_stalled",
+            "Fermix stopped voice (playback_stalled).",
+        ),
         (
             "max_session_duration",
             "This call reached the time limit set in Voice settings.",
@@ -1267,7 +1300,7 @@ fn the_reason_to_sentence_table() {
             "cost_limit",
             "This call reached the spending limit set in Voice settings.",
         ),
-        ("provider_refused", "OpenAI refused the voice call."),
+        ("provider_refused", "The voice provider refused the call."),
         ("{:session_down, :killed}", "Voice stopped unexpectedly."),
         ("voice_disabled", "Fermix stopped voice (voice_disabled)."),
     ];

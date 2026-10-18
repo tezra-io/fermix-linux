@@ -12,9 +12,9 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `558fb34aa3f31eb7a7cdeb78254cfc6b579f1bb5` (2026-10-15, "fix(mobile): the phone rows never
-  name the Mac, and a closed helper pipe is said in words"), the last M62 commit to touch
-  `priv/management`: remote reach in `mobile.status`, the `mobile_iroh` switch and `advanced` rows
+- Commit: `178ed72551938a5e4a46c7dd429d88e1efb4e0a1` (2026-10-17, "feat(voice): Grok Voice as an
+  opt-in voice engine beside GPT-Live (M70)"): the Voice pane's `xai_realtime` engine and its
+  SpaceXAI key row, with the place search rows committed before it
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

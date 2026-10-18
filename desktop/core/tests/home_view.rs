@@ -24,6 +24,10 @@ fn state(status: &str, failures: serde_json::Value, restart: serde_json::Value) 
             {"id": "anthropic", "label": "Anthropic", "auth_modes": ["api_key", "oauth"],
              "auth_mode": "oauth", "configured": false, "primary": false, "present_key": false,
              "default_model": null, "reasoning_effort": null, "fast": null,
+             "account_label": null, "token_state": null},
+            {"id": "xai", "label": "SpaceXAI", "auth_modes": ["api_key", "oauth"],
+             "auth_mode": null, "configured": false, "primary": false, "present_key": false,
+             "default_model": null, "reasoning_effort": null, "fast": null,
              "account_label": null, "token_state": null}
         ],
         "channels": [],
@@ -100,6 +104,25 @@ fn a_missing_credential_routes_to_providers_under_the_providers_own_name() {
             target: "anthropic|import:claude_code".into(),
             verb: "Import from Claude Code".into()
         })
+    );
+}
+
+#[test]
+fn a_missing_voice_key_names_the_voice_provider_and_opens_voice() {
+    let s = state(
+        "ready",
+        json!([{"component": "realtime:xai", "gating": false, "pane": "voice", "detail_key": "realtime:xai"}]),
+        no_restart(),
+    );
+    let rows = attention_rows(&s);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].title,
+        "The voice companion needs a key from SpaceXAI"
+    );
+    assert_eq!(
+        rows[0].body,
+        "Voice calls take an API key, which a subscription sign-in does not authorize."
     );
 }
 

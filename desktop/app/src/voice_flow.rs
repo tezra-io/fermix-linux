@@ -20,7 +20,6 @@ use std::time::Duration;
 
 const SECTION: &str = "realtime";
 const ENABLED: &str = "realtime_enabled";
-const KEY: &str = "openai_api_key";
 /// How long a call's microphone may be gone from the list before the call ends:
 /// a headset changing profile drops its microphone for a moment and brings it back.
 const MICROPHONE_GRACE: Duration = Duration::from_secs(2);
@@ -201,7 +200,7 @@ impl App {
                 let (section, key) = (SECTION.to_owned(), ENABLED.to_owned());
                 self.apply_setting(section, key, Value::Bool(true)).await
             }
-            GateAction::AddKey => self.add_secret(SECTION.into(), KEY.into()),
+            GateAction::AddKey(key) => self.add_secret(SECTION.into(), key.into()),
             GateAction::Restart => self.restart().await,
         }
     }

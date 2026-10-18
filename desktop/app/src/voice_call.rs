@@ -1,7 +1,8 @@
 //! The voice call's controller (spec_voice §1). The core's `Session` decides;
 //! this performs its effects in order and feeds back what happened: the
 //! socket's answers, the pipeline's failures and drains, and the call-start
-//! timer. The socket and the pipeline live here and nowhere else.
+//! timer. The socket and the pipeline live here and nowhere else, and so does
+//! reporting what has played of a Grok call's reply (`playback_progress`).
 
 use crate::app::App;
 use crate::audio::{AudioCall, AudioFailure, Endpoints, Gate};
@@ -9,7 +10,9 @@ use crate::daemon::fermix_home;
 use fermix_client::realtime::client::{self, CloseReason, ConnectError, Inbox, Incoming, Outbox};
 use fermix_client::realtime::playback::{played_ms, PlaybackQueue};
 use fermix_client::realtime::protocol::{ClientEvent, ServerEvent};
-use fermix_client::realtime::session::{Effect, Input, Session, CALL_START_DEADLINE};
+use fermix_client::realtime::session::{
+    Effect, Input, Session, CALL_START_DEADLINE, PROGRESS_INTERVAL,
+};
 use fermix_client::voice::Reach;
 use gtk::{gio, glib};
 use std::cell::Cell;
@@ -37,6 +40,8 @@ pub struct Call {
     audio: Option<AudioCall>,
     gate: Gate,
     playback: Arc<Mutex<PlaybackQueue>>,
+    /// Reports what has played every `PROGRESS_INTERVAL` while the call's sound runs.
+    progress_tick: Option<glib::SourceId>,
     endpoints: Endpoints,
 }
 
@@ -49,6 +54,7 @@ impl Call {
             audio: None,
             gate: Gate::default(),
             playback: Arc::new(Mutex::new(PlaybackQueue::new())),
+            progress_tick: None,
             endpoints,
         }
     }
@@ -58,6 +64,27 @@ impl Call {
         let played = lock(&self.playback).played_since_anchor();
         let latency = self.audio.as_ref().map_or(0, AudioCall::sink_latency_ms);
         played_ms(played, latency)
+    }
+
+    /// Sends what changed of each playback id since the last report. Only a
+    /// call takes them: after `call_stop` the daemon answers one by closing the
+    /// socket. An OpenAI call's audio carries no ids, so it sends nothing.
+    fn report_playback(&self) {
+        if !self.session.in_call() {
+            return;
+        }
+        for progress in lock(&self.playback).take_progress() {
+            send(
+                self.outbox.as_ref(),
+                ClientEvent::PlaybackProgress(progress),
+            );
+        }
+    }
+
+    fn stop_progress_tick(&mut self) {
+        if let Some(tick) = self.progress_tick.take() {
+            tick.remove();
+        }
     }
 }
 
@@ -98,6 +125,7 @@ impl App {
                 return Some(Input::AudioFailed(failure.sentence()));
             }
             Effect::StopAudio => {
+                call.stop_progress_tick();
                 // Reaching Null can take a moment; the call is not borrowed meanwhile.
                 let audio = call.audio.take();
                 drop(call);
@@ -108,6 +136,8 @@ impl App {
             Effect::Arm(on) => call.gate.arm(on),
             Effect::MuteMic(on) => call.gate.mute(on),
             Effect::FlushPlayback => lock(&call.playback).clear(),
+            Effect::NewPlayback => lock(&call.playback).start_call(),
+            Effect::ReportPlayback => call.report_playback(),
             Effect::ResetAnchor => lock(&call.playback).reset_anchor(),
             Effect::WatchCallStart(number) => {
                 let weak = Rc::downgrade(self);
@@ -128,8 +158,8 @@ impl App {
     fn connect(self: &Rc<Self>) {
         let path = fermix_home().join("realtime.sock");
         let playback = Arc::clone(&self.call.borrow().playback);
-        let on_audio: client::OnAudio = Box::new(move |pcm16| {
-            lock(&playback).push_pcm16(pcm16);
+        let on_audio: client::OnAudio = Box::new(move |pcm16, playback_id| {
+            lock(&playback).push_pcm16(pcm16, playback_id);
         });
         self.call.borrow_mut().reach = Reach::Untried;
         let weak = Rc::downgrade(self);
@@ -220,7 +250,11 @@ impl App {
         );
         match started {
             Ok(audio) => {
-                self.call.borrow_mut().audio = Some(audio);
+                let tick = self.progress_tick();
+                let mut call = self.call.borrow_mut();
+                call.audio = Some(audio);
+                call.stop_progress_tick();
+                call.progress_tick = Some(tick);
                 Ok(())
             }
             Err(failure) => {
@@ -228,6 +262,19 @@ impl App {
                 Err(failure)
             }
         }
+    }
+
+    /// Reports playback every `PROGRESS_INTERVAL` until `stop_progress_tick`.
+    /// A report that says nothing changed sends nothing.
+    fn progress_tick(self: &Rc<Self>) -> glib::SourceId {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(PROGRESS_INTERVAL, move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            app.call.borrow().report_playback();
+            glib::ControlFlow::Continue
+        })
     }
 
     /// Ends a call that is up, then lets go of the connection, and starts the
@@ -240,6 +287,7 @@ impl App {
         let (audio, outbox) = {
             let mut call = self.call.borrow_mut();
             call.session = Session::new();
+            call.stop_progress_tick();
             (call.audio.take(), call.outbox.take())
         };
         if let Some(audio) = audio {
@@ -283,11 +331,17 @@ fn send(outbox: Option<&Outbox>, event: ClientEvent) {
 
 /// Reports the end of a reply once playback has stayed empty for `DRAIN_GRACE`.
 /// A later drain supersedes a pending one, and audio still queued at the
-/// deadline means the emptying was a gap, not the end.
+/// deadline means the emptying was a gap, not the end. What has played of each
+/// playback id goes out at once, so a reply's last id is reported drained when
+/// it drains; one that hands over to the next id inside the queue goes out on
+/// the next tick.
 fn drain_reporter(app: &Rc<App>, queue: Arc<Mutex<PlaybackQueue>>) -> Box<dyn Fn()> {
     let weak = Rc::downgrade(app);
     let drains = Rc::new(Cell::new(0_u64));
     Box::new(move || {
+        if let Some(app) = weak.upgrade() {
+            app.call.borrow().report_playback();
+        }
         let drain = drains.get() + 1;
         drains.set(drain);
         let (weak, queue, drains) = (weak.clone(), Arc::clone(&queue), Rc::clone(&drains));

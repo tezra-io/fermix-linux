@@ -1,5 +1,5 @@
 //! The voice wire's events and framing: one JSON object per `\n`-terminated line over
-//! `realtime.sock`, protocol 2 (the vendored `contracts/realtime/PROTOCOL.md`). Pure: it turns
+//! `realtime.sock`, protocol 3 (the vendored `contracts/realtime/PROTOCOL.md`). Pure: it turns
 //! lines into typed events and back, and does no I/O.
 //!
 //! Decoding is lenient where the contract is open: unknown fields are ignored, an unknown event
@@ -12,8 +12,9 @@ use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-/// The version this app speaks. The daemon's window is 1..2 (fermix 0.11.0 and later).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// The version this app speaks: 3, Grok's (`xai_realtime`). The daemon's window is 1..3, and
+/// each engine asks for the version its frames were added in.
+pub const PROTOCOL_VERSION: u32 = 3;
 /// The longest line this client assembles from the daemon (macOS `RealtimeProtocol.swift`).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
 /// The most unscanned inbound bytes held at once.
@@ -60,10 +61,21 @@ pub enum ClientEvent {
         enabled: bool,
     },
     CallStop,
-    /// Live only: the Realtime engine refuses it and closes the connection.
+    /// The task engines only: the Realtime engine refuses it and closes the connection.
     TaskCancel {
         delegation_id: String,
     },
+    /// Grok only: how much of one playback id's audio has played (`PlaybackProgress`).
+    PlaybackProgress(PlaybackProgress),
+}
+
+/// What has played of the audio sent under one playback id. `played_ms` never decreases and
+/// never passes the audio sent; `drained` is true while everything sent under it has played.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackProgress {
+    pub playback_id: String,
+    pub played_ms: u64,
+    pub drained: bool,
 }
 
 /// A line that would reach the daemon's cap, which answers `line_too_large` and closes.
@@ -99,10 +111,12 @@ pub enum ServerEvent {
     State {
         state: TurnState,
     },
-    /// Decoded PCM16 LE mono 24 kHz.
+    /// Decoded PCM16 LE mono 24 kHz. A Grok call sends each stretch of a reply under a
+    /// `playback_id`, which the app echoes in `playback_progress`; OpenAI calls send none.
     AudioDelta {
         #[serde(deserialize_with = "base64_bytes")]
         audio: Vec<u8>,
+        playback_id: Option<String>,
     },
     /// Realtime only: the whole user utterance once transcribed, with an unlisted `role`.
     TranscriptDelta {
@@ -186,7 +200,7 @@ impl From<String> for ToolStatus {
     }
 }
 
-/// Cost facts, never a state change. Every field is optional: the Realtime and Live engines
+/// Cost facts, never a state change. Every field is optional: the Realtime and task engines
 /// send different shapes, and none of them is in the schema whole (spec §1.4).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Usage {
@@ -203,6 +217,8 @@ pub struct Usage {
     pub voice_seconds: Option<f64>,
     pub voice_cost_cents: Option<f64>,
     pub backend_turns: Option<u64>,
+    /// Grok: the text items the call sent the voice provider, each billed as a text event.
+    pub voice_text_items: Option<u64>,
     /// The daemon's word; `unknown` is never zero.
     pub backend_cost: Option<String>,
     /// `complete`, `incomplete` or `running`.
@@ -255,7 +271,7 @@ impl From<String> for Direction {
     }
 }
 
-/// Live only: the provider session is up. `captions` says whether caption frames will follow.
+/// The task engines (Live, Grok): the provider session is up. `captions` says whether caption frames will follow.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CallReady {
     pub engine: String,
@@ -266,7 +282,7 @@ pub struct CallReady {
     pub captions: bool,
 }
 
-/// Live only: one verbatim transcript fragment. Never trim or join it.
+/// The task engines: one verbatim transcript fragment. Never trim or join it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Caption {
     pub speaker: Speaker,
@@ -293,7 +309,7 @@ impl From<String> for Speaker {
     }
 }
 
-/// Live only: one backend delegation. `revision` fences a re-asked task.
+/// The task engines: one backend delegation. `revision` fences a re-asked task.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Task {
     pub delegation_id: String,

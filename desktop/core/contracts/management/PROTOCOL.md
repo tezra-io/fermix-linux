@@ -414,6 +414,20 @@ Notes that the shapes alone do not carry:
   browser already running takes a new tab cap when it next starts.
   `settings.apply` refuses a value the browser would refuse at launch, in the
   browser's own sentence.
+- **`web_search` also carries place search's backend.** After
+  `web_search_backend`, the row `place_search_backend` (a choice, `Place
+  search`) is `[fermix_core.tools.place_search] backend`, and its `value` is the
+  backend in force: the one the file names, or the build's default when it
+  names none (`apple_maps` in the Fermix Mac app's engine, which carries the
+  Apple Maps helper, `brave` in the Homebrew and Linux builds). Its options are
+  the ones this build can run: `apple_maps` (`Apple Maps`, hint `Needs no key`)
+  and `brave` (`Brave`) where the build carries the helper, `brave` alone
+  everywhere else, where `settings.apply` refuses `apple_maps` as a value the
+  row does not publish. The `brave_api_key`
+  row stands whenever web search or place search uses Brave, its footer
+  `Also powers place search.` when both do and `Powers place search.` when only
+  place search does; with neither on Brave it is not published. A call reads
+  the section when it runs, so the row carries the section's usual `restart`.
 - **`browser.install.start` completes only once the launcher finds a
   browser.** It runs the meeting notetaker's own install step (the notetaker's
   helper, then the Chromium build that helper is pinned to, about 150 MB, and a
@@ -579,29 +593,37 @@ Notes that the shapes alone do not carry:
   the allow list keeps its stored value, so its row stays reachable: allowing
   the name again reuses the value, and `secret.clear` removes it.
 - **The voice section's model row selects its engine.** `realtime_model`
-  publishes every model both engines ship, in one list, each option labelled
+  publishes every model the engines ship, in one list, each option labelled
   with the engine it selects: `openai_realtime` (the Realtime API, which runs
-  tools inside the voice session) or `openai_live` (the Live API, which
+  tools inside the voice session), `openai_live` (the Live API, which
   delegates every tool call, memory read and reasoning step back to the Fermix
-  agent and bills by the minute). There is no engine row; the engine is derived
-  from the model and stored as `realtime.engine`, and `settings.apply` refuses
+  agent and bills by the minute) or `xai_realtime` (Grok Voice on SpaceXAI,
+  which delegates the same way and bills by the minute). `openai_live` and
+  `xai_realtime` are the task engines. There is no engine row; the engine is
+  derived from the model and stored as `realtime.engine`, with the provider it
+  dials as `realtime.provider` (`openai` or `xai`), and `settings.apply` refuses
   `realtime_engine` as a key this section does not have. The rest of the section
   is scoped to the engine that model implies: `realtime_voice` publishes the
   voices of that engine and nothing else, `realtime_reasoning_effort` is a
-  Realtime session setting with no Live equivalent and is absent under Live, and
-  `realtime_backend` is present only under Live, is read-only, and names the
-  primary provider and model that answer while Live speaks.
-  `realtime_conversation` ("Voice calls join the chat") is present only under
-  Live too, a choice of `chat` or `private` stored as `realtime.conversation`:
-  `chat`, the value in force while the key is unset, runs a call's hand-offs in
-  the chat's own conversation, and `private` keeps them in one of the call's
-  own. Applying a model of the other engine therefore moves the engine with it,
+  Realtime session setting with no task-engine equivalent and is absent under
+  both task engines, and `realtime_backend` is present only under a task engine,
+  is read-only, and names the primary provider and model that answer while the
+  engine speaks. `realtime_conversation` ("Voice calls join the chat") is present
+  only under a task engine too, a choice of `chat` or `private` stored as
+  `realtime.conversation`: `chat`, the value in force while the key is unset,
+  runs a call's hand-offs in the chat's own conversation, and `private` keeps
+  them in one of the call's own. The key row is the voice provider's own slot:
+  `openai_api_key` under both OpenAI engines and `xai_api_key` under Grok, which
+  takes an API key only (a SpaceXAI sign-in does not authorize voice). Applying a
+  model of another engine therefore moves the engine and its provider with it,
   adds or removes the reasoning effort, moves a voice the new engine does not
-  ship, and drops a chosen `realtime_conversation` on the way to Realtime. The
-  result names every key the daemon derived in `applied` — including `realtime_engine`,
-  which is a derived key rather than a row — with a sentence for each in
-  `side_effects`; reload the section when one of those keys appears, because its
-  row list has changed. `overview.get` reports the same selection as
+  ship to that engine's default, drops a chosen `realtime_conversation` on the
+  way to Realtime, and on the way to Grok turns off screen sharing during calls,
+  which Grok does not support. The result names every key the daemon derived in
+  `applied` — including `realtime_engine`, which is a derived key rather than a
+  row — with a sentence for each in `side_effects` (screen sharing has a
+  sentence and no row); reload the section when one of those keys appears,
+  because its row list has changed. `overview.get` reports the same selection as
   `realtime.engine`, null while voice is disabled.
 - **Secrets travel inbound only, in `secret.set`, one per call.** Every other
   method reports presence as a boolean. "Present" means a reference or a value

@@ -270,7 +270,7 @@ fn action_verb(action: GateAction) -> &'static str {
     match action {
         GateAction::StartFermix => "Start Fermix",
         GateAction::TurnOn => "Turn On Voice",
-        GateAction::AddKey => "Add Key…",
+        GateAction::AddKey(_) => "Add Key…",
         GateAction::Restart => "Restart Fermix…",
     }
 }
@@ -427,7 +427,7 @@ fn live_group() -> (adw::PreferencesGroup, adw::ActionRow, adw::ActionRow) {
 fn more_group(companion: &adw::SwitchRow) -> adw::PreferencesGroup {
     let settings = adw::ActionRow::builder()
         .title("Voice settings")
-        .subtitle("Model, voice, limits and the OpenAI key")
+        .subtitle("Engine, voice, limits and the provider’s key")
         .activatable(true)
         .build();
     settings.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));

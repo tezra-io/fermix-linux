@@ -209,7 +209,15 @@ fn audio_delta_is_decoded_from_base64_and_bad_base64_is_refused() {
     assert_eq!(
         decode(r#"{"type":"audio_delta","audio":"AQACAA=="}"#),
         ServerEvent::AudioDelta {
-            audio: vec![1, 0, 2, 0]
+            audio: vec![1, 0, 2, 0],
+            playback_id: None
+        }
+    );
+    assert_eq!(
+        decode(r#"{"type":"audio_delta","playback_id":"p17","audio":"AQACAA=="}"#),
+        ServerEvent::AudioDelta {
+            audio: vec![1, 0, 2, 0],
+            playback_id: Some("p17".into())
         }
     );
     assert!(matches!(
