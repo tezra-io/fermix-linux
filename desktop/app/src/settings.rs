@@ -11,8 +11,9 @@ use crate::status::{down_view, waiting, DownPage};
 use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
-use fermix_client::mobile::{MobileDevices, MobileStatus};
+use fermix_client::mobile::{MobileDevices, MobileStatus, Remote};
 use fermix_client::model::DetectRow;
+use fermix_client::reach::Newest;
 use fermix_client::settings::{
     pane, sections_for, with_listing, Listing, Section, SectionRows, GROUPS, PANES,
 };
@@ -61,6 +62,10 @@ pub struct SettingsData {
     pub probe: Option<Result<ComputerPermissions, String>>,
     /// The phone channel as `mobile.status` last answered, or why it did not.
     pub phone_status: Option<Result<MobileStatus, String>>,
+    /// Reach from anywhere as last answered; a failed read leaves it as it was.
+    pub phone_remote: Option<Remote>,
+    /// Which `mobile.status` read may land, so an older answer never overwrites a newer one.
+    pub phone_status_newest: Newest,
     /// The paired phones as `mobile.devices.list` last answered, or why it did not.
     pub phone_devices: Option<Result<MobileDevices, String>>,
 }

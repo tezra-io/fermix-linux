@@ -77,8 +77,35 @@ pub struct MobileStatus {
     pub refused: bool,
     pub listener: Listener,
     pub paired_devices: i64,
+    /// Reach from anywhere (M62); None from an engine older than the rail.
+    #[serde(default)]
+    pub remote: Option<Remote>,
     /// The open pairing window, else the newest one the daemon keeps, else none.
     pub pairing: Option<PairingSummary>,
+}
+
+/// `mobile.status.remote`: the rail that lets a paired phone reach this daemon from any network
+/// through Fermix's relays. Only what the app shows is read.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Remote {
+    pub state: RemoteState,
+    /// Whether the rail is connected to its relay right now; false in every state but `ready`.
+    pub connected: bool,
+    /// Why the rail failed, in the helper's or the daemon's words, with control characters removed.
+    pub failure: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteState {
+    Off,
+    Dormant,
+    HelperMissing,
+    Starting,
+    Ready,
+    Failed,
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

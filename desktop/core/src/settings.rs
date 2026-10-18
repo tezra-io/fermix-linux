@@ -122,6 +122,10 @@ pub struct Row {
     pub footer: Option<String>,
     #[serde(default)]
     pub info: Option<String>,
+    /// A row most people never change, drawn after the section's others under one closed
+    /// disclosure. An engine without the key means false.
+    #[serde(default)]
+    pub advanced: bool,
     #[serde(default)]
     pub value: Value,
     #[serde(default)]

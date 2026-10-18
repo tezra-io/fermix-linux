@@ -2,17 +2,19 @@
 //! dialog shows is the core reducer's answer to what the daemon said; this owns only when each
 //! call is made. It reads the window the dialog shows once a second, the contract's cadence, and
 //! cancels it when the dialog closes in Scan or Compare, so no window is left waiting for a scan.
+//! While Phones is shown it follows reach from anywhere, for the line under that switch.
 
 use crate::app::App;
 use crate::phone::{PhoneView, Screen};
 use adw::prelude::*;
 use fermix_client::management::CallError;
-use fermix_client::mobile::PairingStart;
+use fermix_client::mobile::{MobileStatus, PairingStart};
 use fermix_client::pairing::{reduce, Answer, EndAction, Progress, Step, TurnOn, TurnOnAction};
 use fermix_client::phone::{
     switch_starts_in_place, Forgetting, Intent, CHANNEL, ENDED_UNREADABLE, POLL_MS, SECTION,
     SWITCH_KEY,
 };
+use fermix_client::reach::{self, Follow};
 use fermix_client::settings::read_failure;
 use fermix_client::view::channel_title;
 use gtk::glib;
@@ -126,12 +128,14 @@ impl App {
             .rows
             .get(SECTION)
             .and_then(|section| section.rows.iter().find(|r| r.key == SWITCH_KEY));
+        let remote = reach::line(data.phone_remote.as_ref());
         let screen = Screen {
             step: &phone.step,
             deciding: phone.deciding,
             forgetting: &phone.forgetting,
             devices: data.phone_devices.as_ref(),
             footer: switch.and_then(|row| row.footer.as_deref()),
+            remote: remote.as_ref(),
             now: unix_now(),
         };
         view.show(&screen);
@@ -222,9 +226,8 @@ impl App {
     async fn phone_pair(&self, token: u64) {
         self.phone_show(token, Step::Waiting { session: None });
         self.read_section(SECTION).await;
-        let status = self.daemon.call(|m| m.mobile_status()).await;
+        let status = self.read_mobile_status().await;
         let status = status.map_err(|e| self.phone_refusal(&e, "mobile.status"));
-        self.settings_data.borrow_mut().phone_status = Some(status.clone());
         let answer = match status {
             Ok(status) => Answer::Status {
                 status,
@@ -271,7 +274,7 @@ impl App {
     }
 
     async fn phone_elsewhere(&self) -> Answer {
-        match self.daemon.call(|m| m.mobile_status()).await {
+        match self.read_mobile_status().await {
             Ok(status) => Answer::Busy(status.pairing),
             Err(e) => Answer::Refused(self.phone_refusal(&e, "mobile.status")),
         }
@@ -425,6 +428,76 @@ impl App {
         self.phone_show(token, Step::Phones);
         self.read_section(SECTION).await;
         self.read_phone_row().await;
+        self.phone_follow_reach(token).await;
+    }
+
+    /// A write to the channel's section can move reach from anywhere, which Phones then follows
+    /// again from the start.
+    pub async fn phone_section_written(&self) {
+        if self.phone.borrow().view.is_none() || self.phone.borrow().step != Step::Phones {
+            return;
+        }
+        let token = self.phone_begin();
+        self.read_phone_row().await;
+        self.phone_follow_reach(token).await;
+    }
+
+    /// Reads `mobile.status` while reach from anywhere can move by itself and Phones is shown,
+    /// at the contract's cadence, backing off while the daemon refuses, for at most
+    /// `reach::POLLS` reads. Only the first refusal of a run and the answer ending it are logged.
+    async fn phone_follow_reach(&self, token: u64) {
+        let mut follow = Follow::default();
+        while reach::moves(self.settings_data.borrow().phone_remote.as_ref()) {
+            if follow.exhausted() {
+                glib::g_warning!(
+                    "fermix",
+                    "stopped following reach from anywhere after {} reads",
+                    reach::POLLS
+                );
+                return;
+            }
+            glib::timeout_future(Duration::from_millis(follow.wait_ms())).await;
+            if !self.phone_current(token) || self.phone.borrow().step != Step::Phones {
+                return;
+            }
+            match self.read_mobile_status().await {
+                Ok(_) => {
+                    if let Some(run) = follow.answered() {
+                        glib::g_message!(
+                            "fermix",
+                            "mobile.status answers again after {run} refusals"
+                        );
+                    }
+                }
+                Err(e) if follow.refused() => {
+                    glib::g_warning!(
+                        "fermix",
+                        "mobile.status failed while following reach: {e:?}"
+                    );
+                }
+                Err(_) => {}
+            }
+            self.render();
+        }
+    }
+
+    /// One `mobile.status` read. Its answer is kept only if no read asked after it has landed,
+    /// and a refusal leaves reach from anywhere as it was last read.
+    async fn read_mobile_status(&self) -> Result<MobileStatus, CallError> {
+        let number = self.settings_data.borrow_mut().phone_status_newest.ask();
+        let answer = self.daemon.call(|m| m.mobile_status()).await;
+        let mut data = self.settings_data.borrow_mut();
+        if !data.phone_status_newest.lands(number) {
+            return answer;
+        }
+        match &answer {
+            Ok(status) => {
+                data.phone_remote = status.remote.clone();
+                data.phone_status = Some(Ok(status.clone()));
+            }
+            Err(e) => data.phone_status = Some(Err(read_failure(e))),
+        }
+        answer
     }
 
     pub async fn phone_pair_another(self: Rc<Self>) {
@@ -477,15 +550,12 @@ impl App {
 
     /// Reads the channel and its phones, which is everything the Phone row states.
     pub async fn read_phone_row(&self) {
-        let status = self.daemon.call(|m| m.mobile_status()).await;
-        let status = status.map_err(|e| self.phone_refusal(&e, "mobile.status"));
+        if let Err(e) = self.read_mobile_status().await {
+            self.phone_refusal(&e, "mobile.status");
+        }
         let devices = self.daemon.call(|m| m.mobile_devices_list()).await;
         let devices = devices.map_err(|e| self.phone_refusal(&e, "mobile.devices.list"));
-        {
-            let mut data = self.settings_data.borrow_mut();
-            data.phone_status = Some(status);
-            data.phone_devices = Some(devices);
-        }
+        self.settings_data.borrow_mut().phone_devices = Some(devices);
         self.render();
     }
 }

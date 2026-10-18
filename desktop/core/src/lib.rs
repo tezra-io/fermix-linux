@@ -25,6 +25,7 @@ pub mod pairing;
 pub mod phone;
 pub mod plugins;
 pub mod providers;
+pub mod reach;
 pub mod realtime;
 pub mod runtime_env;
 pub mod secrets;

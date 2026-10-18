@@ -295,8 +295,8 @@ fn the_phone_refusals_carry_their_codes_and_the_daemons_words() {
     }
 }
 
-/// The section's first row is the channel's switch; its last toggle is the local-network
-/// announcement, which is not the switch.
+/// The section's first row is the channel's switch; reach from anywhere's switch follows it, and
+/// the network rows, the local-network announcement among them, are advanced.
 #[test]
 fn the_phone_sections_switch_is_mobile_enabled() {
     let result = named(SUCCESS, "settings_get_channels_mobile")["response"]["result"].clone();
@@ -307,14 +307,25 @@ fn the_phone_sections_switch_is_mobile_enabled() {
         switch_starts_in_place(Some(&section)),
         "the switch's row says it starts the channel at once"
     );
-    let keys: Vec<&str> = section.rows.iter().map(|r| r.key.as_str()).collect();
+    let rows: Vec<(&str, bool)> = section
+        .rows
+        .iter()
+        .map(|r| (r.key.as_str(), r.advanced))
+        .collect();
     assert_eq!(
-        keys,
+        rows,
         [
-            "mobile_enabled",
-            "mobile_port",
-            "mobile_bind",
-            "mobile_advertise_mdns"
-        ]
+            ("mobile_enabled", false),
+            ("mobile_iroh", false),
+            ("mobile_port", true),
+            ("mobile_bind", true),
+            ("mobile_advertise_mdns", true)
+        ],
+        "the network rows are advanced, the two switches are not"
+    );
+    let reach = &section.rows[1];
+    assert!(
+        reach.info.is_some(),
+        "reach from anywhere explains what off keeps"
     );
 }

@@ -224,7 +224,7 @@ daemon onto anything else.
 | `meetings.signin.start` | none | Starts the notetaker's one-time interactive sign-in. A job, because it waits for a person. Minimum version `2`. |
 | `computer_use.grant.start` | none | Raises the OS permission prompts and answers with what was granted. A job, and only ever on an explicit ask. Minimum version `2`. |
 | `computer_use.permissions.get` | none | The current, non-prompting permission state: whether the helper is installed, which grants it holds, and when they were read. Minimum version `2`. |
-| `mobile.status` | none | The phone channel as it stands: whether it is enabled, whether it started, whether it was refused this boot and the class of that refusal, the listener (`status`, `reason`, `port`, `bind`, `candidates`), the local-network announcement, detected tailnet addresses, the gateway identity's presence and fingerprint, push credentials and delivery, the paired-phone count, the mobile protocol version this daemon serves, and the pairing session open or newest retained. Answers with the channel off. Minimum version `2`. |
+| `mobile.status` | none | The phone channel as it stands: whether it is enabled, whether it started, whether it was refused this boot and the class of that refusal, the listener (`status`, `reason`, `port`, `bind`, `candidates`), the local-network announcement, detected tailnet addresses, the gateway identity's presence and fingerprint, remote reach, push credentials and delivery, the paired-phone count, the mobile protocol version this daemon serves, and the pairing session open or newest retained. Answers with the channel off. Minimum version `2`. |
 | `mobile.pair.start` | none | Opens the pairing window and answers with the pairing session view plus, once, the pairing link as `uri`. `busy` while a window is open. Minimum version `2`. |
 | `mobile.pair.get` | `session_id` | The pairing session as it stands. The pane polls it until the session is terminal. Minimum version `2`. |
 | `mobile.pair.decide` | `session_id`, `approved` (boolean) | Approves or denies the phone waiting in the session and answers the terminal view. Minimum version `2`. |
@@ -354,6 +354,24 @@ Notes that the shapes alone do not carry:
   dispatcher runs: the channel is not running, push is off, or its
   credentials did not resolve. A connect is given up after ten seconds, and
   the status answers while one runs.
+- **Remote reach lets a paired phone reach this daemon from any network**,
+  through Fermix's relays (M62). `remote.state` is `off` (its switch is off,
+  or the channel is not running), `dormant` (no phone has been paired yet;
+  relay contact starts with the first pairing window), `helper_missing` (this
+  build carries no `fermix-iroh`; the daemon log names the path),
+  `starting`, `ready` or `failed`. While `ready`, `endpoint_id` is the
+  daemon's iroh endpoint id, `relay` the URL of the relay it is reached
+  through, `connected` whether it is connected to that relay right now, and
+  `relay_error` the relay connection's last error, at most 512 bytes; while
+  `failed`, `failure` is why, in the helper's own words where it gave them.
+  Both have control characters removed, so a client shows them as written.
+  Each is null, and `connected` false, in every other state. `refused` counts the remote
+  connections the helper turned away by reason: `busy` (64 already
+  connected), `alpn` (not a Fermix phone) and `bridge_unreachable` (the
+  daemon was not taking them). A rail that fails is retried on its own, from
+  one second doubling to a minute, and given up after a day until the next
+  restart; a helper that disagrees with this daemon's protocol, iroh version
+  or key is not retried.
 - **Pairing and forgetting a phone are the owner's decisions.**
   `mobile.pair.start`, `mobile.pair.decide`, `mobile.pair.cancel` and
   `mobile.devices.revoke` answer `unavailable` {`capability`: `mobile`,
@@ -364,9 +382,15 @@ Notes that the shapes alone do not carry:
   sentence is what tells this refusal from a channel that is not running.
   Reading a session and the status stay open to every caller.
 - **`channels.mobile` is the phone channel's settings section**: the enable
-  switch, applied the moment it is written (its row's `restart` is false), and
-  the port, the address it listens on and the local-network announcement,
-  which are read when the channel starts and are boot-bound. It is a section of its own rather than a
+  switch and the remote-reach switch `mobile_iroh` (on by default), each
+  applied the moment it is written (their rows' `restart` is false), and the
+  port, the address it listens on and the local-network announcement, which
+  are read when the channel starts, are boot-bound and are `advanced`. Neither
+  the address nor the announcement reaches remote reach: only its own switch
+  keeps a phone to the home network and Tailscale. Remote reach is
+  switched within a running channel: with the channel off it is read when the
+  channel starts, and a write says in `side_effects` when the rail did not
+  follow it. It is a section of its own rather than a
   channels-inventory entry, because the phone channel has no credential.
   `setup.state.get` carries a `mobile` channel row after the inventory
   channels, always `configured`, with mode `listener` while it is enabled.
@@ -517,10 +541,17 @@ Notes that the shapes alone do not carry:
   the one short line under the control and is always shown; `info` is a
   paragraph a client puts behind an `(i)` beside the row and reveals on demand.
   It is `null` on every row with nothing more to say, which is most of them.
-  Today two rows carry it: the Venice model row, where the privacy tier in each
-  model's label is two words that mean materially different things, and the
-  secrets section's store row, where the choice trades a keyring password for
-  a file that is not encrypted.
+  A row carries one when its choice has a consequence its label cannot say,
+  such as the Venice model row, where the privacy tier in each model's label is two
+  words that mean materially different things; the secrets section's store
+  row, where the choice trades a keyring password for a file that is not
+  encrypted; and the phone channel's reach-from-anywhere switch, which says
+  what turning it off keeps the phone to.
+- **`advanced` marks a row most people never need to change.** A client draws
+  a section's advanced rows after its other rows, under one disclosure that
+  starts closed; a section with none draws no disclosure. It says nothing about
+  how the row applies, which is `restart`'s job. Today the phone channel's
+  port, listen address and local-network announcement carry it.
 - **The secrets section chooses where a new secret is kept.** Section
   `secrets`, pane `secrets`, publishes one closed choice row, `secret_store`:
   `keyring` (the default, and what a home that never chose reads as) or `file`,
