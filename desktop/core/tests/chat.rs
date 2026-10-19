@@ -1,9 +1,10 @@
 //! The Chat page's entries, read off the chat wire's timeline: held rows, questions still
 //! sending, the running turn with its tools, and the last failure.
 
-use fermix_client::chat::{media_line, view, Entry, Key, RunState};
-use fermix_client::chat_wire::protocol::{decode_line, MediaRef, ServerEvent};
+use fermix_client::chat::{view, Entry, Key, RunState};
+use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
 use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::media::{Strip, TileKind};
 use fermix_client::places::Card;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
@@ -35,11 +36,20 @@ fn row(chat: &mut Chat, seq: u64, role: &str, text: &str, extra: Value) {
     timeline::receive(chat, event(row), 0);
 }
 
-/// A reply with no places.
+/// A reply with no places and nothing under it.
 fn reply(text: &str) -> Entry {
     Entry::Assistant {
         text: text.into(),
         places: Vec::new(),
+        media: Strip::default(),
+    }
+}
+
+/// The person's words with nothing under them.
+fn said(text: &str) -> Entry {
+    Entry::User {
+        text: text.into(),
+        media: Strip::default(),
     }
 }
 
@@ -81,10 +91,7 @@ fn rows_read_as_the_person_and_fermix_with_their_times() {
     row(&mut chat, 1, "user", "Hi", json!({}));
     row(&mut chat, 2, "assistant", "Hello **there**", json!({}));
     let shown = view(&chat);
-    assert_eq!(
-        shown.entries,
-        [Entry::User("Hi".into()), reply("Hello **there**")]
-    );
+    assert_eq!(shown.entries, [said("Hi"), reply("Hello **there**")]);
     assert_eq!(shown.times[0].as_deref(), Some("2026-09-25T09:00:00Z"));
     assert_eq!(shown.first_seq, Some(1));
 }
@@ -104,10 +111,7 @@ fn a_question_shows_as_sending_until_its_row_arrives() {
         "What is on today?",
         json!({"client_msg_id": "linux-1"}),
     );
-    assert_eq!(
-        view(&chat).entries,
-        [Entry::User("What is on today?".into())]
-    );
+    assert_eq!(view(&chat).entries, [said("What is on today?")]);
 }
 
 #[test]
@@ -187,44 +191,45 @@ fn the_last_failure_comes_last() {
     );
 }
 
+/// A row of files is one entry: its strip under no words, keyed by its row.
 #[test]
-fn a_row_of_files_names_each_file_in_the_macs_words() {
+fn a_row_of_files_is_one_entry_with_its_strip() {
     let mut chat = connected();
     let media = json!({"media_refs": [
         {"ref": "a", "kind": "audio", "mime": "audio/ogg", "size_bytes": 1},
         {"ref": "b", "kind": "image", "mime": "image/jpeg", "size_bytes": 1, "filename": "lamp.jpg"}
     ]});
-    row(&mut chat, 1, "user", "", media);
+    row(&mut chat, 1, "user", "", media.clone());
+    row(&mut chat, 2, "assistant", "lamp.jpg", media);
+    let shown = view(&chat);
+    assert_eq!(shown.keys, [Key::Row(1), Key::Row(2)]);
+    let Entry::User { text, media } = &shown.entries[0] else {
+        panic!("the person's row: {:?}", shown.entries[0]);
+    };
+    assert_eq!(text, "");
     assert_eq!(
-        view(&chat).entries,
-        [
-            Entry::Media {
-                line: "Voice note".into(),
-                person: true,
-            },
-            Entry::Media {
-                line: "Picture · lamp.jpg".into(),
-                person: true,
-            }
-        ]
+        media.voice.as_ref().map(|note| note.r#ref.as_str()),
+        Some("a")
     );
+    let tiles: Vec<(&str, TileKind)> = media
+        .tiles
+        .iter()
+        .map(|tile| (tile.name.as_str(), tile.kind))
+        .collect();
+    assert_eq!(tiles, [("lamp.jpg", TileKind::Picture)]);
+    let Entry::Assistant { text, media, .. } = &shown.entries[1] else {
+        panic!("Fermix's row: {:?}", shown.entries[1]);
+    };
+    assert_eq!(text, "", "the line naming the tile went to the tile");
+    assert_eq!(media.tiles.len(), 1);
 }
 
+/// A row with nothing to say and nothing to show draws nothing.
 #[test]
-fn every_file_kind_has_a_word() {
-    let media = |kind: &str, mime: &str| MediaRef {
-        r#ref: "r".into(),
-        kind: kind.into(),
-        mime: mime.into(),
-        size_bytes: 1,
-        sha256: None,
-        filename: None,
-        caption: None,
-    };
-    assert_eq!(media_line(&media("video", "video/mp4")), "Video");
-    assert_eq!(media_line(&media("audio", "audio/mp4")), "Sound");
-    assert_eq!(media_line(&media("file", "application/pdf")), "PDF");
-    assert_eq!(media_line(&media("file", "text/plain")), "File");
+fn a_row_with_no_words_and_no_files_draws_nothing() {
+    let mut chat = connected();
+    row(&mut chat, 1, "user", "  ", json!({}));
+    assert!(view(&chat).entries.is_empty());
 }
 
 fn receive(chat: &mut Chat, value: Value) {
@@ -278,7 +283,6 @@ fn every_entry_has_a_key_of_its_own_and_names_the_row_it_draws() {
         shown.keys,
         [
             Key::Row(1),
-            Key::Media(1, 0),
             Key::Row(2),
             Key::Sending("linux-2".into()),
             Key::Tools("t1".into()),
@@ -287,10 +291,7 @@ fn every_entry_has_a_key_of_its_own_and_names_the_row_it_draws() {
         ]
     );
     assert_eq!(shown.keys.len(), shown.entries.len());
-    assert_eq!(
-        shown.seqs,
-        [Some(1), Some(1), Some(2), None, None, None, None]
-    );
+    assert_eq!(shown.seqs, [Some(1), Some(2), None, None, None, None]);
 }
 
 /// The streamed reply and the row it becomes are one widget, also after the row is read again.
@@ -475,5 +476,5 @@ fn a_person_s_row_never_draws_places() {
         "Here",
         json!({"blocks": fixture_blocks("turn-mac-6")}),
     );
-    assert_eq!(view(&chat).entries, [Entry::User("Here".into())]);
+    assert_eq!(view(&chat).entries, [said("Here")]);
 }

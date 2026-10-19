@@ -438,8 +438,17 @@ impl Shell {
     }
 
     pub fn toast(&self, text: &str) {
-        self.toasts.add_toast(adw::Toast::new(text));
+        self.toasts.add_toast(plain_toast(text));
     }
+}
+
+/// A toast that shows `text` as written. Many carry the daemon's words (a refusal's sentence, a
+/// file's or a provider's name), so markup is off before any text is set, as on every row here.
+pub fn plain_toast(text: &str) -> adw::Toast {
+    let toast = adw::Toast::new("");
+    toast.set_use_markup(false);
+    toast.set_title(text);
+    toast
 }
 
 fn select_named(list: &gtk::ListBox, name: &str) {

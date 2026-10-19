@@ -183,8 +183,131 @@ fn website(place: &Place) -> Option<String> {
         .cloned()
 }
 
+/// Whether a link is one a place in `blocks` stands for, which its card opens or offers, so the
+/// strip draws no second card for it (Mac fbd2880): a place's page at its source or its own
+/// website, as the engine matches them (scheme and host in any case, without the fragment and a
+/// trailing slash), or a page inside that website: its host with or without `www.`, and its path
+/// or one under it, so a site many places share gives each only its own pages.
+pub fn opened_by(address: &str, blocks: &[Block]) -> bool {
+    let Some(link) = WebAddress::parse(address) else {
+        return false;
+    };
+    blocks
+        .iter()
+        .flat_map(|block| match block {
+            Block::Places(places) => places.iter(),
+        })
+        .any(|place| stands_for(place, &link))
+}
+
+fn stands_for(place: &Place, link: &WebAddress) -> bool {
+    let page = link.page();
+    let mut pages = [&place.canonical_url, &place.source_url]
+        .into_iter()
+        .flatten()
+        .filter_map(|url| WebAddress::parse(url));
+    if pages.any(|known| known.page() == page) {
+        return true;
+    }
+    let site = place.canonical_url.as_deref().and_then(WebAddress::parse);
+    site.is_some_and(|site| site.holds(link))
+}
+
+/// A web address in its parts as written. Only what `is_web_address` accepts parses.
+pub(crate) struct WebAddress<'a> {
+    scheme: &'a str,
+    /// The host with any user and port.
+    authority: &'a str,
+    path: &'a str,
+    query: Option<&'a str>,
+    fragment: Option<&'a str>,
+}
+
+impl<'a> WebAddress<'a> {
+    pub(crate) fn parse(url: &'a str) -> Option<WebAddress<'a>> {
+        if !is_web_address(url) {
+            return None;
+        }
+        let (scheme, rest) = url.split_once("://")?;
+        let (rest, fragment) = match rest.split_once('#') {
+            Some((rest, fragment)) => (rest, Some(fragment)),
+            None => (rest, None),
+        };
+        let (rest, query) = match rest.split_once('?') {
+            Some((rest, query)) => (rest, Some(query)),
+            None => (rest, None),
+        };
+        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        Some(WebAddress {
+            scheme,
+            authority,
+            path,
+            query,
+            fragment,
+        })
+    }
+
+    /// The host alone, lowercased: no user, no port.
+    pub(crate) fn host(&self) -> String {
+        let host = self.authority.rsplit('@').next().unwrap_or_default();
+        let host = match host.strip_prefix('[') {
+            Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+            None => host.split(':').next().unwrap_or_default(),
+        };
+        host.to_lowercase()
+    }
+
+    /// Two addresses are one destination when this is equal: the scheme and host lowercased,
+    /// the path, query and fragment as written (Mac `ChatDestination`).
+    pub(crate) fn destination(&self) -> String {
+        let mut key = format!("{}{}", self.lowered(), self.path);
+        if let Some(query) = self.query {
+            key.push('?');
+            key.push_str(query);
+        }
+        if let Some(fragment) = self.fragment {
+            key.push('#');
+            key.push_str(fragment);
+        }
+        key
+    }
+
+    /// The page a place's link matches (Mac `ChatPlaceLink`): no fragment, no trailing slash.
+    fn page(&self) -> String {
+        let mut key = format!("{}{}", self.lowered(), self.path.trim_end_matches('/'));
+        if let Some(query) = self.query {
+            key.push('?');
+            key.push_str(query);
+        }
+        key
+    }
+
+    /// Whether `link` is this website or a page under it (Mac `ChatPlaceSite`).
+    fn holds(&self, link: &WebAddress) -> bool {
+        let bare = |address: &WebAddress| {
+            let host = address.host();
+            host.strip_prefix("www.").map(str::to_owned).unwrap_or(host)
+        };
+        if bare(self) != bare(link) {
+            return false;
+        }
+        let site = self.path.trim_end_matches('/');
+        let page = link.path.trim_end_matches('/');
+        page == site || page.starts_with(&format!("{site}/"))
+    }
+
+    /// `scheme://authority`, lowercased.
+    fn lowered(&self) -> String {
+        format!(
+            "{}://{}",
+            self.scheme.to_ascii_lowercase(),
+            self.authority.to_lowercase()
+        )
+    }
+}
+
 /// `http` or `https` in any case, then `://` and a host, with no space or control anywhere.
-fn is_web_address(url: &str) -> bool {
+pub fn is_web_address(url: &str) -> bool {
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return false;
     }

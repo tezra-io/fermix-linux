@@ -262,7 +262,7 @@ impl App {
     /// A toast for a change that landed; offers Home when Fermix just became ready.
     /// It stays longer than an ordinary toast: the user may still be in the browser.
     fn announce(&self, text: &str, was_ready: bool) {
-        let toast = adw::Toast::new(text);
+        let toast = crate::shell::plain_toast(text);
         toast.set_timeout(10);
         toast.set_priority(adw::ToastPriority::High);
         if !was_ready && self.is_ready() {

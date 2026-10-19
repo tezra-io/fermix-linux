@@ -9,8 +9,8 @@ use gtk::{gio, glib};
 
 /// No wider than a card reads well, and no narrower than a short name would make it, so the
 /// cards of one reply after another line up; it still fits the narrowest window.
-const CARDS_WIDTH: i32 = 480;
-const CARDS_MIN_WIDTH: i32 = 280;
+pub(super) const CARDS_WIDTH: i32 = 480;
+pub(super) const CARDS_MIN_WIDTH: i32 = 280;
 const NO_MAP: &str = "Your browser did not open the map.";
 const NO_WEBSITE: &str = "Your browser did not open the website.";
 
@@ -175,21 +175,21 @@ fn open_website(row: &adw::ActionRow, card: &Card) {
 
 /// The card's window, found before a launch: a reply redrawn while the launch runs takes its
 /// row out of the window, and a failure still has to reach the person there.
-fn window_of(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
+pub(super) fn window_of(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
     let window = widget.root().and_downcast::<gtk::Window>();
     if window.is_none() {
-        glib::g_warning!("fermix", "a place card outside a window opened nothing");
+        glib::g_warning!("fermix", "a card outside a window opened nothing");
     }
     window
 }
 
 /// Opens `uri` the desktop's way: the OpenURI portal inside a sandbox, GIO outside one.
-async fn launched(window: &gtk::Window, uri: &str) -> Result<(), glib::Error> {
+pub(super) async fn launched(window: &gtk::Window, uri: &str) -> Result<(), glib::Error> {
     gtk::UriLauncher::new(uri).launch_future(Some(window)).await
 }
 
 /// The person closed a chooser rather than the launch failing.
-fn turned_down(e: &glib::Error) -> bool {
+pub(super) fn turned_down(e: &glib::Error) -> bool {
     e.matches(gio::IOErrorEnum::Cancelled)
         || e.matches(gtk::DialogError::Dismissed)
         || e.matches(gtk::DialogError::Cancelled)

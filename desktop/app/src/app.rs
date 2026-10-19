@@ -7,12 +7,13 @@ use crate::background_flow::{binding_file, login_entry};
 use crate::chat::ChatPage;
 use crate::chat_session::ChatWire;
 use crate::companion::Companion;
-use crate::daemon::Daemon;
+use crate::daemon::{fermix_home, Daemon};
 use crate::doctor::DoctorPage;
 use crate::home::HomePage;
 use crate::integrations::IntegrationsPane;
 use crate::logs::LogsPage;
 use crate::mascot;
+use crate::media_grants::Media;
 use crate::microphones::MicrophoneWatch;
 use crate::phone_flow::{intent, Phone};
 use crate::providers::ProvidersPage;
@@ -51,6 +52,8 @@ pub struct App {
     pub daemon: Daemon,
     pub state: RefCell<State>,
     pub wire: RefCell<ChatWire>,
+    /// The phone-side files the chat reads, asked for on the chat's connection.
+    pub media: Media,
     pub chat: ChatPage,
     pub settings: SettingsPage,
     pub settings_data: RefCell<SettingsData>,
@@ -99,7 +102,8 @@ pub fn activate(application: &adw::Application, hidden: bool) {
 
 /// Every page, the window around them, and the controller that owns both.
 fn build_app(application: &adw::Application) -> Rc<App> {
-    let chat = ChatPage::new();
+    let media = Media::new(fermix_home().join("companion").join("media"));
+    let chat = ChatPage::new(&media);
     let home = HomePage::new();
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
@@ -132,6 +136,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         daemon: Daemon::new(),
         state: RefCell::new(State::new()),
         wire: RefCell::default(),
+        media,
         chat,
         settings,
         settings_data: RefCell::default(),

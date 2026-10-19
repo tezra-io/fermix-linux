@@ -10,6 +10,9 @@ publish.workspace = true
 base64 = "0.22"
 # The speech gate's voice detector: pure Rust, no dependencies, a 40 KiB network.
 earshot = "1.2.2"
+# Decodes the chat's pictures in pure Rust, since they come from phones and the web: PNG, JPEG,
+# GIF and WebP only, with no encoder the app calls.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # kill(2) on a process group, for the install's cap (capped.rs).
 libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }

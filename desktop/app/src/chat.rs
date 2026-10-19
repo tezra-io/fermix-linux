@@ -7,10 +7,13 @@ mod activity;
 mod approvals;
 mod blocks;
 mod entries;
+mod picture;
 mod places;
+mod strip;
 mod table_scroller;
 
 use crate::chat_session::ChatWire;
+use crate::media_grants::Media;
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
@@ -21,9 +24,12 @@ use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
+use picture::Decoder;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
+use strip::Readers;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
@@ -65,10 +71,12 @@ pub struct ChatPage {
     approvals: approvals::Cards,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
     first_seq: Cell<Option<u64>>,
+    /// What the rows' strips read their files with.
+    readers: Readers,
 }
 
 impl ChatPage {
-    pub fn new() -> Self {
+    pub fn new(media: &Media) -> Self {
         // Close within a turn; a question opens the next with more room (CSS).
         let list = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -114,6 +122,10 @@ impl ChatPage {
             banner,
             approvals,
             first_seq: Cell::default(),
+            readers: Readers {
+                media: media.clone(),
+                decoder: Decoder::new(fermix_client::picture::decode),
+            },
         }
     }
 
@@ -254,7 +266,7 @@ impl ChatPage {
         for ((key, entry), seq) in placed {
             let drawn = match kept.remove(key) {
                 Some(drawn) => self.redrawn(drawn, entry),
-                None => Drawn::new(entry),
+                None => Drawn::new(entry, &self.readers),
             };
             place(&self.list, &drawn.row, previous.as_ref());
             previous = Some(drawn.row.clone().upcast());
@@ -293,7 +305,7 @@ impl ChatPage {
             return drawn;
         }
         self.list.remove(&drawn.row);
-        Drawn::new(entry)
+        Drawn::new(entry, &self.readers)
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -352,7 +364,7 @@ struct Placed {
 
 /// Puts `row` straight after `after`, or first for `None`, moving it only when it is not
 /// there already.
-fn place(list: &gtk::Box, row: &gtk::Box, after: Option<&gtk::Widget>) {
+fn place(list: &gtk::Box, row: &impl IsA<gtk::Widget>, after: Option<&gtk::Widget>) {
     if row.parent().is_none() {
         list.insert_child_after(row, after);
         return;
@@ -528,6 +540,7 @@ fn newest_seen(widget: &impl IsA<gtk::Widget>) {
 
 /// Which held rows are drawn on screen, told to the window each time that changes, so a row a
 /// reconnect may have changed is read again as the reader comes to it (macOS `rowsOnScreen`).
+/// Each entry on screen also reads the pictures under it, once.
 struct OnScreen {
     shown: Rc<RefCell<Vec<Placed>>>,
     scroller: gtk::ScrolledWindow,
@@ -572,8 +585,17 @@ impl OnScreen {
                 return;
             };
             on_screen.due.set(false);
+            on_screen.read();
             on_screen.tell();
         });
+    }
+
+    /// Each entry on screen reads what its strip shows, where it has not yet.
+    fn read(&self) {
+        let shown = self.shown.borrow();
+        for placed in &shown[self.visible(&shown)] {
+            placed.drawn.on_screen();
+        }
     }
 
     fn tell(&self) {
@@ -587,29 +609,33 @@ impl OnScreen {
         }
     }
 
-    /// The held rows whose entries overlap the scroller's view now. Entries stand in order
-    /// down the list, so the first on screen is found by halving.
+    /// The held rows whose entries overlap the scroller's view now.
     fn seqs(&self) -> BTreeSet<u64> {
+        let shown = self.shown.borrow();
+        shown[self.visible(&shown)]
+            .iter()
+            .filter_map(|placed| placed.seq)
+            .collect()
+    }
+
+    /// The entries of `shown` that overlap the scroller's view now; none while it is off
+    /// screen. Entries stand in order down the list, so the first on screen is found by halving.
+    fn visible(&self, shown: &[Placed]) -> Range<usize> {
         if !self.scroller.is_mapped() {
-            return BTreeSet::new();
+            return 0..0;
         }
         let height = self.scroller.height() as f32;
         let span = |placed: &Placed| {
             let bounds = placed.drawn.row.compute_bounds(&self.scroller)?;
             Some((bounds.y(), bounds.y() + bounds.height()))
         };
-        let shown = self.shown.borrow();
         let above = |placed: &Placed| span(placed).is_some_and(|(_, bottom)| bottom <= 0.0);
         let first = shown.partition_point(above);
-        shown[first..]
+        let count = shown[first..]
             .iter()
-            .map_while(|placed| {
-                span(placed)
-                    .filter(|(top, _)| *top < height)
-                    .map(|_| placed)
-            })
-            .filter_map(|placed| placed.seq)
-            .collect()
+            .take_while(|placed| span(placed).is_some_and(|(top, _)| top < height))
+            .count();
+        first..first + count
     }
 }
 

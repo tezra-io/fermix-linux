@@ -1,14 +1,17 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
-//! with the cards of the places a reply links under it, the tools it ran, the
-//! files a row names, and failures. A streamed entry grows in place, so a chunk
-//! never redraws what is already on screen.
+//! with the cards of the places a reply links under it and what a row shows
+//! under its words (pictures, files, link cards), the tools it ran, and
+//! failures. A streamed entry grows in place, so a chunk never redraws what is
+//! already on screen.
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
 use super::places::Places;
+use super::strip::{Readers, StripView};
 use adw::prelude::*;
 use fermix_client::chat::Entry;
 use fermix_client::markdown::{Block, Draft};
+use fermix_client::media::Strip;
 use fermix_client::places::Card;
 use gtk::{gio, glib};
 use std::cell::RefCell;
@@ -31,6 +34,7 @@ pub struct Drawn {
 
 enum Parts {
     Fixed,
+    Message(Message),
     Reply(Reply),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
@@ -46,15 +50,31 @@ struct Reply {
     source: Rc<RefCell<String>>,
     /// The cards of the places it links, under the bubble; they come with its row.
     places: Places,
+    /// What its row shows under the place cards.
+    strip: StripView,
+}
+
+/// The person's words, and what their row shows under them.
+struct Message {
+    label: gtk::Label,
+    source: Source,
+    strip: StripView,
 }
 
 impl Drawn {
-    pub fn new(entry: &Entry) -> Drawn {
-        let (side, body, source, parts) = draw_body(entry);
+    pub fn new(entry: &Entry, readers: &Readers) -> Drawn {
+        let (side, body, source, parts) = draw_body(entry, readers);
         let (row, time) = row(side, &body, source);
-        if let Parts::Reply(reply) = &parts {
-            // Between the bubble's line and the time under it.
-            row.insert_child_after(&reply.places.widget, row.first_child().as_ref());
+        let line = row.first_child();
+        // Between the bubble's line and the time under it.
+        let mut after = line.clone();
+        for widget in parts.under_line() {
+            row.insert_child_after(&widget, after.as_ref());
+            after = Some(widget);
+        }
+        // A row of files alone draws no empty bubble.
+        if let Some(line) = line {
+            line.set_visible(!blank(entry));
         }
         Drawn {
             entry: entry.clone(),
@@ -66,19 +86,32 @@ impl Drawn {
 
     /// Grows this entry into `entry`, the same entry with more streamed in or
     /// a new status; false when `entry` is a different one and has to be
-    /// drawn anew.
+    /// drawn anew. Words coming to a row of files alone show its bubble, and
+    /// what the row shows stays as it is, read.
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
-            (Parts::Reply(reply), Entry::Assistant { text, places }) => {
+            (
+                Parts::Reply(reply),
+                Entry::Assistant {
+                    text,
+                    places,
+                    media,
+                },
+            ) => {
                 reply.grow(text);
                 reply.places.show(places);
+                reply.strip.show(media);
             }
+            (Parts::Message(message), Entry::User { text, media }) => message.grow(text, media),
             (Parts::Tools(group), Entry::Tools(runs)) => {
                 if !group.grow(runs) {
                     return false;
                 }
             }
             _ => return false,
+        }
+        if let Some(line) = self.row.first_child() {
+            line.set_visible(!blank(entry));
         }
         self.entry = entry.clone();
         true
@@ -99,17 +132,58 @@ impl Drawn {
             group.set_live(runs, live);
         }
     }
+
+    /// The entry is on screen: what its row shows is read, where it has not been.
+    pub fn on_screen(&self) {
+        match &self.parts {
+            Parts::Message(message) => message.strip.on_screen(),
+            Parts::Reply(reply) => reply.strip.on_screen(),
+            Parts::Fixed | Parts::Tools(_) => {}
+        }
+    }
+}
+
+impl Parts {
+    /// What stands under the entry's line, in order.
+    fn under_line(&self) -> Vec<gtk::Widget> {
+        match self {
+            Parts::Message(message) => vec![message.strip.widget.clone().upcast()],
+            Parts::Reply(reply) => vec![
+                reply.places.widget.clone().upcast(),
+                reply.strip.widget.clone().upcast(),
+            ],
+            Parts::Fixed | Parts::Tools(_) => Vec::new(),
+        }
+    }
+}
+
+/// Whether the entry is a message without words: a row of files alone.
+fn blank(entry: &Entry) -> bool {
+    match entry {
+        Entry::User { text, .. } | Entry::Assistant { text, .. } => text.trim().is_empty(),
+        Entry::Sending(_) | Entry::Tools(_) | Entry::Failure(_) => false,
+    }
 }
 
 /// The entry's widget, its side, what copying it copies, and its parts.
-fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
+fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Source>, Parts) {
     match entry {
-        Entry::User(text) => {
-            let source = Rc::new(RefCell::new(text.clone()));
-            (Side::Person, user_bubble(text), Some(source), Parts::Fixed)
+        Entry::User { text, media } => {
+            let message = Message::new(text, media, readers);
+            let (label, source) = (message.label.clone(), message.source.clone());
+            (
+                Side::Person,
+                label.upcast(),
+                Some(source),
+                Parts::Message(message),
+            )
         }
-        Entry::Assistant { text, places } => {
-            let reply = Reply::new(text, places);
+        Entry::Assistant {
+            text,
+            places,
+            media,
+        } => {
+            let reply = Reply::new(text, places, media, readers);
             let source = reply.source.clone();
             (
                 Side::Fermix,
@@ -119,10 +193,6 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
             )
         }
         Entry::Sending(text) => (Side::Person, sending_bubble(text), None, Parts::Fixed),
-        Entry::Media { line, person } => {
-            let side = if *person { Side::Person } else { Side::Fermix };
-            (side, media_line(line), None, Parts::Fixed)
-        }
         Entry::Tools(runs) => {
             let group = Group::new(runs);
             (Side::Fermix, group.widget(), None, Parts::Tools(group))
@@ -222,7 +292,7 @@ pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     }
 }
 
-fn user_bubble(text: &str) -> gtk::Widget {
+fn user_bubble(text: &str) -> gtk::Label {
     let label = gtk::Label::builder()
         .label(text)
         .wrap(true)
@@ -234,7 +304,7 @@ fn user_bubble(text: &str) -> gtk::Widget {
         .css_classes(["chat-user"])
         .build();
     label.update_property(&[gtk::accessible::Property::Description("Your message")]);
-    label.upcast()
+    label
 }
 
 /// A question on its way: the person's bubble, dimmed, until the daemon accepts it.
@@ -242,11 +312,32 @@ fn sending_bubble(text: &str) -> gtk::Widget {
     let bubble = user_bubble(text);
     bubble.set_opacity(0.6);
     bubble.set_tooltip_text(Some("Sending"));
-    bubble
+    bubble.upcast()
+}
+
+impl Message {
+    fn new(text: &str, media: &Strip, readers: &Readers) -> Message {
+        let mut strip = StripView::new(gtk::Align::End, readers);
+        strip.show(media);
+        Message {
+            label: user_bubble(text),
+            source: Rc::new(RefCell::new(text.to_owned())),
+            strip,
+        }
+    }
+
+    /// The row read again: its words as they stand now, and what it shows.
+    fn grow(&mut self, text: &str, media: &Strip) {
+        if self.label.label() != text {
+            self.label.set_label(text);
+            self.source.replace(text.to_owned());
+        }
+        self.strip.show(media);
+    }
 }
 
 impl Reply {
-    fn new(text: &str, places: &[Card]) -> Reply {
+    fn new(text: &str, places: &[Card], media: &Strip, readers: &Readers) -> Reply {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -260,9 +351,11 @@ impl Reply {
             draft: Draft::default(),
             source: Rc::default(),
             places: Places::new(),
+            strip: StripView::new(gtk::Align::Start, readers),
         };
         reply.grow(text);
         reply.places.show(places);
+        reply.strip.show(media);
         reply
     }
 
@@ -294,26 +387,6 @@ impl Reply {
         }
         self.source.replace(text.to_owned());
     }
-}
-
-/// A file a row names, by kind and name, until the strip draws it.
-fn media_line(line: &str) -> gtk::Widget {
-    quiet_line("mail-attachment-symbolic", line)
-}
-
-fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
-    let row = gtk::Box::builder().spacing(8).build();
-    let image = gtk::Image::from_icon_name(icon);
-    image.add_css_class("dimmed");
-    row.append(&image);
-    let label = gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .xalign(0.0)
-        .css_classes(["dimmed", "caption"])
-        .build();
-    row.append(&label);
-    row.upcast()
 }
 
 /// Why the reply did not come, and where the reason is.

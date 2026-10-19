@@ -3,27 +3,24 @@
 //! the last request failed. Nothing here is decided: it only says how the held facts read.
 
 use crate::activity::ToolKind;
-use crate::chat_wire::protocol::{MediaRef, Row};
+use crate::chat_wire::protocol::Row;
 use crate::chat_wire::timeline::{self, Chat, ToolState};
+use crate::media::{strip, words, Strip};
 use crate::places::{cards, Card};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
-    User(String),
+    /// The person's words, and what their row shows under them.
+    User { text: String, media: Strip },
     /// A question the daemon has not accepted yet.
     Sending(String),
-    /// Markdown, growing while it streams, and the cards of the places it links, which come with
-    /// its row (none while it streams).
+    /// Markdown, growing while it streams, the cards of the places it links, and what its row
+    /// shows under it, which come with its row (none while it streams).
     Assistant {
         text: String,
         places: Vec<Card>,
-    },
-    /// A file a row names, as one line ("Voice note", "Picture · lamp.jpg"), on the side of
-    /// whoever wrote the row.
-    Media {
-        line: String,
-        person: bool,
+        media: Strip,
     },
     /// The running turn's tools, drawn as one group.
     Tools(Vec<ToolRun>),
@@ -67,10 +64,8 @@ pub struct LiveTurn {
 /// keeps each entry's widget by it, so rows arriving above or below leave the rest drawn.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
-    /// A held row's words, by seq.
+    /// A held row's words and what it shows under them, by seq.
     Row(u64),
-    /// The `index`th file a held row names.
-    Media(u64, usize),
     /// A reply a turn streams, by the turn and its place among the turn's replies (a turn may
     /// send more than one): its draft, and then the held row it became.
     Reply(String, usize),
@@ -145,28 +140,28 @@ pub fn view(chat: &Chat) -> View {
     view
 }
 
-/// A held row's words, then each file it names. `reply` is its key as a reply this connection
-/// streamed; any other row's words are keyed by its seq.
+/// A held row: its words and what it shows under them, as one entry, or none where it has
+/// neither. `reply` is its key as a reply this connection streamed; any other row is keyed by its
+/// seq.
 fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
-    let text = row.text.trim();
-    let (time, seq) = (row.ts.clone(), row.server_seq);
-    if !text.is_empty() {
-        let entry = match row.role.as_str() {
-            "user" => Entry::User(text.to_owned()),
-            _ => Entry::Assistant {
-                text: row.text.clone(),
-                places: cards(&row.blocks),
-            },
-        };
-        let key = reply.unwrap_or(Key::Row(seq));
-        view.push(entry, key, time.clone(), Some(seq));
+    let media = strip(row);
+    let text = words(row, &media);
+    if text.trim().is_empty() && media.is_empty() {
+        return;
     }
-    let person = row.role == "user";
-    for (index, media) in row.media_refs.iter().enumerate() {
-        let line = media_line(media);
-        let key = Key::Media(seq, index);
-        view.push(Entry::Media { line, person }, key, time.clone(), Some(seq));
-    }
+    let entry = match row.role.as_str() {
+        "user" => Entry::User {
+            text: text.trim().to_owned(),
+            media,
+        },
+        _ => Entry::Assistant {
+            text,
+            places: cards(&row.blocks),
+            media,
+        },
+    };
+    let key = reply.unwrap_or(Key::Row(row.server_seq));
+    view.push(entry, key, row.ts.clone(), Some(row.server_seq));
 }
 
 /// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.
@@ -199,24 +194,9 @@ fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
         let draft = Entry::Assistant {
             text: turn.draft.clone(),
             places: Vec::new(),
+            media: Strip::default(),
         };
         view.push(draft, key, None, None);
     }
     view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
-}
-
-/// What a file is, in the macOS app's words (`chat.kind.*`, `chat.voiceNote`), and its name.
-pub fn media_line(media: &MediaRef) -> String {
-    let kind = match (media.kind.as_str(), media.mime.as_str()) {
-        (_, "audio/ogg") => "Voice note",
-        ("image", _) => "Picture",
-        ("video", _) => "Video",
-        ("audio", _) => "Sound",
-        (_, "application/pdf") => "PDF",
-        _ => "File",
-    };
-    match &media.filename {
-        Some(name) => format!("{kind} · {name}"),
-        None => kind.to_owned(),
-    }
 }

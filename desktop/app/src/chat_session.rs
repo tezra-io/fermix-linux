@@ -130,6 +130,7 @@ impl App {
             timeline::negotiated(&mut wire.chat, &on_screen)
         };
         self.chat_send(events);
+        self.media.connected(link.clone());
         self.render();
         let app = self.clone();
         glib::spawn_future_local(async move { app.read_loop(link, generation).await });
@@ -151,6 +152,10 @@ impl App {
     }
 
     fn on_chat_event(self: &Rc<Self>, event: ServerEvent) {
+        // A file's answer is for the reads waiting on it, never the timeline's.
+        if self.media.answered(&event) {
+            return;
+        }
         match &event {
             ServerEvent::Unknown(kind) => glib::g_warning!("fermix", "chat event {kind} unread"),
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
@@ -186,6 +191,7 @@ impl App {
             timeline::disconnected(&mut wire.chat);
             wire.session.lost(why)
         };
+        self.media.disconnected();
         self.render();
         let Some(wait) = wait else {
             return;

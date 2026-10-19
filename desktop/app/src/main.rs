@@ -24,6 +24,7 @@ mod integrations;
 mod logs;
 mod marks;
 mod mascot;
+mod media_grants;
 mod microphones;
 mod phone;
 mod phone_flow;
