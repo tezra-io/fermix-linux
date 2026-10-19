@@ -1,13 +1,15 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
-//! with the cards of the places a reply links under it and what a row shows
-//! under its words (pictures, files, link cards), the tools it ran, and
-//! failures. A streamed entry grows in place, so a chunk never redraws what is
-//! already on screen.
+//! with a voice note's chip in its bubble over the words (its tile in the
+//! lane once it cannot play), the cards of the places a reply links under it
+//! and what a row shows under its words
+//! (pictures, files, link cards), the tools it ran, and failures. A streamed
+//! entry grows in place, so a chunk never redraws what is already on screen.
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
 use super::places::Places;
 use super::strip::{Readers, StripView};
+use super::voice_chip::Chip;
 use adw::prelude::*;
 use fermix_client::chat::Entry;
 use fermix_client::markdown::{Block, Draft};
@@ -51,14 +53,19 @@ struct Reply {
     /// The cards of the places it links, under the bubble; they come with its row.
     places: Places,
     /// What its row shows under the place cards.
-    strip: StripView,
+    strip: SharedStrip,
+    /// The row's voice note, over the words.
+    voice: Option<Rc<Chip>>,
 }
 
 /// The person's words, and what their row shows under them.
 struct Message {
+    /// The label alone, or with a voice note's chip over it.
+    bubble: gtk::Widget,
     label: gtk::Label,
     source: Source,
-    strip: StripView,
+    strip: SharedStrip,
+    voice: Option<Rc<Chip>>,
 }
 
 impl Drawn {
@@ -72,9 +79,12 @@ impl Drawn {
             row.insert_child_after(&widget, after.as_ref());
             after = Some(widget);
         }
-        // A row of files alone draws no empty bubble.
-        if let Some(line) = line {
-            line.set_visible(!blank(entry));
+        if let Some(line) = &line {
+            // A row of files alone draws no empty bubble.
+            line.set_visible(!blank(entry, parts.note_plays()));
+            if let Some((chip, strip, words)) = parts.note() {
+                when_unplayable(chip, line, strip, words);
+            }
         }
         Drawn {
             entry: entry.clone(),
@@ -98,11 +108,19 @@ impl Drawn {
                     media,
                 },
             ) => {
+                if !same_note(reply.voice.as_ref(), media) {
+                    return false;
+                }
                 reply.grow(text);
                 reply.places.show(places);
-                reply.strip.show(media);
+                reply.strip.borrow_mut().show(media);
             }
-            (Parts::Message(message), Entry::User { text, media }) => message.grow(text, media),
+            (Parts::Message(message), Entry::User { text, media }) => {
+                if !same_note(message.voice.as_ref(), media) {
+                    return false;
+                }
+                message.grow(text, media);
+            }
             (Parts::Tools(group), Entry::Tools(runs)) => {
                 if !group.grow(runs) {
                     return false;
@@ -111,7 +129,7 @@ impl Drawn {
             _ => return false,
         }
         if let Some(line) = self.row.first_child() {
-            line.set_visible(!blank(entry));
+            line.set_visible(!blank(entry, self.parts.note_plays()));
         }
         self.entry = entry.clone();
         true
@@ -135,10 +153,14 @@ impl Drawn {
 
     /// The entry is on screen: what its row shows is read, where it has not been.
     pub fn on_screen(&self) {
-        match &self.parts {
-            Parts::Message(message) => message.strip.on_screen(),
-            Parts::Reply(reply) => reply.strip.on_screen(),
-            Parts::Fixed | Parts::Tools(_) => {}
+        let (strip, voice) = match &self.parts {
+            Parts::Message(message) => (&message.strip, &message.voice),
+            Parts::Reply(reply) => (&reply.strip, &reply.voice),
+            Parts::Fixed | Parts::Tools(_) => return,
+        };
+        strip.borrow().on_screen();
+        if let Some(chip) = voice {
+            chip.on_screen();
         }
     }
 }
@@ -147,22 +169,67 @@ impl Parts {
     /// What stands under the entry's line, in order.
     fn under_line(&self) -> Vec<gtk::Widget> {
         match self {
-            Parts::Message(message) => vec![message.strip.widget.clone().upcast()],
+            Parts::Message(message) => vec![message.strip.borrow().widget.clone().upcast()],
             Parts::Reply(reply) => vec![
                 reply.places.widget.clone().upcast(),
-                reply.strip.widget.clone().upcast(),
+                reply.strip.borrow().widget.clone().upcast(),
             ],
             Parts::Fixed | Parts::Tools(_) => Vec::new(),
         }
     }
+
+    /// The row's voice note, with its strip and its words, where it has one.
+    fn note(&self) -> Option<(&Rc<Chip>, &SharedStrip, &Source)> {
+        match self {
+            Parts::Message(message) => message
+                .voice
+                .as_ref()
+                .map(|chip| (chip, &message.strip, &message.source)),
+            Parts::Reply(reply) => reply
+                .voice
+                .as_ref()
+                .map(|chip| (chip, &reply.strip, &reply.source)),
+            Parts::Fixed | Parts::Tools(_) => None,
+        }
+    }
+
+    /// Whether the row has a voice note that can still play, in its bubble.
+    fn note_plays(&self) -> bool {
+        self.note().is_some_and(|(chip, _, _)| chip.plays())
+    }
 }
 
-/// Whether the entry is a message without words: a row of files alone.
-fn blank(entry: &Entry) -> bool {
+/// When the row's voice note cannot play, its tile leads the row's lane, and a line left with no
+/// words goes, as a row of files alone draws none.
+fn when_unplayable(chip: &Chip, line: &gtk::Widget, strip: &SharedStrip, words: &Source) {
+    let line = line.downgrade();
+    let strip = Rc::downgrade(strip);
+    let words = Rc::downgrade(words);
+    chip.when_unplayable(move || {
+        if let Some(strip) = strip.upgrade() {
+            strip.borrow_mut().unplayable();
+        }
+        if let (Some(line), Some(words)) = (line.upgrade(), words.upgrade()) {
+            line.set_visible(!words.borrow().trim().is_empty());
+        }
+    });
+}
+
+/// Whether the entry is a message with nothing for its bubble: no words and no voice note that
+/// plays, a row of files alone.
+fn blank(entry: &Entry, note_plays: bool) -> bool {
     match entry {
-        Entry::User { text, .. } | Entry::Assistant { text, .. } => text.trim().is_empty(),
+        Entry::User { text, .. } | Entry::Assistant { text, .. } => {
+            text.trim().is_empty() && !note_plays
+        }
         Entry::Sending(_) | Entry::Tools(_) | Entry::Failure(_) => false,
     }
+}
+
+/// Whether `media` has the voice note `drawn` shows, or none as it shows none. Another note is
+/// another bubble, drawn anew.
+fn same_note(drawn: Option<&Rc<Chip>>, media: &Strip) -> bool {
+    drawn.map(|chip| chip.r#ref()) == media.voice.as_ref().map(|note| note.r#ref.as_str())
 }
 
 /// The entry's widget, its side, what copying it copies, and its parts.
@@ -170,13 +237,8 @@ fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Sou
     match entry {
         Entry::User { text, media } => {
             let message = Message::new(text, media, readers);
-            let (label, source) = (message.label.clone(), message.source.clone());
-            (
-                Side::Person,
-                label.upcast(),
-                Some(source),
-                Parts::Message(message),
-            )
+            let (bubble, source) = (message.bubble.clone(), message.source.clone());
+            (Side::Person, bubble, Some(source), Parts::Message(message))
         }
         Entry::Assistant {
             text,
@@ -203,6 +265,8 @@ fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Sou
 
 /// The Markdown or text a message's copy button and menu item copy.
 type Source = Rc<RefCell<String>>;
+/// What a row shows under its words, shared with its voice note's hook.
+type SharedStrip = Rc<RefCell<StripView>>;
 
 /// The entry on its side of the conversation, its copy button on the inside
 /// edge, and the time under it, hidden until there is one. A message's row
@@ -317,12 +381,20 @@ fn sending_bubble(text: &str) -> gtk::Widget {
 
 impl Message {
     fn new(text: &str, media: &Strip, readers: &Readers) -> Message {
-        let mut strip = StripView::new(gtk::Align::End, readers);
-        strip.show(media);
+        let strip = Rc::new(RefCell::new(StripView::new(gtk::Align::End, readers)));
+        strip.borrow_mut().show(media);
+        let label = user_bubble(text);
+        let voice = media.voice.as_ref().map(|note| Chip::new(note, readers));
+        let bubble = match &voice {
+            Some(chip) => voice_bubble(chip, &label, text),
+            None => label.clone().upcast(),
+        };
         Message {
-            label: user_bubble(text),
+            bubble,
+            label,
             source: Rc::new(RefCell::new(text.to_owned())),
             strip,
+            voice,
         }
     }
 
@@ -332,8 +404,25 @@ impl Message {
             self.label.set_label(text);
             self.source.replace(text.to_owned());
         }
-        self.strip.show(media);
+        if self.voice.is_some() {
+            self.label.set_visible(!text.trim().is_empty());
+        }
+        self.strip.borrow_mut().show(media);
     }
+}
+
+/// The person's bubble for a voice note: its chip, and its transcript under it where there is one.
+fn voice_bubble(chip: &Chip, label: &gtk::Label, text: &str) -> gtk::Widget {
+    label.remove_css_class("chat-user");
+    label.set_visible(!text.trim().is_empty());
+    let bubble = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .css_classes(["chat-user"])
+        .build();
+    bubble.append(&chip.widget);
+    bubble.append(label);
+    bubble.upcast()
 }
 
 impl Reply {
@@ -345,17 +434,22 @@ impl Reply {
             .css_classes(["chat-reply"])
             .build();
         body.update_property(&[gtk::accessible::Property::Label("Reply from Fermix")]);
+        let voice = media.voice.as_ref().map(|note| Chip::new(note, readers));
+        if let Some(chip) = &voice {
+            body.append(&chip.widget);
+        }
         let mut reply = Reply {
             body,
             blocks: Vec::new(),
             draft: Draft::default(),
             source: Rc::default(),
             places: Places::new(),
-            strip: StripView::new(gtk::Align::Start, readers),
+            strip: Rc::new(RefCell::new(StripView::new(gtk::Align::Start, readers))),
+            voice,
         };
         reply.grow(text);
         reply.places.show(places);
-        reply.strip.show(media);
+        reply.strip.borrow_mut().show(media);
         reply
     }
 

@@ -190,7 +190,7 @@ impl Drop for AudioCall {
 
 /// Takes the pipeline to Null and waits for it, CLOSE_WAIT_MS at most; past
 /// that it logs and carries on.
-fn close(pipeline: &gst::Pipeline) {
+pub(crate) fn close(pipeline: &gst::Pipeline) {
     if let Err(e) = pipeline.set_state(gst::State::Null) {
         glib::g_warning!("fermix", "the voice pipeline refused Null: {e}");
     }
@@ -217,7 +217,7 @@ fn broken(what: &str, e: glib::BoolError) -> AudioFailure {
     AudioFailure::Other(format!("could not {what}: {e}"))
 }
 
-fn make(factory: &str) -> Result<gst::Element, AudioFailure> {
+pub(crate) fn make(factory: &str) -> Result<gst::Element, AudioFailure> {
     gst::ElementFactory::make(factory)
         .build()
         .map_err(|e| broken(&format!("make {factory}"), e))

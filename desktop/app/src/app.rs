@@ -103,7 +103,7 @@ pub fn activate(application: &adw::Application, hidden: bool) {
 /// Every page, the window around them, and the controller that owns both.
 fn build_app(application: &adw::Application) -> Rc<App> {
     let media = Media::new(fermix_home().join("companion").join("media"));
-    let chat = ChatPage::new(&media);
+    let chat = ChatPage::new(&media, audio_endpoints());
     let home = HomePage::new();
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
@@ -160,7 +160,8 @@ fn build_app(application: &adw::Application) -> Rc<App> {
 }
 
 /// `FERMIX_AUDIO=test` swaps the microphone and speakers for a sine and a
-/// fakesink, for the development harness. Nothing else reads it.
+/// fakesink, for the development harness: the call's and the voice notes'.
+/// Nothing else reads it.
 fn audio_endpoints() -> Endpoints {
     match std::env::var("FERMIX_AUDIO") {
         Ok(value) if value == "test" => Endpoints::Test,

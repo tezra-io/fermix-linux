@@ -7,11 +7,16 @@ mod activity;
 mod approvals;
 mod blocks;
 mod entries;
+mod levels;
 mod picture;
 mod places;
+mod playback;
 mod strip;
 mod table_scroller;
+mod voice_chip;
+mod voice_note;
 
+use crate::audio::Endpoints;
 use crate::chat_session::ChatWire;
 use crate::media_grants::Media;
 use crate::state::{Connection, State};
@@ -30,6 +35,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use strip::Readers;
+use voice_note::Player;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
@@ -76,7 +82,9 @@ pub struct ChatPage {
 }
 
 impl ChatPage {
-    pub fn new(media: &Media) -> Self {
+    /// `endpoints` are the voice notes' speakers: the sound server's, or a fakesink under
+    /// `FERMIX_AUDIO=test`.
+    pub fn new(media: &Media, endpoints: Endpoints) -> Self {
         // Close within a turn; a question opens the next with more room (CSS).
         let list = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -105,6 +113,14 @@ impl ChatPage {
             .build();
         root.add_named(&body, Some("chat"));
         root.add_named(&down.page, Some("down"));
+        let player = Player::new(media, endpoints);
+        // Leaving the page, or the window going, stops a voice note.
+        let stops = Rc::downgrade(&player);
+        root.connect_unmap(move |_| {
+            if let Some(player) = stops.upgrade() {
+                player.stop();
+            }
+        });
         ChatPage {
             root,
             conversation,
@@ -125,6 +141,7 @@ impl ChatPage {
             readers: Readers {
                 media: media.clone(),
                 decoder: Decoder::new(fermix_client::picture::decode),
+                player,
             },
         }
     }
@@ -178,6 +195,11 @@ impl ChatPage {
             .and_downcast::<gtk::Window>()
             .is_some_and(|window| window.is_active());
         active && self.root.is_mapped() && self.follow.stuck.get()
+    }
+
+    /// Whether a voice call is up: while one is, no voice note plays.
+    pub fn call_up(&self, up: bool) {
+        self.readers.player.call(up);
     }
 
     /// The held rows drawn on screen now; none while the conversation is not.

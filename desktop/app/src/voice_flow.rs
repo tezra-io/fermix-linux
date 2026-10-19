@@ -71,6 +71,8 @@ impl App {
         mute.set_state(&view.muted.to_variant());
         self.voice.render(&view);
         self.companion.render(&view);
+        // A call coming up stops a voice note, and none plays until it ends.
+        self.chat.call_up(self.call.borrow().session.in_call());
     }
 
     /// Starts following the sound server's inputs, the first time a voice surface

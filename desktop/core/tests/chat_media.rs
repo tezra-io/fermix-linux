@@ -4,7 +4,7 @@
 
 use fermix_client::chat_wire::protocol::{decode_line, Block, LinkPreview, Row, ServerEvent};
 use fermix_client::media::{
-    decode_size, format_size, link_cards, save_name, strip, tile, within_ceiling,
+    decode_size, format_size, lane, link_cards, save_name, strip, tile, within_ceiling,
     without_shown_lines, words, Admission, Fit, TileKind, MAX_DECODING, MAX_WAITING,
 };
 use fermix_client::places::opened_by;
@@ -184,6 +184,47 @@ fn a_second_note_and_any_other_sound_are_file_tiles() {
     );
     assert_eq!(shown.tiles[0].detail, "48.2 kB", "the name says what it is");
     assert_eq!(shown.tiles[0].spoken, "Voice note");
+}
+
+/// A voice note that cannot play is a file tile like any other, first in the lane where the note
+/// stood; one that plays is its chip, and the lane is the other tiles alone.
+#[test]
+fn a_voice_note_that_cannot_play_leads_the_lane_as_a_file_tile() {
+    let refs = json!([
+        media(LAMP, "document", "application/pdf"),
+        media(NOTE, "audio", "audio/ogg"),
+        media(LAMP_PICTURE, "image", "image/jpeg")
+    ]);
+    let shown = strip(&row(json!({"media_refs": refs})));
+    let unplayable = lane(&shown, false);
+    let named: Vec<(&str, TileKind, &str)> = unplayable
+        .iter()
+        .map(|tile| (tile.media.r#ref.as_str(), tile.kind, tile.name.as_str()))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            (NOTE, TileKind::File, "Voice note"),
+            (LAMP_PICTURE, TileKind::Picture, "Picture"),
+            (LAMP, TileKind::File, "PDF")
+        ]
+    );
+    assert_eq!(unplayable[0].detail, "48.2 kB");
+    assert_eq!(unplayable[0], tile(shown.voice.as_ref().expect("a note")));
+    assert_eq!(
+        lane(&shown, true),
+        shown.tiles,
+        "a note that plays is no tile"
+    );
+}
+
+/// A row with no voice note shows its tiles whether or not a note could play.
+#[test]
+fn a_lane_without_a_voice_note_is_its_tiles() {
+    let refs = json!([media(LAMP_PICTURE, "image", "image/jpeg")]);
+    let shown = strip(&row(json!({"media_refs": refs})));
+    assert_eq!(lane(&shown, false), shown.tiles);
+    assert_eq!(lane(&shown, true), shown.tiles);
 }
 
 /// A tile with no name of its own is named by its kind, so its detail is its size alone; a named

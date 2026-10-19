@@ -1,16 +1,17 @@
 //! What a row shows under its words (`fermix_client::media::Strip`): a lane of tiles, pictures
 //! first, and its link cards, a list under any place cards. A picture tile reads its file when
 //! it first comes on screen; every read holds its file for that read alone (`Media::read`): a
-//! thumbnail's decode, the viewer's, an app opening it. Until voice notes play here, a note is
-//! a file tile, first in the lane.
+//! thumbnail's decode, the viewer's, an app opening it. The row's voice note is its own chip, in
+//! the bubble (`voice_note`), and the first tile of the lane once it cannot play.
 
 use super::entries::toast;
 use super::picture::{self, pixels, Decoder, FileRef};
 use super::places::{launched, turned_down, window_of, CARDS_MIN_WIDTH, CARDS_WIDTH};
+use super::voice_note::Player;
 use crate::media_grants::Media;
 use adw::prelude::*;
 use fermix_client::chat_wire::grants::Outcome;
-use fermix_client::media::{save_name, tile, Fit, LinkCard, Strip, Tile, TileKind};
+use fermix_client::media::{lane, save_name, Fit, LinkCard, Strip, Tile, TileKind};
 use fermix_client::picture::Refused;
 use fermix_client::places::is_web_address;
 use gtk::{gdk, gio, glib};
@@ -28,16 +29,17 @@ const AVATAR: i32 = 40;
 /// A picture is asked for at most this many times, once each time it comes on screen (Mac
 /// `tries`).
 const TRIES: u8 = 2;
-const NOT_AVAILABLE: &str = "Not available";
+pub(super) const NOT_AVAILABLE: &str = "Not available";
 /// The Mac's sentence for a file the daemon could not make ready (`browser.notice.fileNotReady`).
-const NOT_READY: &str = "Fermix could not get this file ready to open. Try again.";
+pub(super) const NOT_READY: &str = "Fermix could not get this file ready to open. Try again.";
 const NO_LINK: &str = "Your browser did not open the link.";
 
-/// What a strip reads its files with: the grants, and the page's decoder.
+/// What a row reads its files with: the grants, the page's decoder, and its one player.
 #[derive(Clone)]
 pub struct Readers {
     pub media: Media,
     pub decoder: Rc<Decoder>,
+    pub player: Rc<Player>,
 }
 
 pub struct StripView {
@@ -49,6 +51,8 @@ pub struct StripView {
     links_clamp: adw::Clamp,
     cards: Vec<LinkRow>,
     shown: Strip,
+    /// False once the row's voice note could not play: its tile then leads the lane.
+    note_plays: bool,
     readers: Readers,
 }
 
@@ -92,6 +96,7 @@ impl StripView {
             links_clamp,
             cards: Vec::new(),
             shown: Strip::default(),
+            note_plays: true,
             readers: readers.clone(),
         }
     }
@@ -101,16 +106,18 @@ impl StripView {
         if self.shown == *strip {
             return;
         }
-        let tiles: Vec<Tile> = strip
-            .voice
-            .iter()
-            .map(tile)
-            .chain(strip.tiles.clone())
-            .collect();
-        self.show_tiles(&tiles);
         self.show_links(&strip.links);
         self.shown = strip.clone();
-        self.widget.set_visible(!strip.is_empty());
+        self.show_lane();
+    }
+
+    /// The row's voice note cannot play: its tile leads the lane from now.
+    pub fn unplayable(&mut self) {
+        if !self.note_plays {
+            return;
+        }
+        self.note_plays = false;
+        self.show_lane();
     }
 
     /// The strip came on screen: each picture not read yet is read.
@@ -121,6 +128,14 @@ impl StripView {
         for link in &self.cards {
             link.read_picture(&self.readers);
         }
+    }
+
+    /// The lane's tiles; a voice note that plays is drawn in the bubble, not here.
+    fn show_lane(&mut self) {
+        let tiles = lane(&self.shown, self.note_plays);
+        self.show_tiles(&tiles);
+        self.widget
+            .set_visible(!tiles.is_empty() || !self.shown.links.is_empty());
     }
 
     fn show_tiles(&mut self, tiles: &[Tile]) {

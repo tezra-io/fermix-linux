@@ -84,6 +84,15 @@ pub fn strip(row: &Row) -> Strip {
     }
 }
 
+/// The tiles a row's lane shows: a voice note that cannot play first, as a file tile, where the
+/// note stood, then the other tiles.
+pub fn lane(strip: &Strip, note_plays: bool) -> Vec<Tile> {
+    let note = strip.voice.as_ref().filter(|_| !note_plays).map(tile);
+    note.into_iter()
+        .chain(strip.tiles.iter().cloned())
+        .collect()
+}
+
 /// The row's words as drawn under `strip`, its strip: less every line that only names a tile or
 /// a card. Empty where nothing else was written, and the row then draws its strip alone.
 pub fn words(row: &Row, strip: &Strip) -> String {
