@@ -1,6 +1,6 @@
 # fermix-desktop's packages, built the way a release builds them.
 #
-# On every push to dev or main that can change a package, and on every pull request that can,
+# On every push to main that can change a package, and on every pull request that can,
 # one job per architecture compiles the private GTK runtime from RUNTIME.lock.json, builds the
 # deb and the rpm against it carrying the engine desktop/engine/PIN.json pins, and smokes the
 # runtime, then runs every packaging test. The packages are then linted and installed on every
@@ -18,7 +18,7 @@ name: release
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     # Path filters are not applied to tag pushes, so every release tag runs.
     tags: ["v*.*.*"]
     paths:
@@ -37,8 +37,8 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  # A newer push makes a branch run moot; a tag's run is never cut short.
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  # A newer commit makes a pull request's run moot; main's and a tag's runs are never cut short.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version:

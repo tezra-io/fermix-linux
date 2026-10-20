@@ -105,8 +105,8 @@ for test in scripts/*_test.sh packaging/*_test.sh; do bash "$test"; done
 
 ## Releasing
 
-`.github/workflows/release.yml` builds what a release ships on every push to `dev` or `main` and
-every pull request that can change a package. For amd64 and arm64 each, it builds the runtime from
+`.github/workflows/release.yml` builds what a release ships on every push to `main` and every
+pull request that can change a package. For amd64 and arm64 each, it builds the runtime from
 the lock file, smokes it, and builds both packages. Then it lints them, installs them on every
 supported system, and runs the packaging tests. A release adds a tag to that.
 

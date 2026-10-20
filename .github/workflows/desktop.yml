@@ -1,20 +1,23 @@
-# The desktop app's gate, on every push to main or dev and on every pull request:
-# the desktop entry validated, then the same `scripts/dev.sh check` a developer
-# runs (rustfmt, clippy with warnings as errors, every test, all inside the
-# GNOME 50 SDK). release.yml builds the packages.
+# The desktop app's gate, on every pull request and every push to main: the
+# desktop entry validated, then the same `scripts/dev.sh check` a developer runs
+# (rustfmt, clippy with warnings as errors, every test, all inside the GNOME 50
+# SDK). release.yml builds the packages. A push to dev runs nothing; `gh workflow
+# run desktop.yml --ref <branch>` runs it on any branch by hand.
 name: desktop
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer commit cancels a pull request's older run; main's runs queue.
 concurrency:
   group: desktop-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   desktop:
