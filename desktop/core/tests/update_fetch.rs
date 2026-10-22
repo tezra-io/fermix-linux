@@ -236,6 +236,31 @@ fn rule_7_a_download_matching_its_size_and_sha256_lands_whole() {
 }
 
 #[test]
+fn rule_7_the_shared_fixture_s_package_lands_as_its_feed_names_it() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/update-feed/expected-decode.json"
+    );
+    let decoded: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let deb = &decoded["payload"]["releases"][0]["packages"]["amd64"]["deb"];
+    let named: Package = serde_json::from_value(deb.clone()).unwrap();
+    let body = format!("test package {}\n", named.file);
+    let base = serve(HashMap::from([("/fixture.deb", ok(body.as_bytes()))]), None);
+    let dir = tempfile::tempdir().unwrap();
+    let to = dir.path().join(&named.file);
+    plain()
+        .download(
+            &format!("{base}/fixture.deb"),
+            &named,
+            &to,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&to).unwrap(), body.as_bytes());
+}
+
+#[test]
 fn rule_7_a_download_with_another_digest_is_deleted_and_refused() {
     let base = serve(HashMap::from([("/p.deb", ok(b"tampered"))]), None);
     let dir = tempfile::tempdir().unwrap();

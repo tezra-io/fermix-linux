@@ -35,7 +35,7 @@ pub struct FeedKey {
 }
 
 /// Why a served feed was refused. Each says what was wrong, for the log; the
-/// sentence a person reads is `update::words`'.
+/// sentence a person reads is `update::view`'.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeedError {
     /// Longer than `FEED_CAP`.
