@@ -502,3 +502,61 @@ fn failures_are_sentences_a_person_can_act_on() {
         "The system could not install it: dependency problems"
     );
 }
+
+/// 2026-10-22T03:00:00Z.
+const WRITTEN: u64 = 1_792_638_000;
+
+#[test]
+fn settings_dates_the_update_information_beside_last_checked() {
+    let mut u = updates(Some(Format::Deb));
+    let now = WRITTEN + 300;
+    u.found = Some(Outcome::UpToDate);
+    u.remembered.accepted_generated_at = Some(WRITTEN);
+    u.remembered.last_check = Some(LastCheck {
+        at: WRITTEN,
+        result: Checked::UpToDate,
+    });
+    assert_eq!(
+        settings_view(&u, None, now).detail.as_deref(),
+        Some("Last checked 5 minutes ago · Update information from 22 October")
+    );
+    let next_year = WRITTEN + 100 * 86_400;
+    u.remembered.last_check = Some(LastCheck {
+        at: next_year - 60,
+        result: Checked::UpToDate,
+    });
+    assert_eq!(
+        settings_view(&u, None, next_year).detail.as_deref(),
+        Some("Last checked 1 minute ago · Update information from 22 October 2026"),
+        "a feed from another year names its year"
+    );
+    let mut recalled = updates(Some(Format::Deb));
+    recalled.remembered = u.remembered.clone();
+    assert_eq!(
+        settings_view(&recalled, None, next_year).detail.as_deref(),
+        Some("Last checked 1 minute ago · Update information from 22 October 2026"),
+        "an earlier run's check is dated too"
+    );
+}
+
+#[test]
+fn an_out_of_date_feed_is_a_failed_check_and_never_up_to_date() {
+    let now = WRITTEN + 181 * 86_400;
+    let sentence = check_failure(&CheckError::OutOfDate {
+        generated_at: WRITTEN,
+        now,
+    });
+    assert_eq!(
+        sentence,
+        "The update information is out of date. It is from 22 October 2026."
+    );
+    let mut u = updates(Some(Format::Deb));
+    u.found = Some(Outcome::UpToDate);
+    u.failure = Some(sentence.clone());
+    let view = settings_view(&u, None, now);
+    assert_eq!(view.status, "Fermix could not check for updates");
+    assert_eq!(view.detail.as_deref(), Some(sentence.as_str()));
+    let dialog = dialog_view(&u, None);
+    assert_eq!(dialog.title, "Fermix could not check for updates");
+    assert_eq!(dialog.failure.as_deref(), Some(sentence.as_str()));
+}

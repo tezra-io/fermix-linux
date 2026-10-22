@@ -4,7 +4,7 @@
 //! where it has them. A failed check is never shown as up to date.
 
 use crate::update::check::CheckError;
-use crate::update::feed::FeedError;
+use crate::update::feed::{utc_date, FeedError};
 use crate::update::fetch::FetchError;
 use crate::update::packagekit::{Ending, Fallback};
 use crate::update::policy::{Offer, Outcome};
@@ -174,21 +174,19 @@ fn recalled(updates: &Updates, now: u64) -> Status {
             };
             (
                 status,
-                Some(format!("Last checked {when}")),
+                last_checked(updates, now),
                 Some(("Show…", RowAction::Show)),
             )
         }
         Checked::Stranded { latest } => (
             stranded_status(&latest.to_string()),
-            Some(format!("Last checked {when}")),
+            last_checked(updates, now),
             check_now,
         ),
         Checked::Development => (DEVELOPMENT.into(), None, None),
-        Checked::UpToDate | Checked::Available { .. } => (
-            UP_TO_DATE.into(),
-            Some(format!("Last checked {when}")),
-            check_now,
-        ),
+        Checked::UpToDate | Checked::Available { .. } => {
+            (UP_TO_DATE.into(), last_checked(updates, now), check_now)
+        }
     }
 }
 
@@ -217,9 +215,18 @@ fn available(offer: &Offer) -> String {
     format!("Fermix {} is available", offer.release.version)
 }
 
+/// When the last check ran, and the date of the newest feed accepted, so a
+/// feed frozen in place shows its age.
 fn last_checked(updates: &Updates, now: u64) -> Option<String> {
     let last = updates.remembered.last_check.as_ref()?;
-    Some(format!("Last checked {}", checked_words(last.at, now)))
+    let checked = format!("Last checked {}", checked_words(last.at, now));
+    match updates.remembered.accepted_generated_at {
+        Some(written) => Some(format!(
+            "{checked} · Update information from {}",
+            date_words(written, now)
+        )),
+        None => Some(checked),
+    }
 }
 
 fn version_line(installation: Option<&Installation>, engine: Option<&str>) -> String {
@@ -245,6 +252,31 @@ pub fn checked_words(at: u64, now: u64) -> String {
     };
     let plural = if count == 1 { "" } else { "s" };
     format!("{count} {unit}{plural} ago")
+}
+
+/// A UTC date as "22 October", with its year when that is not `now`'s.
+pub fn date_words(at: u64, now: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let (year, month, day) = utc_date(at);
+    let name = MONTHS[usize::try_from(month - 1).expect("a month is 1 to 12")];
+    if year == utc_date(now).0 {
+        format!("{day} {name}")
+    } else {
+        format!("{day} {name} {year}")
+    }
 }
 
 /// A size as GNOME writes one: decimal units, one place.
@@ -599,6 +631,10 @@ pub fn check_failure(error: &CheckError) -> String {
         CheckError::Stale { .. } => "The update information from fermix.ai is older than what \
             Fermix has already seen, so it was ignored."
             .into(),
+        CheckError::OutOfDate { generated_at, now } => format!(
+            "The update information is out of date. It is from {}.",
+            date_words(*generated_at, *now)
+        ),
         CheckError::Unknown(version) => {
             format!("This copy of Fermix is version {version}, which no release of Fermix has.")
         }

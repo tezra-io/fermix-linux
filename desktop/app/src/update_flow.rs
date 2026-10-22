@@ -592,6 +592,7 @@ fn check_feed(installation: &Installation, remembered: &Remembered) -> Result<Fo
         &production_keys(),
         installation,
         remembered,
+        unix_now(),
     )
 }
 

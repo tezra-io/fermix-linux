@@ -429,6 +429,26 @@ pub fn parse_utc(text: &str) -> Option<u64> {
     valid.then(|| days_since_epoch(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// The UTC date, `(year, month, day)`, of a time in seconds since the epoch
+/// (H. Hinnant's civil_from_days).
+pub fn utc_date(seconds: u64) -> (u64, u64, u64) {
+    let shifted = seconds / 86_400 + 719_468;
+    let era = shifted / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    (year, month, day)
+}
+
 fn days_in_month(year: u64, month: u64) -> u64 {
     let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
     match month {

@@ -6,7 +6,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
 use fermix_client::update::feed::{
-    parse_utc, read_feed, Arch, FeedError, FeedKey, Format, FEED_CAP, FEED_URL,
+    parse_utc, read_feed, utc_date, Arch, FeedError, FeedKey, Format, FEED_CAP, FEED_URL,
 };
 use fermix_client::update::version::Version;
 use serde_json::{json, Value};
@@ -489,4 +489,18 @@ fn the_machine_is_amd64_or_arm64() {
     assert_eq!(Arch::from_target("riscv64"), None);
     assert_eq!(Arch::Amd64.to_string(), "amd64");
     assert_eq!(Arch::Arm64.to_string(), "arm64");
+}
+
+#[test]
+fn a_time_reads_back_as_its_utc_date() {
+    assert_eq!(utc_date(0), (1970, 1, 1));
+    assert_eq!(utc_date(1_792_638_000), (2026, 10, 22));
+    for (text, date) in [
+        ("2028-02-29T23:59:59Z", (2028, 2, 29)),
+        ("2028-03-01T00:00:00Z", (2028, 3, 1)),
+        ("2100-03-01T00:00:00Z", (2100, 3, 1)),
+        ("2026-12-31T12:00:00Z", (2026, 12, 31)),
+    ] {
+        assert_eq!(utc_date(parse_utc(text).unwrap()), date, "{text}");
+    }
 }

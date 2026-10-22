@@ -6,7 +6,9 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
-use fermix_client::update::check::{check, due, remember, CheckError, CHECK_EVERY};
+use fermix_client::update::check::{
+    check, due, remember, CheckError, AHEAD_BY, CHECK_EVERY, STALE_AFTER,
+};
 use fermix_client::update::feed::{FeedError, FeedKey, Format};
 use fermix_client::update::fetch::{FetchConfig, FetchError, Fetcher, Timeouts};
 use fermix_client::update::identity::Alignment;
@@ -24,6 +26,11 @@ use std::thread;
 use std::time::Duration;
 
 const SEED: [u8; 32] = [11; 32];
+/// 2026-10-22T03:00:00Z, when the tests' feeds are written.
+const GENERATED: u64 = 1_792_638_000;
+const DAY: u64 = 86_400;
+/// The local clock, an hour after the feed was written.
+const NOW: u64 = GENERATED + 3_600;
 const KEY_ID: &str = "linux-feed-unit";
 
 fn v(text: &str) -> Version {
@@ -127,6 +134,7 @@ fn a_check_fetches_verifies_and_decides() {
         &keys(),
         &package("0.3.0"),
         &Remembered::default(),
+        NOW,
     )
     .unwrap();
     assert_eq!(found.generated_at, Some(1_792_638_000));
@@ -143,7 +151,7 @@ fn a_check_against_an_older_feed_could_not_check() {
         accepted_generated_at: Some(1_792_638_001),
         ..Remembered::default()
     };
-    let answer = check(&fetcher(), &url, &keys(), &package("0.3.0"), &seen);
+    let answer = check(&fetcher(), &url, &keys(), &package("0.3.0"), &seen, NOW);
     assert_eq!(
         answer.unwrap_err(),
         CheckError::Stale {
@@ -162,6 +170,7 @@ fn a_check_says_why_it_failed() {
         &keys(),
         &package("0.3.0"),
         &Remembered::default(),
+        NOW,
     );
     assert_eq!(
         answer.unwrap_err(),
@@ -178,6 +187,7 @@ fn a_check_says_why_it_failed() {
         &other_keys,
         &package("0.3.0"),
         &Remembered::default(),
+        NOW,
     );
     assert_eq!(answer.unwrap_err(), CheckError::Feed(FeedError::Signature));
 }
@@ -194,6 +204,7 @@ fn a_development_build_does_not_even_fetch() {
         &keys(),
         &development,
         &Remembered::default(),
+        NOW,
     )
     .unwrap();
     assert_eq!(found.outcome, Outcome::Development);
@@ -207,6 +218,7 @@ fn a_development_build_does_not_even_fetch() {
         &keys(),
         &unknown,
         &Remembered::default(),
+        NOW,
     );
     assert_eq!(
         answer.unwrap_err(),
@@ -222,7 +234,14 @@ fn a_check_remembers_when_and_how_it_ended() {
         skipped: Some(v("0.3.5")),
         ..Remembered::default()
     };
-    let found = check(&fetcher(), &url, &keys(), &package("0.3.0"), &remembered);
+    let found = check(
+        &fetcher(),
+        &url,
+        &keys(),
+        &package("0.3.0"),
+        &remembered,
+        NOW,
+    );
     remember(&mut remembered, 5_000, &found);
     assert_eq!(remembered.accepted_generated_at, Some(1_792_638_000));
     assert_eq!(
@@ -386,4 +405,64 @@ fn an_automatic_check_is_due_a_day_after_the_last() {
         ..Remembered::default()
     };
     assert!(!due(&off, 1_000), "the switch is off");
+}
+
+#[test]
+fn a_feed_more_than_180_days_old_or_a_day_ahead_is_out_of_date() {
+    assert_eq!((STALE_AFTER, AHEAD_BY), (180 * DAY, DAY));
+    let feed = signed_feed("2026-10-22T03:00:00Z", &["0.4.0", "0.3.0"]);
+    let at = |now: u64| {
+        let url = serve(200, feed.clone());
+        check(
+            &fetcher(),
+            &url,
+            &keys(),
+            &package("0.3.0"),
+            &Remembered::default(),
+            now,
+        )
+    };
+    let out_of_date = |now: u64| CheckError::OutOfDate {
+        generated_at: GENERATED,
+        now,
+    };
+    assert!(at(GENERATED + 179 * DAY).is_ok(), "179 days behind");
+    assert!(
+        at(GENERATED + 180 * DAY).is_ok(),
+        "180 days is not more than 180"
+    );
+    let behind = GENERATED + 181 * DAY;
+    assert_eq!(
+        at(behind).unwrap_err(),
+        out_of_date(behind),
+        "181 days behind"
+    );
+    assert!(at(GENERATED - DAY).is_ok(), "1 day ahead is clock skew");
+    let ahead = GENERATED - 2 * DAY;
+    assert_eq!(at(ahead).unwrap_err(), out_of_date(ahead), "2 days ahead");
+}
+
+#[test]
+fn an_out_of_date_feed_is_remembered_as_a_failed_check() {
+    let mut remembered = Remembered {
+        accepted_generated_at: Some(GENERATED),
+        ..Remembered::default()
+    };
+    let now = GENERATED + 200 * DAY;
+    let frozen: Result<_, CheckError> = Err(CheckError::OutOfDate {
+        generated_at: GENERATED,
+        now,
+    });
+    remember(&mut remembered, now, &frozen);
+    assert_eq!(remembered.accepted_generated_at, Some(GENERATED));
+    match &remembered.last_check {
+        Some(LastCheck {
+            result: Checked::Failed { sentence },
+            ..
+        }) => assert_eq!(
+            sentence,
+            "The update information is out of date. It is from 22 October 2026."
+        ),
+        other => panic!("an out-of-date feed is a failed check, not {other:?}"),
+    }
 }
