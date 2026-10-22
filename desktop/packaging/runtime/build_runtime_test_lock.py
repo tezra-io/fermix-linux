@@ -401,6 +401,11 @@ def check_flags(lock):
     require_flags(c["harfbuzz"], ["-Dsubset=enabled", "-Dwith_libstdcxx=false"])
     require_flags(c["abseil-cpp"], ["-DBUILD_SHARED_LIBS=OFF",
                                     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"])
+    # Linked into the ogg and opus plugins, so the host libogg and libopus that the
+    # host's libpulse brings in can never stand in for private ones.
+    require_flags(c["libogg"], ["-DBUILD_SHARED_LIBS=OFF",
+                                "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"])
+    require_flags(c["opus"], ["-Ddefault_library=static"])
     # Nothing in a GStreamer module is built unless it is named here.
     enables = {
         "gstreamer": ["-Dtools=enabled"],

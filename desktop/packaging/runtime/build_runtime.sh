@@ -334,14 +334,15 @@ unpack_component() {
 
 # libdir is lib on every build system: meson and cmake would choose lib64 on an
 # RPM distribution, and the installed layout says lib. Meson never downloads a
-# subproject; a dependency the prefix lacks fails the build instead.
+# subproject; a dependency the prefix lacks fails the build instead. Libraries
+# are shared, meson's default, unless the lock's options say static.
 build_meson() {
   local name="$1" src="$2"
   local -a options
   mapfile -t options < <(component_options "$name")
   meson setup "$src/_build" "$src" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release --wrap-mode=nodownload \
-    --strip -Db_ndebug=true -Ddefault_library=shared \
+    --strip -Db_ndebug=true \
     "${options[@]}"
   meson compile -C "$src/_build" -j "$JOBS"
   meson install -C "$src/_build" --no-rebuild
@@ -466,7 +467,10 @@ export_build_environment() {
   export XDG_DATA_DIRS="$PREFIX/share:/usr/local/share:/usr/share"
   export CFLAGS="-O2 -g0 -fno-semantic-interposition -ffile-prefix-map=$BUILD_ROOT=/build"
   export CXXFLAGS="$CFLAGS"
-  export LDFLAGS="-Wl,-O1 -Wl,--as-needed -Wl,--enable-new-dtags"
+  # libogg and opus are static archives inside the ogg and opus plugins, and
+  # --exclude-libs keeps their symbols out of each plugin's exports. It names
+  # those two archives alone, so no other link changes.
+  export LDFLAGS="-Wl,-O1 -Wl,--as-needed -Wl,--enable-new-dtags -Wl,--exclude-libs,libopus.a:libogg.a"
   export RUSTFLAGS="--remap-path-prefix=$BUILD_ROOT=/build"
   # Cargo compiles only what vendor_crates checked.
   export CARGO_NET_OFFLINE=true

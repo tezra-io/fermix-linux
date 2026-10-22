@@ -468,15 +468,17 @@ are dropped from the shipped tree.
 
 **Voice notes.** The phones record Ogg/Opus, so base's `ogg` and `opus` plugins
 are built over libogg and opus, and they bring libgstpbutils, the libgstvideo
-it links, and libgstriff into the shipped tree. libogg builds with CMake,
-shared, without its documentation or CMake package. opus takes
-`-Dauto_features=disabled` and nothing else. That builtin turns off every
-`feature` option, so no x86 or ARM SIMD source, no run-time CPU detection and
-no deep-learning code (deep-plc, dred, osce) is compiled, nor the tests,
-documentation or extra programs. `check_options.py` could not hold any other
-flag anyway: three descriptions in opus 1.6.1's `meson_options.txt` hold an
-unbalanced `(`, and the checker balances brackets without skipping strings, so
-it finds only `fixed-point`. The opus tarball is 10 MB, mostly model weights
+it links, and libgstriff into the shipped tree. Both libraries are static
+(below). libogg builds with CMake, without its documentation or CMake package.
+opus takes `-Ddefault_library=static` and `-Dauto_features=disabled` and
+nothing else. The second builtin turns off every `feature` option, so no x86
+or ARM SIMD source, no run-time CPU detection and no deep-learning code
+(deep-plc, dred, osce) is compiled, nor the tests, documentation or extra
+programs. `check_options.py` holds both builtins to the values meson takes,
+and could not hold any of opus's own options anyway: three descriptions in
+opus 1.6.1's `meson_options.txt` hold an unbalanced `(`, and the checker
+balances brackets without skipping strings, so it finds only `fixed-point`.
+The opus tarball is 10 MB, mostly model weights
 the build never compiles; the source archive carries it whole. An `.ogg` with
 Vorbis or FLAC inside demuxes and then fails to link `opusdec`, so the window
 has to take that error to its file tile, as it does every other audio type.
@@ -502,6 +504,20 @@ component instead, built by CMake as position-independent static archives and
 linked into `libwebrtc-audio-processing-2.so.1`, so the shipped tree has no
 `libabsl_*` files. Its code still ships inside that library, so it keeps its
 licence entry.
+
+**ogg and opus are static.** The host's `libpulse.so.0` links
+libpulsecommon, which links libsndfile, which links the host's
+`libogg.so.0` and `libopus.so.0`. The loader finds those by the host's own
+paths, since a RUNPATH reaches only its object's own `NEEDED` entries, and
+once a library of that soname is loaded, a plugin that needs it gets that
+one, not the prefix's. So libogg and opus are built as position-independent
+static archives and linked into the only objects that need them,
+`gstreamer-1.0/libgstogg.so` and `libgstopus.so`, and the shipped tree has no
+`libogg*` or `libopus*` files. `-Wl,--exclude-libs,libopus.a:libogg.a` in
+`LDFLAGS` keeps their symbols out of the two plugins' exports, so each plugin
+calls its own copy and nothing else can bind to it; it names those archives
+alone, so it changes no other link. Their code still ships inside the
+plugins, so each keeps its licence entry.
 
 **The host boundary.** `host_libraries` is A§4.1's host column, plus
 `libpulse.so.0`, the PulseAudio client protocol and so the session's, and
@@ -568,7 +584,8 @@ notes and Python bytecode are removed because they vary between two builds of
 one tree. librsvg is patched so the order it links its system libraries in no
 longer follows Python's hash seed
 (`patches/librsvg-native-libs-in-rustc-order.patch`), and CMake writes
-abseil's static archives in `ar`'s deterministic mode. `tar --sort=name` makes
+abseil's and libogg's static archives in `ar`'s deterministic mode, as meson
+writes opus's. `tar --sort=name` makes
 each archive's digest a property of the tree. `--verify` rebuilds from empty
 volumes and compares file by file and archive by archive.
 
