@@ -346,6 +346,10 @@ main() {
   [ "$arch" = "$machine" ] ||
     fail "$(basename -- "$package") is for $arch, and this machine is $machine: the smoke runs natively"
   [ -z "$previous" ] || check_upgrade "$image" "$family" "$package" "$previous" "$arch"
+  # tar's -C is relative to the -C before it, and the copy into the container changes directory
+  # once for each package, so both are named from the root.
+  package="$(realpath -- "$package")"
+  [ -z "$previous" ] || previous="$(realpath -- "$previous")"
   if [ "$print" = 1 ]; then
     print_plan "$image" "$family" "$arch" "$previous"
   elif [ -n "$previous" ]; then

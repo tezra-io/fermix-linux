@@ -155,6 +155,31 @@ for case in "ubuntu:24.04 deb $deb $old_deb" "fedora:44 rpm $rpm $old_rpm"; do
   echo "  ok: $image: $family on $native, from $(basename "$previous")"
 done
 
+# The release workflow names both packages relative to its checkout, packages/ and previous/. A
+# docker that only records what is copied into the container, and fails the container's start,
+# stands in for the real one, so the upgrade stops right after the copy.
+echo "install_smoke_test: an upgrade named by relative paths copies both packages in"
+mkdir -p "$work/bin" "$work/run/packages" "$work/run/previous"
+cp "$deb" "$work/run/packages/"
+cp "$old_deb" "$work/run/previous/"
+cat > "$work/bin/docker" << 'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  create | rm) exit 0 ;;
+  cp) tar -tf - > "$STUB_COPIED" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$work/bin/docker"
+(cd "$work/run" && PATH="$work/bin:$PATH" STUB_COPIED="$work/copied" \
+  "$here/install_smoke.sh" --image ubuntu:24.04 "packages/$(basename "$deb")" \
+  --upgrade-from "previous/$(basename "$old_deb")" --out "$work/run/out") > /dev/null 2>&1 || true
+copied="$(cat "$work/copied" 2> /dev/null || true)"
+[ "$copied" = "$(printf 'smoke/%s\nsmoke/%s\nsmoke/smoke_in_container.sh' \
+  "$(basename "$deb")" "$(basename "$old_deb")")" ] ||
+  fail "an upgrade named by relative paths copied in: ${copied:-nothing}"
+echo "  ok: both packages and the script, from packages/ and previous/"
+
 [ -z "$(docker ps -aq --filter 'name=^fermix-desktop-pkg-package-smoke-')" ] ||
   fail "a refused smoke left a container"
 [ -z "$(docker ps -aq --filter 'name=^fermix-desktop-pkg-package-upgrade-')" ] ||
