@@ -48,12 +48,6 @@ fn label(classes: &[&str]) -> gtk::Label {
 
 impl UpdateDialog {
     pub fn new() -> UpdateDialog {
-        let icon = gtk::Image::builder()
-            .icon_name(APP_ICON)
-            .pixel_size(96)
-            .build();
-        let (title, subtitle) = (label(&["title-2"]), label(&["dimmed"]));
-        let (notice, failure) = (label(&[]), label(&["error"]));
         let notes = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let notes_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -61,14 +55,43 @@ impl UpdateDialog {
             .propagate_natural_height(true)
             .child(&notes)
             .build();
-        let progress = gtk::ProgressBar::new();
-        let progress_text = label(&["dimmed", "caption", "numeric"]);
-        let spinner = adw::Spinner::builder().height_request(32).build();
-        let manual = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let buttons = gtk::Box::builder()
-            .spacing(12)
-            .halign(gtk::Align::Center)
-            .margin_top(12)
+        let toasts = adw::ToastOverlay::new();
+        let dialog = adw::Dialog::builder()
+            .content_width(WIDTH)
+            .title("Software Update")
+            .child(&toasts)
+            .build();
+        let parts = UpdateDialog {
+            dialog,
+            header: adw::HeaderBar::builder().show_title(false).build(),
+            toasts,
+            title: label(&["title-2"]),
+            subtitle: label(&["dimmed"]),
+            notice: label(&[]),
+            notes,
+            notes_scroller,
+            progress: gtk::ProgressBar::new(),
+            progress_text: label(&["dimmed", "caption", "numeric"]),
+            spinner: adw::Spinner::builder().height_request(32).build(),
+            failure: label(&["error"]),
+            manual: gtk::Box::new(gtk::Orientation::Vertical, 6),
+            buttons: gtk::Box::builder()
+                .spacing(12)
+                .halign(gtk::Align::Center)
+                .margin_top(12)
+                .build(),
+            shown: RefCell::default(),
+        };
+        parts.lay_out();
+        parts
+    }
+
+    /// Every part in one column under the app's icon, below a header that
+    /// holds only the close button.
+    fn lay_out(&self) {
+        let icon = gtk::Image::builder()
+            .icon_name(APP_ICON)
+            .pixel_size(96)
             .build();
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -79,47 +102,23 @@ impl UpdateDialog {
             .build();
         for widget in [
             icon.upcast_ref::<gtk::Widget>(),
-            title.upcast_ref(),
-            subtitle.upcast_ref(),
-            notice.upcast_ref(),
-            notes_scroller.upcast_ref(),
-            spinner.upcast_ref(),
-            progress.upcast_ref(),
-            progress_text.upcast_ref(),
-            failure.upcast_ref(),
-            manual.upcast_ref(),
-            buttons.upcast_ref(),
+            self.title.upcast_ref(),
+            self.subtitle.upcast_ref(),
+            self.notice.upcast_ref(),
+            self.notes_scroller.upcast_ref(),
+            self.spinner.upcast_ref(),
+            self.progress.upcast_ref(),
+            self.progress_text.upcast_ref(),
+            self.failure.upcast_ref(),
+            self.manual.upcast_ref(),
+            self.buttons.upcast_ref(),
         ] {
             body.append(widget);
         }
-        let header = adw::HeaderBar::builder().show_title(false).build();
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&header);
+        toolbar.add_top_bar(&self.header);
         toolbar.set_content(Some(&body));
-        let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&toolbar));
-        let dialog = adw::Dialog::builder()
-            .content_width(WIDTH)
-            .title("Software Update")
-            .child(&toasts)
-            .build();
-        UpdateDialog {
-            dialog,
-            header,
-            toasts,
-            title,
-            subtitle,
-            notice,
-            notes,
-            notes_scroller,
-            progress,
-            progress_text,
-            spinner,
-            failure,
-            manual,
-            buttons,
-            shown: RefCell::default(),
-        }
+        self.toasts.set_child(Some(&toolbar));
     }
 
     /// Draws `view`. Only what changed is redrawn, so the buttons and the
@@ -239,19 +238,7 @@ impl UpdateDialog {
             self.buttons.remove(&child);
         }
         for spec in buttons {
-            let button = gtk::Button::with_label(spec.label);
-            if spec.suggested {
-                button.add_css_class("suggested-action");
-            }
-            match window_action(spec.action) {
-                Some(action) => button.set_action_name(Some(action)),
-                None => {
-                    let dialog = self.dialog.clone();
-                    button.connect_clicked(move |_| {
-                        dialog.close();
-                    });
-                }
-            }
+            let button = self.button(spec);
             self.buttons.append(&button);
             // Focus starts on the suggested button, never on a label whose
             // text it would select.
@@ -260,6 +247,23 @@ impl UpdateDialog {
             }
         }
         self.buttons.set_visible(!buttons.is_empty());
+    }
+
+    /// A button that fires its window action, or only closes the dialog.
+    fn button(&self, spec: &DialogButton) -> gtk::Button {
+        let button = gtk::Button::with_label(spec.label);
+        if spec.suggested {
+            button.add_css_class("suggested-action");
+        }
+        if let Some(action) = window_action(spec.action) {
+            button.set_action_name(Some(action));
+            return button;
+        }
+        let dialog = self.dialog.clone();
+        button.connect_clicked(move |_| {
+            dialog.close();
+        });
+        button
     }
 }
 
@@ -278,18 +282,12 @@ fn label_text(text: &str, classes: &[&str]) -> gtk::Label {
 
 /// A note as Pango markup: its text escaped, its inline code in `<tt>`.
 pub fn note_markup(note: &[Span]) -> String {
-    let mut markup = String::new();
-    for span in note {
-        match span {
-            Span::Text(text) => markup.push_str(&glib::markup_escape_text(text)),
-            Span::Code(code) => {
-                markup.push_str("<tt>");
-                markup.push_str(&glib::markup_escape_text(code));
-                markup.push_str("</tt>");
-            }
-        }
-    }
-    markup
+    note.iter()
+        .map(|span| match span {
+            Span::Text(text) => glib::markup_escape_text(text).to_string(),
+            Span::Code(code) => format!("<tt>{}</tt>", glib::markup_escape_text(code)),
+        })
+        .collect()
 }
 
 /// The window action a button fires; `None` for those that only close the dialog.

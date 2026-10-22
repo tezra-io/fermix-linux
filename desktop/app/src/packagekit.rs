@@ -16,7 +16,6 @@ use gtk::glib::{self, variant::ObjectPath, Variant};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
 use std::time::Duration;
 
 /// How long one call may take to be answered.
@@ -131,8 +130,6 @@ fn follow(
     progress: impl Fn(Progress) + 'static,
 ) -> (oneshot::Receiver<Finish>, [gio::SignalSubscription; 2]) {
     let (sender, finished) = oneshot::channel();
-    let sender = RefCell::new(Some(sender));
-    let error: RefCell<Option<(u32, String)>> = RefCell::default();
     let transaction = bus.subscribe_to_signal(
         Some(pk::NAME),
         Some(pk::TRANSACTION),
@@ -140,22 +137,8 @@ fn follow(
         Some(path),
         None,
         gio::DBusSignalFlags::NONE,
-        move |signal| match signal.signal_name {
-            "ErrorCode" => *error.borrow_mut() = signal.parameters.get::<(u32, String)>(),
-            "Finished" => {
-                let exit = signal
-                    .parameters
-                    .get::<(u32, u32)>()
-                    .map_or(0, |(exit, _)| exit);
-                if let Some(sender) = sender.borrow_mut().take() {
-                    // The receiver goes only once the install stopped waiting.
-                    let _ = sender.send((exit, error.borrow_mut().take()));
-                }
-            }
-            _ => {}
-        },
+        ending_heard(sender),
     );
-    let now = Rc::new(Cell::new(Progress::default()));
     let properties = bus.subscribe_to_signal(
         Some(pk::NAME),
         Some(PROPERTIES),
@@ -163,14 +146,44 @@ fn follow(
         Some(path),
         None,
         gio::DBusSignalFlags::NONE,
-        move |signal| {
-            if let Some(next) = changed(now.get(), signal.parameters) {
-                now.set(next);
-                progress(next);
-            }
-        },
+        progress_heard(progress),
     );
     (finished, [transaction, properties])
+}
+
+/// Keeps the last `ErrorCode`, and on `Finished` sends the exit with it.
+fn ending_heard(sender: oneshot::Sender<Finish>) -> impl Fn(gio::DBusSignalRef) + 'static {
+    let sender = RefCell::new(Some(sender));
+    let error: RefCell<Option<(u32, String)>> = RefCell::default();
+    move |signal| {
+        if signal.signal_name == "ErrorCode" {
+            *error.borrow_mut() = signal.parameters.get::<(u32, String)>();
+            return;
+        }
+        if signal.signal_name != "Finished" {
+            return;
+        }
+        let exit = signal
+            .parameters
+            .get::<(u32, u32)>()
+            .map_or(0, |(exit, _)| exit);
+        let Some(sender) = sender.borrow_mut().take() else {
+            return;
+        };
+        // The receiver goes only once the install stopped waiting.
+        let _ = sender.send((exit, error.borrow_mut().take()));
+    }
+}
+
+/// Calls `progress` whenever a PropertiesChanged moves Percentage or Status.
+fn progress_heard(progress: impl Fn(Progress) + 'static) -> impl Fn(gio::DBusSignalRef) + 'static {
+    let now = Cell::new(Progress::default());
+    move |signal| {
+        if let Some(next) = changed(now.get(), signal.parameters) {
+            now.set(next);
+            progress(next);
+        }
+    }
 }
 
 /// The progress after a PropertiesChanged, if it touched Percentage or Status.
@@ -223,6 +236,7 @@ mod tests {
     use super::*;
     use crate::packagekit_fake::{fake, Answer, PrivateBus, Seen, TEST_CAP};
     use fermix_client::update::packagekit::{error, status, Fallback, UNTRUSTED};
+    use std::rc::Rc;
 
     const FILE: &str = "/home/ada/.cache/fermix-desktop/updates/fermix-desktop_0.4.0_amd64.deb";
 
@@ -240,25 +254,28 @@ mod tests {
     ) -> (Ending, Seen, Vec<Progress>) {
         let context = glib::MainContext::new();
         context
-            .with_thread_default(|| {
-                context.block_on(async {
-                    let bus = PrivateBus::start();
-                    let (client, service) = (bus.connect().await, bus.connect().await);
-                    let seen = answer.map(|a| fake(&service, vec![a]));
-                    let heard = Rc::new(RefCell::new(Vec::new()));
-                    let record = heard.clone();
-                    let install = install_on(&client, Path::new(FILE), flags, cap, move |p| {
-                        record.borrow_mut().push(p)
-                    });
-                    let ended = glib::future_with_timeout(TEST_CAP, install)
-                        .await
-                        .expect("the install ends within the test's cap");
-                    let seen = seen.map(|s| s.take()).unwrap_or_default();
-                    let heard = heard.take();
-                    (ended, seen, heard)
-                })
-            })
+            .with_thread_default(|| context.block_on(install_on_bus(answer, flags, cap)))
             .unwrap()
+    }
+
+    async fn install_on_bus(
+        answer: Option<Answer>,
+        flags: u64,
+        cap: Duration,
+    ) -> (Ending, Seen, Vec<Progress>) {
+        let bus = PrivateBus::start();
+        let (client, service) = (bus.connect().await, bus.connect().await);
+        let seen = answer.map(|a| fake(&service, vec![a]));
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let record = heard.clone();
+        let install = install_on(&client, Path::new(FILE), flags, cap, move |p| {
+            record.borrow_mut().push(p)
+        });
+        let ended = glib::future_with_timeout(TEST_CAP, install)
+            .await
+            .expect("the install ends within the test's cap");
+        let seen = seen.map(|s| s.take()).unwrap_or_default();
+        (ended, seen, heard.take())
     }
 
     #[test]

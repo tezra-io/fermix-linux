@@ -165,22 +165,20 @@ fn serve_transaction(
     // Registered for the bus's life: the test's bus goes with the test.
     let _registration = bus
         .register_object(path, &interface(TRANSACTION_XML, pk::TRANSACTION))
-        .method_call(move |_, _, _, _, method, params, invocation| match method {
-            "SetHints" => {
-                let hints = params.get::<(Vec<String>,)>().unwrap().0;
-                seen.borrow_mut().hints.push(hints);
-                invocation.return_value(None);
+        .method_call(move |_, _, _, _, method, params, invocation| {
+            let mut seen = seen.borrow_mut();
+            match method {
+                "SetHints" => seen.hints.push(params.get::<(Vec<String>,)>().unwrap().0),
+                "Cancel" => seen.cancels.push(at.clone()),
+                _ => seen
+                    .installs
+                    .push(params.get::<(u64, Vec<String>)>().unwrap()),
             }
-            "Cancel" => {
-                seen.borrow_mut().cancels.push(at.clone());
-                invocation.return_value(None);
-            }
-            _ => {
-                let install = params.get::<(u64, Vec<String>)>().unwrap();
-                seen.borrow_mut().installs.push(install);
-                // The reply goes out first, then the transaction's signals, as
-                // PackageKit sends them.
-                invocation.return_value(None);
+            drop(seen);
+            // The reply goes out first, then an install's signals, as
+            // PackageKit sends them.
+            invocation.return_value(None);
+            if method == "InstallFiles" {
                 run_script(&conn, &at, answer);
             }
         })
