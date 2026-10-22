@@ -519,12 +519,16 @@ impl App {
 
     /// systemd reads the new unit, the engine restarts through the usual
     /// restart when its build changed, and its hello must then name the
-    /// installed build. An engine that is not this package's is left alone.
+    /// installed build. An engine that is not this package's is left alone,
+    /// and one that keeps running needs no reload to go on.
     async fn restart_engine(&self) -> Result<(), String> {
-        reload_units().await?;
+        let reloaded = reload_units().await;
         self.refresh().await;
         if engine_needs_restart(&self.engine_alignment()) {
+            reloaded?;
             self.restart_now().await?;
+        } else if let Err(sentence) = reloaded {
+            glib::g_warning!("fermix", "systemd did not reload its units: {sentence}");
         }
         match self.engine_alignment() {
             Alignment::Aligned | Alignment::NotRunning | Alignment::OwnershipConflict(_) => Ok(()),
