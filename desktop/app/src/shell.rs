@@ -11,6 +11,7 @@
 use crate::settings::SettingsPage;
 use adw::prelude::*;
 use fermix_client::settings::pane;
+use fermix_client::update::view::CHECK_FOR_UPDATES;
 use gtk::gio;
 use gtk::glib::{self, variant::ToVariant};
 use std::cell::RefCell;
@@ -362,6 +363,7 @@ fn primary_menu() -> gtk::MenuButton {
     let menu = gio::Menu::new();
     menu.append(Some("Settings"), Some("win.open-settings"));
     menu.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
+    menu.append(Some(CHECK_FOR_UPDATES), Some("win.updates-open"));
     menu.append(Some("About Fermix"), Some("app.about"));
     menu.append(Some("Quit"), Some("app.quit"));
     gtk::MenuButton::builder()

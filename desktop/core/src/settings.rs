@@ -41,7 +41,7 @@ pub struct Pane {
     pub icon: &'static str,
 }
 
-pub const PANES: [Pane; 14] = [
+pub const PANES: [Pane; 15] = [
     pane_of("providers", "Providers", "dialog-password-symbolic"),
     pane_of("personality", "Personality", "avatar-default-symbolic"),
     pane_of("memory", "Memory", "document-open-recent-symbolic"),
@@ -60,6 +60,8 @@ pub const PANES: [Pane; 14] = [
     pane_of("secrets", "Secrets", "channel-secure-symbolic"),
     pane_of("sandbox", "Sandbox", "security-medium-symbolic"),
     pane_of("permissions", "Permissions", "security-high-symbolic"),
+    // The app's own: it reads nothing from the daemon, so it shows while Fermix is down.
+    pane_of("updates", "Updates", "software-update-available-symbolic"),
 ];
 
 const fn pane_of(slug: &'static str, title: &'static str, icon: &'static str) -> Pane {
@@ -75,7 +77,7 @@ pub const GROUPS: [(&str, &[&str]); 4] = [
             "voice", "meetings", "computer", "coding", "search", "images",
         ],
     ),
-    ("System", &["secrets", "sandbox", "permissions"]),
+    ("System", &["secrets", "sandbox", "permissions", "updates"]),
 ];
 
 pub fn pane(slug: &str) -> Option<&'static Pane> {

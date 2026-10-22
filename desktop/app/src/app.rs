@@ -21,6 +21,7 @@ use crate::settings::{SettingsData, SettingsPage};
 use crate::shell::{self, Shell};
 use crate::state::{Connection, Snapshot, State, RECENT_FOR};
 use crate::tray::Tray;
+use crate::update_flow::Updater;
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
@@ -83,6 +84,8 @@ pub struct App {
     pub tray: RefCell<Option<Tray>>,
     /// Where the window keeps the "Open at login" entry.
     pub login: PathBuf,
+    /// The app's own updates: their files, the dialog and the download.
+    pub updater: Updater,
 }
 
 /// `hidden`: started at login, so the window waits in the tray (see `start_tray`).
@@ -156,6 +159,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         application: application.clone(),
         tray: RefCell::default(),
         login: login_entry(),
+        updater: Updater::new(),
     })
 }
 
@@ -173,6 +177,7 @@ fn audio_endpoints() -> Endpoints {
 fn start(app: &Rc<App>, hidden: bool) {
     let opens_at_login = app.read_open_at_login();
     app.state.borrow_mut().background.opens_at_login = opens_at_login;
+    app.load_updates();
     install_actions(app);
     follow_visible_page(app);
     mark_read_when_active(app);
@@ -191,6 +196,7 @@ fn start(app: &Rc<App>, hidden: bool) {
         first.refresh().await;
         first.open_first(launch);
         first.reassert_open_at_login();
+        first.start_updates().await;
     });
     start_idle_refresh(app);
     app.chat_connect();
@@ -223,6 +229,7 @@ impl App {
         self.render_voice();
         self.render_assistant();
         self.show_tray();
+        self.redraw_update_dialog();
     }
 
     /// Re-reads the daemon and redraws. A failure is a state, never an error dialog.
@@ -246,6 +253,7 @@ impl App {
             pid.is_some() && !was_up
         };
         self.read_service().await;
+        self.read_restart_pending();
         self.render();
         if came_up {
             // A daemon just reached has its chat now, not at the backoff's next attempt. Through
@@ -375,6 +383,7 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
     Connection::Up(Box::new(Snapshot {
         state,
         version: hello.engine.product_version,
+        build_id: hello.engine.build_id,
         pid: hello.engine.pid,
         architecture: hello.engine.architecture,
         distribution: hello.engine.distribution_identity,
@@ -536,6 +545,7 @@ fn install_actions(app: &Rc<App>) {
     install_setup_actions(app);
     install_service_actions(app);
     install_chat_actions(app);
+    install_update_actions(app);
     install_accels(app);
     on(app, "door", |app, target| async move {
         app.open_door(&target).await
@@ -578,6 +588,32 @@ fn install_service_actions(app: &Rc<App>) {
     on_plain(app, "voice-fix", |app| async move { app.voice_fix().await });
     on_plain(app, "open-setup-page", |app| async move {
         app.open_setup_page().await
+    });
+}
+
+/// Where updates show (the tray, the main menu, Home, Settings) and the dialog's buttons.
+fn install_update_actions(app: &Rc<App>) {
+    on_plain(app, "updates-open", |app| async move { app.open_updates() });
+    on_plain(app, "updates-check", |app| async move {
+        app.check_updates(true).await
+    });
+    on_value(app, "updates-automatic", |app, on: bool| async move {
+        app.set_automatic(on)
+    });
+    on_plain(app, "updates-install", |app| async move {
+        app.install_update().await
+    });
+    on_plain(app, "updates-skip", |app| async move { app.skip_update() });
+    on_plain(
+        app,
+        "updates-cancel",
+        |app| async move { app.cancel_download() },
+    );
+    on_plain(app, "updates-try-again", |app| async move {
+        app.update_try_again().await
+    });
+    on_plain(app, "updates-restart", |app| async move {
+        app.finish_update().await
     });
 }
 

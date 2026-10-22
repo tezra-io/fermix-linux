@@ -1,13 +1,15 @@
-//! Settings: thirteen panes in four groups (M38 §5.7), a searchable pane list
+//! Settings: fifteen panes in four groups (M38 §5.7), a searchable pane list
 //! that replaces the sidebar, and the banner for a settings file changed or
 //! broken outside Fermix. Most panes are the daemon's sections drawn by
-//! `descriptor.rs`; Providers, Channels and Permissions add rows of their own.
+//! `descriptor.rs`; Providers, Channels and Permissions add rows of their own,
+//! and Updates is the app's own.
 
 use crate::capability_panes::{ComputerPane, Facts, MeetingsPane, Running, MEETINGS_SIGN_IN};
 use crate::channels::ChannelsPane;
 use crate::descriptor::{Drawn, SectionView};
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage};
+use crate::updates_pane::UpdatesPane;
 use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
@@ -16,11 +18,13 @@ use fermix_client::model::DetectRow;
 use fermix_client::settings::{
     pane, sections_for, with_listing, Listing, Section, SectionRows, GROUPS, PANES,
 };
+use fermix_client::update::view::settings_view;
 use futures_channel::oneshot;
 use gtk::glib::{self, variant::ToVariant};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Panes drawn entirely from the daemon's sections, plus any intro above them.
 const DESCRIPTOR_PANES: [&str; 8] = [
@@ -33,6 +37,9 @@ const DESCRIPTOR_PANES: [&str; 8] = [
     "secrets",
     "sandbox",
 ];
+
+/// Panes that read nothing from the daemon, so they show while it is down.
+const OWN_PANES: [&str; 1] = ["updates"];
 
 /// What the controller knows about settings, beside `State`.
 #[derive(Default)]
@@ -138,6 +145,7 @@ pub struct SettingsPage {
     pub channels: ChannelsPane,
     meetings: MeetingsPane,
     computer: ComputerPane,
+    updates: UpdatesPane,
     search: gtk::SearchEntry,
     /// Pages whose groups are the daemon's sections, by pane slug.
     pages: HashMap<&'static str, adw::PreferencesPage>,
@@ -149,6 +157,8 @@ pub struct SettingsPage {
     /// Pane slugs the search leaves visible.
     visible: Rc<RefCell<Vec<&'static str>>>,
     down: DownPage,
+    /// Fermix is down, so panes that need it show the down page instead.
+    down_shown: Rc<Cell<bool>>,
 }
 
 impl SettingsPage {
@@ -171,6 +181,8 @@ impl SettingsPage {
         panes.add_named(&meetings.page, Some("meetings"));
         let computer = ComputerPane::new();
         panes.add_named(&computer.page, Some("computer"));
+        let updates = UpdatesPane::new();
+        panes.add_named(&updates.page, Some("updates"));
         let mut pages = HashMap::new();
         for slug in DESCRIPTOR_PANES {
             let page = adw::PreferencesPage::new();
@@ -191,6 +203,9 @@ impl SettingsPage {
             .build();
         root.add_named(&content, Some("panes"));
         root.add_named(&down.page, Some("down"));
+        let down_shown = Rc::new(Cell::new(false));
+        let (shown, stack) = (down_shown.clone(), root.clone());
+        panes.connect_visible_child_name_notify(move |panes| show_root(&stack, panes, shown.get()));
         let visible = Rc::new(RefCell::new(PANES.iter().map(|p| p.slug).collect()));
         let (sidebar, list, search) = sidebar(&visible);
         SettingsPage {
@@ -202,6 +217,7 @@ impl SettingsPage {
             channels,
             meetings,
             computer,
+            updates,
             search,
             pages,
             providers_page: providers_page.clone(),
@@ -209,15 +225,20 @@ impl SettingsPage {
             dialog_views: Rc::default(),
             visible,
             down,
+            down_shown,
         }
     }
 
     pub fn render(&self, state: &State, data: &SettingsData) {
+        let engine = state.snapshot().map(|s| s.version.as_str());
+        self.updates
+            .render(&settings_view(&state.updates, engine, unix_now()));
         let Connection::Up(snapshot) = &state.connection else {
             return self.render_down(state);
         };
         self.down.reset();
-        self.root.set_visible_child_name("panes");
+        self.down_shown.set(false);
+        show_root(&self.root, &self.panes, false);
         if let Some(sections) = &data.sections {
             self.ensure_views(sections);
         }
@@ -266,7 +287,9 @@ impl SettingsPage {
             _ => waiting("Connecting to Fermix"),
         };
         self.down.show(view);
-        self.root.set_visible_child_name("down");
+        self.banner.set_revealed(false);
+        self.down_shown.set(true);
+        show_root(&self.root, &self.panes, true);
     }
 
     /// Adds one group per section to each descriptor pane, once the sections are known.
@@ -335,6 +358,21 @@ impl SettingsPage {
     pub fn focus_search(&self) {
         self.search.grab_focus();
     }
+}
+
+/// The pane on show, or the down page in its place for a pane that needs Fermix.
+fn show_root(root: &gtk::Stack, panes: &gtk::Stack, down: bool) {
+    let own = panes
+        .visible_child_name()
+        .is_some_and(|name| OWN_PANES.contains(&name.as_str()));
+    root.set_visible_child_name(if down && !own { "down" } else { "panes" });
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past 1970")
+        .as_secs()
 }
 
 /// The words above a pane's controls, where the platform owes the reader something first.

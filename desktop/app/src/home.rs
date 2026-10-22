@@ -1,11 +1,13 @@
 //! Home: is Fermix working, what does it answer with, and what needs attention.
 
 use crate::state::{Background, Connection, Snapshot, State};
+use crate::updates_pane::row_action;
 use adw::prelude::*;
 use fermix_client::overview::{channels_line, duration_words, tools_count, Overview};
 use fermix_client::providers::{connection, Connection as Link};
 use fermix_client::service::{background_switch, service_line, start_command};
 use fermix_client::settings::pane;
+use fermix_client::update::view::{home_row, HomeRow};
 use fermix_client::view::{
     answers_with, attention_rows, status_word, AttentionAction, AttentionRow, DaemonProblem,
 };
@@ -28,7 +30,8 @@ enum Attention {
 
 #[derive(Default)]
 struct Shown {
-    attention: Option<Attention>,
+    /// What the daemon needs, and the app's own update row under it.
+    attention: Option<(Attention, Option<HomeRow>)>,
     widgets: Vec<gtk::Widget>,
 }
 
@@ -127,17 +130,18 @@ impl HomePage {
             .as_ref()
             .map_or_else(|| "Reading…".to_owned(), service_line);
         self.service.set_text(&line);
-        match &state.connection {
+        let attention = match &state.connection {
             Connection::Connecting => self.render_waiting("Connecting…"),
             Connection::Up(snapshot) => self.render_up(snapshot),
             Connection::Down(_) if state.waking => self.render_waiting("Starting…"),
             Connection::Down(problem) => {
                 self.render_down(problem, state.wake_failed, state.background.binding)
             }
-        }
+        };
+        self.show_attention(attention, home_row(&state.updates));
     }
 
-    fn render_up(&self, snapshot: &Snapshot) {
+    fn render_up(&self, snapshot: &Snapshot) -> Attention {
         let state = &snapshot.state;
         self.status.set_text(status_word(state));
         self.answers.set_text(&answers_with(state));
@@ -152,7 +156,7 @@ impl HomePage {
         self.signed_in.set_text(&signed_in.to_string());
         self.protocol.set_text(&format!("v{}", snapshot.protocol));
         self.render_overview(snapshot.overview.as_ref());
-        self.show_attention(Attention::Rows(attention_rows(state)));
+        Attention::Rows(attention_rows(state))
     }
 
     /// The daemon's own account of itself. Without one, the rows say so rather than guess.
@@ -172,20 +176,20 @@ impl HomePage {
         self.tools.set_text(&tools_count(overview).to_string());
     }
 
-    fn render_down(&self, problem: &DaemonProblem, wake_failed: bool, bound: bool) {
+    fn render_down(&self, problem: &DaemonProblem, wake_failed: bool, bound: bool) -> Attention {
         self.status.set_text(problem.status_word());
         self.clear_values();
-        self.show_attention(Attention::Down {
+        Attention::Down {
             problem: problem.clone(),
             wake_failed,
             bound,
-        });
+        }
     }
 
-    fn render_waiting(&self, word: &str) {
+    fn render_waiting(&self, word: &str) -> Attention {
         self.status.set_text(word);
         self.clear_values();
-        self.show_attention(Attention::Waiting);
+        Attention::Waiting
     }
 
     /// Values Fermix did not just give are left blank, never guessed.
@@ -206,7 +210,8 @@ impl HomePage {
         }
     }
 
-    fn show_attention(&self, next: Attention) {
+    fn show_attention(&self, attention: Attention, update: Option<HomeRow>) {
+        let next = (attention, update);
         let mut shown = self.shown.borrow_mut();
         if shown.attention.as_ref() == Some(&next) {
             return;
@@ -214,7 +219,8 @@ impl HomePage {
         for old in shown.widgets.drain(..) {
             self.attention.remove(&old);
         }
-        let widgets = attention_widgets(&next);
+        let mut widgets = attention_widgets(&next.0);
+        widgets.extend(next.1.as_ref().map(update_row));
         for widget in &widgets {
             self.attention.add(widget);
         }
@@ -311,6 +317,17 @@ fn attention_widgets(attention: &Attention) -> Vec<gtk::Widget> {
         } => vec![down_row(problem, *wake_failed, *bound).upcast()],
         Attention::Waiting => vec![waiting_row().upcast()],
     }
+}
+
+/// An update found, or a restart that finishes one: the app's own row,
+/// whatever the daemon's state.
+fn update_row(row: &HomeRow) -> gtk::Widget {
+    let widget = adw::ActionRow::new();
+    widget.set_use_markup(false);
+    widget.set_title(&row.title);
+    widget.set_subtitle(&row.body);
+    widget.add_suffix(&action_button(row.button, row_action(row.action), None));
+    widget.upcast()
 }
 
 fn waiting_row() -> adw::ActionRow {

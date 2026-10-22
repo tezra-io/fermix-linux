@@ -66,6 +66,18 @@ pub async fn enable_service(linger: Option<bool>) -> Result<(), String> {
     })
 }
 
+/// After an update: the user manager reads the unit files again, as
+/// `enable_service` has it do, so a restart runs the unit the new package
+/// installed.
+pub async fn reload_units() -> Result<(), String> {
+    let run = async {
+        let bus = gio::bus_get_future(gio::BusType::Session).await?;
+        manager(&bus, "Reload", None).await
+    };
+    run.await
+        .map_err(|e| systemd_sentence(&e, "systemctl --user daemon-reload"))
+}
+
 /// "Run in the background" off: unregister and stop. Linger and the binding stay.
 pub async fn disable_service() -> Result<(), String> {
     let run = async {

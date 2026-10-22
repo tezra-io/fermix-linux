@@ -26,6 +26,7 @@ mod marks;
 mod mascot;
 mod media_grants;
 mod microphones;
+mod packagekit;
 mod phone;
 mod phone_flow;
 mod providers;
@@ -40,6 +41,9 @@ mod status;
 mod systemd;
 mod tray;
 mod tray_flow;
+mod update_dialog;
+mod update_flow;
+mod updates_pane;
 mod voice;
 mod voice_call;
 mod voice_flow;
@@ -61,7 +65,12 @@ fn main() -> glib::ExitCode {
     let packaged = runtime_env::start();
     gio::resources_register_include!("fermix.gresource")
         .expect("the app's own resource bundle is built in");
-    let application = adw::Application::builder().application_id(APP_ID).build();
+    // An update replaces the running window with the installed one, which
+    // starts with `--gapplication-replace` (update::state::RELAUNCH).
+    let application = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::ALLOW_REPLACEMENT)
+        .build();
     // `--background` is how the desktop starts Fermix at login: in the tray,
     // without the window. Only the first activation reads it.
     application.add_main_option(

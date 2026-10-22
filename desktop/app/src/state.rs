@@ -4,6 +4,8 @@
 use fermix_client::model::{ProviderRow, SetupState};
 use fermix_client::overview::Overview;
 use fermix_client::service::ServiceRead;
+use fermix_client::update::state::Updates;
+use fermix_client::update::store::Remembered;
 use fermix_client::view::{Activity, DaemonProblem, Recent};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -14,6 +16,8 @@ pub const RECENT_FOR: Duration = Duration::from_secs(120);
 pub struct Snapshot {
     pub state: SetupState,
     pub version: String,
+    /// The engine's immutable build, which says whether it is the installed one.
+    pub build_id: Option<String>,
     pub pid: Option<String>,
     pub architecture: Option<String>,
     /// How the engine was installed (`linux_package` for this app to manage it).
@@ -63,6 +67,8 @@ pub struct State {
     /// Set when the last start or restart did not bring Fermix back.
     pub wake_failed: bool,
     pub background: Background,
+    /// The app's own updates, which need no daemon.
+    pub updates: Updates,
 }
 
 impl State {
@@ -75,6 +81,7 @@ impl State {
             waking: false,
             wake_failed: false,
             background: Background::default(),
+            updates: Updates::new(Remembered::default()),
         }
     }
 

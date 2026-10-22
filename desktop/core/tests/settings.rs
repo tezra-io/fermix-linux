@@ -85,23 +85,31 @@ fn sections_keep_the_daemons_order_and_linux_drops_computer_history() {
 }
 
 #[test]
-fn the_fourteen_panes_sit_in_four_groups() {
-    assert_eq!(PANES.len(), 14);
+fn the_fifteen_panes_sit_in_four_groups() {
+    assert_eq!(PANES.len(), 15);
     assert_eq!(GROUPS.len(), 4);
     let grouped: usize = GROUPS.iter().map(|(_, panes)| panes.len()).sum();
-    assert_eq!(grouped, 14);
+    assert_eq!(grouped, 15);
     for (_, panes) in GROUPS {
         for slug in panes {
             assert!(pane(slug).is_some(), "{slug} is a pane");
         }
     }
     assert_eq!(pane("coding").unwrap().title, "Coding agents");
-    // Where secrets are kept leads the System group.
+    // Where secrets are kept leads the System group; updates, the app's own, close it.
     assert_eq!(
         GROUPS[3],
-        ("System", &["secrets", "sandbox", "permissions"][..])
+        (
+            "System",
+            &["secrets", "sandbox", "permissions", "updates"][..]
+        )
     );
     assert_eq!(pane("secrets").unwrap().title, "Secrets");
+    assert_eq!(pane("updates").unwrap().title, "Updates");
+    assert_eq!(
+        pane("updates").unwrap().icon,
+        "software-update-available-symbolic"
+    );
 }
 
 #[test]

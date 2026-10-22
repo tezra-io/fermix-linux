@@ -58,6 +58,10 @@ pub struct TrayFacts<'a> {
     pub pet_shown: bool,
     /// Home's "Run in the background" switch, as drawn.
     pub background: &'a BackgroundSwitch,
+    /// The update row's words, as `update::view::tray_label` has them.
+    pub update: String,
+    /// An installed update waits for Fermix to restart (M38 §9.2).
+    pub restart_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,8 @@ pub enum Command {
     StartService,
     TogglePet,
     ToggleBackground,
+    /// Check for Updates…, or the update a check found: the dialog, in the window.
+    Update,
     Quit,
 }
 
@@ -86,6 +92,7 @@ impl Command {
                 | Command::Doctor
                 | Command::Restart
                 | Command::ToggleBackground
+                | Command::Update
         )
     }
 }
@@ -93,7 +100,7 @@ impl Command {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub command: Command,
-    pub label: &'static str,
+    pub label: String,
     pub enabled: bool,
     /// `Some` for a row with a tick, and whether it is ticked.
     pub checked: Option<bool>,
@@ -115,13 +122,14 @@ pub struct TrayView {
 }
 
 pub fn tray_view(facts: &TrayFacts) -> TrayView {
-    let (glyph, status) = condition(&facts.daemon);
+    let (glyph, status) = condition(&facts.daemon, facts.restart_pending);
     let rows = vec![
         Row::Status(status.clone()),
         Row::Separator,
         plain(Command::OpenFermix, "Open Fermix", true),
         plain(Command::Settings, "Settings", true),
         plain(Command::Doctor, "Run Doctor", true),
+        plain(Command::Update, &facts.update, true),
         Row::Separator,
         restart_row(&facts.daemon),
         ticked(Command::TogglePet, "Show Pet", facts.pet_shown, true),
@@ -141,11 +149,16 @@ pub fn tray_view(facts: &TrayFacts) -> TrayView {
     }
 }
 
-fn condition(daemon: &Daemon) -> (Glyph, String) {
+/// The daemon's condition first; while it runs, an installed update waiting
+/// for the restart is what needs attention.
+fn condition(daemon: &Daemon, restart_pending: bool) -> (Glyph, String) {
     match daemon {
         Daemon::Reading => (Glyph::Starting, "Reading from Fermix…".into()),
         Daemon::Waking => (Glyph::Starting, "Starting…".into()),
         Daemon::Down(problem) => (Glyph::Attention, problem.status_word().into()),
+        Daemon::Up { .. } if restart_pending => {
+            (Glyph::Attention, "Restart to finish updating".into())
+        }
         Daemon::Up { state, .. } if state.readiness.status != "ready" || state.restart.required => {
             (Glyph::Attention, status_word(state).into())
         }
@@ -176,19 +189,19 @@ fn restart_row(daemon: &Daemon) -> Row {
     }
 }
 
-fn plain(command: Command, label: &'static str, enabled: bool) -> Row {
+fn plain(command: Command, label: &str, enabled: bool) -> Row {
     Row::Item(Item {
         command,
-        label,
+        label: label.to_owned(),
         enabled,
         checked: None,
     })
 }
 
-fn ticked(command: Command, label: &'static str, on: bool, enabled: bool) -> Row {
+fn ticked(command: Command, label: &str, on: bool, enabled: bool) -> Row {
     Row::Item(Item {
         command,
-        label,
+        label: label.to_owned(),
         enabled,
         checked: Some(on),
     })

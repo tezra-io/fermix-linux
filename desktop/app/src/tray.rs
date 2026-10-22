@@ -455,7 +455,7 @@ fn row_properties(row: &Row) -> Variant {
 }
 
 fn item_properties(props: &VariantDict, item: &Item) {
-    props.insert("label", literal(item.label));
+    props.insert("label", literal(&item.label));
     props.insert("enabled", item.enabled);
     if let Some(on) = item.checked {
         props.insert("toggle-type", "checkmark");
