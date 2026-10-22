@@ -168,6 +168,8 @@ SYS_CRATES = {
     "gstreamer-base-sys": "gstreamer-base-1.0", "gstreamer-sys": "gstreamer-1.0",
     "gtk4-sys": "gtk4", "libadwaita-sys": "libadwaita-1", "pango-sys": "pango",
     "linux-raw-sys": None, "windows-sys": None,
+    # rustls-native-certs reads the macOS keychain through these, and only on macOS.
+    "core-foundation-sys": None, "security-framework-sys": None,
 }
 # Private libraries, and host ones whose SONAME differs across the matrix or
 # that GLib is built without.
