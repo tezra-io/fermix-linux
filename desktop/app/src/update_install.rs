@@ -276,18 +276,16 @@ async fn restart_into_update(host: &impl Host) {
     );
 }
 
-/// systemd reads the new unit, the engine restarts through the usual
-/// restart when its build changed, and its hello must then name the
-/// installed build. An engine that is not this package's is left alone,
-/// and one that keeps running needs no reload to go on.
+/// When the engine's build changed, systemd reads the new unit and the
+/// engine restarts through the usual restart; its hello must then name the
+/// installed build. An engine that keeps running (a desktop-only release, or
+/// one that is not this package's) is left alone, with no reload: the CLI
+/// reloads before any later lifecycle change (M38 §9.2).
 async fn restart_engine(host: &impl Host) -> Result<(), String> {
-    let reloaded = host.reload_units().await;
     host.refresh().await;
     if engine_needs_restart(&host.engine_alignment()) {
-        reloaded?;
+        host.reload_units().await?;
         host.restart_now().await?;
-    } else if let Err(sentence) = reloaded {
-        glib::g_warning!("fermix", "systemd did not reload its units: {sentence}");
     }
     match host.engine_alignment() {
         Alignment::Aligned | Alignment::NotRunning | Alignment::OwnershipConflict(_) => Ok(()),
@@ -711,5 +709,15 @@ mod tests {
             }
         );
         assert!(ran.kept, "the package stays for the command");
+    }
+
+    #[test]
+    fn a_desktop_only_update_reloads_nothing_and_restarts_only_the_window() {
+        let plant = Plant {
+            version: "0.5.0\n",
+            engine: Alignment::Aligned,
+        };
+        let ran = run(plant, install_update);
+        assert_eq!(ran.heard, ["PackageKit", "package database", EXEC]);
     }
 }
