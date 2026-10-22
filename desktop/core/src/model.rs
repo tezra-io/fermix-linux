@@ -201,6 +201,10 @@ pub struct Capabilities {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EngineIdentity {
     pub product_version: String,
+    /// The immutable build, which says whether the running engine is the
+    /// installed one (M38 §9.2); older daemons may not say.
+    #[serde(default)]
+    pub build_id: Option<String>,
     pub pid: Option<String>,
     /// `x86_64` or `aarch64`; older daemons may not say.
     #[serde(default)]

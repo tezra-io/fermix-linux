@@ -36,6 +36,7 @@ pub mod secrets;
 pub mod service;
 pub mod settings;
 pub mod tray;
+pub mod update;
 pub mod view;
 pub mod voice;
 pub mod waveform;

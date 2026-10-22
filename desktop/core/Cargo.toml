@@ -10,6 +10,8 @@ publish.workspace = true
 base64 = "0.22"
 # The speech gate's voice detector: pure Rust, no dependencies, a 40 KiB network.
 earshot = "1.2.2"
+# The update feed's signature, ed25519 (RFC 8032), checked against the keys in update/keys.rs.
+ed25519-dalek = "2"
 # Decodes the chat's pictures in pure Rust, since they come from phones and the web: PNG, JPEG,
 # GIF and WebP only, with no encoder the app calls.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
@@ -18,8 +20,16 @@ libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 # The phone's pairing code: the modules only, with no image or SVG writer.
 qrcode = { version = "0.14", default-features = false }
+# HTTPS for the update feed and its packages: rustls with the ring provider and the host's own
+# CA store, so the window links no libssl (RUNTIME.lock.json host_libraries). Without ureq's
+# default features there is no gzip and no compiled-in root store.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# A downloaded package's sha256, as the update feed names it.
+sha2 = "0.10"
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider"] }
 
 [dev-dependencies]
 # Reads a pairing code back the way a phone's camera would, with no image crate.
