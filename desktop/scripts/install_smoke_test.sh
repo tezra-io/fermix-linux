@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Offline tests for install_smoke.sh: the images and packages it refuses before it creates a
-# container, and the plan it prints for each image it runs on. Every case here stops before docker
-# is reached, and the test checks that no container of the smoke's name was left. The smoke itself,
-# an install on each image, is not run here: it needs the network and a built package.
+# container, for an install and for an upgrade, and the plan it prints for each image it runs on.
+# Every case here stops before docker is reached, and the test checks that no container of the
+# smoke's names was left. The smoke itself, an install or an upgrade on each image, is not run here:
+# it needs the network and built packages.
 #   desktop/scripts/install_smoke_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -42,7 +43,8 @@ mkdir -p "$work/packages"
 for name in "fermix-desktop_0.0.1_$native.deb" "fermix-desktop-0.0.1-1.$native_rpm.rpm" \
   "fermix_0.0.1_$native.deb" "fermix-desktop_0.0.1-1_$native.deb" "fermix-desktop_0.0.1_$other.deb" \
   "fermix-desktop-0.0.1-1.$other_rpm.rpm" "fermix-desktop_0.0.1_i386.deb" \
-  "fermix-desktop_0.0.1+dev.20261004000000.0123456789ab.dirty_$native.deb"; do
+  "fermix-desktop_0.0.1+dev.20261004000000.0123456789ab.dirty_$native.deb" \
+  "fermix-desktop_0.0.0_$native.deb" "fermix-desktop-0.0.0-1.$native_rpm.rpm"; do
   printf 'not a package\n' > "$work/packages/$name"
 done
 deb="$work/packages/fermix-desktop_0.0.1_$native.deb"
@@ -121,8 +123,42 @@ dev="$work/packages/fermix-desktop_0.0.1+dev.20261004000000.0123456789ab.dirty_$
   fail "a development deb has no plan for ubuntu:22.04"
 echo "  ok: planned like a release deb"
 
+echo "install_smoke_test: upgrades it refuses"
+old_deb="$work/packages/fermix-desktop_0.0.0_$native.deb"
+old_rpm="$work/packages/fermix-desktop-0.0.0-1.$native_rpm.rpm"
+expect_refusal "an upgrade on an image it does not upgrade on" \
+  "an upgrade runs on ubuntu:24.04 and fedora:44, not ubuntu:22.04" \
+  smoke --image ubuntu:22.04 "$deb" --upgrade-from "$old_deb"
+expect_refusal "an upgrade from an rpm on Ubuntu" "ubuntu:24.04 installs a deb, and $rpm is not one" \
+  smoke --image ubuntu:24.04 "$deb" --upgrade-from "$rpm"
+expect_refusal "an upgrade from a deb on Fedora" "fedora:44 installs an rpm, and $old_deb is not one" \
+  smoke --image fedora:44 "$rpm" --upgrade-from "$old_deb"
+expect_refusal "an upgrade from the other architecture" \
+  "fermix-desktop_0.0.1_$other.deb is for $other, and fermix-desktop_0.0.1_$native.deb is for $native" \
+  smoke --image ubuntu:24.04 "$deb" --upgrade-from "$work/packages/fermix-desktop_0.0.1_$other.deb"
+expect_refusal "an upgrade from the engine's own package" "is not a fermix-desktop package" \
+  smoke --image ubuntu:24.04 "$deb" --upgrade-from "$work/packages/fermix_0.0.1_$native.deb"
+expect_refusal "an upgrade from the package itself" \
+  "an upgrade goes from one version to another, and both packages are fermix-desktop_0.0.1_$native.deb" \
+  smoke --image ubuntu:24.04 "$deb" --upgrade-from "$deb"
+expect_refusal "an upgrade from a package that is not there" "no package at $work/packages/absent.deb" \
+  smoke --image ubuntu:24.04 "$deb" --upgrade-from "$work/packages/absent.deb"
+expect_refusal "an upgrade that names no package" "usage" smoke --image ubuntu:24.04 "$deb" --upgrade-from
+
+echo "install_smoke_test: the plan for each image it upgrades on"
+for case in "ubuntu:24.04 deb $deb $old_deb" "fedora:44 rpm $rpm $old_rpm"; do
+  read -r image family package previous <<< "$case"
+  plan="$(smoke --image "$image" "$package" --upgrade-from "$previous" --print-plan)" || fail "$image printed no plan"
+  [[ "${plan%%$'\n'*}" == "image $image@sha256:"* ]] || fail "$image is not pinned by a digest in its upgrade plan: $plan"
+  [ "${plan#*$'\n'}" = "$(printf 'family %s\narch %s\nupgrade from %s' "$family" "$native" "$(basename "$previous")")" ] ||
+    fail "$image's upgrade plan is not $family on $native from $(basename "$previous"): $plan"
+  echo "  ok: $image: $family on $native, from $(basename "$previous")"
+done
+
 [ -z "$(docker ps -aq --filter 'name=^fermix-desktop-pkg-package-smoke-')" ] ||
   fail "a refused smoke left a container"
+[ -z "$(docker ps -aq --filter 'name=^fermix-desktop-pkg-package-upgrade-')" ] ||
+  fail "a refused upgrade left a container"
 [ ! -e "$work/cache/out" ] || fail "a refused smoke left an output directory"
 
 echo "install_smoke_test: ok"

@@ -11,7 +11,8 @@
 #
 # check_wayland_client, which holds the window to the private libwayland-client; tools_from_epel,
 # which says where an rpm image's test tools come from; provided_engine, which reads the engine
-# version `fermix --version` has to answer with from what the installed package provides; and the
+# version `fermix --version` has to answer with from what the installed package provides;
+# status_names, which reads the engine `fermix status` names running during an upgrade; and the
 # flags the script accepts.
 #   desktop/packaging/smoke_in_container_test.sh
 set -euo pipefail
@@ -194,10 +195,71 @@ for provides in 'fermix-desktop = 0.1.0-1' 'fermix' "$(printf 'fermix = 0.14.0\n
     sourced provided_engine rpm
 done
 
+# A stand-in runuser that runs what follows its --, an id that names the account 1001, and a fermix
+# whose `status` prints $STATUS_FILE and exits with $STATUS_EXIT.
+cat > "$work/bin/runuser" << 'STUB'
+#!/usr/bin/env bash
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+STUB
+printf '#!/bin/sh\necho 1001\n' > "$work/bin/id"
+cat > "$work/bin/fermix" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = status ] || { echo "stand-in fermix was asked: $*" >&2; exit 2; }
+cat "$STATUS_FILE"
+exit "$STATUS_EXIT"
+STUB
+chmod 0755 "$work/bin/runuser" "$work/bin/id" "$work/bin/fermix"
+export STATUS_FILE="$work/status"
+
+# <function> <args...> from the script, as sourced() runs them, with the account's home and the
+# kept answer of `fermix status` under the work directory.
+sourced_as_account() {
+  (
+    # shellcheck source=desktop/packaging/smoke_in_container.sh
+    source "$here/smoke_in_container.sh"
+    trap - ERR
+    ACCOUNT_HOME="$work" STATUS_ANSWER="$work/answer"
+    PATH="$work/bin:$PATH" "$@"
+  )
+}
+
+# <answer> <exit> <engine>: the pid status_names prints when `fermix status` gives that answer, or
+# "refused" when it finds no engine <engine> running.
+status_pid() {
+  printf '%b\n' "$1" > "$STATUS_FILE"
+  STATUS_EXIT="$2" sourced_as_account status_names "$3" || echo refused
+}
+
+echo "smoke_in_container_test: the engine that fermix status names"
+running='fermix: running (pid 4193, version 0.14.0, up 14s, protocol v2)'
+[ "$(status_pid "$running" 0 0.14.0)" = 4193 ] || fail "status_names did not read pid 4193 of 0.14.0"
+skew="[l] Uninstalled older version (v0.14.0)\n$running\nwarning: daemon is running 0.14.0 but the installed binary is 0.15.0"
+[ "$(status_pid "$skew" 0 0.14.0)" = 4193 ] || fail "status_names did not read the engine beside a skew warning"
+grep -qF 'warning: daemon is running 0.14.0' "$work/answer" || fail "status_names did not keep the whole answer"
+echo "  ok: the pid of the engine it names, alone and beside the engine's own notes, the answer kept"
+[ "$(status_pid "$running" 0 0.15.0)" = refused ] || fail "status_names took 0.14.0 for 0.15.0"
+[ "$(status_pid "$running" 0 0.14)" = refused ] || fail "status_names took 0.14.0 for 0.14"
+[ "$(status_pid 'fermix: not running' 3 0.14.0)" = refused ] || fail "status_names took a stopped engine for a running one"
+grep -qxF 'fermix: not running' "$work/answer" || fail "status_names did not keep the answer of a stopped engine"
+[ "$(status_pid 'fermix: running (pid ?, version 0.14.0, up 1s, protocol v2)' 0 0.14.0)" = refused ] ||
+  fail "status_names took an engine with no pid for a running one"
+echo "  ok: another version, a stopped engine and an engine with no pid are not the engine it waits for"
+
 echo "smoke_in_container_test: the flags it accepts"
 run_script() {
   bash "$here/smoke_in_container.sh" --family rpm --package /smoke/p.rpm --sha256 0 "$@"
 }
+expect_refusal "an upgrade with no previous sha256" "an upgrade takes --upgrade-from and --previous-sha256" \
+  run_script --upgrade-from /smoke/q.rpm
+expect_refusal "a previous sha256 with no upgrade" "an upgrade takes --upgrade-from and --previous-sha256" \
+  run_script --previous-sha256 0
+expect_refusal "an upgrade that draws a window" "and draws no window" \
+  run_script --upgrade-from /smoke/q.rpm --previous-sha256 0 --displays x11
+expect_refusal "a boot for another family" "the family is deb or rpm, not 'arch'" \
+  bash "$here/smoke_in_container.sh" --boot arch
+expect_refusal "a boot with a package" "usage" bash "$here/smoke_in_container.sh" --boot deb --package /smoke/p.deb
 expect_refusal "a display it does not know" "the displays are x11 and wayland, not 'mir'" \
   run_script --displays mir
 expect_refusal "one it knows beside one it does not" "not 'mir'" run_script --displays "x11 mir"
