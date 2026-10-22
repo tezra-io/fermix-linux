@@ -427,6 +427,12 @@ def openssl(arguments, what, stdin=subprocess.DEVNULL):
         raise Refusal(f"openssl did not {what} in {OPENSSL_TIMEOUT_SECONDS} seconds") from error
 
 
+def put(path, data):
+    """Writes a scratch file for openssl to read."""
+    with open(path, "wb") as handle:
+        handle.write(data)
+
+
 def one_line(data):
     return " ".join(data.decode("utf-8", "replace").split()) or "it printed nothing"
 
@@ -437,8 +443,7 @@ def signature_verifies(public, payload, signature):
     with tempfile.TemporaryDirectory(prefix="update_feed.") as work:
         paths = {name: os.path.join(work, name) for name in ("key.pem", "payload", "signature")}
         for name, data in (("key.pem", pem), ("payload", payload), ("signature", signature)):
-            with open(paths[name], "wb") as handle:
-                handle.write(data)
+            put(paths[name], data)
         result = openssl(
             ["pkeyutl", "-verify", "-pubin", "-inkey", paths["key.pem"], "-rawin",
              "-in", paths["payload"], "-sigfile", paths["signature"]],
@@ -459,8 +464,7 @@ def sign_bytes(payload):
         raise Refusal("the private key comes as PEM on standard input, and none is there")
     with tempfile.TemporaryDirectory(prefix="update_feed.") as work:
         path = os.path.join(work, "payload")
-        with open(path, "wb") as handle:
-            handle.write(payload)
+        put(path, payload)
         result = openssl(
             ["pkeyutl", "-sign", "-rawin", "-inkey", "/dev/stdin", "-in", path],
             "sign the payload",
