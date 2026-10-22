@@ -121,9 +121,15 @@ The app learns of a release from its update feed, `https://fermix.ai/linux/appca
 format is set out in `packaging/update_feed.py`, which writes it, and which the app's reader
 follows. The feed is signed with ed25519. `packaging/update-keys.json` holds the public keys the app
 compiles in: the `current` key, which signs, and a `standby` key. The `release-linux` environment
-holds the current key's private half as `LINUX_FEED_SIGNING_KEY`, a PKCS#8 PEM. To rotate, put the
-standby's private key in that secret, make the standby current in `update-keys.json`, and name a new
-standby there; installed apps already trust the old standby. A release's packages are its own
+holds the current key's private half as `LINUX_FEED_SIGNING_KEY`, a PKCS#8 PEM. A planned rotation
+takes two releases. In the first, put the standby's private key in that secret, make the standby
+current in `update-keys.json`, and keep the old current key as the standby: installed apps already
+trust the new current key, and the feed job can still verify the live feed and the last release's
+`appcast.json`, which the old key signed. In the next release, name a fresh standby in its place. A
+key that leaked must leave `update-keys.json` in the very next release, because every app that
+carries it trusts a feed it signs. The feed job then cannot verify the old feed, so that release
+rebuilds the feed from the published releases' own `appcast-item.json` assets. That step is not
+scripted yet. A release's packages are its own
 release assets, unless the repository variable `LINUX_PACKAGE_BASE_URL` names another https base,
 to which the workflow adds `/vX.Y.Z`.
 
