@@ -1,14 +1,25 @@
 //! What the updater remembers between runs, in `$XDG_STATE_HOME/fermix-desktop`
 //! (the app keeps no other state of its own): the switch, the newest feed
 //! accepted, the last check and the skipped version, written atomically. And
-//! the downloads folder, emptied at each launch.
+//! the downloads folder, private to this account and emptied at each launch.
 
 use fermix_client::update::store::{
-    clear_downloads, download_dir, load, save, state_path, Checked, LastCheck, Remembered,
+    clear_downloads, download_dir, load, prepare_downloads, save, state_path, Checked, LastCheck,
+    Remembered,
 };
 use fermix_client::update::version::Version;
 use std::ffi::OsStr;
+use std::fs::Permissions;
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
+
+fn mode(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777
+}
 
 #[test]
 fn state_lives_under_xdg_state_home_or_local_state() {
@@ -136,9 +147,64 @@ fn launch_empties_the_downloads_folder() {
     let dir = tempfile::tempdir().unwrap();
     let updates = dir.path().join("updates");
     assert_eq!(clear_downloads(&updates).unwrap(), 0, "no folder yet");
-    std::fs::create_dir(&updates).unwrap();
+    prepare_downloads(&updates).unwrap();
     std::fs::write(updates.join("fermix-desktop_0.4.0_amd64.deb"), "x").unwrap();
     std::fs::write(updates.join("fermix-desktop_0.4.0_amd64.deb.partial"), "x").unwrap();
     assert_eq!(clear_downloads(&updates).unwrap(), 2);
     assert_eq!(std::fs::read_dir(&updates).unwrap().count(), 0);
+}
+
+#[test]
+fn the_downloads_folder_is_made_private_to_this_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let updates = dir.path().join("cache/fermix-desktop/updates");
+    prepare_downloads(&updates).unwrap();
+    assert_eq!(mode(&updates), 0o700);
+    prepare_downloads(&updates).unwrap();
+    assert_eq!(
+        mode(&updates),
+        0o700,
+        "one already there and private is used"
+    );
+}
+
+#[test]
+fn a_downloads_folder_open_to_others_a_link_or_a_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let open = dir.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, Permissions::from_mode(0o755)).unwrap();
+    let refused = prepare_downloads(&open).unwrap_err().to_string();
+    assert!(refused.contains("755"), "{refused}");
+    assert_eq!(
+        mode(&open),
+        0o755,
+        "a folder it did not make is left as it is"
+    );
+    let private = dir.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::set_permissions(&private, Permissions::from_mode(0o700)).unwrap();
+    let link = dir.path().join("link");
+    symlink(&private, &link).unwrap();
+    let refused = prepare_downloads(&link).unwrap_err().to_string();
+    assert!(refused.contains("link"), "{refused}");
+    let file = dir.path().join("file");
+    std::fs::write(&file, "x").unwrap();
+    assert!(prepare_downloads(&file).is_err());
+}
+
+#[test]
+fn launch_never_empties_a_folder_through_a_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("Documents");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(elsewhere.join("letter.odt"), "the person's own").unwrap();
+    let updates = dir.path().join("updates");
+    symlink(&elsewhere, &updates).unwrap();
+    assert!(clear_downloads(&updates).is_err());
+    assert_eq!(
+        std::fs::read(elsewhere.join("letter.odt")).unwrap(),
+        b"the person's own"
+    );
 }

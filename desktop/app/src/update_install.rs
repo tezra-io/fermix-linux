@@ -14,11 +14,11 @@ use fermix_client::update::state::{
     engine_needs_restart, install_command, may_restart, waiting, Failure, Manual, Restart, Stage,
     Step, Updates, RELAUNCH,
 };
+use fermix_client::update::store::prepare_downloads;
 use fermix_client::update::version::Version;
 use fermix_client::update::view::{download_failure, install_failure};
 use gtk::{gio, glib};
 use std::cell::{RefCell, RefMut};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -345,11 +345,7 @@ fn fetch_package(
     got: &AtomicU64,
     cancel: &AtomicBool,
 ) -> Result<(), FetchError> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|e| FetchError::Disk(format!("{}: {e}", dir.display())))?;
+    prepare_downloads(dir).map_err(|e| FetchError::Disk(format!("{}: {e}", dir.display())))?;
     let mut progress = |bytes: u64| got.store(bytes, Ordering::SeqCst);
     fetcher.download(&package.url, package, to, &mut progress, cancel)
 }

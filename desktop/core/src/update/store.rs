@@ -2,15 +2,16 @@
 //! automatically" switch, the newest feed it accepted (rule 2), its last
 //! check and how that ended, and the version the person skipped (rule 5). The
 //! app keeps no other per-user state, so this is its own file under
-//! `$XDG_STATE_HOME`, replaced in one step on every save. Downloads go to the
-//! cache, which every launch empties.
+//! `$XDG_STATE_HOME`, replaced in one step on every save. Downloads go to a
+//! folder in the cache that only this account can open, which every launch
+//! empties.
 
 use crate::update::version::Version;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "fermix-desktop/updates.json";
@@ -142,15 +143,36 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Makes the downloads folder, or checks the one there: a folder, never a
+/// link, that only this account can open (0700). One made here gets that
+/// mode whatever the umask; one already there must have it.
+pub fn prepare_downloads(dir: &Path) -> io::Result<()> {
+    let parent = dir
+        .parent()
+        .expect("the downloads folder has a parent directory");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    private_folder(dir)
+}
+
 /// Deletes every file in the downloads folder, which only this app writes:
 /// a package installed, refused or left by a run that ended mid-download.
+/// A folder that is not private, or a link, is refused, never emptied.
 /// Returns how many went.
 pub fn clear_downloads(dir: &Path) -> io::Result<usize> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+    match fs::symlink_metadata(dir) {
+        Ok(_) => private_folder(dir)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
-    };
+    }
+    let entries = fs::read_dir(dir)?;
     let mut removed = 0;
     for entry in entries.take(CLEAR_CAP) {
         let entry = entry?;
@@ -160,4 +182,23 @@ pub fn clear_downloads(dir: &Path) -> io::Result<usize> {
         }
     }
     Ok(removed)
+}
+
+/// A folder itself, not a link to one, open to this account alone. The
+/// error says what it is instead; the caller names the folder.
+fn private_folder(dir: &Path) -> io::Result<()> {
+    let found = fs::symlink_metadata(dir)?;
+    if found.file_type().is_symlink() {
+        return Err(io::Error::other("a link, not a folder"));
+    }
+    if !found.is_dir() {
+        return Err(io::Error::other("not a folder"));
+    }
+    let mode = found.permissions().mode() & 0o7777;
+    if mode != 0o700 {
+        return Err(io::Error::other(format!(
+            "open to others (mode {mode:o}, not 700)"
+        )));
+    }
+    Ok(())
 }
