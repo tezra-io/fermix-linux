@@ -280,6 +280,43 @@ PREVIOUS="$work/full.json" merge_onto_fixture > /dev/null
 echo "  ok: a full feed keeps the newest 200: 0.1.1 is dropped for 0.6.0"
 [ ! -e "$work/x.json" ] || fail "a refused merge left a file behind"
 
+echo "update_feed_test: merge over a floor, the feed the last published release carries"
+# <previous> <floor>
+merge_over_floor() {
+  feed merge --item "$work/item.json" --previous "$1" --floor "$2" --keys "$keys" \
+    --generated-at 2026-12-01T10:05:00Z --out "$work/floored.payload"
+}
+# <what> <reason> <previous>, over the fixture as the floor
+floor_refusal() {
+  expect_refusal "$1" "$2" feed merge --item "$work/item.json" --previous "$3" --floor "$fixtures/appcast.json" \
+    --keys "$keys" --generated-at 2026-12-01T10:05:00Z --out "$work/x.json"
+}
+merge_over_floor "$fixtures/appcast.json" "$fixtures/appcast.json" > /dev/null
+[ "$(jq -c '[.generated_at, [.releases[].version]]' "$work/floored.payload")" = \
+  '["2026-12-01T10:05:00Z",["0.6.0","0.5.0","0.4.0","0.3.0"]]' ] || fail "the merge over a floor is not the item over the fixture's"
+signed_variant "$work/floor-0.4.0.json" '.generated_at = "2026-11-06T18:05:00Z" | .releases |= .[1:]'
+merge_over_floor "$fixtures/appcast.json" "$work/floor-0.4.0.json" > /dev/null
+echo "  ok: a previous feed that is the floor, and one that has moved on past it"
+expect_refusal "no previous feed over a floor" \
+  "there is no previous feed, but the floor feed at $fixtures/appcast.json carries 0.5.0, 0.4.0 and 0.3.0" \
+  feed merge --item "$work/item.json" --floor "$fixtures/appcast.json" --keys "$keys" \
+  --generated-at 2026-12-01T10:05:00Z --out "$work/x.json"
+signed_variant "$work/stale.json" '.generated_at = "2026-11-20T18:04:59Z"'
+floor_refusal "a previous feed older than the floor" \
+  "the previous feed at $work/stale.json was generated 2026-11-20T18:04:59Z, before the floor feed at $fixtures/appcast.json (2026-11-20T18:05:00Z)" \
+  "$work/stale.json"
+signed_variant "$work/restarted.json" '.generated_at = "2026-11-25T18:05:00Z" | .releases |= .[:1]'
+floor_refusal "a newer previous feed cut down to one release" \
+  "the previous feed at $work/restarted.json lacks 0.4.0 and 0.3.0, which the floor feed at $fixtures/appcast.json carries" \
+  "$work/restarted.json"
+signed_variant "$work/gap.json" '.generated_at = "2026-11-25T18:05:00Z" | .releases |= map(select(.version != "0.4.0"))'
+floor_refusal "a newer previous feed without one release of the floor's" \
+  "the previous feed at $work/gap.json lacks 0.4.0, which the floor feed" "$work/gap.json"
+expect_refusal "a floor whose payload was changed" \
+  "the signature of the floor feed at $work/tampered.json does not verify against linux-feed-test" \
+  merge_over_floor "$fixtures/appcast.json" "$work/tampered.json"
+[ ! -e "$work/x.json" ] || fail "a refused merge over a floor left a file behind"
+
 echo "update_feed_test: sign"
 feed sign --payload "$work/merged.payload" --keys "$keys" --out "$work/signed.json" < "$pem" > /dev/null
 feed verify --feed "$work/signed.json" --keys "$keys" > /dev/null

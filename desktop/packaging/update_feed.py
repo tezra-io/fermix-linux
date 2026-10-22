@@ -3,8 +3,9 @@
 
     update_feed.py item --packages <dir> --version <X.Y.Z> --pin <PIN.json> --notes <notes.md>
                         --base-url <https url> --published-at <time> --out <appcast-item.json>
-    update_feed.py merge --item <appcast-item.json> [--previous <appcast.json>] --keys <keys.json>
-                         --generated-at <time> --out <payload.json>
+    update_feed.py merge --item <appcast-item.json> [--previous <appcast.json>]
+                         [--floor <appcast.json>] --keys <keys.json> --generated-at <time>
+                         --out <payload.json>
     update_feed.py sign --payload <payload.json> --keys <keys.json> --out <appcast.json> < <key.pem>
     update_feed.py verify --feed <appcast.json> --keys <keys.json> [--decoded <file>]
 
@@ -31,7 +32,10 @@ then "/", then the file's name.
 merge puts the item in front of the releases of the previous feed, which must verify against
 <keys.json>. It refuses a version that is not higher than the newest one there, and a generated_at
 that is not later than the previous feed's, since the app refuses an older feed. Without
---previous, the item is the first release of a new feed. It keeps the newest 200.
+--previous, the item is the first release of a new feed. It keeps the newest 200. --floor is the
+feed the last published release carries, which must verify too: the previous feed must carry
+every version the floor carries, and must not be older than it. So a feed that a release once
+published never starts again, and a served feed that went back to an older one is refused.
 
 sign signs the payload's bytes as they are, as the keys file's current key, with OpenSSL 3. The
 private key PEM comes on standard input, which openssl pkeyutl inherits and reads as /dev/stdin, so
@@ -132,6 +136,13 @@ def read_bytes(path, what, limit):
 def shown(value):
     """A value as the JSON a refusal quotes it in."""
     return json.dumps(value, ensure_ascii=False)
+
+
+def listed(words):
+    """The words as a sentence lists them: a; a and b; a, b and c."""
+    if len(words) == 1:
+        return words[0]
+    return f"{', '.join(words[:-1])} and {words[-1]}"
 
 
 def no_duplicates(pairs):
@@ -638,18 +649,42 @@ def run_item(arguments):
 # merge, sign and verify
 
 
+def read_feed(path, keys, what):
+    """The payload of the feed at <path>, which <keys> must sign."""
+    data = read_bytes(path, what, MAX_FEED_BYTES)
+    return open_envelope(data, keys, f"{what} at {path}")[2]
+
+
+def check_floor(previous, floor, what, floor_what):
+    """Refuses a previous feed that is missing, older than the floor, or without its releases."""
+    versions = [release["version"] for release in floor["releases"]]
+    if previous is None:
+        raise Refusal(f"there is no previous feed, but {floor_what} carries {listed(versions)}")
+    if previous["generated_at"] < floor["generated_at"]:
+        raise Refusal(
+            f"{what} was generated {previous['generated_at']}, "
+            f"before {floor_what} ({floor['generated_at']})"
+        )
+    carried = {release["version"] for release in previous["releases"]}
+    missing = [version for version in versions if version not in carried]
+    if missing:
+        raise Refusal(f"{what} lacks {listed(missing)}, which {floor_what} carries")
+
+
 def run_merge(arguments):
     item = check_release(read_json(arguments.item, "the item"), f"the item at {arguments.item}")
     generated_at = check_time(arguments.generated_at, "--generated-at")
     keys = read_keys(arguments.keys)
-    releases = []
+    what = f"the previous feed at {arguments.previous}"
+    previous = None
     if arguments.previous is not None:
-        what = f"the previous feed at {arguments.previous}"
-        data = read_bytes(arguments.previous, "the previous feed", MAX_FEED_BYTES)
-        _, _, previous = open_envelope(data, keys, what)
-        releases = previous["releases"]
+        previous = read_feed(arguments.previous, keys, "the previous feed")
         if generated_at <= previous["generated_at"]:
             raise Refusal(f"{generated_at} is not later than {what}'s {previous['generated_at']}")
+    if arguments.floor is not None:
+        floor = read_feed(arguments.floor, keys, "the floor feed")
+        check_floor(previous, floor, what, f"the floor feed at {arguments.floor}")
+    releases = previous["releases"] if previous is not None else []
     if releases and version_key(item["version"]) <= version_key(releases[0]["version"]):
         raise Refusal(
             f"{item['version']} is not higher than {releases[0]['version']}, "
@@ -712,6 +747,7 @@ def parse_arguments(argv):
             sub.add_argument(f"--{name}", required=True)
         sub.set_defaults(run=runs[command])
     commands.choices["merge"].add_argument("--previous")
+    commands.choices["merge"].add_argument("--floor")
     commands.choices["verify"].add_argument("--decoded")
     return parser.parse_args(argv)
 
