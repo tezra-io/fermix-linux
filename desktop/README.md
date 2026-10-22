@@ -112,7 +112,19 @@ for test in scripts/*_test.sh packaging/*_test.sh; do bash "$test"; done
 `.github/workflows/release.yml` builds what a release ships on every push to `main` and every
 pull request that can change a package. For amd64 and arm64 each, it builds the runtime from
 the lock file, smokes it, and builds both packages. Then it lints them, installs them on every
-supported system, and runs the packaging tests. A release adds a tag to that.
+supported system, and runs the packaging tests. It also upgrades the latest published release to
+them on ubuntu:24.04 and fedora:44, and writes an update feed from them signed with the test key of
+`core/tests/fixtures/update-feed`. A release adds a tag to that.
+
+The app learns of a release from its update feed, `https://fermix.ai/linux/appcast.json`. The
+format is set out in `packaging/update_feed.py`, which writes it, and which the app's reader
+follows. The feed is signed with ed25519. `packaging/update-keys.json` holds the public keys the app
+compiles in: the `current` key, which signs, and a `standby` key. The `release-linux` environment
+holds the current key's private half as `LINUX_FEED_SIGNING_KEY`, a PKCS#8 PEM. To rotate, put the
+standby's private key in that secret, make the standby current in `update-keys.json`, and name a new
+standby there; installed apps already trust the old standby. A release's packages are its own
+release assets, unless the repository variable `LINUX_PACKAGE_BASE_URL` names another https base,
+to which the workflow adds `/vX.Y.Z`.
 
 1. The release version is the app's own, X.Y.Z, the `version` in `app/Cargo.toml`, as the macOS
    app's is its marketing version. It does not follow the engine's. A release bumps it there, on
@@ -123,18 +135,37 @@ supported system, and runs the packaging tests. A release adds a tag to that.
    `engine/PIN.json`, and `engine_pin.py --check` holds the pin to the published release. It
    changes what the package carries, so it needs a new app version. The packages provide `fermix`
    at the pinned engine's version, and the release notes name it.
-3. Merge `dev` into `main` through a pull request, with `release.yml` green on it.
-4. Tag the merge on `main` as `vX.Y.Z`, the form the macOS app's tags take, and push the tag. The
+3. Write `packaging/notes/X.Y.Z.md`, the lines the app's update dialog shows: what the release
+   brings, one `- ` sentence a line, 1 to 8 of them, each at most 300 characters, with `` `code` ``
+   the only markup. Optional front matter, between two `---` lines, is where
+   `critical: true` goes (the app then offers no Skip), and `minimum_installed_version: X.Y.Z`
+   (the app then offers an older install a stepping stone first). The workflow refuses a version
+   without notes before it builds anything, and `packaging/update_feed_test.sh` holds every notes
+   file to its form.
+4. Merge `dev` into `main` through a pull request, with `release.yml` green on it.
+5. Tag the merge on `main` as `vX.Y.Z`, the form the macOS app's tags take, and push the tag. The
    repository's tag ruleset limits who can. The workflow refuses a tag that is not the app's
    version, an engine pin `engine_pin.py --check` refuses, and a tag whose release is already
    published.
-5. The tag's run signs every asset with cosign under the workflow's identity
-   (`.github/workflows/release.yml@refs/tags/vX.Y.Z`), writes a `.sha256` beside each, and stages
-   them on a draft release with notes from `packaging/release_notes.md`. It then downloads each
-   asset back and checks it. The assets are both packages for both architectures and
-   `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`.
-6. Read the draft, then publish it. A published release is never refilled: a fix is the next
+6. The tag's run signs every asset with cosign under the workflow's identity
+   (`.github/workflows/release.yml@refs/tags/vX.Y.Z`) and writes a `.sha256` beside each. Its feed
+   job then writes the release's item and merges it into the feed fermix.ai serves; a 404 there
+   starts a new feed, and a served feed that does not verify stops the release. The job signs the
+   result in the `release-linux` environment and verifies it. The run stages it all on a draft
+   release with notes from `packaging/release_notes.md`, then downloads each asset back and checks
+   it. The assets are both packages for both architectures,
+   `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`, `appcast.json` and `appcast-item.json`.
+7. Read the draft, then publish it. A published release is never refilled: a fix is the next
    version.
+8. Then, and not before, put the release's `appcast.json` where `https://fermix.ai/linux/appcast.json`
+   serves it. A draft's asset urls are not public, so a feed that named them earlier would offer
+   packages no one can download. Check what is served, downloaded to a file:
+
+   ```
+   packaging/update_feed.py verify --feed <file> --keys packaging/update-keys.json
+   ```
+
+   Until it is served, no installed app learns of the release.
 
 ## Facts the code relies on (measured against fermix 0.11.0)
 
