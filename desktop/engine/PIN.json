@@ -1,30 +1,30 @@
 {
   "schema_version": 3,
   "repository": "tezra-io/fermix",
-  "tag": "v0.15.0",
-  "engine_version": "0.15.0",
-  "source_commit": "b268d8e1d15688ec6015ae6ebd433da3db9392c5",
+  "tag": "v0.16.0",
+  "engine_version": "0.16.0",
+  "source_commit": "95ee575b4de961bcc43f138038e06b8c379f4ba8",
   "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
-  "certificate_identity": "https://github.com/tezra-io/fermix/.github/workflows/release.yml@refs/tags/v0.15.0",
+  "certificate_identity": "https://github.com/tezra-io/fermix/.github/workflows/release.yml@refs/tags/v0.16.0",
   "packages": {
     "amd64": {
       "deb": {
-        "asset": "fermix_0.15.0_amd64.deb",
-        "sha256": "76fcbabd90008358b686c952f07ebb54b14b0255d0b485422156c7099a153978"
+        "asset": "fermix_0.16.0_amd64.deb",
+        "sha256": "4e47ce66628df10c6adf3a7609559f8259bee7389c1c700c79ff0657af822a3b"
       },
       "rpm": {
-        "asset": "fermix-0.15.0-1.x86_64.rpm",
-        "sha256": "c98d98622df129b4e93057d05709405afe4aad2b42899ff0899910a33094ac4a"
+        "asset": "fermix-0.16.0-1.x86_64.rpm",
+        "sha256": "f85666a238de690f405aa71f3caeddb4987b796892bc5fe9e759bac2b4d5ad24"
       }
     },
     "arm64": {
       "deb": {
-        "asset": "fermix_0.15.0_arm64.deb",
-        "sha256": "a8c25b849265455a75e94e6b35517aae24c7c0b6194e90c18f5d43f9edc384cd"
+        "asset": "fermix_0.16.0_arm64.deb",
+        "sha256": "419308e2d2b7240a407aca7d59c621423e5355d1e88af721259a14e6c4ef735c"
       },
       "rpm": {
-        "asset": "fermix-0.15.0-1.aarch64.rpm",
-        "sha256": "dcf309e302385860a0333ceeeb725a37d2070a968147d3a0de260b55c434409a"
+        "asset": "fermix-0.16.0-1.aarch64.rpm",
+        "sha256": "f87c18f489cf50a579d9c8ba04c314fb7069badb59ab9fc6ef21b2503a7c27f8"
       }
     }
   }
