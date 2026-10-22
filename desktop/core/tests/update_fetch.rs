@@ -4,7 +4,9 @@
 //! bounded, and TLS trusts only the roots it is given. Nothing leaves the host.
 
 use fermix_client::update::feed::{Package, FEED_CAP};
-use fermix_client::update::fetch::{native_roots, FetchConfig, FetchError, Fetcher, Timeouts};
+use fermix_client::update::fetch::{
+    check_file, native_roots, FetchConfig, FetchError, Fetcher, Timeouts,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -259,6 +261,39 @@ fn a_link_planted_where_the_partial_file_goes_is_refused_and_its_target_untouche
         "nothing was written through the link"
     );
     assert!(leftovers(&updates).is_empty(), "the link is removed");
+}
+
+#[test]
+fn a_package_checked_again_must_still_be_the_one_the_feed_names() {
+    let body = b"the package bytes";
+    let named = package(body, body.len() as u64);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("p.deb");
+    std::fs::write(&file, body).unwrap();
+    assert_eq!(check_file(&file, &named), Ok(()));
+    std::fs::write(&file, b"the package byteS").unwrap();
+    assert_eq!(check_file(&file, &named), Err(FetchError::Digest));
+    std::fs::write(&file, b"the package").unwrap();
+    assert_eq!(
+        check_file(&file, &named),
+        Err(FetchError::Short {
+            got: 11,
+            size: body.len() as u64
+        })
+    );
+    std::fs::write(&file, b"the package bytes, and more").unwrap();
+    assert!(matches!(
+        check_file(&file, &named),
+        Err(FetchError::TooLong { .. })
+    ));
+    let copy = dir.path().join("copy.deb");
+    std::fs::write(&copy, body).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&copy, &file).unwrap();
+    assert!(
+        matches!(check_file(&file, &named), Err(FetchError::Disk(_))),
+        "a link is refused, even to the right bytes"
+    );
 }
 
 #[test]

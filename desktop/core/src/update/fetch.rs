@@ -5,8 +5,8 @@
 
 use crate::update::feed::{Package, FEED_CAP};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,12 +225,35 @@ impl Fetcher {
     }
 }
 
+/// Reads `file` again and holds it to `package`'s size and sha256 (rule 7), so
+/// what the system installs is what was checked, a package downloaded on an
+/// earlier try included. A link in its place is refused.
+pub fn check_file(file: &Path, package: &Package) -> Result<(), FetchError> {
+    let mut opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(file)
+        .map_err(|e| FetchError::Disk(format!("{}: {e}", file.display())))?;
+    let never = AtomicBool::new(false);
+    let digest = copy_counted(
+        &mut opened,
+        &mut io::sink(),
+        package.size,
+        &mut |_| {},
+        &never,
+    )?;
+    if digest != package.sha256 {
+        return Err(FetchError::Digest);
+    }
+    Ok(())
+}
+
 /// Copies at most `size` bytes, hashing them, and refuses a body that is
 /// longer or shorter. Every read returns a byte or ends the body, so the
 /// loop's cap is never what stops it.
 fn copy_counted(
     body: &mut impl Read,
-    file: &mut File,
+    file: &mut impl Write,
     size: u64,
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,

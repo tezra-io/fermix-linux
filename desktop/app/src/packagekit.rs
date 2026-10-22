@@ -1,13 +1,14 @@
 //! Installs a downloaded, checked package through PackageKit on the system
-//! bus (proposal, revision 5): a transaction, InstallFiles with only-trusted,
-//! and once more without it when PackageKit says the package carries no GPG
-//! signature, as any local .deb and the unsigned .rpm do. The system's polkit
-//! prompt asks for the password; this app ships no rule and no helper. What
-//! each ending means is core's (`update::packagekit`). The tests run against a
-//! fake PackageKit on a bus of their own, never the host's.
+//! bus (proposal, revision 5): one transaction for each InstallFiles, with the
+//! flags the install asks for. The install (`update_install`) asks with
+//! only-trusted, and once more without it when PackageKit says the package
+//! carries no GPG signature, as any local .deb and the unsigned .rpm do. The
+//! system's polkit prompt asks for the password; this app ships no rule and no
+//! helper. What each ending means is core's (`update::packagekit`). The tests
+//! run against a fake PackageKit on a bus of their own, never the host's.
 
 use fermix_client::update::packagekit::{
-    self as pk, ending, refusal, Ending, ONLY_TRUSTED, PERCENT_UNKNOWN, UNTRUSTED,
+    self as pk, ending, refusal, Ending, ONLY_TRUSTED, PERCENT_UNKNOWN,
 };
 use futures_channel::oneshot;
 use gtk::gio::{self, prelude::*};
@@ -35,10 +36,10 @@ pub struct Progress {
 /// `Finished`'s exit, and the last `ErrorCode` before it.
 type Finish = (u32, Option<(u32, String)>);
 
-/// Installs `file` through the host's PackageKit.
-pub async fn install(file: &Path, progress: impl Fn(Progress) + Clone + 'static) -> Ending {
+/// One InstallFiles of `file`, with `flags`, through the host's PackageKit.
+pub async fn install(file: &Path, flags: u64, progress: impl Fn(Progress) + 'static) -> Ending {
     match gio::bus_get_future(gio::BusType::System).await {
-        Ok(bus) => install_on(&bus, file, progress).await,
+        Ok(bus) => install_on(&bus, file, flags, progress).await,
         Err(e) => {
             glib::g_warning!("fermix", "no system bus to reach PackageKit: {e}");
             refusal(None, e.message())
@@ -46,25 +47,8 @@ pub async fn install(file: &Path, progress: impl Fn(Progress) + Clone + 'static)
     }
 }
 
-/// Installs `file` through the PackageKit on `bus`: only-trusted, then at
-/// most once more untrusted.
+/// One InstallFiles of `file`, with `flags`, through the PackageKit on `bus`.
 pub async fn install_on(
-    bus: &gio::DBusConnection,
-    file: &Path,
-    progress: impl Fn(Progress) + Clone + 'static,
-) -> Ending {
-    let trusted = transaction(bus, file, ONLY_TRUSTED, progress.clone()).await;
-    if trusted != Ending::RetryUntrusted {
-        return trusted;
-    }
-    glib::g_info!(
-        "fermix",
-        "PackageKit wants the unsigned package installed untrusted"
-    );
-    transaction(bus, file, UNTRUSTED, progress).await
-}
-
-async fn transaction(
     bus: &gio::DBusConnection,
     file: &Path,
     flags: u64,
@@ -223,22 +207,23 @@ mod tests {
 
     use super::*;
     use crate::packagekit_fake::{fake, Answer, PrivateBus, Seen, TEST_CAP};
-    use fermix_client::update::packagekit::{error, status, Fallback};
+    use fermix_client::update::packagekit::{error, status, Fallback, UNTRUSTED};
 
     const FILE: &str = "/home/ada/.cache/fermix-desktop/updates/fermix-desktop_0.4.0_amd64.deb";
 
-    /// Runs `answers` against a fresh bus: the ending, what the fake saw, and every progress.
-    fn install_against(answers: Option<Vec<Answer>>) -> (Ending, Seen, Vec<Progress>) {
+    /// One install with `flags` against a fresh bus whose PackageKit, if any,
+    /// gives `answer`: the ending, what the fake saw, and every progress.
+    fn install_against(answer: Option<Answer>, flags: u64) -> (Ending, Seen, Vec<Progress>) {
         let context = glib::MainContext::new();
         context
             .with_thread_default(|| {
                 context.block_on(async {
                     let bus = PrivateBus::start();
                     let (client, service) = (bus.connect().await, bus.connect().await);
-                    let seen = answers.map(|a| fake(&service, a));
+                    let seen = answer.map(|a| fake(&service, vec![a]));
                     let heard = Rc::new(RefCell::new(Vec::new()));
                     let record = heard.clone();
-                    let install = install_on(&client, Path::new(FILE), move |p| {
+                    let install = install_on(&client, Path::new(FILE), flags, move |p| {
                         record.borrow_mut().push(p)
                     });
                     let ended = glib::future_with_timeout(TEST_CAP, install)
@@ -253,18 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unsigned_package_is_installed_on_the_untrusted_pass() {
+    fn an_unsigned_package_ends_the_trusted_pass_asking_for_an_untrusted_one() {
         let unsigned = Answer::Fail(error::MISSING_GPG_SIGNATURE, "package is not signed");
-        let (ended, seen, heard) = install_against(Some(vec![unsigned, Answer::Succeed]));
-        assert_eq!(ended, Ending::Installed);
-        assert_eq!(
-            seen.installs,
-            [
-                (ONLY_TRUSTED, vec![FILE.to_owned()]),
-                (UNTRUSTED, vec![FILE.to_owned()])
-            ],
-            "only-trusted first, then untrusted, nothing more"
-        );
+        let (ended, seen, heard) = install_against(Some(unsigned), ONLY_TRUSTED);
+        assert_eq!(ended, Ending::RetryUntrusted);
+        assert_eq!(seen.installs, [(ONLY_TRUSTED, vec![FILE.to_owned()])]);
         assert!(seen
             .hints
             .iter()
@@ -276,8 +254,15 @@ mod tests {
     }
 
     #[test]
+    fn an_untrusted_pass_installs_with_the_flags_it_is_given() {
+        let (ended, seen, _) = install_against(Some(Answer::Succeed), UNTRUSTED);
+        assert_eq!(ended, Ending::Installed);
+        assert_eq!(seen.installs, [(UNTRUSTED, vec![FILE.to_owned()])]);
+    }
+
+    #[test]
     fn a_trusted_install_needs_one_pass() {
-        let (ended, seen, _) = install_against(Some(vec![Answer::Succeed]));
+        let (ended, seen, _) = install_against(Some(Answer::Succeed), ONLY_TRUSTED);
         assert_eq!(ended, Ending::Installed);
         assert_eq!(seen.installs.len(), 1);
     }
@@ -285,18 +270,18 @@ mod tests {
     #[test]
     fn no_authorization_or_a_held_lock_falls_back_on_the_first_pass() {
         let denied = Answer::Fail(error::NOT_AUTHORIZED, "Failed to obtain authentication.");
-        let (ended, seen, _) = install_against(Some(vec![denied]));
+        let (ended, seen, _) = install_against(Some(denied), ONLY_TRUSTED);
         assert_eq!(ended, Ending::Fallback(Fallback::NotAuthorized));
         assert_eq!(seen.installs.len(), 1);
         let locked = Answer::Fail(error::LOCK_REQUIRED, "unattended-upgrades is running");
-        let (ended, _, _) = install_against(Some(vec![locked]));
+        let (ended, _, _) = install_against(Some(locked), ONLY_TRUSTED);
         assert_eq!(ended, Ending::Fallback(Fallback::Locked));
     }
 
     #[test]
     fn a_failure_carries_packagekit_s_words() {
         let conflict = Answer::Fail(35, "file /usr/bin/fermix conflicts with fermix 0.15.0");
-        let (ended, _, _) = install_against(Some(vec![conflict]));
+        let (ended, _, _) = install_against(Some(conflict), ONLY_TRUSTED);
         assert_eq!(
             ended,
             Ending::Failed("file /usr/bin/fermix conflicts with fermix 0.15.0".into())
@@ -305,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_bus_without_packagekit_falls_back_to_the_command() {
-        let (ended, _, _) = install_against(None);
+        let (ended, _, _) = install_against(None, ONLY_TRUSTED);
         assert_eq!(ended, Ending::Fallback(Fallback::Unavailable));
     }
 }

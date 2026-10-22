@@ -1,15 +1,17 @@
 //! The install the dialog runs, from Install Update to the window coming
-//! back: the package, held to the feed's size and sha256, then PackageKit,
-//! the package database's word on what is installed, and the restart. One
-//! committed step from the download on. It runs on a `Host`, which holds the
-//! window's update state and reaches everything beyond it, so a test can
-//! stand in for the package database, systemd, the engine and exec.
+//! back: the package, held to the feed's size and sha256, then PackageKit
+//! (only-trusted, and once more untrusted when PackageKit asks for it, the
+//! package checked again before each), the package database's word on what
+//! is installed, and the restart. One committed step from the download on. It
+//! runs on a `Host`, which holds the window's update state and reaches
+//! everything beyond it, so a test can stand in for the package database,
+//! systemd, the engine and exec.
 
 use crate::packagekit::Progress;
 use fermix_client::update::feed::{Format, Package};
-use fermix_client::update::fetch::{FetchError, Fetcher};
+use fermix_client::update::fetch::{check_file, FetchError, Fetcher};
 use fermix_client::update::identity::Alignment;
-use fermix_client::update::packagekit::Ending;
+use fermix_client::update::packagekit::{Ending, ONLY_TRUSTED, UNTRUSTED};
 use fermix_client::update::state::{
     engine_needs_restart, install_command, may_restart, waiting, Failure, Manual, Restart, Stage,
     Step, Updates, RELAUNCH,
@@ -41,11 +43,12 @@ pub trait Host: 'static {
     fn redraw_update_dialog(&self);
     /// The HTTPS client packages download through.
     async fn fetcher(&self) -> Result<Fetcher, FetchError>;
-    /// PackageKit's InstallFiles, as `packagekit::install` runs it.
+    /// One InstallFiles with `flags`, as `packagekit::install` runs it.
     async fn install_package(
         &self,
         file: &Path,
-        progress: impl Fn(Progress) + Clone + 'static,
+        flags: u64,
+        progress: impl Fn(Progress) + 'static,
     ) -> Ending;
     /// What the package database names as installed, when it answered.
     async fn installed_version(&self, format: Format) -> Option<String>;
@@ -113,15 +116,9 @@ pub async fn install_update<H: Host>(host: Rc<H>) {
     let Some(file) = download(&host, &package, version).await else {
         return;
     };
-    set_step(&*host, Some(Step::Asking));
-    let weak = Rc::downgrade(&host);
-    let ending = host
-        .install_package(&file, move |progress| {
-            if let Some(host) = weak.upgrade() {
-                installing(&*host, progress);
-            }
-        })
-        .await;
+    let Some(ending) = hand_over(&host, &package, &file).await else {
+        return;
+    };
     if !installed(&*host, &ending, &file, version).await {
         return;
     }
@@ -146,6 +143,64 @@ fn chosen_package(host: &impl Host) -> Option<(Package, Version)> {
         .packages
         .pick(updates.arch?, updates.format()?);
     Some((package.clone(), offer.release.version))
+}
+
+/// PackageKit's InstallFiles: only-trusted, then once more untrusted when
+/// PackageKit says the package carries no GPG signature, as any local .deb
+/// and the unsigned .rpm do. Before each, the package is checked again.
+/// `None` once the step says why it was not handed over.
+async fn hand_over<H: Host>(host: &Rc<H>, package: &Package, file: &Path) -> Option<Ending> {
+    let mut ending = Ending::RetryUntrusted;
+    for flags in [ONLY_TRUSTED, UNTRUSTED] {
+        if !still_checked(&**host, package, file).await {
+            return None;
+        }
+        set_step(&**host, Some(Step::Asking));
+        ending = host.install_package(file, flags, progress_of(host)).await;
+        if ending != Ending::RetryUntrusted {
+            break;
+        }
+        glib::g_info!(
+            "fermix",
+            "PackageKit wants the unsigned package installed untrusted"
+        );
+    }
+    Some(ending)
+}
+
+/// The package read again and held to the feed's size and sha256, so what
+/// PackageKit is handed is what was checked. One that changed is deleted,
+/// and the step says the download failed.
+async fn still_checked(host: &impl Host, package: &Package, file: &Path) -> bool {
+    set_step(host, Some(Step::Verifying));
+    let (wanted, at) = (package.clone(), file.to_owned());
+    let checked = gio::spawn_blocking(move || check_file(&at, &wanted))
+        .await
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let Err(e) = checked else {
+        return true;
+    };
+    host.downloads().checked.borrow_mut().take();
+    match std::fs::remove_file(file) {
+        Ok(()) => {}
+        Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {}
+        Err(left) => glib::g_warning!("fermix", "a refused package was not deleted: {left}"),
+    }
+    let manual = Manual::Link {
+        url: package.url.clone(),
+    };
+    fail(host, Stage::Download, download_failure(&e), manual);
+    false
+}
+
+/// What PackageKit says of the transaction, drawn as the install's step.
+fn progress_of<H: Host>(host: &Rc<H>) -> impl Fn(Progress) + 'static {
+    let weak = Rc::downgrade(host);
+    move |progress| {
+        if let Some(host) = weak.upgrade() {
+            installing(&*host, progress);
+        }
+    }
 }
 
 fn installing(host: &impl Host, progress: Progress) {
@@ -362,7 +417,7 @@ mod tests {
     use crate::packagekit_fake::{fake, Answer, PrivateBus, Seen, TEST_CAP};
     use fermix_client::update::feed::{Arch, Engine, Packages, Pair, Release};
     use fermix_client::update::fetch::{FetchConfig, Timeouts};
-    use fermix_client::update::packagekit::ONLY_TRUSTED;
+    use fermix_client::update::packagekit::error;
     use fermix_client::update::policy::{Offer, Outcome};
     use fermix_client::update::state::Installation;
     use fermix_client::update::store::Remembered;
@@ -383,10 +438,25 @@ mod tests {
 
     /// What the test plants.
     struct Plant {
+        /// PackageKit's answer to each InstallFiles, in turn.
+        answers: Vec<Answer>,
+        /// The package's bytes change on disk during the first InstallFiles.
+        tamper: bool,
         /// What the package database names as installed after the install.
         version: &'static str,
         /// The engine until it restarts, when it becomes the installed build.
         engine: Alignment,
+    }
+
+    /// An install PackageKit allows at once, of 0.5.0 that the database then
+    /// names, the engine on another build until it restarts.
+    fn plant() -> Plant {
+        Plant {
+            answers: vec![Answer::Succeed],
+            tamper: false,
+            version: "0.5.0\n",
+            engine: Alignment::PendingRestart,
+        }
     }
 
     /// The system the install runs on, as planted, and what it was asked.
@@ -394,6 +464,7 @@ mod tests {
         updates: RefCell<Updates>,
         downloads: Downloads,
         bus: gio::DBusConnection,
+        tamper: bool,
         version: &'static str,
         engine: RefCell<Alignment>,
         /// Each seam the install reached, in order.
@@ -446,10 +517,16 @@ mod tests {
         async fn install_package(
             &self,
             file: &Path,
-            progress: impl Fn(Progress) + Clone + 'static,
+            flags: u64,
+            progress: impl Fn(Progress) + 'static,
         ) -> Ending {
             self.hear("PackageKit");
-            install_on(&self.bus, file, progress).await
+            let ending = install_on(&self.bus, file, flags, progress).await;
+            if self.tamper && flags == ONLY_TRUSTED {
+                std::fs::write(file, b"test package swapped while the password was asked\n")
+                    .unwrap();
+            }
+            ending
         }
 
         async fn installed_version(&self, format: Format) -> Option<String> {
@@ -542,6 +619,7 @@ mod tests {
             updates: RefCell::new(updates),
             downloads: Downloads::new(downloads),
             bus,
+            tamper: plant.tamper,
             version: plant.version,
             engine: RefCell::new(plant.engine),
             heard: RefCell::default(),
@@ -613,14 +691,14 @@ mod tests {
             .unwrap()
     }
 
-    async fn run_on_bus<F, Fut>(plant: Plant, flow: F) -> Ran
+    async fn run_on_bus<F, Fut>(mut plant: Plant, flow: F) -> Ran
     where
         F: FnOnce(Rc<Stand>) -> Fut,
         Fut: Future<Output = ()>,
     {
         let bus = PrivateBus::start();
         let (client, service) = (bus.connect().await, bus.connect().await);
-        let seen = fake(&service, vec![Answer::Succeed]);
+        let seen = fake(&service, std::mem::take(&mut plant.answers));
         let n = RUNS.fetch_add(1, Ordering::SeqCst);
         let scratch = Scratch(
             std::env::temp_dir().join(format!("fermix-install-{}-{n}", std::process::id())),
@@ -651,11 +729,7 @@ mod tests {
 
     #[test]
     fn a_confirmed_install_goes_on_to_the_engine_s_restart_and_exec() {
-        let plant = Plant {
-            version: "0.5.0\n",
-            engine: Alignment::PendingRestart,
-        };
-        let ran = run(plant, install_update);
+        let ran = run(plant(), install_update);
         let file = ran.file.to_string_lossy().into_owned();
         assert_eq!(ran.seen.installs, [(ONLY_TRUSTED, vec![file])]);
         assert_eq!(
@@ -671,7 +745,14 @@ mod tests {
         assert_eq!(ran.drawn.first().map(String::as_str), Some("Downloading"));
         assert!(
             ran.drawn.ends_with(
-                &["Asking", "Installing", "Restarting", "Failed at Restart"].map(String::from)
+                &[
+                    "Verifying",
+                    "Asking",
+                    "Installing",
+                    "Restarting",
+                    "Failed at Restart"
+                ]
+                .map(String::from)
             ),
             "drawn: {:?}",
             ran.drawn
@@ -687,7 +768,7 @@ mod tests {
     fn a_version_the_system_does_not_confirm_keeps_the_package_for_the_command() {
         let plant = Plant {
             version: "0.4.0\n",
-            engine: Alignment::PendingRestart,
+            ..plant()
         };
         let ran = run(plant, install_update);
         assert_eq!(ran.heard, ["PackageKit", "package database"]);
@@ -710,10 +791,90 @@ mod tests {
     #[test]
     fn a_desktop_only_update_reloads_nothing_and_restarts_only_the_window() {
         let plant = Plant {
-            version: "0.5.0\n",
             engine: Alignment::Aligned,
+            ..plant()
         };
         let ran = run(plant, install_update);
         assert_eq!(ran.heard, ["PackageKit", "package database", EXEC]);
+    }
+
+    #[test]
+    fn an_unsigned_package_is_checked_again_and_installed_on_the_untrusted_pass() {
+        let unsigned = Answer::Fail(error::MISSING_GPG_SIGNATURE, "package is not signed");
+        let plant = Plant {
+            answers: vec![unsigned, Answer::Succeed],
+            ..plant()
+        };
+        let ran = run(plant, install_update);
+        let file = ran.file.to_string_lossy().into_owned();
+        assert_eq!(
+            ran.seen.installs,
+            [(ONLY_TRUSTED, vec![file.clone()]), (UNTRUSTED, vec![file])],
+            "only-trusted first, then untrusted, nothing more"
+        );
+        assert_eq!(
+            ran.heard[..3],
+            ["PackageKit", "PackageKit", "package database"]
+        );
+        let tail = [
+            "Verifying",
+            "Asking",
+            "Installing",
+            "Verifying",
+            "Asking",
+            "Installing",
+            "Restarting",
+            "Failed at Restart",
+        ];
+        assert!(
+            ran.drawn.ends_with(&tail.map(String::from)),
+            "drawn: {:?}",
+            ran.drawn
+        );
+    }
+
+    #[test]
+    fn a_package_that_changed_since_its_check_is_never_handed_over() {
+        let unsigned = Answer::Fail(error::MISSING_GPG_SIGNATURE, "package is not signed");
+        let plant = Plant {
+            answers: vec![unsigned, Answer::Succeed],
+            tamper: true,
+            ..plant()
+        };
+        let ran = run(plant, install_update);
+        assert_eq!(ran.seen.installs.len(), 1, "only the pass before the swap");
+        assert_eq!(ran.heard, ["PackageKit"]);
+        let failure = failure(&ran);
+        assert_eq!(failure.stage, Stage::Download);
+        assert_eq!(
+            failure.sentence,
+            "The download was not the file the update names, so it was deleted."
+        );
+        assert!(!ran.kept, "the changed package is deleted");
+    }
+
+    #[test]
+    fn try_again_checks_the_package_it_reuses_before_handing_it_over() {
+        let conflict = Answer::Fail(35, "file /usr/bin/fermix conflicts with fermix 0.15.0");
+        let plant = Plant {
+            answers: vec![conflict, Answer::Succeed],
+            ..plant()
+        };
+        let ran = run(plant, |stand: Rc<Stand>| async move {
+            install_update(stand.clone()).await;
+            assert!(
+                matches!(&stand.updates.borrow().step, Some(Step::Failed(f)) if f.stage == Stage::Install)
+            );
+            let file = stand.downloads.dir.join(FILE);
+            std::fs::write(file, b"test package swapped before Try Again\n").unwrap();
+            update_try_again(stand).await;
+        });
+        assert_eq!(
+            ran.seen.installs.len(),
+            1,
+            "the swapped package is never handed over"
+        );
+        assert_eq!(failure(&ran).stage, Stage::Download);
+        assert!(!ran.kept, "the changed package is deleted");
     }
 }

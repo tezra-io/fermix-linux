@@ -338,9 +338,10 @@ impl Host for App {
     async fn install_package(
         &self,
         file: &Path,
-        progress: impl Fn(packagekit::Progress) + Clone + 'static,
+        flags: u64,
+        progress: impl Fn(packagekit::Progress) + 'static,
     ) -> Ending {
-        packagekit::install(file, progress).await
+        packagekit::install(file, flags, progress).await
     }
 
     async fn installed_version(&self, format: Format) -> Option<String> {
