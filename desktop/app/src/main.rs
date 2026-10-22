@@ -27,6 +27,8 @@ mod mascot;
 mod media_grants;
 mod microphones;
 mod packagekit;
+#[cfg(test)]
+mod packagekit_fake;
 mod phone;
 mod phone_flow;
 mod providers;
@@ -43,6 +45,7 @@ mod tray;
 mod tray_flow;
 mod update_dialog;
 mod update_flow;
+mod update_install;
 mod updates_pane;
 mod voice;
 mod voice_call;

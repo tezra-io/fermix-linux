@@ -22,6 +22,7 @@ use crate::shell::{self, Shell};
 use crate::state::{Connection, Snapshot, State, RECENT_FOR};
 use crate::tray::Tray;
 use crate::update_flow::Updater;
+use crate::update_install::{finish_update, install_update, update_try_again};
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
@@ -601,19 +602,17 @@ fn install_update_actions(app: &Rc<App>) {
         app.set_automatic(on)
     });
     on_plain(app, "updates-install", |app| async move {
-        app.install_update().await
+        install_update(app).await
     });
     on_plain(app, "updates-skip", |app| async move { app.skip_update() });
-    on_plain(
-        app,
-        "updates-cancel",
-        |app| async move { app.cancel_download() },
-    );
+    on_plain(app, "updates-cancel", |app| async move {
+        app.updater.downloads.cancel()
+    });
     on_plain(app, "updates-try-again", |app| async move {
-        app.update_try_again().await
+        update_try_again(app).await
     });
     on_plain(app, "updates-restart", |app| async move {
-        app.finish_update().await
+        finish_update(&*app).await
     });
 }
 

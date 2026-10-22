@@ -1,7 +1,7 @@
 //! The controller's side of in-app updates: how this copy was installed, the
 //! checks (at launch once the daemon has settled, then daily, and whenever
-//! asked), and the install the dialog runs from the download to the window
-//! coming back. Network and disk work runs on worker threads; what the
+//! asked), the dialog, and the window as the `Host` the install runs on
+//! (`update_install`). Network and disk work runs on worker threads; what the
 //! surfaces show is core's (`update::view`). A failed step is never left
 //! silent: it says what went wrong and how to do it by hand.
 
@@ -10,12 +10,13 @@ use crate::packagekit;
 use crate::shell::plain_toast;
 use crate::systemd::reload_units;
 use crate::update_dialog::UpdateDialog;
+use crate::update_install::{Downloads, Host};
 use adw::prelude::*;
 use fermix_client::capped::{self, Ended};
 use fermix_client::model::EngineIdentity;
 use fermix_client::runtime_env::runs_from_package;
 use fermix_client::update::check::{check, due, remember, CheckError, Found};
-use fermix_client::update::feed::{Package, FEED_URL};
+use fermix_client::update::feed::{Format, FEED_URL};
 use fermix_client::update::fetch::{native_roots, FetchConfig, FetchError, Fetcher};
 use fermix_client::update::identity::{
     engine_alignment, installed_engine, restart_pending, window_replaced, Alignment,
@@ -24,23 +25,15 @@ use fermix_client::update::identity::{
 use fermix_client::update::keys::production_keys;
 use fermix_client::update::packagekit::Ending;
 use fermix_client::update::policy::{origin, version_argv, Outcome, OWNER_DPKG, OWNER_RPM};
-use fermix_client::update::state::{
-    engine_needs_restart, install_command, installation, waiting, Failure, Installation, Manual,
-    Stage, Step, RELAUNCH,
-};
+use fermix_client::update::state::{installation, Installation, Step, Updates};
 use fermix_client::update::store::{self, Remembered};
 use fermix_client::update::version::Version;
-use fermix_client::update::view::{
-    check_failure, dialog_view, download_failure, found_toast, install_failure,
-};
+use fermix_client::update::view::{check_failure, dialog_view, found_toast};
 use gtk::{gio, glib};
-use std::cell::{Cell, RefCell};
-use std::os::unix::fs::DirBuilderExt;
+use std::cell::{Cell, RefCell, RefMut};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// After the first read of the daemon, the launch check waits this long, so
@@ -48,8 +41,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const SETTLE: Duration = Duration::from_secs(10);
 /// How often the window asks whether a day has passed since the last check.
 const TICK: Duration = Duration::from_secs(60 * 60);
-/// How often the dialog reads how far the download is.
-const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 /// How long a package database may take to answer.
 const QUERY_CAP: Duration = Duration::from_secs(20);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -57,12 +48,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What the controller keeps for updates beside `State::updates`.
 pub struct Updater {
     state_file: PathBuf,
-    downloads: PathBuf,
+    pub downloads: Downloads,
     dialog: RefCell<Option<UpdateDialog>>,
-    /// Set to stop the download running now.
-    cancel: RefCell<Option<Arc<AtomicBool>>>,
-    /// The package downloaded and checked for this version, until installed.
-    checked: RefCell<Option<(Version, PathBuf)>>,
     /// The version an automatic check last announced, so it is announced once.
     toasted: Cell<Option<Version>>,
 }
@@ -75,10 +62,8 @@ impl Updater {
         let cache_home = std::env::var_os("XDG_CACHE_HOME");
         Updater {
             state_file: store::state_path(state_home.as_deref(), &home),
-            downloads: store::download_dir(cache_home.as_deref(), &home),
+            downloads: Downloads::new(store::download_dir(cache_home.as_deref(), &home)),
             dialog: RefCell::default(),
-            cancel: RefCell::default(),
-            checked: RefCell::default(),
             toasted: Cell::default(),
         }
     }
@@ -102,7 +87,7 @@ impl App {
     /// package databases say how this copy was installed, and the checks
     /// start: once now, unless switched off, and then daily.
     pub async fn start_updates(self: &Rc<Self>) {
-        let downloads = self.updater.downloads.clone();
+        let downloads = self.updater.downloads.dir.clone();
         let read = gio::spawn_blocking(move || (clear_downloads(&downloads), read_installation()));
         let ((), found) = read
             .await
@@ -248,7 +233,7 @@ impl App {
     /// update shows again next time.
     fn update_dialog_closed(&self) {
         self.updater.dialog.borrow_mut().take();
-        self.cancel_download();
+        self.updater.downloads.cancel();
         let mut state = self.state.borrow_mut();
         if matches!(state.updates.step, Some(Step::Failed(_))) {
             state.updates.step = None;
@@ -311,12 +296,6 @@ impl App {
         self.render();
     }
 
-    pub fn cancel_download(&self) {
-        if let Some(cancel) = self.updater.cancel.borrow().as_ref() {
-            cancel.store(true, Ordering::SeqCst);
-        }
-    }
-
     /// Writes what is remembered, atomically. A failed write is logged, and
     /// the next change tries again.
     fn save_updates(&self) {
@@ -329,237 +308,71 @@ impl App {
             );
         }
     }
-
-    fn set_step(&self, step: Option<Step>) {
-        self.state.borrow_mut().updates.step = step;
-        self.render();
-    }
-
-    fn fail(&self, stage: Stage, sentence: String, manual: Manual) {
-        glib::g_warning!("fermix", "the update stopped at {stage:?}: {sentence}");
-        self.set_step(Some(Step::Failed(Failure {
-            stage,
-            sentence,
-            manual,
-        })));
-    }
-
-    /// Try Again runs the failed step: the download and install, or the restart.
-    pub async fn update_try_again(self: Rc<Self>) {
-        let stage = match &self.state.borrow().updates.step {
-            Some(Step::Failed(failure)) => failure.stage,
-            _ => return,
-        };
-        match stage {
-            Stage::Download | Stage::Install => self.install_update().await,
-            Stage::Restart => self.finish_update().await,
-        }
-    }
-
-    /// Install Update: the download, held to the feed's size and sha256, then
-    /// PackageKit, then the restart. One committed step from here on.
-    pub async fn install_update(self: Rc<Self>) {
-        let Some((package, version)) = self.chosen_package() else {
-            glib::g_warning!(
-                "fermix",
-                "Install Update with nothing this copy can install"
-            );
-            return;
-        };
-        let Some(file) = self.download(&package, version).await else {
-            return;
-        };
-        self.set_step(Some(Step::Asking));
-        let weak = Rc::downgrade(&self);
-        let ending = packagekit::install(&file, move |progress| {
-            if let Some(app) = weak.upgrade() {
-                app.installing(progress);
-            }
-        })
-        .await;
-        if self.installed(&ending, &file, version).await {
-            self.finish_update().await;
-        }
-    }
-
-    fn chosen_package(&self) -> Option<(Package, Version)> {
-        let state = self.state.borrow();
-        let updates = &state.updates;
-        if updates.busy() {
-            return None;
-        }
-        let offer = updates.offer()?;
-        let package = offer
-            .release
-            .packages
-            .pick(updates.arch?, updates.format()?);
-        Some((package.clone(), offer.release.version))
-    }
-
-    fn installing(&self, progress: packagekit::Progress) {
-        self.state.borrow_mut().updates.step = Some(Step::Installing {
-            percent: progress.percent,
-            waiting: waiting(progress.status),
-        });
-        self.redraw_update_dialog();
-    }
 }
 
-impl App {
-    /// The package, from an earlier try when it was already checked. `None`
-    /// once the step says why there is none.
-    async fn download(self: &Rc<Self>, package: &Package, version: Version) -> Option<PathBuf> {
-        let checked = self.updater.checked.borrow().clone();
-        if let Some((_, file)) = checked.filter(|(v, f)| *v == version && f.is_file()) {
-            return Some(file);
-        }
-        let file = self.updater.downloads.join(&package.file);
-        let (got, cancel) = (
-            Arc::new(AtomicU64::new(0)),
-            Arc::new(AtomicBool::new(false)),
-        );
-        *self.updater.cancel.borrow_mut() = Some(cancel.clone());
-        self.set_step(Some(Step::Downloading {
-            got: 0,
-            size: package.size,
-        }));
-        let ticker = follow_download(self, got.clone(), package.size);
-        let (dir, wanted, to) = (
-            self.updater.downloads.clone(),
-            package.clone(),
-            file.clone(),
-        );
-        let job = move || fetch_package(&dir, &wanted, &to, &got, &cancel);
-        let fetched = gio::spawn_blocking(job).await;
-        ticker.remove();
-        self.updater.cancel.borrow_mut().take();
-        match fetched.unwrap_or_else(|panic| std::panic::resume_unwind(panic)) {
-            Ok(()) => {
-                *self.updater.checked.borrow_mut() = Some((version, file.clone()));
-                Some(file)
-            }
-            Err(FetchError::Cancelled) => {
-                self.set_step(None);
-                None
-            }
-            Err(e) => {
-                let manual = Manual::Link {
-                    url: package.url.clone(),
-                };
-                self.fail(Stage::Download, download_failure(&e), manual);
-                None
-            }
-        }
+/// The real system: the host's PackageKit, package database and systemd,
+/// the daemon, and exec.
+impl Host for App {
+    fn updates(&self) -> RefMut<'_, Updates> {
+        RefMut::map(self.state.borrow_mut(), |state| &mut state.updates)
     }
 
-    /// After PackageKit: whether the package database now names `version`.
-    /// The package is deleted once installed; on a failure it stays for the
-    /// command that installs it by hand, until the next launch.
-    async fn installed(&self, ending: &Ending, file: &Path, version: Version) -> bool {
-        let format = self
-            .state
-            .borrow()
-            .updates
-            .format()
-            .expect("only a copy a database owns installs");
-        let failure = match ending {
-            Ending::Installed => None,
-            Ending::RetryUntrusted => {
-                Some("The system asked for a second untrusted install.".into())
-            }
-            ending => Some(install_failure(ending)),
-        };
-        if let Some(sentence) = failure {
-            let command = install_command(format, file);
-            let manual = Manual::Command {
-                command,
-                file: file.to_owned(),
-            };
-            self.fail(Stage::Install, sentence, manual);
-            return false;
-        }
-        self.updater.checked.borrow_mut().take();
-        if let Err(e) = std::fs::remove_file(file) {
-            glib::g_warning!("fermix", "the installed package was not deleted: {e}");
-        }
+    fn downloads(&self) -> &Downloads {
+        &self.updater.downloads
+    }
+
+    fn render(&self) {
+        App::render(self);
+    }
+
+    fn redraw_update_dialog(&self) {
+        App::redraw_update_dialog(self);
+    }
+
+    async fn fetcher(&self) -> Result<Fetcher, FetchError> {
+        gio::spawn_blocking(production_fetcher)
+            .await
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+
+    async fn install_package(
+        &self,
+        file: &Path,
+        progress: impl Fn(packagekit::Progress) + Clone + 'static,
+    ) -> Ending {
+        packagekit::install(file, progress).await
+    }
+
+    async fn installed_version(&self, format: Format) -> Option<String> {
         let argv = version_argv(format);
-        let now = gio::spawn_blocking(move || query(&argv)).await;
-        let now = now.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        let now = now.as_deref().map(str::trim).unwrap_or("nothing");
-        if now != version.to_string() {
-            let sentence =
-                format!("The system installed it, but reports Fermix {now}, not {version}.");
-            self.fail(Stage::Install, sentence, Manual::Reopen);
-            return false;
-        }
-        true
+        gio::spawn_blocking(move || query(&argv))
+            .await
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
-    /// The restart that finishes an update: the engine, when another build of
-    /// it is installed, then this window, replaced by the installed one.
-    pub async fn finish_update(self: Rc<Self>) {
-        let packaged = matches!(
-            self.state.borrow().updates.installation,
-            Some(Installation::Package { .. })
-        );
-        if !packaged || self.state.borrow().updates.busy() {
-            return glib::g_warning!("fermix", "no update to restart into");
-        }
-        self.set_step(Some(Step::Restarting));
-        if let Err(sentence) = self.restart_engine().await {
-            return self.fail(Stage::Restart, sentence, Manual::Reopen);
-        }
-        let e = relaunch();
-        self.fail(
-            Stage::Restart,
-            format!("Fermix could not open again: {e}."),
-            Manual::Reopen,
-        );
+    async fn reload_units(&self) -> Result<(), String> {
+        reload_units().await
     }
 
-    /// systemd reads the new unit, the engine restarts through the usual
-    /// restart when its build changed, and its hello must then name the
-    /// installed build. An engine that is not this package's is left alone,
-    /// and one that keeps running needs no reload to go on.
-    async fn restart_engine(&self) -> Result<(), String> {
-        let reloaded = reload_units().await;
-        self.refresh().await;
-        if engine_needs_restart(&self.engine_alignment()) {
-            reloaded?;
-            self.restart_now().await?;
-        } else if let Err(sentence) = reloaded {
-            glib::g_warning!("fermix", "systemd did not reload its units: {sentence}");
-        }
-        match self.engine_alignment() {
-            Alignment::Aligned | Alignment::NotRunning | Alignment::OwnershipConflict(_) => Ok(()),
-            Alignment::PendingRestart => {
-                Err("The engine still runs the version from before the update.".into())
-            }
-            Alignment::Unknown => {
-                Err("Fermix could not tell whether its engine is the updated one.".into())
-            }
-        }
+    async fn refresh(&self) {
+        App::refresh(self).await;
     }
-}
 
-/// The dialog's download progress, read every `PROGRESS_EVERY` until the
-/// caller removes it. Every byte in, the step becomes the check of them.
-fn follow_download(app: &Rc<App>, got: Arc<AtomicU64>, size: u64) -> glib::SourceId {
-    let weak = Rc::downgrade(app);
-    glib::timeout_add_local(PROGRESS_EVERY, move || {
-        let Some(app) = weak.upgrade() else {
-            return glib::ControlFlow::Break;
-        };
-        let got = got.load(Ordering::SeqCst);
-        let step = if got >= size {
-            Step::Verifying
-        } else {
-            Step::Downloading { got, size }
-        };
-        app.state.borrow_mut().updates.step = Some(step);
-        app.redraw_update_dialog();
-        glib::ControlFlow::Continue
-    })
+    fn engine_alignment(&self) -> Alignment {
+        App::engine_alignment(self)
+    }
+
+    async fn restart_now(&self) -> Result<(), String> {
+        App::restart_now(self).await
+    }
+
+    /// The process id stays, so a session or D-Bus activation that started
+    /// the window still has it, and the installed window takes the app's name
+    /// over (`RELAUNCH`).
+    fn exec(&self, argv: &[&str]) -> std::io::Error {
+        let (program, args) = argv.split_first().expect("exec names its program");
+        std::process::Command::new(program).args(args).exec()
+    }
 }
 
 fn start_daily_checks(app: &Rc<App>) {
@@ -573,15 +386,6 @@ fn start_daily_checks(app: &Rc<App>) {
         }
         glib::ControlFlow::Continue
     });
-}
-
-/// Replaces this process with the installed window, which takes the app's
-/// name over. The process id stays, so a session or D-Bus activation that
-/// started the window still has it. Returns only when that failed.
-fn relaunch() -> std::io::Error {
-    let (program, args) = RELAUNCH.split_first().expect("RELAUNCH names its program");
-    glib::g_info!("fermix", "opening the updated Fermix: {RELAUNCH:?}");
-    std::process::Command::new(program).args(args).exec()
 }
 
 fn check_feed(installation: &Installation, remembered: &Remembered) -> Result<Found, CheckError> {
@@ -602,23 +406,6 @@ fn production_fetcher() -> Result<Fetcher, FetchError> {
         glib::g_info!("fermix", "a CA certificate was skipped: {problem}");
     }
     Fetcher::new(FetchConfig::production(roots))
-}
-
-fn fetch_package(
-    dir: &Path,
-    package: &Package,
-    to: &Path,
-    got: &AtomicU64,
-    cancel: &AtomicBool,
-) -> Result<(), FetchError> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|e| FetchError::Disk(format!("{}: {e}", dir.display())))?;
-    let fetcher = production_fetcher()?;
-    let mut progress = |bytes: u64| got.store(bytes, Ordering::SeqCst);
-    fetcher.download(&package.url, package, to, &mut progress, cancel)
 }
 
 fn clear_downloads(dir: &Path) {
