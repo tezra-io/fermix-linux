@@ -35,9 +35,13 @@
 #
 # An upgrade, N to N+1, is proven the way a person meets one: with the previous package installed,
 # its engine running as the account's systemd user service, and the new package installed over it
-# by apt or dnf. The container runs systemd as its first process, so it is privileged, with its own
-# cgroup namespace and /run on tmpfs. smoke_in_container.sh --boot installs systemd there and becomes
-# it; once it is up, smoke_in_container.sh --upgrade-from runs beside it and says what it proves.
+# by apt or dnf. The container runs systemd as its first process, with its own cgroup namespace
+# and /run on tmpfs. It is not privileged. Docker mounts a container's cgroup namespace read-only,
+# so the container gets CAP_SYS_ADMIN alone, to remount its own namespace writable for systemd. It
+# keeps the default seccomp profile, has none of the host's devices, and mounts nothing of the
+# host's. AppArmor's docker-default profile refuses that remount, so AppArmor does not confine it.
+# smoke_in_container.sh --boot installs systemd there, remounts, and becomes it; once it is up,
+# smoke_in_container.sh --upgrade-from runs beside it and says what it proves.
 # Both packages go in by docker cp, each checked there against its sha256, and the window is not
 # drawn. The previous package must be of the same family and architecture.
 set -euo pipefail
@@ -239,7 +243,8 @@ copy_out() {
 create_upgrade_container() {
   local pinned="$1" family="$2" arch="$3" package="$4" previous="$5"
   docker create --name "fermix-desktop-pkg-package-upgrade-$$" --platform "linux/$arch" --pull missing \
-    --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock --env container=docker \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined --cgroupns=private --tmpfs /run --tmpfs /run/lock \
+    --env container=docker \
     "$pinned" bash /smoke/smoke_in_container.sh --boot "$family" > /dev/null
   CONTAINER="fermix-desktop-pkg-package-upgrade-$$"
   tar -cf - --transform 'flags=r;s,^,smoke/,' -C "$(dirname -- "$package")" "$(basename -- "$package")" \

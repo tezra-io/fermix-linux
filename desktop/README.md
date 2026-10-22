@@ -85,7 +85,8 @@ says what it takes and what it checks.
    24.04 and 26.04, debian:12 and 13, fedora:44, and almalinux:9 and 10. With `--upgrade-from`
    and an earlier package, the smoke instead upgrades to the package from that one, over its
    engine running as a user service, on ubuntu:24.04 or fedora:44. That container runs systemd,
-   so it is privileged.
+   so it gets CAP_SYS_ADMIN to make its cgroups, and AppArmor does not confine it. It is not
+   privileged.
 
    ```
    scripts/lint_packages.sh <deb> <rpm> --out <dir>
@@ -157,9 +158,10 @@ to which the workflow adds `/vX.Y.Z`.
    `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`, `appcast.json` and `appcast-item.json`.
 7. Read the draft, then publish it. A published release is never refilled: a fix is the next
    version.
-8. Then, and not before, put the release's `appcast.json` where `https://fermix.ai/linux/appcast.json`
-   serves it. A draft's asset urls are not public, so a feed that named them earlier would offer
-   packages no one can download. Check what is served, downloaded to a file:
+8. Then, and not before, put the release's `appcast.json` where
+   `https://fermix.ai/linux/appcast.json` serves it. A draft's asset urls are not public, so a feed
+   that named them earlier would offer packages no one can download. Check what is served,
+   downloaded to a file:
 
    ```
    packaging/update_feed.py verify --feed <file> --keys packaging/update-keys.json

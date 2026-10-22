@@ -415,7 +415,9 @@ write_sums() {
 }
 
 # The init system the upgrade runs under, installed, then run as the container's first process in
-# this one's place. It does not return.
+# this one's place. Docker mounts the container's own cgroup namespace read-only, and systemd makes
+# its scopes there, so it is remounted writable first, which the container's CAP_SYS_ADMIN allows.
+# It does not return.
 boot_systemd() {
   local family="$1" log="$OUT/boot.log"
   case "$family" in deb | rpm) ;; *) fail "the family is deb or rpm, not '$family'" ;; esac
@@ -433,6 +435,8 @@ boot_systemd() {
         fail "dnf cannot install systemd: $(tail -n 20 "$log")"
       ;;
   esac
+  mount -o remount,rw /sys/fs/cgroup ||
+    fail "cannot remount the container's cgroup namespace writable: it needs CAP_SYS_ADMIN, not AppArmor's default"
   log "installed systemd; it runs next, as the container's first process"
   exec /usr/lib/systemd/systemd
 }
