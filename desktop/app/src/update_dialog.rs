@@ -15,9 +15,12 @@ const APP_ICON: &str = "io.tezra.Fermix";
 const WIDTH: i32 = 460;
 /// The notes scroll past this height, so the buttons stay on screen.
 const NOTES_HEIGHT: i32 = 220;
+/// Long lines wrap here, so every state of the dialog is as wide as the last.
+const LINE_CHARS: i32 = 46;
 
 pub struct UpdateDialog {
     pub dialog: adw::Dialog,
+    header: adw::HeaderBar,
     toasts: adw::ToastOverlay,
     title: gtk::Label,
     subtitle: gtk::Label,
@@ -38,6 +41,7 @@ fn label(classes: &[&str]) -> gtk::Label {
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .justify(gtk::Justification::Center)
+        .max_width_chars(LINE_CHARS)
         .css_classes(classes.to_vec())
         .build()
 }
@@ -50,7 +54,6 @@ impl UpdateDialog {
             .build();
         let (title, subtitle) = (label(&["title-2"]), label(&["dimmed"]));
         let (notice, failure) = (label(&[]), label(&["error"]));
-        failure.set_selectable(true);
         let notes = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let notes_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -65,7 +68,6 @@ impl UpdateDialog {
         let buttons = gtk::Box::builder()
             .spacing(12)
             .halign(gtk::Align::Center)
-            .homogeneous(true)
             .margin_top(12)
             .build();
         let body = gtk::Box::builder()
@@ -90,8 +92,9 @@ impl UpdateDialog {
         ] {
             body.append(widget);
         }
+        let header = adw::HeaderBar::builder().show_title(false).build();
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::builder().show_title(false).build());
+        toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&body));
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&toolbar));
@@ -102,6 +105,7 @@ impl UpdateDialog {
             .build();
         UpdateDialog {
             dialog,
+            header,
             toasts,
             title,
             subtitle,
@@ -133,7 +137,9 @@ impl UpdateDialog {
         // PackageKit that cannot say how far it is shows the spinner instead of a bar.
         let unmeasured = view.progress.as_ref().is_some_and(|p| p.fraction.is_none());
         self.spinner.set_visible(view.spinner || unmeasured);
+        // Past the point of no return there is no way to close it.
         self.dialog.set_can_close(view.closable);
+        self.header.set_show_end_title_buttons(view.closable);
         if before.as_ref().map(|b| &b.notes) != Some(&view.notes) {
             self.show_notes(&view.notes);
         }
@@ -161,13 +167,23 @@ impl UpdateDialog {
             self.notes.remove(&child);
         }
         for note in notes {
-            let line = gtk::Label::builder()
+            // The bullet sits apart, so a wrapped note's lines align under its text.
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let bullet = gtk::Label::builder()
+                .label("•")
+                .valign(gtk::Align::Start)
+                .build();
+            let text = gtk::Label::builder()
                 .use_markup(true)
                 .label(note_markup(note))
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .max_width_chars(LINE_CHARS)
+                .hexpand(true)
                 .xalign(0.0)
                 .build();
+            line.append(&bullet);
+            line.append(&text);
             self.notes.append(&line);
         }
         self.notes_scroller.set_visible(!notes.is_empty());
@@ -188,7 +204,7 @@ impl UpdateDialog {
                 self.manual.append(&self.command_buttons(command, file));
             }
             Manual::Link { url } => {
-                let link = gtk::LinkButton::with_label(url, "Open the Download Page");
+                let link = gtk::LinkButton::with_label(url, "Download the Package");
                 link.set_halign(gtk::Align::Center);
                 self.manual.append(&link);
             }
@@ -224,7 +240,6 @@ impl UpdateDialog {
         }
         for spec in buttons {
             let button = gtk::Button::with_label(spec.label);
-            button.add_css_class("pill");
             if spec.suggested {
                 button.add_css_class("suggested-action");
             }
@@ -238,6 +253,11 @@ impl UpdateDialog {
                 }
             }
             self.buttons.append(&button);
+            // Focus starts on the suggested button, never on a label whose
+            // text it would select.
+            if spec.suggested {
+                self.dialog.set_focus(Some(&button));
+            }
         }
         self.buttons.set_visible(!buttons.is_empty());
     }
@@ -258,7 +278,7 @@ fn label_text(text: &str, classes: &[&str]) -> gtk::Label {
 
 /// A note as Pango markup: its text escaped, its inline code in `<tt>`.
 pub fn note_markup(note: &[Span]) -> String {
-    let mut markup = String::from("• ");
+    let mut markup = String::new();
     for span in note {
         match span {
             Span::Text(text) => markup.push_str(&glib::markup_escape_text(text)),
@@ -309,7 +329,7 @@ mod tests {
         ];
         assert_eq!(
             note_markup(&note),
-            "• Run &lt;b&gt;this&lt;/b&gt; &amp; <tt>fermix &lt;status&gt;</tt>."
+            "Run &lt;b&gt;this&lt;/b&gt; &amp; <tt>fermix &lt;status&gt;</tt>."
         );
     }
 
