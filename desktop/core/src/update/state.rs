@@ -219,6 +219,33 @@ fn shell_word(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// What starts the restart into an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restart {
+    /// The install the dialog ran was just confirmed.
+    AfterInstall,
+    /// Restart, or Try Again after a failed restart.
+    Asked,
+}
+
+/// Whether the restart into an update may start now. Not `busy`, which a
+/// confirmed install still is: the restart is that install's own next step.
+/// Asked for, it never cuts into a download, an install or a restart, and
+/// needs something installed to restart into.
+pub fn may_restart(updates: &Updates, restart: Restart) -> bool {
+    if !matches!(updates.installation, Some(Installation::Package { .. })) {
+        return false;
+    }
+    match (&updates.step, restart) {
+        (Some(Step::Asking | Step::Installing { .. }), Restart::AfterInstall) => true,
+        (Some(Step::Failed(failure)), Restart::Asked) => {
+            failure.stage == Stage::Restart || updates.restart_pending
+        }
+        (None, Restart::Asked) => updates.restart_pending,
+        _ => false,
+    }
+}
+
 /// After an install, the engine restarts only when another build of it is
 /// installed (a desktop-only release ships the same engine), or when an older
 /// daemon names no build. An engine that is not this package's is never

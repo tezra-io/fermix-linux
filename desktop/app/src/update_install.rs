@@ -11,8 +11,8 @@ use fermix_client::update::fetch::{FetchError, Fetcher};
 use fermix_client::update::identity::Alignment;
 use fermix_client::update::packagekit::Ending;
 use fermix_client::update::state::{
-    engine_needs_restart, install_command, waiting, Failure, Installation, Manual, Stage, Step,
-    Updates, RELAUNCH,
+    engine_needs_restart, install_command, may_restart, waiting, Failure, Manual, Restart, Stage,
+    Step, Updates, RELAUNCH,
 };
 use fermix_client::update::version::Version;
 use fermix_client::update::view::{download_failure, install_failure};
@@ -122,9 +122,17 @@ pub async fn install_update<H: Host>(host: Rc<H>) {
             }
         })
         .await;
-    if installed(&*host, &ending, &file, version).await {
-        finish_update(&*host).await;
+    if !installed(&*host, &ending, &file, version).await {
+        return;
     }
+    // The install's own step goes on to the restart; `busy` still holds it.
+    if !may_restart(&host.updates(), Restart::AfterInstall) {
+        let step = host.updates().step.clone();
+        glib::g_warning!("fermix", "an install confirmed at {step:?}");
+        let sentence = "The update installed, but Fermix did not restart.".into();
+        return fail(&*host, Stage::Restart, sentence, Manual::Reopen);
+    }
+    restart_into_update(&*host).await;
 }
 
 fn chosen_package(host: &impl Host) -> Option<(Package, Version)> {
@@ -243,16 +251,18 @@ async fn installed(host: &impl Host, ending: &Ending, file: &Path, version: Vers
     true
 }
 
-/// The restart that finishes an update: the engine, when another build of
-/// it is installed, then this window, replaced by the installed one.
+/// Restart, and Try Again after a failed restart: the restart into an
+/// update installed already.
 pub async fn finish_update(host: &impl Host) {
-    let packaged = matches!(
-        host.updates().installation,
-        Some(Installation::Package { .. })
-    );
-    if !packaged || host.updates().busy() {
+    if !may_restart(&host.updates(), Restart::Asked) {
         return glib::g_warning!("fermix", "no update to restart into");
     }
+    restart_into_update(host).await;
+}
+
+/// The restart that finishes an update: the engine, when another build of
+/// it is installed, then this window, replaced by the installed one.
+async fn restart_into_update(host: &impl Host) {
     set_step(host, Some(Step::Restarting));
     if let Err(sentence) = restart_engine(host).await {
         return fail(host, Stage::Restart, sentence, Manual::Reopen);
@@ -345,4 +355,338 @@ fn fetch_package(
         .map_err(|e| FetchError::Disk(format!("{}: {e}", dir.display())))?;
     let mut progress = |bytes: u64| got.store(bytes, Ordering::SeqCst);
     fetcher.download(&package.url, package, to, &mut progress, cancel)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The whole install, offer to exec: the package served from 127.0.0.1,
+    //! PackageKit a fake on a bus of the test's own, and the package database,
+    //! systemd, the engine and exec stood in for, each noting what it was
+    //! asked. Nothing reaches the host's buses, tools or network.
+
+    use super::*;
+    use crate::packagekit::install_on;
+    use crate::packagekit_fake::{fake, Answer, PrivateBus, Seen, TEST_CAP};
+    use fermix_client::update::feed::{Arch, Engine, Packages, Pair, Release};
+    use fermix_client::update::fetch::{FetchConfig, Timeouts};
+    use fermix_client::update::packagekit::ONLY_TRUSTED;
+    use fermix_client::update::policy::{Offer, Outcome};
+    use fermix_client::update::state::Installation;
+    use fermix_client::update::store::Remembered;
+    use std::future::Future;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::AtomicU32;
+
+    const FILE: &str = "fermix-desktop_0.5.0_amd64.deb";
+    const BYTES: &[u8] = b"test package fermix-desktop_0.5.0_amd64.deb\n";
+    /// The fetcher needs a root; the test's server is plain http, so TLS never reads it.
+    const ROOT: &[u8] = include_bytes!("../../core/tests/fixtures/update-tls/test-server.der");
+    const WAIT: Duration = Duration::from_secs(5);
+    /// The longest request head the test's server reads.
+    const HEAD_CAP: usize = 16 * 1024;
+    const EXEC: &str = "exec /usr/bin/fermix-desktop --gapplication-replace";
+    static RUNS: AtomicU32 = AtomicU32::new(0);
+
+    /// What the test plants.
+    struct Plant {
+        /// What the package database names as installed after the install.
+        version: &'static str,
+        /// The engine until it restarts, when it becomes the installed build.
+        engine: Alignment,
+    }
+
+    /// The system the install runs on, as planted, and what it was asked.
+    struct Stand {
+        updates: RefCell<Updates>,
+        downloads: Downloads,
+        bus: gio::DBusConnection,
+        version: &'static str,
+        engine: RefCell<Alignment>,
+        /// Each seam the install reached, in order.
+        heard: RefCell<Vec<String>>,
+        /// Each step the surfaces were drawn with, a repeat once.
+        drawn: RefCell<Vec<String>>,
+    }
+
+    impl Stand {
+        fn hear(&self, what: &str) {
+            self.heard.borrow_mut().push(what.to_owned());
+        }
+    }
+
+    impl Host for Stand {
+        fn updates(&self) -> RefMut<'_, Updates> {
+            self.updates.borrow_mut()
+        }
+
+        fn downloads(&self) -> &Downloads {
+            &self.downloads
+        }
+
+        fn render(&self) {
+            let name = step_name(self.updates.borrow().step.as_ref());
+            let mut drawn = self.drawn.borrow_mut();
+            if drawn.last() != Some(&name) {
+                drawn.push(name);
+            }
+        }
+
+        fn redraw_update_dialog(&self) {
+            self.render();
+        }
+
+        async fn fetcher(&self) -> Result<Fetcher, FetchError> {
+            Fetcher::new(FetchConfig {
+                roots: vec![ROOT.to_vec()],
+                https_only: false,
+                proxy_from_env: false,
+                timeouts: Timeouts {
+                    connect: WAIT,
+                    feed: WAIT,
+                    per_read: WAIT,
+                    download: WAIT,
+                },
+            })
+        }
+
+        async fn install_package(
+            &self,
+            file: &Path,
+            progress: impl Fn(Progress) + Clone + 'static,
+        ) -> Ending {
+            self.hear("PackageKit");
+            install_on(&self.bus, file, progress).await
+        }
+
+        async fn installed_version(&self, format: Format) -> Option<String> {
+            assert_eq!(format, Format::Deb);
+            self.hear("package database");
+            Some(self.version.to_owned())
+        }
+
+        async fn reload_units(&self) -> Result<(), String> {
+            self.hear("systemd reload");
+            Ok(())
+        }
+
+        async fn refresh(&self) {}
+
+        fn engine_alignment(&self) -> Alignment {
+            self.engine.borrow().clone()
+        }
+
+        async fn restart_now(&self) -> Result<(), String> {
+            self.hear("engine restart");
+            *self.engine.borrow_mut() = Alignment::Aligned;
+            Ok(())
+        }
+
+        fn exec(&self, argv: &[&str]) -> std::io::Error {
+            self.hear(&format!("exec {}", argv.join(" ")));
+            std::io::Error::other("the test stands in for exec")
+        }
+    }
+
+    fn step_name(step: Option<&Step>) -> String {
+        match step {
+            None => "none".into(),
+            Some(Step::Downloading { .. }) => "Downloading".into(),
+            Some(Step::Verifying) => "Verifying".into(),
+            Some(Step::Asking) => "Asking".into(),
+            Some(Step::Installing { .. }) => "Installing".into(),
+            Some(Step::Restarting) => "Restarting".into(),
+            Some(Step::Failed(failure)) => format!("Failed at {:?}", failure.stage),
+        }
+    }
+
+    /// 0.5.0 offered over the installed 0.4.0, its package at `url`.
+    fn offer(url: &str) -> Offer {
+        let sha256 = glib::compute_checksum_for_data(glib::ChecksumType::Sha256, BYTES).unwrap();
+        let package = Package {
+            file: FILE.into(),
+            url: url.into(),
+            size: u64::try_from(BYTES.len()).unwrap(),
+            sha256: sha256.to_string(),
+        };
+        let pair = Pair {
+            deb: package.clone(),
+            rpm: package,
+        };
+        let release = Release {
+            version: Version::parse("0.5.0").unwrap(),
+            published_at: 0,
+            critical: false,
+            minimum_installed_version: None,
+            engine: Engine {
+                version: "0.17.0".into(),
+                tag: "v0.17.0".into(),
+                source_commit: "0".repeat(40),
+            },
+            notes: vec!["Fermix installs its own updates.".into()],
+            packages: Packages {
+                amd64: pair.clone(),
+                arm64: pair,
+            },
+        };
+        Offer {
+            release,
+            critical: false,
+            held_back: None,
+            skipped: false,
+        }
+    }
+
+    fn planted(plant: Plant, bus: gio::DBusConnection, downloads: PathBuf, url: &str) -> Stand {
+        let mut updates = Updates::new(Remembered::default());
+        updates.installation = Some(Installation::Package {
+            version: Version::parse("0.4.0").unwrap(),
+            format: Some(Format::Deb),
+        });
+        updates.arch = Some(Arch::Amd64);
+        updates.found = Some(Outcome::Available(Box::new(offer(url))));
+        Stand {
+            updates: RefCell::new(updates),
+            downloads: Downloads::new(downloads),
+            bus,
+            version: plant.version,
+            engine: RefCell::new(plant.engine),
+            heard: RefCell::default(),
+            drawn: RefCell::default(),
+        }
+    }
+
+    /// Serves `BYTES` to one request, on a port of its own. Returns the package's URL.
+    fn serve_package() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Some(Ok(stream)) = listener.incoming().next() {
+                answer(stream);
+            }
+        });
+        format!("http://127.0.0.1:{port}/{FILE}")
+    }
+
+    fn answer(mut stream: TcpStream) {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && head.len() < HEAD_CAP {
+            if stream.read(&mut byte).unwrap_or(0) == 0 {
+                return;
+            }
+            head.push(byte[0]);
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            BYTES.len()
+        );
+        // The client may hang up first: that is its answer.
+        let _ = stream
+            .write_all(reply.as_bytes())
+            .and_then(|()| stream.write_all(BYTES));
+    }
+
+    /// A folder of the test's own, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// What one run left: the seams reached, the steps drawn, what PackageKit
+    /// was asked, the step it ended on, and whether the package is still there.
+    struct Ran {
+        heard: Vec<String>,
+        drawn: Vec<String>,
+        seen: Seen,
+        step: Option<Step>,
+        file: PathBuf,
+        kept: bool,
+    }
+
+    /// Runs `flow` on a stand planted with `plant`, on a main context and a
+    /// bus of its own.
+    fn run<F, Fut>(plant: Plant, flow: F) -> Ran
+    where
+        F: FnOnce(Rc<Stand>) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| context.block_on(run_on_bus(plant, flow)))
+            .unwrap()
+    }
+
+    async fn run_on_bus<F, Fut>(plant: Plant, flow: F) -> Ran
+    where
+        F: FnOnce(Rc<Stand>) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let bus = PrivateBus::start();
+        let (client, service) = (bus.connect().await, bus.connect().await);
+        let seen = fake(&service, vec![Answer::Succeed]);
+        let n = RUNS.fetch_add(1, Ordering::SeqCst);
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("fermix-install-{}-{n}", std::process::id())),
+        );
+        let downloads = scratch.0.join("updates");
+        let stand = Rc::new(planted(plant, client, downloads, &serve_package()));
+        glib::future_with_timeout(TEST_CAP, flow(stand.clone()))
+            .await
+            .expect("the install ends within the test's cap");
+        let file = stand.downloads.dir.join(FILE);
+        let step = stand.updates.borrow().step.clone();
+        Ran {
+            heard: stand.heard.take(),
+            drawn: stand.drawn.take(),
+            seen: seen.take(),
+            step,
+            kept: file.exists(),
+            file,
+        }
+    }
+
+    fn failure(ran: &Ran) -> &Failure {
+        match &ran.step {
+            Some(Step::Failed(failure)) => failure,
+            other => panic!("the install ended on {other:?}, not a failure"),
+        }
+    }
+
+    #[test]
+    fn a_confirmed_install_goes_on_to_the_engine_s_restart_and_exec() {
+        let plant = Plant {
+            version: "0.5.0\n",
+            engine: Alignment::PendingRestart,
+        };
+        let ran = run(plant, install_update);
+        let file = ran.file.to_string_lossy().into_owned();
+        assert_eq!(ran.seen.installs, [(ONLY_TRUSTED, vec![file])]);
+        assert_eq!(
+            ran.heard,
+            [
+                "PackageKit",
+                "package database",
+                "systemd reload",
+                "engine restart",
+                EXEC
+            ]
+        );
+        assert_eq!(ran.drawn.first().map(String::as_str), Some("Downloading"));
+        assert!(
+            ran.drawn.ends_with(
+                &["Asking", "Installing", "Restarting", "Failed at Restart"].map(String::from)
+            ),
+            "drawn: {:?}",
+            ran.drawn
+        );
+        assert_eq!(
+            failure(&ran).sentence,
+            "Fermix could not open again: the test stands in for exec."
+        );
+        assert!(!ran.kept, "the installed package is deleted");
+    }
 }

@@ -14,7 +14,8 @@ use fermix_client::update::fetch::{FetchConfig, FetchError, Fetcher, Timeouts};
 use fermix_client::update::identity::Alignment;
 use fermix_client::update::policy::Outcome;
 use fermix_client::update::state::{
-    engine_needs_restart, install_command, installation, Installation, RELAUNCH,
+    engine_needs_restart, install_command, installation, may_restart, Failure, Installation,
+    Manual, Restart, Stage, Step, Updates, RELAUNCH,
 };
 use fermix_client::update::store::{Checked, LastCheck, Remembered};
 use fermix_client::update::version::Version;
@@ -373,6 +374,66 @@ fn the_engine_restarts_only_when_another_build_is_installed() {
     assert!(!engine_needs_restart(&Alignment::OwnershipConflict(
         "standalone".into()
     )));
+}
+
+#[test]
+fn a_confirmed_install_goes_on_to_its_restart_and_an_asked_one_waits_its_turn() {
+    let mut updates = Updates::new(Remembered::default());
+    updates.installation = Some(package("0.4.0"));
+    // Where an install stands when the package database confirms it.
+    updates.step = Some(Step::Installing {
+        percent: Some(100),
+        waiting: None,
+    });
+    assert!(updates.busy(), "nothing else may start");
+    assert!(may_restart(&updates, Restart::AfterInstall));
+    assert!(
+        !may_restart(&updates, Restart::Asked),
+        "an asked restart never cuts into an install"
+    );
+    updates.step = Some(Step::Asking);
+    assert!(
+        may_restart(&updates, Restart::AfterInstall),
+        "PackageKit sent no progress"
+    );
+    for running in [
+        Step::Downloading { got: 1, size: 2 },
+        Step::Verifying,
+        Step::Restarting,
+    ] {
+        updates.step = Some(running);
+        assert!(!may_restart(&updates, Restart::AfterInstall));
+        assert!(!may_restart(&updates, Restart::Asked));
+    }
+    let failed = |stage| {
+        Some(Step::Failed(Failure {
+            stage,
+            sentence: "It stopped.".into(),
+            manual: Manual::Reopen,
+        }))
+    };
+    updates.step = failed(Stage::Restart);
+    assert!(
+        may_restart(&updates, Restart::Asked),
+        "Try Again after a failed restart"
+    );
+    assert!(!may_restart(&updates, Restart::AfterInstall));
+    updates.step = failed(Stage::Install);
+    assert!(!may_restart(&updates, Restart::Asked));
+    updates.step = None;
+    assert!(
+        !may_restart(&updates, Restart::Asked),
+        "nothing to restart into"
+    );
+    updates.restart_pending = true;
+    assert!(
+        may_restart(&updates, Restart::Asked),
+        "Restart to finish updating"
+    );
+    updates.installation = Some(Installation::Development {
+        version: "0.4.0+dev.1".into(),
+    });
+    assert!(!may_restart(&updates, Restart::Asked));
 }
 
 #[test]
