@@ -395,7 +395,7 @@ fn a_package_is_named_as_the_build_names_it() {
 }
 
 #[test]
-fn a_package_url_is_https_and_ends_in_its_file() {
+fn a_package_url_is_https_to_a_host_with_no_user_or_port_and_ends_in_its_file() {
     let with_url = |url: &str| {
         let mut r = release("0.4.0");
         r["packages"]["amd64"]["deb"]["url"] = json!(url);
@@ -407,8 +407,27 @@ fn a_package_url_is_https_and_ends_in_its_file() {
     refused_payload(&with_url(&format!("https://example.com/{file}?x=1")), "url");
     refused_payload(&with_url(&format!("https://exa mple.com/{file}")), "url");
     refused_payload(&with_url(&format!("https:///{file}")), "url");
+    // As update_feed.py's check_url refuses them: no user and no port.
+    refused_payload(
+        &with_url(&format!("https://user@example.com/{file}")),
+        "url",
+    );
+    refused_payload(
+        &with_url(&format!("https://user:secret@example.com/{file}")),
+        "url",
+    );
+    refused_payload(
+        &with_url(&format!("https://example.com:8443/{file}")),
+        "url",
+    );
+    refused_payload(&with_url(&format!("https://example.com:/{file}")), "url");
     let elsewhere = with_url(&format!("https://downloads.fermix.ai/linux/0.4.0/{file}"));
     assert!(read(&signed(&elsewhere)).is_ok(), "any https origin");
+    let at_in_path = with_url(&format!("https://example.com/builds/@v0.4.0/{file}"));
+    assert!(
+        read(&signed(&at_in_path)).is_ok(),
+        "only the host part is held to it"
+    );
 }
 
 #[test]

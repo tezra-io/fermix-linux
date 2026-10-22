@@ -363,14 +363,16 @@ fn check_package(package: &Package, file: &str) -> Result<(), FeedError> {
     })
 }
 
-/// https, a host, no query or fragment, nothing but visible ASCII, and the
-/// file's own name as the last path segment.
+/// https to a host with no user and no port, as the feed's writer has it
+/// (update_feed.py's check_url), no query or fragment, nothing but visible
+/// ASCII, and the file's own name as the last path segment.
 fn url_allowed(url: &str, file: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };
     let host = rest.split('/').next().unwrap_or_default();
     !host.is_empty()
+        && !host.contains(['@', ':'])
         && url.bytes().all(|b| b.is_ascii_graphic())
         && !url.contains(['?', '#'])
         && rest.ends_with(&format!("/{file}"))
