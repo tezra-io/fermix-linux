@@ -558,9 +558,12 @@ jobs:
 
   # The feed the app reads, with this release in front: its item written from the signed
   # packages, merged into the feed fermix.ai serves now, and signed in the release-linux environment.
-  # A 404 there means no feed has been served yet, so this release starts one. A feed that is served
-  # but does not verify stops the release. The package urls are this tag's release assets, unless
-  # the repository variable LINUX_PACKAGE_BASE_URL names another base, which gets /<tag> after it.
+  # The floor is the appcast.json of the newest published release that carries one. The served
+  # feed must verify, carry every release the floor carries, and be no older than it, so a CDN
+  # misroute, a wrong path or a stale copy stops the release instead of cutting the feed short.
+  # Only while no published release carries a feed does a 404 start one. The package urls are this
+  # tag's release assets, unless the repository variable LINUX_PACKAGE_BASE_URL names another base,
+  # which gets /<tag> after it.
   feed:
     name: Write the update feed
     if: github.ref_type == 'tag'
@@ -594,16 +597,40 @@ jobs:
             --out feed/appcast-item.json
           cat feed/appcast-item.json
 
+      # Published releases only: a draft's assets are not public, and this tag's release is a draft.
+      - name: Fetch the feed the last published release carries
+        id: floor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false)
+              | select(.tag_name | test("^v[0-9]+[.][0-9]+[.][0-9]+$"))
+              | select(any(.assets[]; .name == "appcast.json")) | .tag_name' | sort -V | tail -n 1)"
+          if [ -z "$tag" ]; then
+            echo "::notice title=No floor::no published release carries appcast.json, so a 404 may start the feed"
+            echo "feed=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/floor"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern appcast.json --dir "$RUNNER_TEMP/floor"
+          desktop/packaging/update_feed.py verify --feed "$RUNNER_TEMP/floor/appcast.json" --keys "$KEYS"
+          echo "::notice title=Floor::$tag's appcast.json"
+          echo "feed=$RUNNER_TEMP/floor/appcast.json" >> "$GITHUB_OUTPUT"
+
+      # --proto already refuses anything but https, redirects included; --proto-redir says so for
+      # the redirects -L follows as well, so that rule does not rest on curl's reading of --proto.
       - name: Fetch the feed fermix.ai serves
         id: previous
         run: |
           set -euo pipefail
-          status="$(curl -sS -L --proto '=https' --tlsv1.2 --retry 3 --max-time 60 --max-filesize 1048576 \
-            -o "$RUNNER_TEMP/previous.json" -w '%{http_code}' "$FEED_URL")"
+          status="$(curl -sS -L --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --max-time 60 \
+            --max-filesize 1048576 -o "$RUNNER_TEMP/previous.json" -w '%{http_code}' "$FEED_URL")"
           case "$status" in
             200) echo "found=true" >> "$GITHUB_OUTPUT" ;;
             404)
-              echo "::notice title=The feed starts here::$FEED_URL answers 404, so $TAG is the whole feed"
+              echo "::notice title=No feed served::$FEED_URL answers 404; the merge refuses that over a floor"
               echo "found=false" >> "$GITHUB_OUTPUT"
               ;;
             *)
@@ -615,6 +642,7 @@ jobs:
       - name: Verify it, and merge this release into it
         env:
           FOUND: ${{ steps.previous.outputs.found }}
+          FLOOR: ${{ steps.floor.outputs.feed }}
         run: |
           set -euo pipefail
           merge=(--item feed/appcast-item.json --keys "$KEYS" --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -622,6 +650,9 @@ jobs:
           if [ "$FOUND" = true ]; then
             desktop/packaging/update_feed.py verify --feed "$RUNNER_TEMP/previous.json" --keys "$KEYS"
             merge+=(--previous "$RUNNER_TEMP/previous.json")
+          fi
+          if [ -n "$FLOOR" ]; then
+            merge+=(--floor "$FLOOR")
           fi
           desktop/packaging/update_feed.py merge "${merge[@]}"
 

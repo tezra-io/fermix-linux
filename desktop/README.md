@@ -150,9 +150,11 @@ to which the workflow adds `/vX.Y.Z`.
    published.
 6. The tag's run signs every asset with cosign under the workflow's identity
    (`.github/workflows/release.yml@refs/tags/vX.Y.Z`) and writes a `.sha256` beside each. Its feed
-   job then writes the release's item and merges it into the feed fermix.ai serves; a 404 there
-   starts a new feed, and a served feed that does not verify stops the release. The job signs the
-   result in the `release-linux` environment and verifies it. The run stages it all on a draft
+   job then writes the release's item and merges it into the feed fermix.ai serves. The floor is
+   the `appcast.json` of the newest published release that carries one: the served feed must
+   verify, carry every release the floor carries, and be no older than it, or the release stops.
+   Only while no published release carries a feed does a 404 there start a new one. The job signs
+   the result in the `release-linux` environment and verifies it. The run stages it all on a draft
    release with notes from `packaging/release_notes.md`, then downloads each asset back and checks
    it. The assets are both packages for both architectures,
    `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`, `appcast.json` and `appcast-item.json`.
@@ -167,7 +169,8 @@ to which the workflow adds `/vX.Y.Z`.
    packaging/update_feed.py verify --feed <file> --keys packaging/update-keys.json
    ```
 
-   Until it is served, no installed app learns of the release.
+   Until it is served, no installed app learns of the release, and the next release's feed job
+   refuses the older feed still served.
 
 ## Facts the code relies on (measured against fermix 0.11.0)
 
