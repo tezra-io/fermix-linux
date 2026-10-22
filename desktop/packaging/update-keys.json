@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "keys": [
+    {
+      "key_id": "linux-feed-1",
+      "role": "current",
+      "public_key": "E51Uv2uksKNCEBeij/hJZ7dRgiUNFsz5pmzyX8iXwfY="
+    },
+    {
+      "key_id": "linux-feed-2",
+      "role": "standby",
+      "public_key": "WLIAl6ZJLQcRV5RV87cIJ3L/ALzLZrJI0jEemRMJG2A="
+    }
+  ]
+}
