@@ -5,9 +5,9 @@
 
 use crate::update::feed::{Package, FEED_CAP};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -209,7 +209,13 @@ impl Fetcher {
             .call()
             .map_err(fetch_error)?;
         let mut body = response.into_body().into_reader();
-        let mut file = File::create(partial).map_err(disk)?;
+        // A new file, never one already there or through a link planted in its place.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(partial)
+            .map_err(|e| FetchError::Disk(format!("{}: {e}", partial.display())))?;
         let digest = copy_counted(&mut body, &mut file, package.size, progress, cancel)?;
         file.sync_all().map_err(disk)?;
         if digest != package.sha256 {

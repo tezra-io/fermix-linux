@@ -236,6 +236,32 @@ fn rule_7_a_download_matching_its_size_and_sha256_lands_whole() {
 }
 
 #[test]
+fn a_link_planted_where_the_partial_file_goes_is_refused_and_its_target_untouched() {
+    let body = b"the package bytes";
+    let base = serve(HashMap::from([("/p.deb", ok(body))]), None);
+    let dir = tempfile::tempdir().unwrap();
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, "the victim's own bytes").unwrap();
+    let updates = dir.path().join("updates");
+    std::fs::create_dir(&updates).unwrap();
+    std::os::unix::fs::symlink(&victim, updates.join("p.deb.partial")).unwrap();
+    let got = plain().download(
+        &format!("{base}/p.deb"),
+        &package(body, body.len() as u64),
+        &updates.join("p.deb"),
+        &mut |_| {},
+        &AtomicBool::new(false),
+    );
+    assert!(matches!(got, Err(FetchError::Disk(_))), "{got:?}");
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"the victim's own bytes",
+        "nothing was written through the link"
+    );
+    assert!(leftovers(&updates).is_empty(), "the link is removed");
+}
+
+#[test]
 fn rule_7_the_shared_fixture_s_package_lands_as_its_feed_names_it() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
