@@ -216,37 +216,36 @@ async fn fetch(
 }
 
 /// After PackageKit: whether the package database now names `version`.
-/// The package is deleted once installed; on a failure it stays for the
-/// command that installs it by hand, until the next launch.
+/// The package is deleted once it does; until then it stays for the command
+/// that installs it by hand, until the next launch.
 async fn installed(host: &impl Host, ending: &Ending, file: &Path, version: Version) -> bool {
     let format = host
         .updates()
         .format()
         .expect("only a copy a database owns installs");
+    let by_hand = Manual::Command {
+        command: install_command(format, file),
+        file: file.to_owned(),
+    };
     let failure = match ending {
         Ending::Installed => None,
         Ending::RetryUntrusted => Some("The system asked for a second untrusted install.".into()),
         ending => Some(install_failure(ending)),
     };
     if let Some(sentence) = failure {
-        let command = install_command(format, file);
-        let manual = Manual::Command {
-            command,
-            file: file.to_owned(),
-        };
-        fail(host, Stage::Install, sentence, manual);
+        fail(host, Stage::Install, sentence, by_hand);
         return false;
-    }
-    host.downloads().checked.borrow_mut().take();
-    if let Err(e) = std::fs::remove_file(file) {
-        glib::g_warning!("fermix", "the installed package was not deleted: {e}");
     }
     let now = host.installed_version(format).await;
     let now = now.as_deref().map(str::trim).unwrap_or("nothing");
     if now != version.to_string() {
         let sentence = format!("The system installed it, but reports Fermix {now}, not {version}.");
-        fail(host, Stage::Install, sentence, Manual::Reopen);
+        fail(host, Stage::Install, sentence, by_hand);
         return false;
+    }
+    host.downloads().checked.borrow_mut().take();
+    if let Err(e) = std::fs::remove_file(file) {
+        glib::g_warning!("fermix", "the installed package was not deleted: {e}");
     }
     true
 }
@@ -688,5 +687,29 @@ mod tests {
             "Fermix could not open again: the test stands in for exec."
         );
         assert!(!ran.kept, "the installed package is deleted");
+    }
+
+    #[test]
+    fn a_version_the_system_does_not_confirm_keeps_the_package_for_the_command() {
+        let plant = Plant {
+            version: "0.4.0\n",
+            engine: Alignment::PendingRestart,
+        };
+        let ran = run(plant, install_update);
+        assert_eq!(ran.heard, ["PackageKit", "package database"]);
+        let failure = failure(&ran);
+        assert_eq!(failure.stage, Stage::Install);
+        assert_eq!(
+            failure.sentence,
+            "The system installed it, but reports Fermix 0.4.0, not 0.5.0."
+        );
+        assert_eq!(
+            failure.manual,
+            Manual::Command {
+                command: install_command(Format::Deb, &ran.file),
+                file: ran.file.clone(),
+            }
+        );
+        assert!(ran.kept, "the package stays for the command");
     }
 }
