@@ -361,6 +361,11 @@ fn installing_runs_in_the_dialog_one_step_after_another() {
     let notice = asking.notice.unwrap();
     assert!(notice.contains("asks for your password"), "{notice}");
     assert!(notice.contains("untrusted package"), "{notice}");
+    assert!(
+        notice.contains("because it comes from Fermix rather than your system's software sources"),
+        "it names the source, not the host the package downloads from: {notice}"
+    );
+    assert!(!notice.contains("fermix.ai"), "{notice}");
     assert!(!asking.closable);
     u.step = Some(Step::Installing {
         percent: Some(40),

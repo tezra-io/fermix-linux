@@ -16,7 +16,7 @@ pub const AUTOMATIC: &str = "Check for updates automatically";
 pub const AUTOMATIC_DETAIL: &str = "When Fermix starts, then once a day while it runs.";
 /// Shown as PackageKit is asked, before the system's own prompt appears.
 pub const PASSWORD_NOTICE: &str = "Your system now asks for your password. It may call this an \
-    untrusted package, because it comes from fermix.ai rather than your system's software \
+    untrusted package, because it comes from Fermix rather than your system's software \
     sources. Fermix has already checked that Fermix signed it.";
 const NOT_CHECKED: &str = "Fermix has not checked for updates yet";
 const CHECKING: &str = "Checking for updates";
