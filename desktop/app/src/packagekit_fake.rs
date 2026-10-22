@@ -90,12 +90,16 @@ impl Drop for PrivateBus {
 pub enum Answer {
     Succeed,
     Fail(u32, &'static str),
+    /// Never finishes, as one whose password prompt is left open.
+    Hang,
 }
 
 #[derive(Default)]
 pub struct Seen {
     pub installs: Vec<(u64, Vec<String>)>,
     pub hints: Vec<Vec<String>>,
+    /// The transactions cancelled, by path.
+    pub cancels: Vec<String>,
 }
 
 const MANAGER_XML: &str = r#"<node><interface name="org.freedesktop.PackageKit">
@@ -104,6 +108,7 @@ const MANAGER_XML: &str = r#"<node><interface name="org.freedesktop.PackageKit">
 const TRANSACTION_XML: &str = r#"<node><interface name="org.freedesktop.PackageKit.Transaction">
   <method name="SetHints"><arg type="as" direction="in"/></method>
   <method name="InstallFiles"><arg type="t" direction="in"/><arg type="as" direction="in"/></method>
+  <method name="Cancel"/>
   <signal name="ErrorCode"><arg type="u"/><arg type="s"/></signal>
   <signal name="Finished"><arg type="u"/><arg type="u"/></signal>
 </interface></node>"#;
@@ -160,20 +165,24 @@ fn serve_transaction(
     // Registered for the bus's life: the test's bus goes with the test.
     let _registration = bus
         .register_object(path, &interface(TRANSACTION_XML, pk::TRANSACTION))
-        .method_call(move |_, _, _, _, method, params, invocation| {
-            if method == "SetHints" {
-                seen.borrow_mut()
-                    .hints
-                    .push(params.get::<(Vec<String>,)>().unwrap().0);
-                return invocation.return_value(None);
+        .method_call(move |_, _, _, _, method, params, invocation| match method {
+            "SetHints" => {
+                let hints = params.get::<(Vec<String>,)>().unwrap().0;
+                seen.borrow_mut().hints.push(hints);
+                invocation.return_value(None);
             }
-            seen.borrow_mut()
-                .installs
-                .push(params.get::<(u64, Vec<String>)>().unwrap());
-            // The reply goes out first, then the transaction's signals, as
-            // PackageKit sends them.
-            invocation.return_value(None);
-            run_script(&conn, &at, answer);
+            "Cancel" => {
+                seen.borrow_mut().cancels.push(at.clone());
+                invocation.return_value(None);
+            }
+            _ => {
+                let install = params.get::<(u64, Vec<String>)>().unwrap();
+                seen.borrow_mut().installs.push(install);
+                // The reply goes out first, then the transaction's signals, as
+                // PackageKit sends them.
+                invocation.return_value(None);
+                run_script(&conn, &at, answer);
+            }
         })
         .build()
         .unwrap();
@@ -195,6 +204,7 @@ fn run_script(bus: &gio::DBusConnection, path: &str, answer: Answer) {
     .unwrap();
     let exit = match answer {
         Answer::Succeed => exit::SUCCESS,
+        Answer::Hang => return,
         Answer::Fail(code, details) => {
             let args = (code, details).to_variant();
             bus.emit_signal(None, path, pk::TRANSACTION, "ErrorCode", Some(&args))

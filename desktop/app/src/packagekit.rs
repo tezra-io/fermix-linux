@@ -22,7 +22,7 @@ use std::time::Duration;
 /// How long one call may take to be answered.
 const CALL_TIMEOUT_MS: i32 = 30_000;
 /// How long a transaction may run, the password prompt included.
-const TRANSACTION_CAP: Duration = Duration::from_secs(60 * 60);
+pub const TRANSACTION_CAP: Duration = Duration::from_secs(60 * 60);
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
 /// Where a transaction stands, as its properties last said.
@@ -39,7 +39,7 @@ type Finish = (u32, Option<(u32, String)>);
 /// One InstallFiles of `file`, with `flags`, through the host's PackageKit.
 pub async fn install(file: &Path, flags: u64, progress: impl Fn(Progress) + 'static) -> Ending {
     match gio::bus_get_future(gio::BusType::System).await {
-        Ok(bus) => install_on(&bus, file, flags, progress).await,
+        Ok(bus) => install_on(&bus, file, flags, TRANSACTION_CAP, progress).await,
         Err(e) => {
             glib::g_warning!("fermix", "no system bus to reach PackageKit: {e}");
             refusal(None, e.message())
@@ -47,11 +47,13 @@ pub async fn install(file: &Path, flags: u64, progress: impl Fn(Progress) + 'sta
     }
 }
 
-/// One InstallFiles of `file`, with `flags`, through the PackageKit on `bus`.
+/// One InstallFiles of `file`, with `flags`, through the PackageKit on `bus`,
+/// for at most `cap`.
 pub async fn install_on(
     bus: &gio::DBusConnection,
     file: &Path,
     flags: u64,
+    cap: Duration,
     progress: impl Fn(Progress) + 'static,
 ) -> Ending {
     let path = match create(bus).await {
@@ -76,7 +78,7 @@ pub async fn install_on(
     if let Err(e) = call(bus, &path, pk::TRANSACTION, "InstallFiles", &args).await {
         return refused(&e);
     }
-    match glib::future_with_timeout(TRANSACTION_CAP, finished).await {
+    match glib::future_with_timeout(cap, finished).await {
         Ok(Ok((exit, error))) => {
             let error = error
                 .as_ref()
@@ -84,8 +86,21 @@ pub async fn install_on(
             ending(exit, error, flags == ONLY_TRUSTED)
         }
         Ok(Err(_)) => Ending::Failed("PackageKit stopped following the installation.".into()),
-        Err(_) => Ending::Failed("PackageKit did not finish within an hour.".into()),
+        Err(_) => cancel(bus, &path).await,
     }
+}
+
+/// Past the cap the transaction is cancelled, so it does not go on once the
+/// window has stopped waiting for it.
+async fn cancel(bus: &gio::DBusConnection, path: &str) -> Ending {
+    glib::g_warning!(
+        "fermix",
+        "PackageKit's {path} ran past its cap; cancelling it"
+    );
+    if let Err(e) = call(bus, path, pk::TRANSACTION, "Cancel", &().to_variant()).await {
+        glib::g_warning!("fermix", "PackageKit's {path} was not cancelled: {e}");
+    }
+    Ending::Failed("PackageKit did not finish within an hour.".into())
 }
 
 async fn create(bus: &gio::DBusConnection) -> Result<String, glib::Error> {
@@ -214,6 +229,15 @@ mod tests {
     /// One install with `flags` against a fresh bus whose PackageKit, if any,
     /// gives `answer`: the ending, what the fake saw, and every progress.
     fn install_against(answer: Option<Answer>, flags: u64) -> (Ending, Seen, Vec<Progress>) {
+        capped_against(answer, flags, TRANSACTION_CAP)
+    }
+
+    /// The same, with the transaction capped at `cap`.
+    fn capped_against(
+        answer: Option<Answer>,
+        flags: u64,
+        cap: Duration,
+    ) -> (Ending, Seen, Vec<Progress>) {
         let context = glib::MainContext::new();
         context
             .with_thread_default(|| {
@@ -223,7 +247,7 @@ mod tests {
                     let seen = answer.map(|a| fake(&service, vec![a]));
                     let heard = Rc::new(RefCell::new(Vec::new()));
                     let record = heard.clone();
-                    let install = install_on(&client, Path::new(FILE), flags, move |p| {
+                    let install = install_on(&client, Path::new(FILE), flags, cap, move |p| {
                         record.borrow_mut().push(p)
                     });
                     let ended = glib::future_with_timeout(TEST_CAP, install)
@@ -292,5 +316,16 @@ mod tests {
     fn a_bus_without_packagekit_falls_back_to_the_command() {
         let (ended, _, _) = install_against(None, ONLY_TRUSTED);
         assert_eq!(ended, Ending::Fallback(Fallback::Unavailable));
+    }
+
+    #[test]
+    fn a_transaction_past_its_cap_is_cancelled() {
+        let cap = Duration::from_millis(300);
+        let (ended, seen, _) = capped_against(Some(Answer::Hang), ONLY_TRUSTED, cap);
+        assert_eq!(
+            ended,
+            Ending::Failed("PackageKit did not finish within an hour.".into())
+        );
+        assert_eq!(seen.cancels, ["/org/freedesktop/PackageKit/t1"]);
     }
 }

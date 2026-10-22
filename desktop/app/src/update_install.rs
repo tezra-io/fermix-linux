@@ -413,7 +413,7 @@ mod tests {
     //! asked. Nothing reaches the host's buses, tools or network.
 
     use super::*;
-    use crate::packagekit::install_on;
+    use crate::packagekit::{install_on, TRANSACTION_CAP};
     use crate::packagekit_fake::{fake, Answer, PrivateBus, Seen, TEST_CAP};
     use fermix_client::update::feed::{Arch, Engine, Packages, Pair, Release};
     use fermix_client::update::fetch::{FetchConfig, Timeouts};
@@ -521,7 +521,7 @@ mod tests {
             progress: impl Fn(Progress) + 'static,
         ) -> Ending {
             self.hear("PackageKit");
-            let ending = install_on(&self.bus, file, flags, progress).await;
+            let ending = install_on(&self.bus, file, flags, TRANSACTION_CAP, progress).await;
             if self.tamper && flags == ONLY_TRUSTED {
                 std::fs::write(file, b"test package swapped while the password was asked\n")
                     .unwrap();
