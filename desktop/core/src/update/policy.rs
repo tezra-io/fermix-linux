@@ -11,6 +11,20 @@ use crate::update::version::{Installed, Version};
 pub const PACKAGED_PATH: &str = "/usr/bin/fermix-desktop";
 const PACKAGE: &str = "fermix-desktop";
 
+/// What `origin` reads: which package owns `PACKAGED_PATH`, asked of each database.
+pub const OWNER_DPKG: [&str; 3] = ["dpkg-query", "-S", PACKAGED_PATH];
+pub const OWNER_RPM: [&str; 5] = ["rpm", "-qf", "--qf", "%{NAME}\n", PACKAGED_PATH];
+
+/// The version of `fermix-desktop` the database that owns it has installed.
+/// The packages carry no Debian revision and no rpm epoch, so this is the
+/// release's X.Y.Z or a development build's.
+pub fn version_argv(format: Format) -> [&'static str; 5] {
+    match format {
+        Format::Deb => ["dpkg-query", "-W", "-f", "${Version}", PACKAGE],
+        Format::Rpm => ["rpm", "-q", "--qf", "%{VERSION}", PACKAGE],
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Rule 1: a development build never offers an update.

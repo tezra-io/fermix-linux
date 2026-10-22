@@ -10,6 +10,22 @@ use crate::update::store::{Checked, LastCheck, Remembered};
 use crate::update::version::Installed;
 use crate::update::view::check_failure;
 
+/// Automatic checks run at launch, then once this long after the last.
+pub const CHECK_EVERY: u64 = 24 * 60 * 60;
+
+/// Whether an automatic check is due at `now`: the switch is on, and a day
+/// has passed since the last check, or none is known. A last check dated
+/// after `now` was taken by a wrong clock, so it does not hold the next off.
+pub fn due(remembered: &Remembered, now: u64) -> bool {
+    let Some(last) = &remembered.last_check else {
+        return remembered.automatic;
+    };
+    let waited = now
+        .checked_sub(last.at)
+        .is_none_or(|ago| ago >= CHECK_EVERY);
+    remembered.automatic && waited
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub outcome: Outcome,

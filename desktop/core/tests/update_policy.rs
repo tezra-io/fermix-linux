@@ -3,7 +3,9 @@
 //! digest, is update_fetch.rs's.
 
 use fermix_client::update::feed::{Arch, Engine, Feed, Format, Package, Packages, Pair, Release};
-use fermix_client::update::policy::{decide, fresh, origin, Offer, Outcome};
+use fermix_client::update::policy::{
+    decide, fresh, origin, version_argv, Offer, Outcome, OWNER_DPKG, OWNER_RPM,
+};
 use fermix_client::update::version::{Installed, Version};
 
 fn v(text: &str) -> Version {
@@ -214,4 +216,21 @@ fn rule_6_the_package_follows_the_machine_and_the_package_manager() {
         "both databases claiming it is not an answer"
     );
     assert_eq!(origin(None, None), None);
+}
+
+#[test]
+fn rule_6_the_databases_are_asked_about_the_packaged_window() {
+    assert_eq!(OWNER_DPKG, ["dpkg-query", "-S", "/usr/bin/fermix-desktop"]);
+    assert_eq!(
+        OWNER_RPM,
+        ["rpm", "-qf", "--qf", "%{NAME}\n", "/usr/bin/fermix-desktop"]
+    );
+    assert_eq!(
+        version_argv(Format::Deb),
+        ["dpkg-query", "-W", "-f", "${Version}", "fermix-desktop"]
+    );
+    assert_eq!(
+        version_argv(Format::Rpm),
+        ["rpm", "-q", "--qf", "%{VERSION}", "fermix-desktop"]
+    );
 }

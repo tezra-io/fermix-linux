@@ -5,6 +5,7 @@
 
 use crate::update::feed::{Arch, Format};
 use crate::update::identity::Alignment;
+use crate::update::packagekit;
 use crate::update::policy::{Offer, Outcome, PACKAGED_PATH};
 use crate::update::store::Remembered;
 use crate::update::version::{Installed, Version};
@@ -158,6 +159,15 @@ pub enum Waiting {
     Lock,
     /// The system's password prompt is open.
     Password,
+}
+
+/// What a transaction's PackageKit status says it waits for, if anything.
+pub fn waiting(status: u32) -> Option<Waiting> {
+    match status {
+        packagekit::status::WAITING_FOR_LOCK => Some(Waiting::Lock),
+        packagekit::status::WAITING_FOR_AUTH => Some(Waiting::Password),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

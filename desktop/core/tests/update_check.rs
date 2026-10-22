@@ -6,7 +6,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
-use fermix_client::update::check::{check, remember, CheckError};
+use fermix_client::update::check::{check, due, remember, CheckError, CHECK_EVERY};
 use fermix_client::update::feed::{FeedError, FeedKey, Format};
 use fermix_client::update::fetch::{FetchConfig, FetchError, Fetcher, Timeouts};
 use fermix_client::update::identity::Alignment;
@@ -362,4 +362,28 @@ fn the_window_comes_back_as_the_installed_binary_taking_over_its_name() {
         RELAUNCH,
         ["/usr/bin/fermix-desktop", "--gapplication-replace"]
     );
+}
+
+#[test]
+fn an_automatic_check_is_due_a_day_after_the_last() {
+    let at = |seconds: u64| Remembered {
+        last_check: Some(LastCheck {
+            at: seconds,
+            result: Checked::UpToDate,
+        }),
+        ..Remembered::default()
+    };
+    assert_eq!(CHECK_EVERY, 24 * 60 * 60);
+    assert!(due(&Remembered::default(), 1_000), "never checked");
+    assert!(!due(&at(1_000), 1_000 + CHECK_EVERY - 1));
+    assert!(due(&at(1_000), 1_000 + CHECK_EVERY));
+    assert!(
+        due(&at(5_000), 1_000),
+        "a last check in the future is a clock that was wrong"
+    );
+    let off = Remembered {
+        automatic: false,
+        ..Remembered::default()
+    };
+    assert!(!due(&off, 1_000), "the switch is off");
 }

@@ -6,6 +6,7 @@
 use fermix_client::update::packagekit::{
     ending, error, exit, refusal, status, Ending, Fallback, ONLY_TRUSTED,
 };
+use fermix_client::update::state::{waiting, Waiting};
 
 #[test]
 fn the_numbers_are_packagekit_s() {
@@ -120,4 +121,12 @@ fn a_bus_without_packagekit_or_a_refusal_falls_back_to_the_command() {
         ),
         Ending::Failed("no such file".into())
     );
+}
+
+#[test]
+fn the_dialog_says_what_packagekit_waits_for() {
+    assert_eq!(waiting(status::WAITING_FOR_LOCK), Some(Waiting::Lock));
+    assert_eq!(waiting(status::WAITING_FOR_AUTH), Some(Waiting::Password));
+    assert_eq!(waiting(9), None, "installing");
+    assert_eq!(waiting(0), None);
 }
