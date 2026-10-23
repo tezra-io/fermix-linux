@@ -13,8 +13,9 @@
 # which says where an rpm image's test tools come from; provided_engine, which reads the engine
 # version `fermix --version` has to answer with from what the installed package provides;
 # status_names, which reads the engine `fermix status` names running during an upgrade;
-# save_journal, which keeps the account's journal and the container's; and the flags the script
-# accepts.
+# save_journal, which keeps the account's journal and the container's; start_service, which gives
+# root owner read on the shadow file before the linger starts the user manager; and the flags the
+# script accepts.
 #   desktop/packaging/smoke_in_container_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -261,6 +262,27 @@ grep -qxF 'journalctl --no-pager _UID=1001' "$work/out/account.journal" ||
 grep -qxF 'journalctl --no-pager' "$work/out/system.journal" ||
   fail "save_journal did not keep the container's whole journal: $(cat "$work/out/system.journal")"
 echo "  ok: the account's journal, and the container's whole journal, logind's and user@1001's among it"
+
+# A stand-in useradd, and a loginctl that keeps the mode the shadow file has when it is asked to
+# make the account linger, which starts its user manager, and then refuses.
+printf '#!/bin/sh\nexit 0\n' > "$work/bin/useradd"
+printf '#!/bin/sh\nstat -c %%a "%s" > "%s"\nexit 1\n' "$work/shadow" "$work/linger-saw" > "$work/bin/loginctl"
+chmod 0755 "$work/bin/useradd" "$work/bin/loginctl"
+
+echo "smoke_in_container_test: the shadow file root reads when the user manager starts"
+install -m 0000 /dev/null "$work/shadow"
+if (
+  # shellcheck source=desktop/packaging/smoke_in_container.sh
+  source "$here/smoke_in_container.sh"
+  trap - ERR
+  SHADOW="$work/shadow" ACCOUNT_HOME="$work" OUT="$work/out" PATH="$work/bin:$PATH" start_service
+) 2> /dev/null; then
+  fail "start_service went on past a loginctl that refused"
+fi
+[ -f "$work/linger-saw" ] || fail "start_service never asked loginctl to make the account linger"
+[ "$(cat "$work/linger-saw")" = 400 ] ||
+  fail "the shadow file was mode $(cat "$work/linger-saw"), not 400, when the user manager started"
+echo "  ok: Fedora's mode 0000 is 0400 by then, which root reads with no capability"
 
 echo "smoke_in_container_test: the flags it accepts"
 run_script() {

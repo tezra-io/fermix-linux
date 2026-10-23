@@ -67,6 +67,8 @@ USER_MANAGER_WAIT_SECONDS=60
 ENGINE_WAIT_SECONDS=180
 # The last answer of `fermix status`, which a failed wait quotes.
 STATUS_ANSWER=/tmp/fermix-status.txt
+# The file PAM reads the account from when it starts the account's user manager.
+SHADOW=/etc/shadow
 
 fail() {
   echo "smoke_in_container: $*" >&2
@@ -455,6 +457,12 @@ as_account() {
 start_service() {
   local uid
   useradd --create-home --home-dir "$ACCOUNT_HOME" "$ACCOUNT" || fail "useradd cannot create the account $ACCOUNT"
+  # The linger starts the user manager, whose PAM account check runs unix_chkpwd, and that reads the
+  # account from the shadow file. Fedora's is mode 0000, which root reads only through
+  # CAP_DAC_READ_SEARCH or CAP_DAC_OVERRIDE. This container is unconfined, so an Ubuntu host's
+  # AppArmor profile for unix_chkpwd attaches to it by path, and that profile grants neither
+  # (upstream AppArmor added dac_read_search in 556396a1). Owner read needs no capability.
+  chmod u+r "$SHADOW" || fail "cannot give root owner read on $SHADOW"
   loginctl enable-linger "$ACCOUNT" || fail "loginctl cannot make $ACCOUNT linger"
   uid="$(id -u "$ACCOUNT")"
   wait_for "$USER_MANAGER_WAIT_SECONDS" test -S "/run/user/$uid/systemd/private" ||
