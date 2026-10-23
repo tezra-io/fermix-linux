@@ -12,8 +12,9 @@
 # check_wayland_client, which holds the window to the private libwayland-client; tools_from_epel,
 # which says where an rpm image's test tools come from; provided_engine, which reads the engine
 # version `fermix --version` has to answer with from what the installed package provides;
-# status_names, which reads the engine `fermix status` names running during an upgrade; and the
-# flags the script accepts.
+# status_names, which reads the engine `fermix status` names running during an upgrade;
+# save_journal, which keeps the account's journal and the container's; and the flags the script
+# accepts.
 #   desktop/packaging/smoke_in_container_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -246,6 +247,20 @@ grep -qxF 'fermix: not running' "$work/answer" || fail "status_names did not kee
 [ "$(status_pid 'fermix: running (pid ?, version 0.14.0, up 1s, protocol v2)' 0 0.14.0)" = refused ] ||
   fail "status_names took an engine with no pid for a running one"
 echo "  ok: another version, a stopped engine and an engine with no pid are not the engine it waits for"
+
+# A stand-in journalctl that prints what it was asked.
+printf '#!/bin/sh\necho "journalctl $*"\n' > "$work/bin/journalctl"
+chmod 0755 "$work/bin/journalctl"
+
+echo "smoke_in_container_test: the journals an upgrade keeps"
+mkdir -p "$work/out"
+sourced save_journal
+grep -qxF 'journalctl --no-pager _UID=1001' "$work/out/account.journal" ||
+  fail "save_journal did not keep the account's journal: $(cat "$work/out/account.journal")"
+[ -f "$work/out/system.journal" ] || fail "save_journal did not keep the system journal"
+grep -qxF 'journalctl --no-pager' "$work/out/system.journal" ||
+  fail "save_journal did not keep the container's whole journal: $(cat "$work/out/system.journal")"
+echo "  ok: the account's journal, and the container's whole journal, logind's and user@1001's among it"
 
 echo "smoke_in_container_test: the flags it accepts"
 run_script() {

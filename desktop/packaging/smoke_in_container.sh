@@ -26,7 +26,8 @@
 # must answer with the new engine, while `fermix status` still names the old engine, with the same
 # pid. After `systemctl --user daemon-reload` and a restart of fermix.service, `fermix status` must
 # name the new engine, with another pid. The libraries check and its control must still hold. The
-# account's journal is kept in account.journal, whether the upgrade passes or fails.
+# account's journal is kept in account.journal, and the container's in system.journal, whether the
+# upgrade passes or fails.
 #
 # Usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>
 #          --displays "<x11 | wayland | x11 wayland>"
@@ -490,9 +491,11 @@ restart_service() {
   log "reloaded $ACCOUNT's user manager and restarted fermix.service"
 }
 
-# What the account's user manager and engine logged, into account.journal.
+# What the container logged since it booted, logind's start of the account's user manager among it,
+# into system.journal, and what that user manager and the engine logged, into account.journal.
 save_journal() {
   local uid
+  journalctl --no-pager > "$OUT/system.journal" 2>&1 || log "journalctl cannot read the system journal"
   # Before the account exists there is nothing of its to keep.
   uid="$(id -u "$ACCOUNT" 2> /dev/null)" || return 0
   journalctl --no-pager "_UID=$uid" > "$OUT/account.journal" 2>&1 || log "journalctl cannot read $ACCOUNT's journal"
