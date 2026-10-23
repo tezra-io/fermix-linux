@@ -1,566 +1,480 @@
-//! The conversation the Chat page draws: what was asked, what streamed back,
-//! which tools ran, and whether a reply is still coming.
+//! The Chat page's entries, read off the chat wire's timeline: held rows, questions still
+//! sending, the running turn with its tools, and the last failure.
 
-use fermix_client::acp::{StopReason, ToolKind, ToolStatus, Update};
-use fermix_client::chat::{Entry, Phase, RunState, ToolRun, Transcript};
+use fermix_client::chat::{view, Entry, Key, RunState};
+use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
+use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::media::{Strip, TileKind};
+use fermix_client::places::Card;
+use serde_json::{json, Value};
+use std::collections::{BTreeSet, HashSet};
 
-fn chunk(text: &str) -> Update {
-    Update::MessageChunk(text.into())
+fn event(value: Value) -> ServerEvent {
+    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
 }
 
-/// A wall-clock time, in seconds since the epoch, `n` seconds into the test.
-fn at(n: i64) -> i64 {
-    1_790_000_000 + n
-}
-
-#[test]
-fn a_new_conversation_is_empty_and_ready() {
-    let t = Transcript::default();
-    assert!(t.entries().is_empty());
-    assert_eq!(t.phase(), Phase::Idle);
-    assert!(t.can_send());
-}
-
-#[test]
-fn sending_records_the_question_and_waits_for_the_reply() {
-    let mut t = Transcript::default();
-    assert!(t.send("  What is on my calendar?  ", at(0)));
-    assert_eq!(t.entries(), [Entry::User("What is on my calendar?".into())]);
-    assert_eq!(t.phase(), Phase::Waiting);
-    assert!(!t.can_send(), "one reply at a time");
-    assert!(
-        !t.send("again", at(0)),
-        "a second question waits for the first reply"
+fn connected() -> Chat {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    timeline::receive(
+        &mut chat,
+        event(
+            json!({"type": "history_page", "profile_id": "main", "history_head_seq": 0,
+            "messages": []}),
+        ),
+        0,
     );
+    chat
 }
 
-#[test]
-fn a_blank_message_is_never_sent() {
-    let mut t = Transcript::default();
-    assert!(!t.send("   \n ", at(0)));
-    assert!(t.entries().is_empty());
+fn row(chat: &mut Chat, seq: u64, role: &str, text: &str, extra: Value) {
+    let mut row = json!({"type": "row", "profile_id": "main", "server_seq": seq, "role": role,
+        "text": text, "ts": "2026-09-25T09:00:00Z", "media_refs": []});
+    for (key, value) in extra.as_object().unwrap() {
+        row[key] = value.clone();
+    }
+    timeline::receive(chat, event(row), 0);
 }
 
-#[test]
-fn chunks_join_into_one_reply_until_a_tool_runs_between_them() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.apply(&chunk("Hel"), at(1));
-    assert_eq!(t.phase(), Phase::Streaming);
-    t.apply(&chunk("lo."), at(1));
-    t.apply(&call("t1", "web_search", ToolKind::Fetch), at(2));
-    t.apply(&ended("t1", ToolStatus::Completed), at(3));
-    t.apply(&chunk("Found it."), at(4));
-    assert_eq!(
-        t.entries(),
-        [
-            Entry::User("hi".into()),
-            Entry::Assistant("Hello.".into()),
-            Entry::Tools(vec![run(
-                "t1",
-                "web_search",
-                ToolKind::Fetch,
-                RunState::Done,
-                2,
-                Some(3)
-            )]),
-            Entry::Assistant("Found it.".into()),
-        ]
-    );
-}
-
-#[test]
-fn tools_in_a_row_fold_into_one_group_until_text_comes() {
-    let mut t = Transcript::default();
-    t.send("plan my day", at(0));
-    t.apply(&call("t1", "web_search", ToolKind::Fetch), at(1));
-    t.apply(&call("t2", "shell", ToolKind::Execute), at(2));
-    t.apply(&ended("t1", ToolStatus::Completed), at(3));
-    assert!(
-        t.apply(&ended("t2", ToolStatus::Failed), at(5)),
-        "an update finds its run inside the group"
-    );
-    t.apply(&chunk("Here is your day."), at(6));
-    t.apply(&call("t3", "file_read", ToolKind::Read), at(7));
-    assert_eq!(
-        t.entries(),
-        [
-            Entry::User("plan my day".into()),
-            Entry::Tools(vec![
-                run(
-                    "t1",
-                    "web_search",
-                    ToolKind::Fetch,
-                    RunState::Done,
-                    1,
-                    Some(3)
-                ),
-                run(
-                    "t2",
-                    "shell",
-                    ToolKind::Execute,
-                    RunState::Failed,
-                    2,
-                    Some(5)
-                ),
-            ]),
-            Entry::Assistant("Here is your day.".into()),
-            Entry::Tools(vec![run(
-                "t3",
-                "file_read",
-                ToolKind::Read,
-                RunState::Running,
-                7,
-                None
-            )]),
-        ]
-    );
-}
-
-#[test]
-fn an_update_for_a_tool_nobody_announced_changes_nothing() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    let shown = t.apply(&ended("ghost", ToolStatus::Failed), at(1));
-    assert!(!shown, "the page logs what it could not place");
-    assert_eq!(t.entries(), [Entry::User("hi".into())]);
-}
-
-#[test]
-fn an_update_this_app_does_not_know_is_reported_as_not_shown() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    assert!(!t.apply(&Update::Other("plan".into()), at(1)));
-    assert!(
-        t.apply(&chunk(""), at(1)),
-        "an empty chunk is understood, only empty"
-    );
-    assert!(t.apply(&chunk("Hello"), at(1)));
-    assert_eq!(t.entries().len(), 2);
-}
-
-#[test]
-fn a_reply_cut_short_says_why_in_a_note() {
-    for (reason, note) in [
-        ("max_tokens", "The reply ran out of room."),
-        ("refusal", "Fermix declined to answer this."),
-        ("max_turn_requests", "The reply ended early."),
-    ] {
-        let mut t = Transcript::default();
-        t.send("essay", at(0));
-        t.apply(&chunk("Once"), at(1));
-        t.finish(&StopReason::Other(reason.into()), at(1));
-        assert_eq!(
-            t.entries().last(),
-            Some(&Entry::Notice(note.into())),
-            "{reason}"
-        );
+/// A reply with no places and nothing under it.
+fn reply(text: &str) -> Entry {
+    Entry::Assistant {
+        text: text.into(),
+        places: Vec::new(),
+        media: Strip::default(),
     }
 }
 
-#[test]
-fn a_finished_reply_frees_the_composer() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.apply(&chunk("Hello"), at(1));
-    t.finish(&StopReason::EndTurn, at(1));
-    assert_eq!(t.phase(), Phase::Idle);
-    assert!(t.can_send());
-    assert_eq!(t.entries().len(), 2);
+/// The person's words with nothing under them.
+fn said(text: &str) -> Entry {
+    Entry::User {
+        text: text.into(),
+        media: Strip::default(),
+    }
 }
 
-#[test]
-fn stopping_marks_the_reply_as_stopped() {
-    let mut t = Transcript::default();
-    t.send("write an essay", at(0));
-    t.apply(&chunk("Once"), at(1));
-    assert!(t.stop());
-    assert_eq!(t.phase(), Phase::Stopping);
-    assert!(!t.stop(), "a second stop sends nothing");
-    t.finish(&StopReason::Cancelled, at(1));
-    assert_eq!(t.phase(), Phase::Idle);
-    assert_eq!(t.entries().last(), Some(&Entry::Notice("Stopped".into())));
+/// The places a reply's entry carries, by name.
+fn place_names(entry: &Entry) -> Vec<&str> {
+    let Entry::Assistant { places, .. } = entry else {
+        panic!("a reply: {entry:?}");
+    };
+    places
+        .iter()
+        .map(|card: &Card| card.name.as_str())
+        .collect()
 }
 
-#[test]
-fn nothing_to_stop_while_idle() {
-    let mut t = Transcript::default();
-    assert!(!t.stop());
-}
+const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
 
-#[test]
-fn a_failed_reply_says_why_and_frees_the_composer() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.fail("Fermix could not answer.", at(1));
-    assert_eq!(t.phase(), Phase::Idle);
-    assert_eq!(
-        t.entries().last(),
-        Some(&Entry::Failure("Fermix could not answer.".into()))
-    );
-}
-
-#[test]
-fn a_tool_still_running_when_the_reply_ends_says_how_it_ended() {
-    let cases = [
-        (Some(StopReason::Cancelled), RunState::Stopped),
-        (Some(StopReason::EndTurn), RunState::Unfinished),
-        (None, RunState::Unfinished),
-    ];
-    for (reason, state) in cases {
-        let mut t = Transcript::default();
-        t.send("hi", at(0));
-        t.apply(&call("t1", "shell", ToolKind::Execute), at(1));
-        t.apply(&call("t2", "web_search", ToolKind::Fetch), at(2));
-        t.apply(&ended("t2", ToolStatus::Completed), at(3));
-        match &reason {
-            Some(reason) => t.finish(reason, at(4)),
-            None => t.fail("The chat connection to Fermix broke.", at(4)),
+/// The vendored places block of the reply to `turn`, as JSON.
+fn fixture_blocks(turn: &str) -> Value {
+    for line in SERVER.lines() {
+        let event: Value = serde_json::from_str(line).expect("a fixture line is JSON");
+        if event["type"] == "text_done" && event["turn_id"] == turn {
+            return event["blocks"].clone();
         }
-        let Entry::Tools(runs) = &t.entries()[1] else {
-            panic!("the tools are one group: {:?}", t.entries());
-        };
-        assert_eq!(
-            (runs[0].state, runs[0].ended),
-            (state, Some(at(4))),
-            "{reason:?}"
-        );
-        assert_eq!(
-            runs[1].state,
-            RunState::Done,
-            "a finished run keeps its end"
-        );
     }
+    panic!("no text_done for {turn} in the fixtures");
 }
 
 #[test]
-fn a_refused_reply_is_explained_in_words_a_person_can_act_on() {
-    use fermix_client::chat::{reply_error, ReplyError};
-    assert_eq!(
-        reply_error(
-            -32000,
-            "Re-authenticate: the model provider rejected Fermix's credentials."
-        ),
-        ReplyError::SignInAgain
-    );
-    assert_eq!(
-        ReplyError::SignInAgain.sentence(),
-        "Your provider refused Fermix's sign-in. Sign in again under Providers."
-    );
-    assert_eq!(
-        reply_error(
-            -32603,
-            "the Fermix turn failed; the daemon log has the reason"
-        ),
-        ReplyError::Failed
-    );
-    assert_eq!(
-        ReplyError::Failed.sentence(),
-        "Fermix could not answer. The reason is in Logs."
-    );
-    assert_eq!(
-        reply_error(-32602, "prompt must be a list of ACP content blocks"),
-        ReplyError::Refused("prompt must be a list of ACP content blocks".into())
-    );
+fn an_empty_chat_has_no_entries_and_no_turn() {
+    let shown = view(&Chat::default());
+    assert!(shown.entries.is_empty());
+    assert!(shown.turn.is_none());
+    assert!(!shown.thinking);
 }
 
 #[test]
-fn a_note_marks_where_the_assistant_stopped_remembering() {
-    let mut t = Transcript::default();
-    t.note("The connection to Fermix ended, so your next message starts a new conversation.");
-    assert!(
-        t.entries().is_empty(),
-        "nothing to separate in an empty conversation"
-    );
-    t.send("hi", at(0));
-    t.finish(&fermix_client::acp::StopReason::EndTurn, at(1));
-    t.note("The connection to Fermix ended, so your next message starts a new conversation.");
-    t.note("The connection to Fermix ended, so your next message starts a new conversation.");
-    assert_eq!(
-        t.entries().last(),
-        Some(&Entry::Notice(
-            "The connection to Fermix ended, so your next message starts a new conversation."
-                .into()
-        ))
-    );
-    assert_eq!(
-        t.entries().len(),
-        2,
-        "the same note twice in a row is shown once"
-    );
-}
-
-fn picture() -> fermix_client::acp::Image {
-    fermix_client::acp::Image {
-        mime: "image/png".into(),
-        bytes: vec![1, 2, 3].into(),
-    }
-}
-
-fn call(id: &str, name: &str, kind: ToolKind) -> Update {
-    Update::ToolCall {
-        id: id.into(),
-        title: name.into(),
-        kind,
-        status: ToolStatus::Running,
-    }
-}
-
-fn running(id: &str) -> Update {
-    call(id, "web_search", ToolKind::Fetch)
-}
-
-fn ended(id: &str, status: ToolStatus) -> Update {
-    Update::ToolUpdate {
-        id: id.into(),
-        status,
-    }
-}
-
-fn run(
-    id: &str,
-    name: &str,
-    kind: ToolKind,
-    state: RunState,
-    started: i64,
-    ended: Option<i64>,
-) -> ToolRun {
-    ToolRun {
-        id: id.into(),
-        name: name.into(),
-        kind,
-        state,
-        started: at(started),
-        ended: ended.map(at),
-    }
+fn rows_read_as_the_person_and_fermix_with_their_times() {
+    let mut chat = connected();
+    row(&mut chat, 1, "user", "Hi", json!({}));
+    row(&mut chat, 2, "assistant", "Hello **there**", json!({}));
+    let shown = view(&chat);
+    assert_eq!(shown.entries, [said("Hi"), reply("Hello **there**")]);
+    assert_eq!(shown.times[0].as_deref(), Some("2026-09-25T09:00:00Z"));
+    assert_eq!(shown.first_seq, Some(1));
 }
 
 #[test]
-fn thoughts_gather_into_one_entry_ahead_of_the_reply() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.apply(&Update::ThoughtChunk("Look".into()), at(1));
-    t.apply(&Update::ThoughtChunk("ing it up.".into()), at(1));
-    assert_eq!(t.phase(), Phase::Streaming);
-    t.apply(&chunk("Found it."), at(1));
+fn a_question_shows_as_sending_until_its_row_arrives() {
+    let mut chat = connected();
+    timeline::send(&mut chat, "What is on today?", "linux-1".into());
     assert_eq!(
-        t.entries(),
+        view(&chat).entries,
+        [Entry::Sending("What is on today?".into())]
+    );
+    row(
+        &mut chat,
+        1,
+        "user",
+        "What is on today?",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    assert_eq!(view(&chat).entries, [said("What is on today?")]);
+}
+
+#[test]
+fn a_turn_thinks_then_shows_its_tools_and_its_draft() {
+    let mut chat = connected();
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "turn_started", "profile_id": "main",
+        "turn_id": "t1", "in_reply_to": "linux-1"})),
+        100,
+    );
+    let shown = view(&chat);
+    assert!(shown.thinking);
+    let turn = shown.turn.expect("a live turn");
+    assert_eq!(turn.started, 100);
+    assert!(turn.can_stop);
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "tool_event", "turn_id": "t1",
+        "tool": "web_search", "phase": "start"})),
+        101,
+    );
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "text_delta", "turn_id": "t1",
+        "text": "Here"})),
+        102,
+    );
+    let shown = view(&chat);
+    assert!(!shown.thinking);
+    let Entry::Tools(runs) = &shown.entries[0] else {
+        panic!("the tools first");
+    };
+    assert_eq!(runs[0].name, "web_search");
+    assert_eq!(runs[0].state, RunState::Running);
+    assert_eq!(runs[0].started, 101);
+    assert_eq!(shown.entries[1], reply("Here"));
+}
+
+#[test]
+fn stop_marks_the_turn_stopping() {
+    let mut chat = connected();
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "turn_started", "profile_id": "main",
+        "turn_id": "t1", "in_reply_to": "linux-1"})),
+        0,
+    );
+    timeline::stop(&mut chat);
+    assert!(view(&chat).turn.unwrap().stopping);
+}
+
+#[test]
+fn a_joined_turn_cannot_be_stopped() {
+    let mut chat = connected();
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "text_delta", "turn_id": "t9",
+        "text": "so far"})),
+        0,
+    );
+    assert!(!view(&chat).turn.unwrap().can_stop);
+}
+
+#[test]
+fn the_last_failure_comes_last() {
+    let mut chat = connected();
+    timeline::receive(
+        &mut chat,
+        event(json!({"type": "turn_error", "turn_id": "t1",
+        "code": "interrupted", "message": "lost"})),
+        0,
+    );
+    assert_eq!(
+        view(&chat).entries,
+        [Entry::Failure("The reply was interrupted".into())]
+    );
+}
+
+/// A row of files is one entry: its strip under no words, keyed by its row.
+#[test]
+fn a_row_of_files_is_one_entry_with_its_strip() {
+    let mut chat = connected();
+    let media = json!({"media_refs": [
+        {"ref": "a", "kind": "audio", "mime": "audio/ogg", "size_bytes": 1},
+        {"ref": "b", "kind": "image", "mime": "image/jpeg", "size_bytes": 1, "filename": "lamp.jpg"}
+    ]});
+    row(&mut chat, 1, "user", "", media.clone());
+    row(&mut chat, 2, "assistant", "lamp.jpg", media);
+    let shown = view(&chat);
+    assert_eq!(shown.keys, [Key::Row(1), Key::Row(2)]);
+    let Entry::User { text, media } = &shown.entries[0] else {
+        panic!("the person's row: {:?}", shown.entries[0]);
+    };
+    assert_eq!(text, "");
+    assert_eq!(
+        media.voice.as_ref().map(|note| note.r#ref.as_str()),
+        Some("a")
+    );
+    let tiles: Vec<(&str, TileKind)> = media
+        .tiles
+        .iter()
+        .map(|tile| (tile.name.as_str(), tile.kind))
+        .collect();
+    assert_eq!(tiles, [("lamp.jpg", TileKind::Picture)]);
+    let Entry::Assistant { text, media, .. } = &shown.entries[1] else {
+        panic!("Fermix's row: {:?}", shown.entries[1]);
+    };
+    assert_eq!(text, "", "the line naming the tile went to the tile");
+    assert_eq!(media.tiles.len(), 1);
+}
+
+/// A row with nothing to say and nothing to show draws nothing.
+#[test]
+fn a_row_with_no_words_and_no_files_draws_nothing() {
+    let mut chat = connected();
+    row(&mut chat, 1, "user", "  ", json!({}));
+    assert!(view(&chat).entries.is_empty());
+}
+
+fn receive(chat: &mut Chat, value: Value) {
+    timeline::receive(chat, event(value), 0);
+}
+
+fn page_of(seqs: impl IntoIterator<Item = u64>, head: u64, older: Option<u64>) -> Value {
+    let messages: Vec<Value> = seqs
+        .into_iter()
+        .map(|seq| {
+            json!({"server_seq": seq, "role": "user", "content": format!("Message {seq}"),
+            "kind": "text", "ts": "2026-09-25T09:00:00Z", "media_refs": []})
+        })
+        .collect();
+    let mut page = json!({"type": "history_page", "profile_id": "main", "messages": messages,
+        "history_head_seq": head});
+    if let Some(before) = older {
+        page["next_before_seq"] = json!(before);
+    }
+    page
+}
+
+/// The page keeps each entry's widget by its key, and reads which held row each entry draws.
+#[test]
+fn every_entry_has_a_key_of_its_own_and_names_the_row_it_draws() {
+    let mut chat = connected();
+    let voice = json!({"client_msg_id": "linux-1", "media_refs": [
+        {"ref": "a", "kind": "audio", "mime": "audio/ogg", "size_bytes": 1}]});
+    row(&mut chat, 1, "user", "Hi", voice);
+    row(&mut chat, 2, "assistant", "Hello", json!({}));
+    timeline::send(&mut chat, "And?", "linux-2".into());
+    receive(
+        &mut chat,
+        json!({"type": "turn_error", "turn_id": "t0", "code": "interrupted", "message": "x"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-2"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "tool_event", "turn_id": "t1", "tool": "web_search", "phase": "start"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "So"}),
+    );
+    let shown = view(&chat);
+    assert_eq!(
+        shown.keys,
         [
-            Entry::User("hi".into()),
-            Entry::Thought("Looking it up.".into()),
-            Entry::Assistant("Found it.".into()),
+            Key::Row(1),
+            Key::Row(2),
+            Key::Sending("linux-2".into()),
+            Key::Tools("t1".into()),
+            Key::Reply("t1".into(), 0),
+            Key::Failure,
         ]
     );
+    assert_eq!(shown.keys.len(), shown.entries.len());
+    assert_eq!(shown.seqs, [Some(1), Some(2), None, None, None, None]);
 }
 
+/// The streamed reply and the row it becomes are one widget, also after the row is read again.
 #[test]
-fn a_picture_sits_between_the_text_around_it() {
-    let mut t = Transcript::default();
-    t.send("show me", at(0));
-    t.apply(&chunk("Here:"), at(1));
-    t.apply(&Update::Image(picture()), at(1));
-    t.apply(&chunk("Like it?"), at(1));
+fn a_reply_keeps_its_key_from_its_first_words_to_the_row_it_becomes() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Hi",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Hel"}),
+    );
+    let streaming = view(&chat);
+    assert_eq!(streaming.keys, [Key::Row(1), Key::Reply("t1".into(), 0)]);
+    assert_eq!(streaming.seqs, [Some(1), None]);
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2, "text": "Hello"}),
+    );
+    let held = view(&chat);
+    assert_eq!(held.keys, streaming.keys);
+    assert_eq!(held.seqs, [Some(1), Some(2)]);
+    // Away and back: the row on screen is read again and keeps its key.
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::from([2]));
+    receive(&mut chat, page_of([], 2, None));
+    let mut reread = page_of([2], 2, None);
+    reread["messages"][0]["role"] = json!("assistant");
+    reread["messages"][0]["content"] = json!("Hello again");
+    receive(&mut chat, reread);
+    let again = view(&chat);
+    assert_eq!(again.entries[1], reply("Hello again"));
+    assert_eq!(again.keys, streaming.keys);
+}
+
+/// A page read backward lands above: every entry already drawn keeps its key and its order.
+#[test]
+fn a_page_read_backward_adds_keys_above_and_keeps_every_key_below() {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    receive(&mut chat, page_of(51..=100, 100, Some(51)));
+    let before = view(&chat).keys;
+    assert_eq!(before.first(), Some(&Key::Row(51)));
+    assert!(!timeline::pull_older(&mut chat).is_empty());
+    receive(&mut chat, page_of(1..=50, 100, None));
+    let after = view(&chat).keys;
+    assert_eq!(after.len(), 100);
+    assert_eq!(after.first(), Some(&Key::Row(1)));
+    assert!(after.ends_with(&before));
+}
+
+/// A turn may send `text_done` more than once (PROTOCOL.md): each of its replies keeps a key of
+/// its own, and the next one streaming takes the key its row will have.
+#[test]
+fn every_reply_of_a_turn_has_a_key_of_its_own() {
+    let unique = |keys: &[Key]| keys.iter().collect::<HashSet<_>>().len() == keys.len();
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Hi",
+        json!({"client_msg_id": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2, "text": "First"}),
+    );
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Sec"}),
+    );
+    let streaming = view(&chat);
+    assert!(unique(&streaming.keys), "{:?}", streaming.keys);
     assert_eq!(
-        t.entries(),
+        streaming.keys,
         [
-            Entry::User("show me".into()),
-            Entry::Assistant("Here:".into()),
-            Entry::Image(picture()),
-            Entry::Assistant("Like it?".into()),
+            Key::Row(1),
+            Key::Reply("t1".into(), 0),
+            Key::Reply("t1".into(), 1)
         ]
     );
-}
-
-#[test]
-fn a_file_that_could_not_come_through_is_named_in_its_own_entry() {
-    let mut t = Transcript::default();
-    t.send("screenshot please", at(0));
-    t.apply(&Update::Attachment("shot.png".into()), at(1));
-    t.apply(&chunk("Sent."), at(1));
-    assert_eq!(t.entries()[1], Entry::Attachment("shot.png".into()));
-    assert_eq!(t.entries()[2], Entry::Assistant("Sent.".into()));
-}
-
-#[test]
-fn the_orb_shows_while_fermix_works_and_nothing_else_on_screen_moves() {
-    let mut t = Transcript::default();
-    assert!(!t.thinking(), "nothing asked yet");
-    t.send("hi", at(0));
-    assert!(t.thinking(), "asked, nothing back");
-    t.apply(&Update::ThoughtChunk("Hmm".into()), at(1));
-    assert!(
-        !t.thinking(),
-        "a live thought carries the orb in its own title, so there is one signal"
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 3, "text": "Second"}),
     );
-    t.apply(&running("t1"), at(1));
-    assert!(
-        !t.thinking(),
-        "a running tool's group carries the live line"
+    let held = view(&chat);
+    assert!(unique(&held.keys), "{:?}", held.keys);
+    assert_eq!(held.keys, streaming.keys, "the draft's key is its row's");
+}
+
+/// A reply's places come with its row: none while it streams, its cards from `text_done` on, in
+/// the same entry under the same key, so the reply grows its cards in place.
+#[test]
+fn a_streamed_reply_gains_its_places_at_text_done_under_its_key() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Coffee?",
+        json!({"client_msg_id": "linux-1"}),
     );
-    t.apply(&ended("t1", ToolStatus::Completed), at(1));
-    assert!(
-        !t.thinking(),
-        "so does a group whose tools are done, until text comes"
+    receive(
+        &mut chat,
+        json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+        "in_reply_to": "linux-1"}),
     );
-    t.apply(&chunk("Hel"), at(1));
-    assert!(!t.thinking(), "the text streaming in shows the work");
-    t.apply(&Update::Image(picture()), at(1));
-    assert!(t.thinking(), "after a picture, before more text");
-    assert!(t.stop());
-    assert!(t.thinking(), "stopping still waits on Fermix");
-    t.finish(&StopReason::Cancelled, at(1));
-    assert!(!t.thinking());
-}
-
-#[test]
-fn each_question_and_each_finished_reply_carry_a_time() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    assert_eq!(t.time(0), Some(at(0)));
-    t.apply(&chunk("Checking."), at(1));
-    t.apply(&running("t1"), at(1));
-    t.apply(&chunk("Done."), at(1));
-    assert_eq!(t.time(1), None, "a reply is timed once it ends");
-    assert_eq!(t.time(3), None);
-    t.finish(&StopReason::EndTurn, at(70));
-    assert_eq!(t.time(1), None, "only the end of the reply");
-    assert_eq!(t.time(2), None);
-    assert_eq!(t.time(3), Some(at(70)));
-    assert_eq!(t.time(4), None, "past the end");
-}
-
-#[test]
-fn a_reply_in_the_same_minute_as_its_question_repeats_no_time() {
-    let mut t = Transcript::default();
-    // at(0) is 20 s into its minute: at(39) is the same minute, at(40) the next.
-    t.send("hi", at(0));
-    t.apply(&chunk("Hello."), at(1));
-    t.finish(&StopReason::EndTurn, at(39));
-    assert_eq!(t.time(1), None, "the question's time already says it");
-    t.send("and now?", at(40));
-    t.apply(&chunk("Still here."), at(41));
-    t.finish(&StopReason::EndTurn, at(100));
-    assert_eq!(t.time(3), Some(at(100)), "a minute on, the reply says when");
-}
-
-#[test]
-fn a_turn_counts_from_its_question_while_it_runs() {
-    let mut t = Transcript::default();
-    assert_eq!(t.turn_started(), None);
-    t.send("hi", at(5));
-    assert_eq!(t.turn_started(), Some(at(5)));
-    t.apply(&chunk("Hel"), at(6));
-    assert_eq!(t.turn_started(), Some(at(5)));
-    t.fail("Fermix could not answer.", at(7));
-    assert_eq!(t.turn_started(), None, "nothing runs");
-    t.retry();
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t1", "text": "Two quiet ones"}),
+    );
+    let streaming = view(&chat);
+    assert_eq!(streaming.entries[1], reply("Two quiet ones"));
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 2,
+        "text": "Two quiet ones", "blocks": fixture_blocks("turn-mac-6")}),
+    );
+    let done = view(&chat);
+    assert_eq!(done.keys, streaming.keys);
     assert_eq!(
-        t.turn_started(),
-        Some(at(5)),
-        "a retry is the same question"
+        place_names(&done.entries[1]),
+        ["Example Coffee", "Quiet Grounds"]
     );
 }
 
 #[test]
-fn a_stopped_reply_is_timed_above_its_note() {
-    let mut t = Transcript::default();
-    t.send("essay", at(0));
-    t.apply(&chunk("Once"), at(1));
-    t.stop();
-    t.finish(&StopReason::Cancelled, at(65));
-    assert_eq!(t.entries()[2], Entry::Notice("Stopped".into()));
-    assert_eq!(t.time(1), Some(at(65)));
-    assert_eq!(t.time(2), None);
-}
-
-#[test]
-fn only_a_bubble_carries_the_time_a_reply_ended() {
-    let mut t = Transcript::default();
-    t.send("think", at(0));
-    t.apply(&Update::ThoughtChunk("Hmm".into()), at(1));
-    t.stop();
-    t.finish(&StopReason::Cancelled, at(4));
-    assert_eq!(t.time(1), None, "a thought is a caption, not a bubble");
-    let mut t = Transcript::default();
-    t.send("search", at(0));
-    t.apply(&running("t1"), at(1));
-    t.finish(&StopReason::EndTurn, at(4));
-    assert_eq!(t.time(1), None, "a tool row is a caption too");
-    let mut t = Transcript::default();
-    t.send("draw", at(0));
-    t.apply(&Update::Image(picture()), at(1));
-    t.finish(&StopReason::EndTurn, at(64));
-    assert_eq!(t.time(1), Some(at(64)), "a picture is a bubble");
-}
-
-#[test]
-fn a_reply_stopped_before_anything_came_keeps_only_the_question_time() {
-    let mut t = Transcript::default();
-    t.send("essay", at(0));
-    t.stop();
-    t.finish(&StopReason::Cancelled, at(3));
-    assert_eq!(t.time(0), Some(at(0)));
-    assert_eq!(t.time(1), None);
-}
-
-#[test]
-fn a_failed_reply_is_timed_and_retrying_asks_the_same_question_again() {
-    let mut t = Transcript::default();
-    t.send("hi", at(0));
-    t.apply(&chunk("Hal"), at(1));
-    t.fail("The chat connection to Fermix broke.", at(4));
-    assert_eq!(t.time(2), Some(at(4)));
-    assert!(t.can_retry());
-    assert_eq!(t.retry(), Some("hi".into()));
+fn a_row_read_from_history_or_read_again_carries_its_places() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "assistant",
+        "Two in Suwanee",
+        json!({"blocks": fixture_blocks("turn-mac-7")}),
+    );
+    let first = view(&chat);
     assert_eq!(
-        t.entries(),
-        [Entry::User("hi".into())],
-        "the half reply and the failure make way for the new reply"
+        place_names(&first.entries[0]),
+        ["Example Taqueria", "Second Cantina"]
     );
-    assert_eq!(t.time(0), Some(at(0)));
-    assert_eq!(t.phase(), Phase::Waiting);
-    assert!(!t.can_retry());
-    assert_eq!(t.retry(), None, "one retry at a time");
-}
-
-#[test]
-fn only_a_failure_that_ends_the_conversation_can_be_retried() {
-    let mut t = Transcript::default();
-    assert!(!t.can_retry());
-    assert_eq!(t.retry(), None);
-    t.send("hi", at(0));
-    t.fail("Fermix could not answer.", at(1));
-    t.send("again", at(2));
-    assert!(!t.can_retry(), "a newer question replaced it");
-    t.finish(&StopReason::EndTurn, at(3));
-    assert!(!t.can_retry());
-}
-
-#[test]
-fn a_picture_is_drawn_no_wider_than_fits_its_box_and_never_enlarged() {
-    use fermix_client::chat::picture_width;
-    assert_eq!(picture_width(800, 400, 440), 440, "wide: the box's width");
-    assert_eq!(picture_width(400, 800, 440), 220, "tall: the box's height");
-    assert_eq!(picture_width(100, 50, 440), 100, "small: its own size");
-    assert_eq!(picture_width(1, 10_000, 440), 1, "never nothing");
-}
-
-#[test]
-#[should_panic(expected = "has no size")]
-fn a_picture_without_a_size_is_a_bug() {
-    fermix_client::chat::picture_width(0, 10, 440);
-}
-
-#[test]
-fn a_saved_picture_is_named_for_its_type() {
-    use fermix_client::chat::picture_file_name;
-    assert_eq!(picture_file_name("image/png"), "Fermix image.png");
-    assert_eq!(picture_file_name("image/jpeg"), "Fermix image.jpg");
-    assert_eq!(picture_file_name("image/svg+xml"), "Fermix image.svg");
-    assert_eq!(picture_file_name("image/webp"), "Fermix image.webp");
+    // Away and back: the row read again with other places changes under the same key.
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::from([1]));
+    receive(&mut chat, page_of([], 1, None));
+    let mut reread = page_of([1], 1, None);
+    reread["messages"][0]["role"] = json!("assistant");
+    reread["messages"][0]["content"] = json!("Two in Suwanee");
+    reread["messages"][0]["blocks"] = fixture_blocks("turn-mac-6");
+    receive(&mut chat, reread);
+    let again = view(&chat);
+    assert_eq!(again.keys, first.keys);
     assert_eq!(
-        picture_file_name("image/../../x"),
-        "Fermix image",
-        "a type that is not a plain word names no extension"
+        place_names(&again.entries[0]),
+        ["Example Coffee", "Quiet Grounds"]
     );
+}
+
+#[test]
+fn a_person_s_row_never_draws_places() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "user",
+        "Here",
+        json!({"blocks": fixture_blocks("turn-mac-6")}),
+    );
+    assert_eq!(view(&chat).entries, [said("Here")]);
 }

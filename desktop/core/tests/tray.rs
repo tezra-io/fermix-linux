@@ -33,6 +33,8 @@ fn facts<'a>(daemon: Daemon<'a>, switch: &'a BackgroundSwitch) -> TrayFacts<'a> 
         daemon,
         pet_shown: false,
         background: switch,
+        update: "Check for Updates…".into(),
+        restart_pending: false,
     }
 }
 
@@ -92,7 +94,7 @@ fn the_menu_reads_as_the_macos_status_menu() {
         .map(|row| match row {
             Row::Status(text) => format!("[{text}]"),
             Row::Separator => "---".into(),
-            Row::Item(item) => item.label.to_owned(),
+            Row::Item(item) => item.label.clone(),
         })
         .collect();
     assert_eq!(
@@ -103,6 +105,7 @@ fn the_menu_reads_as_the_macos_status_menu() {
             "Open Fermix",
             "Settings",
             "Run Doctor",
+            "Check for Updates…",
             "---",
             "Restart Fermix…",
             "Show Pet",
@@ -165,12 +168,12 @@ fn the_restart_row_offers_what_home_offers() {
     let switch = background(true, true);
     let not_running = DaemonProblem::NotRunning;
     let start = tray_view(&facts(Daemon::Down(&not_running), &switch));
-    let row = &start.rows[6];
+    let row = &start.rows[7];
     assert_eq!(
         row,
         &Row::Item(Item {
             command: Command::StartService,
-            label: "Start Fermix",
+            label: "Start Fermix".into(),
             enabled: true,
             checked: None,
         })
@@ -178,7 +181,10 @@ fn the_restart_row_offers_what_home_offers() {
     let silent = DaemonProblem::NotResponding;
     let stuck = tray_view(&facts(Daemon::Down(&silent), &switch));
     let restart = item(&stuck.rows, Command::RestartService);
-    assert_eq!((restart.label, restart.enabled), ("Restart Fermix", true));
+    assert_eq!(
+        (restart.label.as_str(), restart.enabled),
+        ("Restart Fermix", true)
+    );
     let too_old = DaemonProblem::UpdateNeeded("Update the fermix package.".into());
     let update = tray_view(&facts(Daemon::Down(&too_old), &switch));
     assert_eq!(update.status, "Update needed");
@@ -227,6 +233,7 @@ fn a_row_that_may_ask_a_question_brings_the_window_up_first() {
         Command::Doctor,
         Command::Restart,
         Command::ToggleBackground,
+        Command::Update,
     ] {
         assert!(command.needs_window(), "{command:?}");
     }
@@ -254,4 +261,53 @@ fn each_glyph_is_an_icon_the_package_exports() {
     assert_eq!(Glyph::Running.label(), "Fermix is running");
     assert_eq!(Glyph::Starting.label(), "Fermix is starting");
     assert_eq!(Glyph::Attention.label(), "Fermix needs attention");
+}
+
+#[test]
+fn the_update_row_says_what_the_updater_found() {
+    let ready = state("ready", false);
+    let switch = background(true, true);
+    let mut found = facts(
+        Daemon::Up {
+            state: &ready,
+            uptime_ms: None,
+        },
+        &switch,
+    );
+    found.update = "Update to 0.4.0…".into();
+    let view = tray_view(&found);
+    let update = item(&view.rows, Command::Update);
+    assert_eq!(update.label, "Update to 0.4.0…");
+    assert!(update.enabled);
+    let not_running = DaemonProblem::NotRunning;
+    let down = tray_view(&facts(Daemon::Down(&not_running), &switch));
+    assert!(
+        item(&down.rows, Command::Update).enabled,
+        "an update can be looked for with Fermix stopped"
+    );
+}
+
+#[test]
+fn an_installed_update_still_running_old_code_asks_for_the_restart() {
+    let ready = state("ready", false);
+    let switch = background(true, true);
+    let mut pending = facts(
+        Daemon::Up {
+            state: &ready,
+            uptime_ms: Some(60_000),
+        },
+        &switch,
+    );
+    pending.restart_pending = true;
+    let view = tray_view(&pending);
+    assert_eq!(view.glyph, Glyph::Attention);
+    assert_eq!(view.status, "Restart to finish updating");
+    let not_running = DaemonProblem::NotRunning;
+    let mut down = facts(Daemon::Down(&not_running), &switch);
+    down.restart_pending = true;
+    assert_eq!(
+        tray_view(&down).status,
+        "Not running",
+        "a daemon that is down says so first"
+    );
 }

@@ -83,10 +83,28 @@ fn a_voice_change_waiting_for_restart_outranks_voice_off() {
     assert_eq!(action, Some(GateAction::Restart));
 }
 
+/// The setup state with voice's key missing for `provider`, which the daemon lists by name.
+fn missing_voice_key(provider: &str) -> SetupState {
+    let component = format!("realtime:{provider}");
+    let mut s = state(
+        json!([{"component": component, "gating": false, "pane": "voice", "detail_key": component}]),
+        json!([]),
+    );
+    s.providers = serde_json::from_value(json!([
+        {"id": "openai", "label": "OpenAI", "auth_modes": ["api_key"], "auth_mode": "api_key",
+         "configured": false, "primary": false, "present_key": false, "default_model": null,
+         "reasoning_effort": null, "account_label": null, "token_state": null},
+        {"id": "xai", "label": "SpaceXAI", "auth_modes": ["api_key", "oauth"], "auth_mode": null,
+         "configured": false, "primary": false, "present_key": false, "default_model": null,
+         "reasoning_effort": null, "account_label": null, "token_state": null}
+    ]))
+    .unwrap();
+    s
+}
+
 #[test]
 fn a_missing_key_says_a_sign_in_does_not_cover_voice() {
-    let failure = json!([{"component": "realtime:openai", "gating": false, "pane": "voice", "detail_key": "realtime:openai"}]);
-    let s = state(failure, json!([]));
+    let s = missing_voice_key("openai");
     let (sentence, action, _) = gate(
         Some(&s),
         Some(&realtime(true, "setup_required")),
@@ -94,9 +112,39 @@ fn a_missing_key_says_a_sign_in_does_not_cover_voice() {
     );
     assert_eq!(
         sentence,
-        "Voice needs an OpenAI API key. A ChatGPT or Claude sign-in does not cover it."
+        "Voice needs the OpenAI API key. A sign-in does not cover it."
     );
-    assert_eq!(action, Some(GateAction::AddKey));
+    assert_eq!(action, Some(GateAction::AddKey("openai_api_key")));
+}
+
+#[test]
+fn grok_voice_asks_for_the_spacexai_key() {
+    let s = missing_voice_key("xai");
+    let (sentence, action, _) = gate(
+        Some(&s),
+        Some(&realtime(true, "setup_required")),
+        Reach::Untried,
+    );
+    assert_eq!(
+        sentence,
+        "Voice needs the SpaceXAI API key. A sign-in does not cover it."
+    );
+    assert_eq!(action, Some(GateAction::AddKey("xai_api_key")));
+}
+
+#[test]
+fn a_voice_provider_this_app_has_no_key_row_for_is_named_without_a_button() {
+    let s = missing_voice_key("mistral");
+    let (sentence, action, _) = gate(
+        Some(&s),
+        Some(&realtime(true, "setup_required")),
+        Reach::Untried,
+    );
+    assert_eq!(
+        sentence,
+        "Voice needs the mistral API key. A sign-in does not cover it."
+    );
+    assert_eq!(action, None);
 }
 
 #[test]
@@ -268,7 +316,7 @@ fn a_refusal_the_gate_does_not_cover_shows_as_the_sessions_sentence() {
         json!({"reason": "provider_refused"}),
     )));
     let line = call_status(&session, &ready_gate(), &usb());
-    assert_eq!(line.text, "OpenAI refused the voice call.");
+    assert_eq!(line.text, "The voice provider refused the call.");
     assert_eq!(line.icon, None);
     assert_eq!(line.palette, Palette::Error);
 }

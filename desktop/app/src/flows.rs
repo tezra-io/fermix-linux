@@ -7,7 +7,7 @@ use crate::dialogs::{confirm, secret_page, SecretPrompt, SECRET_WIDTH};
 use crate::secret_save::set_secret;
 use crate::state::Link;
 use adw::prelude::*;
-use fermix_client::job::{adoptable_sign_in, outcome, poll_cap, Outcome};
+use fermix_client::job::{adoptable_sign_in, model_warning, outcome, poll_cap, Outcome};
 use fermix_client::management::CallError;
 use fermix_client::model::JobView;
 use fermix_client::providers::{
@@ -187,7 +187,7 @@ impl App {
     async fn ended(self: &Rc<Self>, provider: &str, door: Door, view: &JobView) {
         match outcome(view) {
             Outcome::Running(_) => {}
-            Outcome::Completed => self.signed_in(provider, door).await,
+            Outcome::Completed => self.signed_in(provider, door, model_warning(view)).await,
             Outcome::Failed(sentence) => self.finish(provider, Activity::Failed(sentence)).await,
             Outcome::Cancelled => self.finish(provider, Activity::Cancelled).await,
         }
@@ -202,7 +202,9 @@ impl App {
         self.render();
     }
 
-    async fn signed_in(self: &Rc<Self>, provider: &str, door: Door) {
+    /// A sign-in that completed with a caveat (no default model checked) says
+    /// it on the row, in the daemon's words, for as long as a failure would.
+    async fn signed_in(self: &Rc<Self>, provider: &str, door: Door, caveat: Option<String>) {
         let was_ready = self.is_ready();
         let first = self
             .state
@@ -215,6 +217,9 @@ impl App {
             _ => Recent::SignedIn,
         };
         self.mark_recent(provider, recent);
+        if let Some(caveat) = caveat {
+            self.settle(provider, Activity::Caveat(caveat));
+        }
         self.refresh().await;
         let label = self.state.borrow().label(provider);
         self.announce(&format!("Signed in to {label}"), was_ready);
@@ -257,7 +262,7 @@ impl App {
     /// A toast for a change that landed; offers Home when Fermix just became ready.
     /// It stays longer than an ordinary toast: the user may still be in the browser.
     fn announce(&self, text: &str, was_ready: bool) {
-        let toast = adw::Toast::new(text);
+        let toast = crate::shell::plain_toast(text);
         toast.set_timeout(10);
         toast.set_priority(adw::ToastPriority::High);
         if !was_ready && self.is_ready() {

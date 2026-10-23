@@ -15,6 +15,17 @@ pub struct SetupState {
     pub coexistence: Coexistence,
 }
 
+impl SetupState {
+    /// A provider's name as the daemon gives it, or its id when the daemon lists no such
+    /// provider.
+    pub fn provider_label<'a>(&'a self, id: &'a str) -> &'a str {
+        self.providers
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(id, |p| p.label.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChannelRow {
     pub name: String,
@@ -190,6 +201,10 @@ pub struct Capabilities {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EngineIdentity {
     pub product_version: String,
+    /// The immutable build, which says whether the running engine is the
+    /// installed one (M38 §9.2); older daemons may not say.
+    #[serde(default)]
+    pub build_id: Option<String>,
     pub pid: Option<String>,
     /// `x86_64` or `aarch64`; older daemons may not say.
     #[serde(default)]

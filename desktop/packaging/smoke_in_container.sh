@@ -17,8 +17,22 @@
 # install_smoke.sh checks every capture in one pinned converter image, the same for every
 # distribution. What this writes lands in /smoke/out with a SHA256SUMS.
 #
+# The upgrade, N to N+1, runs under systemd, which --boot installs in the container and runs as its
+# first process. install_smoke.sh then starts --upgrade-from beside it. The previous package is
+# installed the same way, with `fermix --version` answering with its engine. An account `smoke`
+# lingers, and runs `fermix service install` as a person does, which enables fermix.service in its
+# user manager and waits for the engine to answer. Then the new package is installed over the
+# running engine, with apt or dnf. The installed package must be the new one, and `fermix --version`
+# must answer with the new engine, while `fermix status` still names the old engine, with the same
+# pid. After `systemctl --user daemon-reload` and a restart of fermix.service, `fermix status` must
+# name the new engine, with another pid. The libraries check and its control must still hold. The
+# account's journal is kept in account.journal, whether the upgrade passes or fails.
+#
 # Usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>
 #          --displays "<x11 | wayland | x11 wayland>"
+#        smoke_in_container.sh --boot <deb|rpm>
+#        smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>
+#          --upgrade-from <file> --previous-sha256 <hex>
 set -eEuo pipefail
 shopt -s inherit_errexit
 # A command that stops the smoke with no sentence of its own still names itself.
@@ -43,6 +57,15 @@ WESTON_PID_FILE=/tmp/weston.pid
 # Where weston-screenshooter writes, and the capture the wait for the window compares.
 SHOTS=/tmp/shots
 WAYLAND_NOW=/tmp/wayland-now.png
+# The account the upgrade runs the engine as, and its home.
+ACCOUNT=smoke
+ACCOUNT_HOME=/home/smoke
+# Seconds to wait for the account's user manager, and for the engine to answer `fermix status` with
+# the version it should; a new engine's first start extracts its payload. Then the upgrade fails.
+USER_MANAGER_WAIT_SECONDS=60
+ENGINE_WAIT_SECONDS=180
+# The last answer of `fermix status`, which a failed wait quotes.
+STATUS_ANSWER=/tmp/fermix-status.txt
 
 fail() {
   echo "smoke_in_container: $*" >&2
@@ -53,22 +76,38 @@ log() {
   echo "smoke_in_container: $*" >&2
 }
 
+# <family> <package> <sha256> <log name>: installs the package, or upgrades to it over one installed.
 install_package() {
-  local family="$1" package="$2" digest="$3"
+  local family="$1" package="$2" digest="$3" log="$OUT/$4"
   echo "$digest  $package" | sha256sum --quiet --check - || fail "$package is not the package copied in"
   case "$family" in
     deb)
       export DEBIAN_FRONTEND=noninteractive
-      apt-get -o Acquire::Retries=3 update > "$OUT/install.log" 2>&1 || fail "apt-get update failed"
-      apt-get -o Acquire::Retries=3 install -y "$package" >> "$OUT/install.log" 2>&1 ||
-        fail "apt-get cannot install $package: $(tail -n 20 "$OUT/install.log")"
+      apt-get -o Acquire::Retries=3 update > "$log" 2>&1 || fail "apt-get update failed"
+      apt-get -o Acquire::Retries=3 install -y "$package" >> "$log" 2>&1 ||
+        fail "apt-get cannot install $package: $(tail -n 20 "$log")"
       ;;
     rpm)
-      dnf install -y "$package" > "$OUT/install.log" 2>&1 ||
-        fail "dnf cannot install $package: $(tail -n 20 "$OUT/install.log")"
+      dnf install -y "$package" > "$log" 2>&1 || fail "dnf cannot install $package: $(tail -n 20 "$log")"
       ;;
   esac
-  log "installed $(basename -- "$package") and what it declares: see install.log"
+  log "installed $(basename -- "$package") and what it declares: see $4"
+}
+
+# The version of fermix-desktop that is installed, or that <package> carries.
+installed_version() {
+  # shellcheck disable=SC2016 # dpkg-query's field, not the shell's
+  case "$1" in
+    deb) dpkg-query -W -f '${Version}' fermix-desktop ;;
+    rpm) rpm -q --qf '%{VERSION}' fermix-desktop ;;
+  esac
+}
+
+package_version() {
+  case "$1" in
+    deb) dpkg-deb -f "$2" Version ;;
+    rpm) rpm -qp --qf '%{VERSION}' "$2" ;;
+  esac
 }
 
 # The version the installed fermix-desktop provides fermix at: the one fermix (= <v>) of the deb's
@@ -92,11 +131,12 @@ provided_engine() {
   echo "$versions"
 }
 
+# <engine> <file>: `fermix --version` answers with <engine>, kept in <file> under the output.
 check_engine() {
   local engine="$1" answer
   answer="$(fermix --version 2>&1)" || fail "fermix --version failed: $answer"
   grep -qF -- "$engine" <<< "$answer" || fail "fermix --version answers '$answer', not $engine"
-  printf '%s\n' "$answer" > "$OUT/fermix-version.txt"
+  printf '%s\n' "$answer" > "$OUT/$2"
   log "fermix --version: $answer"
 }
 
@@ -374,43 +414,172 @@ write_sums() {
   printf '%s\n' "$sums" > "$OUT/SHA256SUMS"
 }
 
+# The init system the upgrade runs under, installed, then run as the container's first process in
+# this one's place. Docker mounts the container's own cgroup namespace read-only, and systemd makes
+# its scopes there, so it is remounted writable first, which the container's CAP_SYS_ADMIN allows.
+# It does not return.
+boot_systemd() {
+  local family="$1" log="$OUT/boot.log"
+  case "$family" in deb | rpm) ;; *) fail "the family is deb or rpm, not '$family'" ;; esac
+  mkdir -p "$OUT"
+  case "$family" in
+    deb)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Acquire::Retries=3 update > "$log" 2>&1 || fail "apt-get update failed: $(tail -n 20 "$log")"
+      apt-get -o Acquire::Retries=3 install -y --no-install-recommends systemd systemd-sysv dbus \
+        dbus-user-session libpam-systemd >> "$log" 2>&1 || fail "apt-get cannot install systemd: $(tail -n 20 "$log")"
+      ;;
+    rpm)
+      dnf install -y --setopt=install_weak_deps=False systemd systemd-pam dbus-broker shadow-utils util-linux \
+        > "$log" 2>&1 ||
+        fail "dnf cannot install systemd: $(tail -n 20 "$log")"
+      ;;
+  esac
+  mount -o remount,rw /sys/fs/cgroup ||
+    fail "cannot remount the container's cgroup namespace writable: it needs CAP_SYS_ADMIN, not AppArmor's default"
+  log "installed systemd; it runs next, as the container's first process"
+  exec /usr/lib/systemd/systemd
+}
+
+# <command...> as the account, in its home, beside its user manager.
+as_account() {
+  local uid
+  uid="$(id -u "$ACCOUNT")"
+  (cd "$ACCOUNT_HOME" && runuser -u "$ACCOUNT" -- env HOME="$ACCOUNT_HOME" XDG_RUNTIME_DIR="/run/user/$uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@")
+}
+
+# The account, lingering, with fermix.service enabled in its user manager and answering, as
+# `fermix service install` leaves it for a person.
+start_service() {
+  local uid
+  useradd --create-home --home-dir "$ACCOUNT_HOME" "$ACCOUNT" || fail "useradd cannot create the account $ACCOUNT"
+  loginctl enable-linger "$ACCOUNT" || fail "loginctl cannot make $ACCOUNT linger"
+  uid="$(id -u "$ACCOUNT")"
+  wait_for "$USER_MANAGER_WAIT_SECONDS" test -S "/run/user/$uid/systemd/private" ||
+    fail "the user manager of $ACCOUNT did not start in ${USER_MANAGER_WAIT_SECONDS}s"
+  as_account fermix service install > "$OUT/service-install.log" 2>&1 ||
+    fail "fermix service install failed: $(tail -n 20 "$OUT/service-install.log")"
+  log "fermix service install enabled fermix.service for $ACCOUNT: see service-install.log"
+}
+
+# Prints the pid `fermix status` names when it names the engine <engine> running, and fails
+# otherwise. Its answer is kept in $STATUS_ANSWER.
+status_names() {
+  local engine="$1" answer running
+  answer="$(as_account fermix status 2>&1)" || { printf '%s\n' "$answer" > "$STATUS_ANSWER"; return 1; }
+  printf '%s\n' "$answer" > "$STATUS_ANSWER"
+  running="$(sed -n 's/^fermix: running (pid \([0-9][0-9]*\), version \([^,]*\), .*/\1 \2/p' <<< "$answer")"
+  [ -n "$running" ] && [ "${running#* }" = "$engine" ] || return 1
+  echo "${running%% *}"
+}
+
+# <engine> <name>: the pid of the engine <engine> once `fermix status` names it, with that answer
+# kept in <name> under the output. Each try is one `fermix status`, a second apart.
+engine_pid() {
+  local engine="$1" name="$2" pid
+  pid="$(wait_for "$ENGINE_WAIT_SECONDS" status_names "$engine")" ||
+    fail "fermix status did not name the engine $engine in $ENGINE_WAIT_SECONDS tries: $(cat "$STATUS_ANSWER")"
+  cp -- "$STATUS_ANSWER" "$OUT/$name"
+  echo "$pid"
+}
+
+restart_service() {
+  as_account systemctl --user daemon-reload || fail "systemctl --user daemon-reload failed for $ACCOUNT"
+  as_account systemctl --user restart fermix.service || fail "systemctl --user restart fermix.service failed"
+  log "reloaded $ACCOUNT's user manager and restarted fermix.service"
+}
+
+# What the account's user manager and engine logged, into account.journal.
+save_journal() {
+  local uid
+  # Before the account exists there is nothing of its to keep.
+  uid="$(id -u "$ACCOUNT" 2> /dev/null)" || return 0
+  journalctl --no-pager "_UID=$uid" > "$OUT/account.journal" 2>&1 || log "journalctl cannot read $ACCOUNT's journal"
+}
+
+upgrade_smoke() {
+  local family="$1" previous="$2" previous_digest="$3" package="$4" digest="$5" before after old new
+  mkdir -p "$OUT"
+  trap save_journal EXIT
+  install_package "$family" "$previous" "$previous_digest" install.log
+  before="$(provided_engine "$family")"
+  check_engine "$before" fermix-version-previous.txt
+  start_service
+  old="$(engine_pid "$before" status-previous.txt)"
+  log "fermix-desktop $(installed_version "$family") runs the engine $before as pid $old"
+  install_package "$family" "$package" "$digest" upgrade.log
+  [ "$(installed_version "$family")" = "$(package_version "$family" "$package")" ] ||
+    fail "fermix-desktop $(installed_version "$family") is installed, not $(package_version "$family" "$package")"
+  after="$(provided_engine "$family")"
+  check_engine "$after" fermix-version.txt
+  [ "$(engine_pid "$before" status-upgraded.txt)" = "$old" ] ||
+    fail "the engine $before is not still running as pid $old after the upgrade"
+  log "upgraded to fermix-desktop $(installed_version "$family"); the engine $before still runs as pid $old"
+  restart_service
+  new="$(engine_pid "$after" status-restarted.txt)"
+  [ "$new" != "$old" ] || fail "fermix.service still runs pid $old after the restart"
+  log "the engine $after runs as pid $new"
+  check_libraries
+  check_control
+  save_journal
+  trap - EXIT
+  write_sums
+}
+
+fresh_smoke() {
+  local family="$1" package="$2" digest="$3" displays="$4" engine display
+  mkdir -p "$OUT"
+  install_package "$family" "$package" "$digest" install.log
+  engine="$(provided_engine "$family")"
+  log "fermix-desktop provides fermix $engine"
+  check_engine "$engine" fermix-version.txt
+  check_libraries
+  check_control
+  install_display_tools "$family" "$displays"
+  prepare_session
+  for display in $displays; do
+    "draw_on_$display"
+  done
+  write_sums
+}
+
 usage() {
   fail "usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>" \
-    "--displays \"<x11 | wayland | x11 wayland>\""
+    "(--displays \"<x11 | wayland | x11 wayland>\" | --upgrade-from <file> --previous-sha256 <hex>)," \
+    "or smoke_in_container.sh --boot <deb|rpm>"
 }
 
 main() {
-  local family="" package="" digest="" engine="" displays="" display
+  local family="" package="" digest="" displays="" previous="" previous_digest="" display
   local -a words
+  if [ "${1:-}" = --boot ]; then
+    [ $# -eq 2 ] || usage
+    boot_systemd "$2"
+  fi
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || usage
     case "$1" in
       --family) family="$2" ;; --package) package="$2" ;; --sha256) digest="$2" ;;
-      --displays) displays="$2" ;;
+      --displays) displays="$2" ;; --upgrade-from) previous="$2" ;; --previous-sha256) previous_digest="$2" ;;
       *) usage ;;
     esac
     shift 2
   done
   case "$family" in deb | rpm) ;; *) fail "the family is deb or rpm, not '$family'" ;; esac
+  [ -n "$package" ] && [ -n "$digest" ] || fail "every flag needs a value"
+  if [ -n "$previous$previous_digest" ]; then
+    [ -n "$previous" ] && [ -n "$previous_digest" ] && [ -z "$displays" ] ||
+      fail "an upgrade takes --upgrade-from and --previous-sha256, and draws no window"
+    upgrade_smoke "$family" "$previous" "$previous_digest" "$package" "$digest"
+    return 0
+  fi
   read -r -a words <<< "$displays"
-  [ -n "$package" ] && [ -n "$digest" ] && [ "${#words[@]}" -gt 0 ] ||
-    fail "every flag needs a value"
+  [ "${#words[@]}" -gt 0 ] || fail "every flag needs a value"
   for display in "${words[@]}"; do
     case "$display" in x11 | wayland) ;; *) fail "the displays are x11 and wayland, not '$display'" ;; esac
   done
-  mkdir -p "$OUT"
-  install_package "$family" "$package" "$digest"
-  engine="$(provided_engine "$family")"
-  log "fermix-desktop provides fermix $engine"
-  check_engine "$engine"
-  check_libraries
-  check_control
-  install_display_tools "$family" "${words[*]}"
-  prepare_session
-  for display in "${words[@]}"; do
-    "draw_on_$display"
-  done
-  write_sums
+  fresh_smoke "$family" "$package" "$digest" "${words[*]}"
 }
 
 # Run, not sourced: smoke_in_container_test.sh sources this file for its functions.

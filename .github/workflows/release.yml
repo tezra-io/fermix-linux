@@ -1,6 +1,6 @@
 # fermix-desktop's packages, built the way a release builds them.
 #
-# On every push to dev or main that can change a package, and on every pull request that can,
+# On every push to main that can change a package, and on every pull request that can,
 # one job per architecture compiles the private GTK runtime from RUNTIME.lock.json, builds the
 # deb and the rpm against it carrying the engine desktop/engine/PIN.json pins, and smokes the
 # runtime, then runs every packaging test. The packages are then linted and installed on every
@@ -14,11 +14,20 @@
 #
 # Nothing here reuses a runtime from an earlier run: a release compiles the runtime it ships
 # from the lock file of the commit it ships.
+#
+# The app learns of a new release from its update feed, https://fermix.ai/linux/appcast.json,
+# which desktop/packaging/update_feed.py writes. Every run upgrades the latest published release
+# to the packages it built, over a running engine, on ubuntu:24.04 and fedora:44. It also writes a
+# feed from those packages and signs it with the shared fixture's test key, so the writer's path is
+# always exercised. A tag merges its release into the feed fermix.ai serves and signs the result
+# with the release-linux environment's LINUX_FEED_SIGNING_KEY. The draft then carries appcast.json
+# and appcast-item.json. A person copies appcast.json to fermix.ai once the release is published
+# (desktop/README.md, Releasing).
 name: release
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     # Path filters are not applied to tag pushes, so every release tag runs.
     tags: ["v*.*.*"]
     paths:
@@ -37,8 +46,8 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  # A newer push makes a branch run moot; a tag's run is never cut short.
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  # A newer commit makes a pull request's run moot; main's and a tag's runs are never cut short.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version:
@@ -75,6 +84,20 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "engine_version=$engine_version" >> "$GITHUB_OUTPUT"
           echo "fermix-desktop $version, carrying engine $engine_version"
+
+      # The lines the app's update dialog shows for this version. A tag without them stops here,
+      # before anything is built. update_feed_test.sh holds every notes file to its form.
+      - name: Refuse a version without its update notes
+        env:
+          VERSION: ${{ steps.read.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="desktop/packaging/notes/$VERSION.md"
+          [ -f "$notes" ] || {
+            echo "::error::there is no $notes: write what $VERSION brings there, one '- ' sentence a line"
+            exit 1
+          }
+          cat "$notes"
 
       # The assets a person has downloaded are the release. Replacing them under the same tag
       # would make every recorded digest a lie, so a fix is the next version.
@@ -346,10 +369,138 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # N to N+1, as a person meets an update: the latest published release installed, its engine
+  # running as the account's user service, and this run's package installed over it by apt or dnf.
+  # install_smoke.sh --upgrade-from proves the new engine answers after a daemon-reload and a
+  # restart. A run whose version is not newer than the latest release has nothing to upgrade from.
+  upgrade:
+    name: Upgrade on ${{ matrix.image }} (amd64)
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "fedora:44"]
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packages-amd64
+          path: packages
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # This workflow's token reads this repository's releases, whether it is public or private.
+      # The package is held to its .sha256 and to the cosign signature its tag's run made.
+      - name: Fetch the latest published release's package
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          previous="${tag#v}"
+          [[ "$previous" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::the latest release is $tag, not vX.Y.Z"; exit 1; }
+          if [ "$(printf '%s\n%s\n' "$previous" "$VERSION" | sort -V | tail -n 1)" = "$previous" ]; then
+            echo "::notice title=Nothing to upgrade from::the latest published release, $tag, is not older than $VERSION"
+            echo "package=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$IMAGE" in
+            ubuntu:*) name="fermix-desktop_${previous}_amd64.deb" ;;
+            *) name="fermix-desktop-${previous}-1.x86_64.rpm" ;;
+          esac
+          mkdir -p previous
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir previous \
+            --pattern "$name" --pattern "$name.sha256" --pattern "$name.sig" --pattern "$name.pem"
+          (cd previous && sha256sum --check --strict -- "$name.sha256")
+          cosign verify-blob --certificate "previous/$name.pem" --signature "previous/$name.sig" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$tag" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com "previous/$name"
+          echo "package=previous/$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upgrade it to this run's package over its running engine
+        if: steps.previous.outputs.package != ''
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.package }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in
+            ubuntu:*) package="packages/fermix-desktop_${VERSION}_amd64.deb" ;;
+            *) package="packages/fermix-desktop-${VERSION}-1.x86_64.rpm" ;;
+          esac
+          desktop/scripts/install_smoke.sh --image "$IMAGE" "$package" --upgrade-from "$PREVIOUS" \
+            --out "$RUNNER_TEMP/upgrade"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: upgrade-${{ strategy.job-index }}-amd64
+          path: |
+            ${{ runner.temp }}/upgrade
+            ${{ runner.temp }}/upgrade-failed
+          if-no-files-found: warn
+          retention-days: 7
+
+  # The release's feed writer over this run's packages, signed with the shared fixture's test key,
+  # which the app never trusts: the production keys must refuse what it signed.
+  feed-check:
+    name: Write a test update feed
+    if: github.ref_type != 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: packages
+
+      - name: Write, sign and verify a feed with the test key
+        env:
+          BASE_URL: ${{ vars.LINUX_PACKAGE_BASE_URL || format('https://github.com/{0}/releases/download', github.repository) }}
+        run: |
+          set -euo pipefail
+          fixture=desktop/core/tests/fixtures/update-feed
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p feed
+          desktop/packaging/update_feed.py item --packages packages --version "$VERSION" \
+            --pin desktop/engine/PIN.json --notes "desktop/packaging/notes/$VERSION.md" \
+            --base-url "$BASE_URL/v$VERSION" --published-at "$now" --out feed/appcast-item.json
+          desktop/packaging/update_feed.py merge --item feed/appcast-item.json \
+            --keys "$fixture/test-keys.json" --generated-at "$now" --out feed/payload.json
+          desktop/packaging/update_feed.py sign --payload feed/payload.json --keys "$fixture/test-keys.json" \
+            --out feed/appcast.json < "$fixture/test-key-linux-feed-test.pem"
+          desktop/packaging/update_feed.py verify --feed feed/appcast.json --keys "$fixture/test-keys.json"
+          if desktop/packaging/update_feed.py verify --feed feed/appcast.json \
+            --keys desktop/packaging/update-keys.json 2> "$RUNNER_TEMP/refusal"; then
+            echo "::error::the production keys accept a feed the test key signed"
+            exit 1
+          fi
+          grep -qF "is signed by linux-feed-test, which the keys file does not list" "$RUNNER_TEMP/refusal" || {
+            echo "::error::the production keys refuse the test feed for another reason: $(cat "$RUNNER_TEMP/refusal")"
+            exit 1
+          }
+          cat feed/appcast-item.json
+
   sign:
     name: Sign
     if: github.ref_type == 'tag'
-    needs: [version, build, lint, smoke]
+    needs: [version, build, lint, smoke, upgrade]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -405,10 +556,138 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The feed the app reads, with this release in front: its item written from the signed
+  # packages, merged into the feed fermix.ai serves now, and signed in the release-linux environment.
+  # The floor is the appcast.json of the newest published release that carries one. The served
+  # feed must verify, carry every release the floor carries, and be no older than it, so a CDN
+  # misroute, a wrong path or a stale copy stops the release instead of cutting the feed short.
+  # Only while no published release carries a feed does a 404 start one. The package urls are this
+  # tag's release assets, unless the repository variable LINUX_PACKAGE_BASE_URL names another base,
+  # which gets /<tag> after it.
+  feed:
+    name: Write the update feed
+    if: github.ref_type == 'tag'
+    needs: [version, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-linux
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      FEED_URL: https://fermix.ai/linux/appcast.json
+      KEYS: desktop/packaging/update-keys.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the signed assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signed-release
+          path: release
+
+      - name: Write this release's item
+        env:
+          BASE_URL: ${{ vars.LINUX_PACKAGE_BASE_URL || format('https://github.com/{0}/releases/download', github.repository) }}
+        run: |
+          set -euo pipefail
+          mkdir -p feed
+          desktop/packaging/update_feed.py item --packages release --version "$VERSION" \
+            --pin desktop/engine/PIN.json --notes "desktop/packaging/notes/$VERSION.md" \
+            --base-url "$BASE_URL/$TAG" --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out feed/appcast-item.json
+          cat feed/appcast-item.json
+
+      # Published releases only: a draft's assets are not public, and this tag's release is a draft.
+      - name: Fetch the feed the last published release carries
+        id: floor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false)
+              | select(.tag_name | test("^v[0-9]+[.][0-9]+[.][0-9]+$"))
+              | select(any(.assets[]; .name == "appcast.json")) | .tag_name' | sort -V | tail -n 1)"
+          if [ -z "$tag" ]; then
+            echo "::notice title=No floor::no published release carries appcast.json, so a 404 may start the feed"
+            echo "feed=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/floor"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern appcast.json --dir "$RUNNER_TEMP/floor"
+          desktop/packaging/update_feed.py verify --feed "$RUNNER_TEMP/floor/appcast.json" --keys "$KEYS"
+          echo "::notice title=Floor::$tag's appcast.json"
+          echo "feed=$RUNNER_TEMP/floor/appcast.json" >> "$GITHUB_OUTPUT"
+
+      # --proto already refuses anything but https, redirects included; --proto-redir says so for
+      # the redirects -L follows as well, so that rule does not rest on curl's reading of --proto.
+      - name: Fetch the feed fermix.ai serves
+        id: previous
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -L --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --max-time 60 \
+            --max-filesize 1048576 -o "$RUNNER_TEMP/previous.json" -w '%{http_code}' "$FEED_URL")"
+          case "$status" in
+            200) echo "found=true" >> "$GITHUB_OUTPUT" ;;
+            404)
+              echo "::notice title=No feed served::$FEED_URL answers 404; the merge refuses that over a floor"
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::$FEED_URL answers HTTP $status, so the feed it serves cannot be carried forward"
+              exit 1
+              ;;
+          esac
+
+      - name: Verify it, and merge this release into it
+        env:
+          FOUND: ${{ steps.previous.outputs.found }}
+          FLOOR: ${{ steps.floor.outputs.feed }}
+        run: |
+          set -euo pipefail
+          merge=(--item feed/appcast-item.json --keys "$KEYS" --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --out "$RUNNER_TEMP/payload.json")
+          if [ "$FOUND" = true ]; then
+            desktop/packaging/update_feed.py verify --feed "$RUNNER_TEMP/previous.json" --keys "$KEYS"
+            merge+=(--previous "$RUNNER_TEMP/previous.json")
+          fi
+          if [ -n "$FLOOR" ]; then
+            merge+=(--floor "$FLOOR")
+          fi
+          desktop/packaging/update_feed.py merge "${merge[@]}"
+
+      # The key goes from the environment's secret into update_feed.py's standard input, which
+      # openssl reads, so it is never an argument, a file or an echoed value.
+      - name: Sign it with the release key
+        env:
+          LINUX_FEED_SIGNING_KEY: ${{ secrets.LINUX_FEED_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$LINUX_FEED_SIGNING_KEY" ] || {
+            echo "::error::the release-linux environment has no LINUX_FEED_SIGNING_KEY, the update feed's key"
+            exit 1
+          }
+          printf '%s\n' "$LINUX_FEED_SIGNING_KEY" |
+            desktop/packaging/update_feed.py sign --payload "$RUNNER_TEMP/payload.json" --keys "$KEYS" \
+              --out feed/appcast.json
+
+      - name: Verify it as the app will
+        run: desktop/packaging/update_feed.py verify --feed feed/appcast.json --keys "$KEYS"
+
+      - name: Hand it to the draft
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: update-feed
+          path: |
+            feed/appcast.json
+            feed/appcast-item.json
+          if-no-files-found: error
+          retention-days: 7
+
   draft:
     name: Stage the draft release
     if: github.ref_type == 'tag'
-    needs: [version, sign]
+    needs: [version, sign, feed]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -425,6 +704,14 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: signed-release
+          path: release
+
+      # appcast.json and appcast-item.json, staged beside the packages they name. Their trust is
+      # their own ed25519 signature, so they have no cosign sidecars.
+      - name: Collect the update feed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: update-feed
           path: release
 
       # Asked again here, because an hour has passed since the version job asked.
@@ -467,4 +754,14 @@ jobs:
           (cd "$RUNNER_TEMP/back" && find . -maxdepth 1 -type f -printf '%f\n' | sort) > "$RUNNER_TEMP/served"
           diff -u "$RUNNER_TEMP/staged" "$RUNNER_TEMP/served"
           (cd "$RUNNER_TEMP/back" && sha256sum --check --strict -- *.sha256)
+          for feed in appcast.json appcast-item.json; do
+            cmp "release/$feed" "$RUNNER_TEMP/back/$feed"
+          done
           echo "the draft serves every asset under its own name, with the signed bytes"
+
+      # A draft's asset urls answer only its repository's members, so the feed that names them goes
+      # to fermix.ai once the release is published.
+      - name: Say what publishing the feed takes
+        run: |
+          echo "::notice title=Publish the feed::after publishing $TAG, copy its appcast.json to" \
+            "https://fermix.ai/linux/appcast.json (desktop/README.md, Releasing); until then no installed app sees $VERSION"

@@ -1,7 +1,6 @@
 //! Fermix for Linux: set up Fermix and chat with it. A client of the daemon
 //! that the `fermix` package runs; it holds no config and no secrets of its own.
 
-mod acp_link;
 mod app;
 mod assistant;
 mod assistant_flow;
@@ -11,8 +10,9 @@ mod capability_flow;
 mod capability_panes;
 mod channels;
 mod chat;
+mod chat_link;
+mod chat_session;
 mod companion;
-mod conversation;
 mod daemon;
 mod descriptor;
 mod dialogs;
@@ -24,7 +24,11 @@ mod integrations;
 mod logs;
 mod marks;
 mod mascot;
+mod media_grants;
 mod microphones;
+mod packagekit;
+#[cfg(test)]
+mod packagekit_fake;
 mod phone;
 mod phone_flow;
 mod providers;
@@ -39,6 +43,10 @@ mod status;
 mod systemd;
 mod tray;
 mod tray_flow;
+mod update_dialog;
+mod update_flow;
+mod update_install;
+mod updates_pane;
 mod voice;
 mod voice_call;
 mod voice_flow;
@@ -60,7 +68,12 @@ fn main() -> glib::ExitCode {
     let packaged = runtime_env::start();
     gio::resources_register_include!("fermix.gresource")
         .expect("the app's own resource bundle is built in");
-    let application = adw::Application::builder().application_id(APP_ID).build();
+    // An update replaces the running window with the installed one, which
+    // starts with `--gapplication-replace` (update::state::RELAUNCH).
+    let application = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::ALLOW_REPLACEMENT)
+        .build();
     // `--background` is how the desktop starts Fermix at login: in the tray,
     // without the window. Only the first activation reads it.
     application.add_main_option(
@@ -131,7 +144,6 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let chat = adw::ShortcutsSection::new(Some("Chat"));
     chat.add(adw::ShortcutsItem::new("Send", "Return"));
     chat.add(adw::ShortcutsItem::new("New line", "<Shift>Return"));
-    chat.add(adw::ShortcutsItem::new("New conversation", "<Ctrl>n"));
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new(
         "Keyboard shortcuts",

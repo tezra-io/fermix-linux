@@ -1231,6 +1231,83 @@
       "patches": []
     },
     {
+      "name": "libogg",
+      "version": "1.3.6",
+      "purl": "pkg:generic/libogg@1.3.6",
+      "url": "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz",
+      "sha256": "5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061",
+      "archive": "libogg-1.3.6.tar.xz",
+      "source_dir": "libogg-1.3.6",
+      "build_system": "cmake",
+      "license": "BSD-3-Clause",
+      "options": [
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-DBUILD_TESTING=OFF",
+        "-DINSTALL_DOCS=OFF",
+        "-DINSTALL_CMAKE_PACKAGE_MODULE=OFF"
+      ],
+      "patches": []
+    },
+    {
+      "name": "opus",
+      "version": "1.6.1",
+      "purl": "pkg:generic/opus@1.6.1",
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+      "archive": "opus-1.6.1.tar.gz",
+      "source_dir": "opus-1.6.1",
+      "build_system": "meson",
+      "license": "BSD-3-Clause AND BSD-2-Clause",
+      "license_excerpts": [
+        {
+          "path": "celt/kiss_fft.c",
+          "lines": [
+            1,
+            27
+          ],
+          "sha256": "6a6025b8d9cc7bc174a5c1ea1885e10eeb7e638e7064fa7581f7a3644d1da6d9"
+        },
+        {
+          "path": "celt/laplace.c",
+          "lines": [
+            1,
+            27
+          ],
+          "sha256": "daf7b689cd13648e1f5a05c1dbcfb9cc68e36cf298bff94dd8ae24f6292d0216"
+        },
+        {
+          "path": "celt/mathops.c",
+          "lines": [
+            1,
+            33
+          ],
+          "sha256": "2cc22070121b0fad848ea1f2fd09d44c6005f6b80eb41eb33c50cbc8fed870e5"
+        },
+        {
+          "path": "src/mapping_matrix.c",
+          "lines": [
+            1,
+            26
+          ],
+          "sha256": "18501522920a174ddbcf28f4204a9e1c437f43d66ee64706030508ef278b22f9"
+        },
+        {
+          "path": "src/mlp.c",
+          "lines": [
+            1,
+            26
+          ],
+          "sha256": "db4473368a5266b22f93aa5be6daa61bcf58a371e18060d7a223345718b65bdc"
+        }
+      ],
+      "options": [
+        "-Ddefault_library=static",
+        "-Dauto_features=disabled"
+      ],
+      "patches": []
+    },
+    {
       "name": "gst-plugins-base",
       "version": "1.26.11",
       "purl": "pkg:generic/gst-plugins-base@1.26.11",
@@ -1239,7 +1316,17 @@
       "archive": "gst-plugins-base-1.26.11.tar.xz",
       "source_dir": "gst-plugins-base-1.26.11",
       "build_system": "meson",
-      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later",
+      "license": "LGPL-2.1-or-later AND LGPL-2.0-or-later AND BSD-3-Clause",
+      "license_excerpts": [
+        {
+          "path": "ext/ogg/vorbis_parse.c",
+          "lines": [
+            4,
+            34
+          ],
+          "sha256": "2116e174c8e806d4e00a3296a95f38d1ae37cf49755298f8049cb9f841b6223c"
+        }
+      ],
       "standard_license_texts": [
         "LGPL-2.0-or-later"
       ],
@@ -1248,7 +1335,9 @@
         "-Dapp=enabled",
         "-Daudioconvert=enabled",
         "-Daudioresample=enabled",
-        "-Daudiotestsrc=enabled"
+        "-Daudiotestsrc=enabled",
+        "-Dogg=enabled",
+        "-Dopus=enabled"
       ],
       "patches": []
     },

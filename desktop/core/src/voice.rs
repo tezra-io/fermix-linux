@@ -10,9 +10,7 @@ use crate::overview::RealtimeFacts;
 use crate::realtime::client::ConnectError;
 use crate::realtime::protocol::Direction;
 use crate::realtime::session::{Mode, Palette, Session};
-
-/// The readiness failure a missing OpenAI key raises.
-const KEY_FAILURE: &str = "realtime:openai";
+use crate::view::VOICE_KEY_PREFIX;
 /// Said before a call when the sound server offers no microphone, and after one
 /// whose recording could find none.
 pub const NO_MICROPHONE: &str = "No microphone is connected.";
@@ -146,8 +144,8 @@ pub enum GateAction {
     StartFermix,
     /// Turn `realtime_enabled` on.
     TurnOn,
-    /// Store the OpenAI API key.
-    AddKey,
+    /// Store the voice provider's API key: the `realtime` section's secret row of that name.
+    AddKey(&'static str),
     Restart,
 }
 
@@ -201,13 +199,12 @@ pub fn voice_gate(facts: &VoiceFacts<'_>) -> VoiceGate {
     if !enabled {
         return blocked("Voice is off.", Some(GateAction::TurnOn));
     }
-    if state
-        .readiness
-        .failures
-        .iter()
-        .any(|f| f.component == KEY_FAILURE)
-    {
-        return blocked(KEY_SENTENCE, Some(GateAction::AddKey));
+    if let Some(provider) = missing_voice_key(state) {
+        let sentence = format!(
+            "Voice needs the {} API key. A sign-in does not cover it.",
+            state.provider_label(provider)
+        );
+        return blocked(&sentence, voice_key(provider).map(GateAction::AddKey));
     }
     if let Some(sentence) = restart_for(state, "providers") {
         return blocked(sentence, Some(GateAction::Restart));
@@ -249,10 +246,26 @@ fn restart_for<'a>(state: &'a SetupState, section: &str) -> Option<&'a str> {
         .map(|r| r.sentence.as_str())
 }
 
-/// What the key is for, in short; Home's attention row for the same failure
-/// explains at length. The caveat stays: a sign-in looks like it should cover voice.
-const KEY_SENTENCE: &str =
-    "Voice needs an OpenAI API key. A ChatGPT or Claude sign-in does not cover it.";
+/// The provider whose voice key is missing (`realtime:<provider>`), which the
+/// configured engine dials. Home's attention row for the same failure explains
+/// at length; the caveat stays, since a sign-in looks like it should cover voice.
+fn missing_voice_key(state: &SetupState) -> Option<&str> {
+    state
+        .readiness
+        .failures
+        .iter()
+        .find_map(|f| f.component.strip_prefix(VOICE_KEY_PREFIX))
+        .filter(|provider| !provider.is_empty())
+}
+
+/// The key row the Voice pane shows for each voice provider's engine.
+fn voice_key(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai" => Some("openai_api_key"),
+        "xai" => Some("xai_api_key"),
+        _ => None,
+    }
+}
 
 /// The line under the mascot. Before a call, what stands in the way is said
 /// here and nowhere else, as a plain sentence in the faint palette: a setup

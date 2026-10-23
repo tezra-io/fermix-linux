@@ -30,6 +30,14 @@ pub fn outcome(job: &JobView) -> Outcome {
     }
 }
 
+/// Why a completed ChatGPT sign-in left its default model unchecked, in the
+/// daemon's words (`auth.start`'s `model_warning`). None when the check was
+/// made, and from an engine that never sends the field.
+pub fn model_warning(job: &JobView) -> Option<String> {
+    let warning = job.result.as_ref()?.get("model_warning")?.as_str()?;
+    (!warning.trim().is_empty()).then(|| warning.to_owned())
+}
+
 /// The most polls a job with this budget can need; past it, the app gives up.
 pub fn poll_cap(budget_ms: u64, interval_ms: u64) -> u64 {
     assert!(interval_ms > 0, "poll interval must be positive");

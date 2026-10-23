@@ -23,7 +23,8 @@ VALUES = {
     "feature": {"enabled", "disabled", "auto"},
 }
 # Meson's own options, which no project declares. Only the ones the lock uses.
-BUILTINS = {"auto_features": VALUES["feature"]}
+BUILTINS = {"auto_features": VALUES["feature"],
+            "default_library": {"shared", "static", "both"}}
 
 
 def option_blocks(text):

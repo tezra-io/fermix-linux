@@ -1,11 +1,20 @@
 //! How a turn's work reads on the Chat page: each tool's name, what the live
 //! line says while Fermix works, and the one line a finished group folds into.
-//! The wire gives only a tool's engine name, its coarse kind and its status,
+//! The wire gives only a tool's engine name and whether it started or stopped,
 //! so the words come from the engine's own tool names (`builtin.ex`, the
 //! bundled plugins, MCP's `mcp_` prefix), with a plain fallback for the rest.
 
-use crate::acp::ToolKind;
 use crate::chat::{RunState, ToolRun};
+
+/// What a tool does, in the engine's coarse classes: only for the tool's icon, never for what
+/// the app allows. The chat wire names no class, so its tools are `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Read,
+    Fetch,
+    Execute,
+    Other,
+}
 
 /// A tool as a person reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]

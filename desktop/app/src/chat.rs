@@ -1,21 +1,41 @@
-//! Chat: the conversation, drawn from `Transcript`, and the composer under it.
-//! The page never talks to Fermix; its buttons fire window actions and
-//! `conversation.rs` does the work.
+//! Chat: the conversation, drawn from `chat::view` of the chat wire's timeline,
+//! the cards waiting for the owner's answer, and the composer under them. The
+//! page never talks to Fermix; its buttons fire window actions and
+//! `chat_session.rs` does the work.
 
 mod activity;
+mod approvals;
+mod blocks;
 mod entries;
+mod levels;
+mod picture;
+mod places;
+mod playback;
+mod strip;
+mod table_scroller;
+mod voice_chip;
+mod voice_note;
 
+use crate::audio::Endpoints;
+use crate::chat_session::ChatWire;
+use crate::media_grants::Media;
 use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{Phase, Transcript};
+use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
+use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
+use picture::Decoder;
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
+use strip::Readers;
+use voice_note::Player;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
@@ -44,7 +64,8 @@ pub struct ChatPage {
     list: gtk::Box,
     /// The live line for a turn with nothing else on screen showing the work.
     thinking: LiveLine,
-    shown: Rc<RefCell<Vec<Drawn>>>,
+    shown: Rc<RefCell<Vec<Placed>>>,
+    on_screen: Rc<OnScreen>,
     /// The running turn, which the clock reads each second.
     turn: Rc<Cell<Option<Turn>>>,
     clock: Rc<RefCell<Option<glib::SourceId>>>,
@@ -53,10 +74,17 @@ pub struct ChatPage {
     send: gtk::Button,
     down: DownPage,
     banner: adw::Banner,
+    approvals: approvals::Cards,
+    /// The oldest seq drawn, to keep the reader's place when older rows come in above.
+    first_seq: Cell<Option<u64>>,
+    /// What the rows' strips read their files with.
+    readers: Readers,
 }
 
 impl ChatPage {
-    pub fn new() -> Self {
+    /// `endpoints` are the voice notes' speakers: the sound server's, or a fakesink under
+    /// `FERMIX_AUDIO=test`.
+    pub fn new(media: &Media, endpoints: Endpoints) -> Self {
         // Close within a turn; a question opens the next with more room (CSS).
         let list = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -67,13 +95,17 @@ impl ChatPage {
         thinking.row.add_css_class("standalone");
         thinking.row.set_visible(false);
         let (follow, conversation, empty) = conversation_area(&list, &thinking.row);
+        let shown = Rc::default();
+        let on_screen = OnScreen::new(&shown, &follow.scroller);
         let (composer, input, send) = composer();
+        let approvals = approvals::Cards::new();
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
         let banner = adw::Banner::new("");
         body.append(&banner);
         body.append(&conversation);
+        body.append(&approvals.widget);
         body.append(&composer);
         let down = DownPage::new();
         let root = gtk::Stack::builder()
@@ -81,13 +113,22 @@ impl ChatPage {
             .build();
         root.add_named(&body, Some("chat"));
         root.add_named(&down.page, Some("down"));
+        let player = Player::new(media, endpoints);
+        // Leaving the page, or the window going, stops a voice note.
+        let stops = Rc::downgrade(&player);
+        root.connect_unmap(move |_| {
+            if let Some(player) = stops.upgrade() {
+                player.stop();
+            }
+        });
         ChatPage {
             root,
             conversation,
             empty,
             list,
             thinking,
-            shown: Rc::default(),
+            shown,
+            on_screen,
             turn: Rc::default(),
             clock: Rc::default(),
             follow,
@@ -95,35 +136,78 @@ impl ChatPage {
             send,
             down,
             banner,
+            approvals,
+            first_seq: Cell::default(),
+            readers: Readers {
+                media: media.clone(),
+                decoder: Decoder::new(fermix_client::picture::decode),
+                player,
+            },
         }
     }
 
     /// `name` is the first name About you holds, for the greeting.
-    pub fn render(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+    pub fn render(&self, wire: &ChatWire, state: &State, name: Option<&str>) {
+        let shown = view(&wire.chat);
         let down = down_state(state);
-        if let Some(view) = down.clone().filter(|_| transcript.entries().is_empty()) {
-            self.down.show(view);
+        if let Some(down) = down.clone().filter(|_| shown.entries.is_empty()) {
+            self.down.show(down);
             self.root.set_visible_child_name("down");
             return;
         }
         self.down.reset();
         self.root.set_visible_child_name("chat");
-        self.show_banner(down.as_ref());
-        self.render_conversation(transcript, state, name);
+        self.show_banner(down.as_ref(), &wire.session.shown());
+        self.approvals.show(&wire.chat);
+        self.render_conversation(&shown, state, name);
     }
 
     /// With a conversation on screen the page stays, and the banner says why the
-    /// composer waits and offers the way out the down page would.
-    fn show_banner(&self, down: Option<&DownView>) {
-        self.banner.set_revealed(down.is_some());
-        let Some(view) = down else { return };
-        self.banner.set_title(view.title());
-        let (label, action) = view.button().unzip();
-        self.banner.set_button_label(label);
-        self.banner.set_action_name(action);
+    /// composer waits and offers the way out the down page would. With Fermix up,
+    /// it says why the chat is not connected, in the session's words.
+    fn show_banner(&self, down: Option<&DownView>, shown: &Shown) {
+        if let Some(view) = down {
+            self.banner.set_revealed(true);
+            self.banner.set_title(view.title());
+            let (label, action) = view.button().unzip();
+            self.banner.set_button_label(label);
+            self.banner.set_action_name(action);
+            return;
+        }
+        let sentence = match shown {
+            Shown::NoChat => Some(NO_CHAT.to_owned()),
+            Shown::Disconnected(sentence) | Shown::Refused(sentence) => Some(sentence.clone()),
+            Shown::Idle | Shown::Connecting | Shown::Connected => None,
+        };
+        self.banner.set_revealed(sentence.is_some());
+        self.banner
+            .set_title(sentence.as_deref().unwrap_or_default());
+        self.banner.set_button_label(None);
+        self.banner.set_action_name(None);
     }
 
-    fn render_conversation(&self, transcript: &Transcript, state: &State, name: Option<&str>) {
+    /// Whether the newest entry is on screen in the window the person is using, so the shared
+    /// read frontier may move: not while the window is behind another or on another workspace.
+    pub fn reading_latest(&self) -> bool {
+        let active = self
+            .root
+            .root()
+            .and_downcast::<gtk::Window>()
+            .is_some_and(|window| window.is_active());
+        active && self.root.is_mapped() && self.follow.stuck.get()
+    }
+
+    /// Whether a voice call is up: while one is, no voice note plays.
+    pub fn call_up(&self, up: bool) {
+        self.readers.player.call(up);
+    }
+
+    /// The held rows drawn on screen now; none while the conversation is not.
+    pub fn rows_on_screen(&self) -> BTreeSet<u64> {
+        self.on_screen.seqs()
+    }
+
+    fn render_conversation(&self, shown: &View, state: &State, name: Option<&str>) {
         // The time of day on this computer's clock; each render follows it.
         let time = match glib::DateTime::now_local() {
             Ok(now) => Some(time_of_day(now.hour() as u32)),
@@ -133,23 +217,29 @@ impl ChatPage {
             }
         };
         self.empty.set_title(&greeting(time, name));
-        let empty = transcript.entries().is_empty();
+        let empty = shown.entries.is_empty();
         self.conversation
             .set_visible_child_name(if empty { "empty" } else { "messages" });
-        let turn = Turn::of(transcript);
+        let turn = shown.turn.map(Turn::of);
         self.turn.set(turn);
         let live = turn.map(Turn::live);
-        self.show_entries(transcript, live.as_ref());
-        self.thinking.row.set_visible(transcript.thinking());
+        if self.first_seq.replace(shown.first_seq) > shown.first_seq {
+            self.follow.keep_place();
+        }
+        self.show_entries(shown, live.as_ref());
+        self.on_screen.notice();
+        self.thinking.row.set_visible(shown.thinking);
         if let Some(live) = &live {
             self.thinking.thinking(live);
         }
         self.keep_time(turn.is_some());
-        self.show_composer(transcript.phase(), state.snapshot().is_some());
+        self.show_composer(shown.turn, state.snapshot().is_some());
     }
 
-    fn show_composer(&self, phase: Phase, up: bool) {
-        let running = phase != Phase::Idle;
+    /// Send, or Stop while a turn this app started runs.
+    fn show_composer(&self, turn: Option<LiveTurn>, up: bool) {
+        let running = turn.is_some_and(|turn| turn.can_stop);
+        let stopping = turn.is_some_and(|turn| turn.stopping);
         let (icon, tooltip, action) = if running {
             ("media-playback-stop-symbolic", "Stop", "win.stop-reply")
         } else {
@@ -160,7 +250,7 @@ impl ChatPage {
         self.send.set_action_name(Some(action));
         let has_text = self.input.buffer().char_count() > 0;
         self.send
-            .set_sensitive(up && phase != Phase::Stopping && (running || has_text));
+            .set_sensitive(up && !stopping && (running || has_text));
         self.input.set_editable(up);
     }
 
@@ -186,28 +276,58 @@ impl ChatPage {
         self.follow.latest();
     }
 
-    /// Draws what changed: entries already on screen stay, one that streamed
-    /// more in or changed its status is updated in place, and everything from
-    /// the first entry that cannot be is drawn anew.
-    fn show_entries(&self, transcript: &Transcript, live: Option<&Live>) {
-        let entries = transcript.entries();
+    /// Draws what changed, each entry kept by its key: one already on screen stays where it
+    /// is, one that streamed more in or changed is updated in place, a new one is drawn at its
+    /// place, and one gone is removed. A page read backward is a prepend: nothing below it
+    /// is drawn again.
+    fn show_entries(&self, view: &View, live: Option<&Live>) {
         let mut shown = self.shown.borrow_mut();
-        let mut same = 0;
-        for (drawn, entry) in shown.iter_mut().zip(entries) {
-            if drawn.entry != *entry && !drawn.grow(entry) {
-                break;
+        let mut kept = self.take_kept(&mut shown, &view.keys);
+        let mut previous: Option<gtk::Widget> = None;
+        let placed = view.keys.iter().zip(&view.entries).zip(&view.seqs);
+        for ((key, entry), seq) in placed {
+            let drawn = match kept.remove(key) {
+                Some(drawn) => self.redrawn(drawn, entry),
+                None => Drawn::new(entry, &self.readers),
+            };
+            place(&self.list, &drawn.row, previous.as_ref());
+            previous = Some(drawn.row.clone().upcast());
+            shown.push(Placed {
+                key: key.clone(),
+                seq: *seq,
+                drawn,
+            });
+        }
+        // Every key kept is one the view has, and the loop took each at its first place.
+        debug_assert!(kept.is_empty(), "an entry kept that the view does not have");
+        decorate(&shown, view, live);
+    }
+
+    /// Empties `shown` into its entries by key, and removes from the list each entry `keys`
+    /// no longer has, and any second entry under one key.
+    fn take_kept(&self, shown: &mut Vec<Placed>, keys: &[Key]) -> HashMap<Key, Drawn> {
+        let wanted: HashSet<&Key> = keys.iter().collect();
+        let mut kept = HashMap::with_capacity(shown.len());
+        for placed in shown.drain(..) {
+            if !wanted.contains(&placed.key) {
+                self.list.remove(&placed.drawn.row);
+                continue;
             }
-            same += 1;
+            if let Some(twin) = kept.insert(placed.key, placed.drawn) {
+                self.list.remove(&twin.row);
+            }
         }
-        for stale in shown.drain(same..) {
-            self.list.remove(&stale.row);
+        kept
+    }
+
+    /// `drawn` grown into `entry`, or drawn anew when it cannot be: a different kind of entry
+    /// under the same key, or a row read again that draws differently.
+    fn redrawn(&self, mut drawn: Drawn, entry: &Entry) -> Drawn {
+        if drawn.entry == *entry || drawn.grow(entry) {
+            return drawn;
         }
-        for entry in &entries[same..] {
-            let drawn = Drawn::new(entry);
-            self.list.append(&drawn.row);
-            shown.push(drawn);
-        }
-        decorate(&shown, transcript, live);
+        self.list.remove(&drawn.row);
+        Drawn::new(entry, &self.readers)
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -226,7 +346,7 @@ impl ChatPage {
             let live = turn.live();
             thinking.thinking(&live);
             if let Some(last) = shown.borrow().last() {
-                last.set_live(Some(&live));
+                last.drawn.set_live(Some(&live));
             }
             glib::ControlFlow::Continue
         });
@@ -242,11 +362,11 @@ struct Turn {
 }
 
 impl Turn {
-    fn of(transcript: &Transcript) -> Option<Turn> {
-        Some(Turn {
-            started: transcript.turn_started()?,
-            stopping: transcript.phase() == Phase::Stopping,
-        })
+    fn of(turn: LiveTurn) -> Turn {
+        Turn {
+            started: turn.started,
+            stopping: turn.stopping,
+        }
     }
 
     fn live(self) -> Live {
@@ -257,24 +377,45 @@ impl Turn {
     }
 }
 
-/// The parts of each entry that follow the rest of the conversation; only the
-/// last entry can be live.
-fn decorate(shown: &[Drawn], transcript: &Transcript, live: Option<&Live>) {
-    let last = shown.len().checked_sub(1);
-    for (index, drawn) in shown.iter().enumerate() {
-        let is_last = Some(index) == last;
-        let time = transcript.time(index).and_then(clock);
-        drawn.decorate(
-            time.as_deref(),
-            is_last && transcript.can_retry(),
-            live.filter(|_| is_last),
-        );
+/// One entry on screen: its key, the held row it draws, and its widgets.
+struct Placed {
+    key: Key,
+    seq: Option<u64>,
+    drawn: Drawn,
+}
+
+/// Puts `row` straight after `after`, or first for `None`, moving it only when it is not
+/// there already.
+fn place(list: &gtk::Box, row: &impl IsA<gtk::Widget>, after: Option<&gtk::Widget>) {
+    if row.parent().is_none() {
+        list.insert_child_after(row, after);
+        return;
+    }
+    if row.prev_sibling().as_ref() != after {
+        list.reorder_child_after(row, after);
     }
 }
 
-/// "14:05" in the local time zone.
-fn clock(at: i64) -> Option<String> {
-    match glib::DateTime::from_unix_local(at).and_then(|time| time.format("%H:%M")) {
+/// The parts of each entry that follow the rest of the conversation; only the
+/// last entry can be live.
+fn decorate(shown: &[Placed], view: &View, live: Option<&Live>) {
+    let last = shown.len().checked_sub(1);
+    for (index, placed) in shown.iter().enumerate() {
+        let is_last = Some(index) == last;
+        let time = view.times.get(index).cloned().flatten();
+        let time = time.as_deref().and_then(clock);
+        placed
+            .drawn
+            .decorate(time.as_deref(), live.filter(|_| is_last));
+    }
+}
+
+/// "14:05" in the local time zone, from the daemon's RFC 3339 time.
+fn clock(at: &str) -> Option<String> {
+    let parsed = glib::DateTime::from_iso8601(at, None)
+        .and_then(|time| time.to_local())
+        .and_then(|time| time.format("%H:%M"));
+    match parsed {
         Ok(text) => Some(text.into()),
         Err(e) => {
             glib::g_warning!("fermix", "could not show the time {at}: {e}");
@@ -313,6 +454,15 @@ fn conversation_area(list: &gtk::Box, live: &gtk::Box) -> (Follow, gtk::Stack, a
     let overlay = gtk::Overlay::builder().child(&scroller).build();
     overlay.add_overlay(&jump);
     let follow = Follow::new(&scroller, &jump);
+    // The reader reached the oldest row drawn: ask for the page before it.
+    scroller.connect_edge_reached(|scroller, edge| {
+        if edge != gtk::PositionType::Top {
+            return;
+        }
+        if let Err(e) = scroller.activate_action("win.chat-older", None) {
+            glib::g_warning!("fermix", "could not ask for older messages: {e}");
+        }
+    });
     // The mark and a greeting (plan §3.4); the page fills in the title.
     let empty = adw::StatusPage::builder()
         .icon_name("io.tezra.Fermix-symbolic")
@@ -347,9 +497,11 @@ fn jump_button() -> gtk::Button {
 
 /// Keeps the newest entry in view while the reader is at the bottom, leaves
 /// the view alone once they scroll up to read, and offers a way back down.
+/// Coming back to the bottom marks the newest row read.
 struct Follow {
     stuck: Rc<Cell<bool>>,
     adjustment: gtk::Adjustment,
+    scroller: gtk::ScrolledWindow,
 }
 
 impl Follow {
@@ -357,29 +509,161 @@ impl Follow {
         let follow = Follow {
             stuck: Rc::new(Cell::new(true)),
             adjustment: scroller.vadjustment(),
+            scroller: scroller.clone(),
         };
         let (stuck, button) = (follow.stuck.clone(), jump.clone());
         follow.adjustment.connect_value_changed(move |a| {
             let at_bottom = a.value() + a.page_size() >= a.upper() - STICK_DISTANCE;
-            stuck.set(at_bottom);
+            let was = stuck.replace(at_bottom);
             button.set_visible(!at_bottom);
+            if at_bottom && !was {
+                newest_seen(&button);
+            }
         });
         let stuck = follow.stuck.clone();
         follow
             .adjustment
             .connect_changed(move |a| scroll_to_end_when_idle(a, &stuck));
         let (stuck, adjustment) = (follow.stuck.clone(), follow.adjustment.clone());
-        jump.connect_clicked(move |_| {
-            stuck.set(true);
+        jump.connect_clicked(move |button| {
+            let was = stuck.replace(true);
             adjustment.set_value(adjustment.upper() - adjustment.page_size());
+            if !was {
+                newest_seen(button);
+            }
         });
         follow
+    }
+
+    /// Rows are about to come in above: keep the reader where they were, by their distance
+    /// from the bottom, once the new rows are laid out.
+    fn keep_place(&self) {
+        if self.stuck.get() {
+            return;
+        }
+        let a = self.adjustment.clone();
+        let from_bottom = a.upper() - a.value();
+        glib::idle_add_local_once(move || a.set_value(a.upper() - from_bottom));
     }
 
     fn latest(&self) {
         self.stuck.set(true);
         let a = &self.adjustment;
         a.set_value(a.upper() - a.page_size());
+    }
+}
+
+/// The reader is back at the newest row: the window marks it read.
+fn newest_seen(widget: &impl IsA<gtk::Widget>) {
+    if let Err(e) = widget.activate_action("win.chat-seen", None) {
+        glib::g_warning!("fermix", "could not mark the newest message read: {e}");
+    }
+}
+
+/// Which held rows are drawn on screen, told to the window each time that changes, so a row a
+/// reconnect may have changed is read again as the reader comes to it (macOS `rowsOnScreen`).
+/// Each entry on screen also reads the pictures under it, once.
+struct OnScreen {
+    shown: Rc<RefCell<Vec<Placed>>>,
+    scroller: gtk::ScrolledWindow,
+    /// What the window was last told; empty while the conversation is off screen.
+    told: RefCell<BTreeSet<u64>>,
+    /// A look is due at the next idle, once the layout has settled.
+    due: Cell<bool>,
+}
+
+impl OnScreen {
+    fn new(shown: &Rc<RefCell<Vec<Placed>>>, scroller: &gtk::ScrolledWindow) -> Rc<OnScreen> {
+        let on_screen = Rc::new(OnScreen {
+            shown: shown.clone(),
+            scroller: scroller.clone(),
+            told: RefCell::default(),
+            due: Cell::new(false),
+        });
+        let adjustment = scroller.vadjustment();
+        let weak = Rc::downgrade(&on_screen);
+        adjustment.connect_value_changed(move |_| notice(&weak));
+        let weak = Rc::downgrade(&on_screen);
+        adjustment.connect_changed(move |_| notice(&weak));
+        let weak = Rc::downgrade(&on_screen);
+        scroller.connect_map(move |_| notice(&weak));
+        let told = Rc::downgrade(&on_screen);
+        scroller.connect_unmap(move |_| {
+            if let Some(on_screen) = told.upgrade() {
+                on_screen.told.take();
+            }
+        });
+        on_screen
+    }
+
+    /// Something moved: once the layout settles, the window hears of a change.
+    fn notice(self: &Rc<Self>) {
+        if self.due.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(on_screen) = weak.upgrade() else {
+                return;
+            };
+            on_screen.due.set(false);
+            on_screen.read();
+            on_screen.tell();
+        });
+    }
+
+    /// Each entry on screen reads what its strip shows, where it has not yet.
+    fn read(&self) {
+        let shown = self.shown.borrow();
+        for placed in &shown[self.visible(&shown)] {
+            placed.drawn.on_screen();
+        }
+    }
+
+    fn tell(&self) {
+        let seqs = self.seqs();
+        if *self.told.borrow() == seqs {
+            return;
+        }
+        self.told.replace(seqs);
+        if let Err(e) = self.scroller.activate_action("win.chat-on-screen", None) {
+            glib::g_warning!("fermix", "could not report the messages on screen: {e}");
+        }
+    }
+
+    /// The held rows whose entries overlap the scroller's view now.
+    fn seqs(&self) -> BTreeSet<u64> {
+        let shown = self.shown.borrow();
+        shown[self.visible(&shown)]
+            .iter()
+            .filter_map(|placed| placed.seq)
+            .collect()
+    }
+
+    /// The entries of `shown` that overlap the scroller's view now; none while it is off
+    /// screen. Entries stand in order down the list, so the first on screen is found by halving.
+    fn visible(&self, shown: &[Placed]) -> Range<usize> {
+        if !self.scroller.is_mapped() {
+            return 0..0;
+        }
+        let height = self.scroller.height() as f32;
+        let span = |placed: &Placed| {
+            let bounds = placed.drawn.row.compute_bounds(&self.scroller)?;
+            Some((bounds.y(), bounds.y() + bounds.height()))
+        };
+        let above = |placed: &Placed| span(placed).is_some_and(|(_, bottom)| bottom <= 0.0);
+        let first = shown.partition_point(above);
+        let count = shown[first..]
+            .iter()
+            .take_while(|placed| span(placed).is_some_and(|(top, _)| top < height))
+            .count();
+        first..first + count
+    }
+}
+
+fn notice(on_screen: &std::rc::Weak<OnScreen>) {
+    if let Some(on_screen) = on_screen.upgrade() {
+        on_screen.notice();
     }
 }
 

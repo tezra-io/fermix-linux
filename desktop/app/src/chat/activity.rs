@@ -230,51 +230,6 @@ impl Group {
     }
 }
 
-/// The assistant's reasoning, when an agent sends it: live while it comes in,
-/// then folded to "Thought", opening to the text, small and dim.
-pub struct Thought {
-    disclosure: Disclosure,
-    text: gtk::Label,
-}
-
-impl Thought {
-    pub fn new(text: &str) -> Thought {
-        let label = gtk::Label::builder()
-            .label(text)
-            .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .xalign(0.0)
-            .selectable(true)
-            .css_classes(["dimmed", "caption"])
-            .build();
-        Thought {
-            disclosure: Disclosure::new(&label),
-            text: label,
-        }
-    }
-
-    pub fn widget(&self) -> gtk::Widget {
-        self.disclosure.column.clone().upcast()
-    }
-
-    pub fn grow(&self, text: &str) {
-        self.text.set_text(text);
-    }
-
-    pub fn set_live(&self, live: Option<&Live>) {
-        match live {
-            Some(live) => {
-                let meta = live_meta(0, live.elapsed);
-                let phrase = live_phrase(&[], live.stopping);
-                self.disclosure.show_live(&phrase, meta.as_deref(), false)
-            }
-            None => self
-                .disclosure
-                .show_folded("Thought", None, None, "Thought"),
-        }
-    }
-}
-
 /// The chevron and the folded line's parts: what was used, what failed (in
 /// the warning colour), and how it was cut short (dim).
 fn folded_line() -> (gtk::Box, gtk::Label, gtk::Label, gtk::Label) {

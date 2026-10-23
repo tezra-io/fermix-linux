@@ -6,7 +6,7 @@
 //! copy of it on the clipboard is taken back when Scan leaves, if it is still Fermix's. Linux has
 //! no way to keep one window out of a screen share, so nothing here claims to.
 
-use crate::descriptor::SectionView;
+use crate::descriptor::{NoteKind, SectionView};
 use adw::prelude::*;
 use fermix_client::mobile::{MobileDevice, MobileDevices};
 use fermix_client::pairing::{Compare, PairingCode, Progress, Scan, Step, TurnOn};
@@ -15,6 +15,7 @@ use fermix_client::phone::{
     FORGET, FORGET_CONFIRM, LINK_LABEL, PAIR, PAIR_ANOTHER, RESTARTING, SCAN_LINE, SECTION,
     STATUS_CHECKING, SWITCH_KEY,
 };
+use fermix_client::reach::{self, Kind, Line};
 use gtk::glib::{self, variant::ToVariant};
 use gtk::{cairo, gdk, pango};
 use std::cell::{Cell, RefCell};
@@ -37,6 +38,8 @@ pub struct Screen<'a> {
     pub devices: Option<&'a Result<MobileDevices, String>>,
     /// The daemon's footer for the channel's switch, which Turn on leads with.
     pub footer: Option<&'a str>,
+    /// Where reach from anywhere stands, for the line under its switch on Phones.
+    pub remote: Option<&'a Line>,
     /// Unix seconds, for when a phone was last seen.
     pub now: i64,
 }
@@ -49,6 +52,7 @@ struct Key {
     forgetting: Forgetting,
     devices: Option<Result<MobileDevices, String>>,
     footer: Option<String>,
+    remote: Option<Line>,
 }
 
 impl Key {
@@ -59,6 +63,7 @@ impl Key {
             forgetting: screen.forgetting.clone(),
             devices: screen.devices.cloned(),
             footer: screen.footer.map(str::to_owned),
+            remote: screen.remote.cloned(),
         }
     }
 }
@@ -217,13 +222,14 @@ impl PhoneView {
     }
 
     /// Phones: each paired phone, Pair another phone, then the channel's connection rows without
-    /// its switch, which stays on the Channels row.
+    /// its switch, which stays on the Channels row, and where reach from anywhere stands under
+    /// that one's switch.
     fn phones_step(&self, screen: &Screen<'_>) -> Built {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
         page.add(&group);
         let keep = Box::new(|key: &str| key != SWITCH_KEY);
-        let view = SectionView::keeping(SECTION, None, keep);
+        let view = SectionView::keeping_with_note(SECTION, keep, reach::SWITCH_KEY);
         page.add(&view.group);
         self.dialog_views.borrow_mut().push(view.clone());
         let phones = PhonesParts {
@@ -232,6 +238,7 @@ impl PhoneView {
             view,
         };
         phones.fill(screen);
+        phones.show_remote(screen.remote);
         let done = pill(DONE, "win.phone-dismiss", true);
         Built {
             content: page.upcast(),
@@ -287,7 +294,10 @@ fn update(parts: &Parts, was: &Key, screen: &Screen<'_>) -> bool {
             true
         }
         (Parts::Phones(p), Step::Phones, Step::Phones) => {
-            p.fill(screen);
+            if was.devices.as_ref() != screen.devices || was.forgetting != *screen.forgetting {
+                p.fill(screen);
+            }
+            p.show_remote(screen.remote);
             true
         }
         (Parts::Plain, Step::Waiting { .. }, Step::Waiting { .. }) => true,
@@ -687,6 +697,16 @@ fn sentence_step(sentence: &str, mut others: Vec<gtk::Button>, act: gtk::Button)
 }
 
 impl PhonesParts {
+    fn show_remote(&self, remote: Option<&Line>) {
+        let kind = |kind: Kind| match kind {
+            Kind::Note => NoteKind::Plain,
+            Kind::Progress => NoteKind::Progress,
+            Kind::Failure => NoteKind::Failure,
+        };
+        self.view
+            .set_note(remote.map(|line| (line.text.as_str(), kind(line.kind))));
+    }
+
     /// The phones as the daemon lists them, then Pair another phone. A press in a row draws the
     /// rows again; focus that was in them goes to the asking row's Cancel, else to Pair.
     fn fill(&self, screen: &Screen<'_>) {

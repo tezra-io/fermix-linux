@@ -3,8 +3,8 @@
 //! drift in the engine fails here rather than on a call.
 
 use fermix_client::realtime::protocol::{
-    decode_line, CallReady, Caption, ClientEvent, Direction, ServerEvent, Speaker, Task,
-    TaskStatus, ToolStatus, TurnState, PROTOCOL_VERSION,
+    decode_line, CallReady, Caption, ClientEvent, Direction, PlaybackProgress, ServerEvent,
+    Speaker, Task, TaskStatus, ToolStatus, TurnState, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -147,7 +147,7 @@ fn the_golden_server_events_carry_their_fields() {
         server(0),
         ServerEvent::ServerHello {
             min_version: 1,
-            max_version: 2
+            max_version: 3
         }
     );
     assert_eq!(
@@ -159,11 +159,19 @@ fn the_golden_server_events_carry_their_fields() {
     assert_eq!(
         server(2),
         ServerEvent::AudioDelta {
-            audio: vec![0, 0, 0]
+            audio: vec![0, 0, 0],
+            playback_id: None
         }
     );
     assert_eq!(
-        server(5),
+        server(3),
+        ServerEvent::AudioDelta {
+            audio: vec![0, 0, 0],
+            playback_id: Some("p17".into())
+        }
+    );
+    assert_eq!(
+        server(7),
         ServerEvent::ToolEvent {
             status: ToolStatus::Completed,
             name: None,
@@ -171,7 +179,7 @@ fn the_golden_server_events_carry_their_fields() {
         }
     );
     assert_eq!(
-        server(7),
+        server(9),
         ServerEvent::CallReady(CallReady {
             engine: "openai_live".into(),
             call_id: "voice_live:17".into(),
@@ -181,7 +189,17 @@ fn the_golden_server_events_carry_their_fields() {
         })
     );
     assert_eq!(
-        server(8),
+        server(10),
+        ServerEvent::CallReady(CallReady {
+            engine: "xai_realtime".into(),
+            call_id: "voice_live:18".into(),
+            provider_session_id: Some("sess_grok_01HB".into()),
+            expires_at: None,
+            captions: true,
+        })
+    );
+    assert_eq!(
+        server(11),
         ServerEvent::Caption(Caption {
             speaker: Speaker::User,
             delta: "what is ".into(),
@@ -190,7 +208,7 @@ fn the_golden_server_events_carry_their_fields() {
         })
     );
     assert_eq!(
-        server(9),
+        server(12),
         ServerEvent::Task(Task {
             delegation_id: "dg_01H9".into(),
             revision: 1,
@@ -198,24 +216,61 @@ fn the_golden_server_events_carry_their_fields() {
             summary: Some("checking the calendar".into()),
         })
     );
-    assert_eq!(server(14), ServerEvent::PlaybackStop);
+    assert_eq!(server(28), ServerEvent::PlaybackStop);
 }
 
 #[test]
 fn the_golden_usage_and_error_lines_keep_what_the_app_shows() {
-    let ServerEvent::Usage(live) = server(10) else {
-        panic!("line 10 is usage")
+    let ServerEvent::Usage(live) = server(15) else {
+        panic!("line 15 is usage")
     };
     assert_eq!(live.voice_cost_cents, Some(5.35));
     assert_eq!(live.backend_cost.as_deref(), Some("unknown"));
     assert_eq!(live.accounting.as_deref(), Some("running"));
 
-    let ServerEvent::Error(refusal) = server(13) else {
-        panic!("line 13 is an error")
+    let ServerEvent::Usage(grok) = server(16) else {
+        panic!("line 16 is usage")
+    };
+    assert_eq!(grok.voice_text_items, Some(2));
+    assert_eq!(grok.accounting.as_deref(), Some("incomplete"));
+
+    let ServerEvent::Error(refusal) = server(26) else {
+        panic!("line 26 is an error")
     };
     assert_eq!(refusal.reason, "unsupported_protocol_version");
     assert_eq!(refusal.kind.as_deref(), Some("update_required"));
     assert_eq!(refusal.direction, Some(Direction::ClientTooOld));
     assert_eq!(refusal.min_version, Some(2));
     assert_eq!(refusal.required_for.as_deref(), Some("openai_live"));
+
+    let ServerEvent::Error(grok) = server(27) else {
+        panic!("line 27 is an error")
+    };
+    assert_eq!(grok.client_version, Some(2));
+    assert_eq!(grok.min_version, Some(3));
+    assert_eq!(grok.required_for.as_deref(), Some("xai_realtime"));
+}
+
+#[test]
+fn the_golden_playback_progress_is_what_the_app_sends() {
+    let progress: Vec<ClientEvent> = CLIENT
+        .lines()
+        .filter(|line| line.contains("playback_progress"))
+        .map(|line| serde_json::from_str(line).expect("a client event"))
+        .collect();
+    assert_eq!(
+        progress,
+        vec![
+            ClientEvent::PlaybackProgress(PlaybackProgress {
+                playback_id: "p17".into(),
+                played_ms: 420,
+                drained: false,
+            }),
+            ClientEvent::PlaybackProgress(PlaybackProgress {
+                playback_id: "p17".into(),
+                played_ms: 870,
+                drained: true,
+            }),
+        ]
+    );
 }

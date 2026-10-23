@@ -1,6 +1,6 @@
 //! A job is polled until it ends, and never longer than its own budget allows.
 
-use fermix_client::job::{adoptable_sign_in, outcome, poll_cap, Outcome};
+use fermix_client::job::{adoptable_sign_in, model_warning, outcome, poll_cap, Outcome};
 use fermix_client::model::JobView;
 use serde_json::json;
 
@@ -56,6 +56,35 @@ fn a_timed_out_job_carries_its_sentence_too() {
 #[test]
 fn a_cancelled_job_is_cancelled() {
     assert_eq!(outcome(&job("cancelled", None, None)), Outcome::Cancelled);
+}
+
+fn completed_with(result: serde_json::Value) -> JobView {
+    let mut done = job("completed", None, None);
+    done.result = result.as_object().cloned();
+    done
+}
+
+/// A ChatGPT sign-in whose default model could not be checked against the
+/// account still completes, and says why (`auth.start`, PROTOCOL.md).
+#[test]
+fn a_sign_in_that_left_the_model_unchecked_says_why() {
+    let sentence = "The default model was not checked against your ChatGPT account. \
+                    OpenAI Codex is connected, but its models could not be listed: \
+                    HTTP 520 from https://api.openai.com/v1/models";
+    let done = completed_with(json!({"account_label": "a@example.com", "model_warning": sentence}));
+    assert_eq!(model_warning(&done).as_deref(), Some(sentence));
+}
+
+/// Absent means the check was made, and an engine before the field never sends it.
+#[test]
+fn a_sign_in_that_checked_the_model_says_nothing_more() {
+    let checked = completed_with(json!({"account_label": "a@example.com"}));
+    assert_eq!(model_warning(&checked), None);
+    assert_eq!(model_warning(&job("completed", None, None)), None);
+    assert_eq!(
+        model_warning(&completed_with(json!({"model_warning": " "}))),
+        None
+    );
 }
 
 #[test]

@@ -8,14 +8,18 @@
 # the newest of each family also on a headless Weston, which is what proves the private
 # libwayland-client.
 #
-#   install_smoke.sh --image <image> <package> [--out <dir>]
-#   install_smoke.sh --image <image> <package> --print-plan
+#   install_smoke.sh --image <image> <package> [--upgrade-from <previous package>] [--out <dir>]
+#   install_smoke.sh --image <image> <package> [--upgrade-from <previous package>] --print-plan
 #
 #   <image>       ubuntu:22.04, ubuntu:24.04, ubuntu:26.04, debian:12, debian:13, fedora:44,
 #                 almalinux:9 or almalinux:10
 #   --out <dir>   where the screenshots and the logs go, by default
 #                 $FERMIX_PACKAGE_CACHE/out/smoke/<image>, with the image's ':' as '-'
-#   --print-plan  print the pinned image, the family, the architecture and the displays, and stop
+#   --upgrade-from <previous package>
+#                 upgrade to <package> from <previous package> rather than install it on a clean
+#                 image, on ubuntu:24.04 or fedora:44: see below
+#   --print-plan  print the pinned image, the family, the architecture and the displays, or the
+#                 package an upgrade starts from, and stop
 #
 # Each image is pinned here by the digest of its multi-arch index, so one pin runs natively on an
 # amd64 and an arm64 machine. The smoke runs natively: the package's architecture must be this
@@ -28,10 +32,24 @@
 # the same for every distribution, so no image under test decodes its own capture. Both containers
 # are removed on every exit. The images reach their mirrors for the package's dependencies, for the
 # display tools, and for ImageMagick.
+#
+# An upgrade, N to N+1, is proven the way a person meets one: with the previous package installed,
+# its engine running as the account's systemd user service, and the new package installed over it
+# by apt or dnf. The container runs systemd as its first process, with its own cgroup namespace
+# and /run on tmpfs. It is not privileged. Docker mounts a container's cgroup namespace read-only,
+# so the container gets CAP_SYS_ADMIN alone, to remount its own namespace writable for systemd. It
+# keeps the default seccomp profile, has none of the host's devices, and mounts nothing of the
+# host's. AppArmor's docker-default profile refuses that remount, so AppArmor does not confine it.
+# smoke_in_container.sh --boot installs systemd there, remounts, and becomes it; once it is up,
+# smoke_in_container.sh --upgrade-from runs beside it and says what it proves.
+# Both packages go in by docker cp, each checked there against its sha256, and the window is not
+# drawn. The previous package must be of the same family and architecture.
 set -euo pipefail
 shopt -s inherit_errexit
 
 IMAGES="ubuntu:22.04, ubuntu:24.04, ubuntu:26.04, debian:12, debian:13, fedora:44, almalinux:9 and almalinux:10"
+# The images an upgrade runs on: one of each family, whose systemd boots in a container.
+UPGRADE_IMAGES="ubuntu:24.04 and fedora:44"
 # The converter: Alpine 3.22 with ImageMagick 7.1.2-15, which reads xwd's 32-bit pixels right.
 CONVERT_IMAGE="alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
 CONVERT_PACKAGES="imagemagick=7.1.2.15-r0 bash=5.2.37-r0"
@@ -39,6 +57,8 @@ SCREEN=1280x800
 # A smoke that has not finished by then has failed; the container is removed either way.
 SMOKE_TIMEOUT_SECONDS=1800
 CONVERT_TIMEOUT_SECONDS=600
+# Tries, two seconds apart, for an upgrade's container to install systemd and boot it.
+BOOT_TRIES=150
 CACHE_HOME="${XDG_CACHE_HOME:-${HOME:?}/.cache}"
 PACKAGE_CACHE="${FERMIX_PACKAGE_CACHE:-$CACHE_HOME/fermix-desktop-package}"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -55,7 +75,8 @@ fail() {
 }
 
 usage() {
-  fail "usage: install_smoke.sh --image <image> <package> [--out <dir> | --print-plan]"
+  fail "usage: install_smoke.sh --image <image> <package> [--upgrade-from <previous package>]" \
+    "[--out <dir> | --print-plan]"
 }
 
 cleanup() {
@@ -138,6 +159,26 @@ package_arch() {
   echo "$arch"
 }
 
+# The previous package an upgrade starts from: on an image upgrades run on, of the same family and
+# architecture as <package>, and another file.
+check_upgrade() {
+  local image="$1" family="$2" package="$3" previous="$4" arch="$5" previous_arch
+  case "$image" in
+    ubuntu:24.04 | fedora:44) ;;
+    *) fail "an upgrade runs on $UPGRADE_IMAGES, not $image" ;;
+  esac
+  check_package "$image" "$previous" "$family"
+  previous_arch="$(package_arch "$previous" "$family")"
+  [ "$previous_arch" = "$arch" ] ||
+    fail "$(basename -- "$previous") is for $previous_arch, and $(basename -- "$package") is for $arch"
+  [ "$(basename -- "$previous")" != "$(basename -- "$package")" ] ||
+    fail "an upgrade goes from one version to another, and both packages are $(basename -- "$package")"
+}
+
+sha256_of() {
+  sha256sum -- "$1" | cut -d' ' -f1
+}
+
 # The smoke container, with the package and the script that checks it copied in.
 create_container() {
   local pinned="$1" family="$2" package="$3" arch="$4" displays="$5" digest name
@@ -198,6 +239,38 @@ copy_out() {
   echo "install_smoke: $(wc -l < "$out/SHA256SUMS") files in $out"
 }
 
+# The upgrade's container, which becomes systemd's, with both packages and the script copied in.
+create_upgrade_container() {
+  local pinned="$1" family="$2" arch="$3" package="$4" previous="$5"
+  docker create --name "fermix-desktop-pkg-package-upgrade-$$" --platform "linux/$arch" --pull missing \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined --cgroupns=private --tmpfs /run --tmpfs /run/lock \
+    --env container=docker \
+    "$pinned" bash /smoke/smoke_in_container.sh --boot "$family" > /dev/null
+  CONTAINER="fermix-desktop-pkg-package-upgrade-$$"
+  tar -cf - --transform 'flags=r;s,^,smoke/,' -C "$(dirname -- "$package")" "$(basename -- "$package")" \
+    -C "$(dirname -- "$previous")" "$(basename -- "$previous")" -C "$desktop/packaging" smoke_in_container.sh |
+    docker cp - "$CONTAINER:/"
+}
+
+# The container's systemd has finished starting: running, or degraded by a unit a container cannot
+# run. systemctl is-system-running says so on stdout, and exits 1 for every state but running.
+booted() {
+  local state
+  state="$(docker exec "$CONTAINER" systemctl is-system-running 2> /dev/null)" || [ -n "$state" ] || return 1
+  [ "$state" = running ] || [ "$state" = degraded ]
+}
+
+# Waits up to $BOOT_TRIES tries for systemd to boot, and fails at once if the container stops.
+wait_boot() {
+  local try
+  for ((try = 0; try < BOOT_TRIES; try++)); do
+    [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" = true ] || return 1
+    booted && return 0
+    sleep 2
+  done
+  return 1
+}
+
 # What a failed smoke wrote, unchecked, for reading: it wrote no SHA256SUMS.
 keep_failed() {
   rm -rf -- "$1"
@@ -221,11 +294,43 @@ run_smoke() {
   echo "install_smoke: the captures in $out are checked in $CONVERT_IMAGE"
 }
 
+run_upgrade() {
+  local image="$1" family="$2" package="$3" previous="$4" arch="$5" out="$6"
+  create_upgrade_container "$(pinned_image "$image")" "$family" "$arch" "$package" "$previous"
+  echo "install_smoke: $(basename -- "$previous") upgraded to $(basename -- "$package") on $image, $arch" >&2
+  docker start "$CONTAINER" > /dev/null
+  if ! wait_boot; then
+    keep_failed "$out-failed"
+    fail "systemd did not boot in the $image container; what it wrote is in $out-failed:" \
+      "$(docker logs --tail 20 "$CONTAINER" 2>&1)"
+  fi
+  if ! timeout "$SMOKE_TIMEOUT_SECONDS" docker exec "$CONTAINER" bash /smoke/smoke_in_container.sh \
+    --family "$family" --package "/smoke/$(basename -- "$package")" --sha256 "$(sha256_of "$package")" \
+    --upgrade-from "/smoke/$(basename -- "$previous")" --previous-sha256 "$(sha256_of "$previous")"; then
+    keep_failed "$out-failed"
+    fail "the upgrade to $(basename -- "$package") failed on $image; what it wrote is in $out-failed"
+  fi
+  mkdir -p "$PACKAGE_CACHE"
+  WORK="$(mktemp -d "$PACKAGE_CACHE/smoke.XXXXXX")"
+  copy_out "$out"
+}
+
+print_plan() {
+  local image="$1" family="$2" arch="$3" previous="$4"
+  printf 'image %s\nfamily %s\narch %s\n' "$(pinned_image "$image")" "$family" "$arch"
+  if [ -n "$previous" ]; then
+    printf 'upgrade from %s\n' "$(basename -- "$previous")"
+  else
+    printf 'displays %s\n' "$(displays_of "$image")"
+  fi
+}
+
 main() {
-  local image="" package="" out="" print=0 family arch machine
+  local image="" package="" previous="" out="" print=0 family arch machine
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) [ $# -ge 2 ] || usage; image="$2"; shift 2 ;;
+      --upgrade-from) [ $# -ge 2 ] || usage; previous="$2"; shift 2 ;;
       --out) [ $# -ge 2 ] || usage; out="$2"; shift 2 ;;
       --print-plan) print=1; shift ;;
       -*) usage ;;
@@ -240,12 +345,18 @@ main() {
   machine="$(machine_arch)"
   [ "$arch" = "$machine" ] ||
     fail "$(basename -- "$package") is for $arch, and this machine is $machine: the smoke runs natively"
+  [ -z "$previous" ] || check_upgrade "$image" "$family" "$package" "$previous" "$arch"
+  # tar's -C is relative to the -C before it, and the copy into the container changes directory
+  # once for each package, so both are named from the root.
+  package="$(realpath -- "$package")"
+  [ -z "$previous" ] || previous="$(realpath -- "$previous")"
   if [ "$print" = 1 ]; then
-    printf 'image %s\nfamily %s\narch %s\ndisplays %s\n' \
-      "$(pinned_image "$image")" "$family" "$arch" "$(displays_of "$image")"
-    return 0
+    print_plan "$image" "$family" "$arch" "$previous"
+  elif [ -n "$previous" ]; then
+    run_upgrade "$image" "$family" "$package" "$previous" "$arch" "${out:-$PACKAGE_CACHE/out/upgrade/${image//:/-}}"
+  else
+    run_smoke "$image" "$family" "$package" "$arch" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
   fi
-  run_smoke "$image" "$family" "$package" "$arch" "${out:-$PACKAGE_CACHE/out/smoke/${image//:/-}}"
 }
 
 trap cleanup EXIT

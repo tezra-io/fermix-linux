@@ -89,8 +89,8 @@ pub enum Incoming {
     Closed(CloseReason),
 }
 
-/// Runs on the reader thread with each decoded `audio_delta`.
-pub type OnAudio = Box<dyn FnMut(&[u8]) + Send>;
+/// Runs on the reader thread with each decoded `audio_delta` and its playback id, if any.
+pub type OnAudio = Box<dyn FnMut(&[u8], Option<&str>) + Send>;
 
 /// The sending half. Clones share one connection, which closes when the last one is dropped.
 #[derive(Debug, Clone)]
@@ -478,8 +478,8 @@ fn deliver(
     on_audio: &mut OnAudio,
 ) -> Result<(), CloseReason> {
     let incoming = match decode_line(line).map_err(CloseReason::Framing)? {
-        ServerEvent::AudioDelta { audio } => {
-            on_audio(&audio);
+        ServerEvent::AudioDelta { audio, playback_id } => {
+            on_audio(&audio, playback_id.as_deref());
             Incoming::Audio {
                 bytes: audio.len(),
                 rms: rms(&audio),

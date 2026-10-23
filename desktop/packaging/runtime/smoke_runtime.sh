@@ -7,8 +7,10 @@
 # on the host, then gets the shipped tree, that binary and gst-inspect-1.0, and
 # nothing from apt but the host libraries the boundary declares and a display.
 # There the window is drawn under Xvfb twice, once with the cairo renderer and
-# once with GL on Mesa's software driver, and every GStreamer element the voice
-# call builds is looked up through the compiled-in plugin path.
+# once with GL on Mesa's software driver, every GStreamer element the voice
+# call builds is looked up through the compiled-in plugin path, and a phone's
+# voice note (Ogg/Opus, 1.504 s of speech) is decoded through the chain the
+# chat's levels pass builds, to 8 kHz mono float, and its length checked.
 #
 # The GL pass is the one that reaches libepoxy's dlopen of the host GL
 # libraries, which no NEEDED entry names.
@@ -22,12 +24,14 @@ shopt -s inherit_errexit
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/packaging/runtime"
 MARKS_DIR="$ROOT_DIR/app/marks"
+VOICE_NOTE="$ROOT_DIR/app/tests/fixtures/voice/speech-opus.ogg"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/fermix-desktop-runtime"
 OUT_DIR="${FERMIX_RUNTIME_OUT:-$CACHE_HOME/out}"
 BUILD_IMAGE="${FERMIX_RUNTIME_IMAGE:-fermix-desktop-pkg-runtime-build}"
 SMOKE_IMAGE="${FERMIX_RUNTIME_SMOKE_IMAGE:-ubuntu@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02}"
-# Every element desktop/app/src/audio.rs makes, and level.
-ELEMENTS="pulsesrc pulsesink webrtcdsp webrtcechoprobe level audioconvert audioresample capsfilter audiotestsrc fakesink appsrc appsink"
+# Every element desktop/app/src/audio.rs makes, level, and the demuxer and
+# decoder of a phone's voice note (Ogg/Opus).
+ELEMENTS="pulsesrc pulsesink webrtcdsp webrtcechoprobe level audioconvert audioresample capsfilter audiotestsrc fakesink appsrc appsink oggdemux opusdec"
 
 # What the EXIT trap removes. A trap runs after every function has returned.
 WORK=""
@@ -70,6 +74,7 @@ require_inputs() {
   [ -f "$OUT_DIR/runtime-dev-$arch.tar" ] || fail "no dev tree at $OUT_DIR/runtime-dev-$arch.tar"
   [ -f "$RUNTIME_DIR/smoke/runtime_smoke.c" ] || fail "no smoke program to compile"
   [ -f "$RUNTIME_DIR/smoke/sample.gif" ] || fail "no GIF to decode"
+  [ -f "$VOICE_NOTE" ] || fail "no voice note to decode at $VOICE_NOTE"
   [ -d "$MARKS_DIR" ] || fail "no marks at $MARKS_DIR"
   docker image inspect "$BUILD_IMAGE" >/dev/null 2>&1 \
     || fail "$BUILD_IMAGE is not built; run build_runtime.sh --container first"
@@ -96,14 +101,15 @@ compile_smoke() {
       $(pkg-config --cflags --libs libadwaita-1) \
       -Wl,-rpath,"\$ORIGIN/../lib" -Wl,--enable-new-dtags
     readelf -d /tmp/runtime-smoke | grep -E "RUNPATH|RPATH"
-    cp /usr/lib/fermix-desktop/bin/gst-inspect-1.0 /tmp/gst-inspect-1.0
-    for f in /tmp/runtime-smoke /tmp/gst-inspect-1.0; do sha256sum "$f" > "$f.sha256"; done
+    cp /usr/lib/fermix-desktop/bin/gst-inspect-1.0 /usr/lib/fermix-desktop/bin/gst-launch-1.0 /tmp/
+    for f in /tmp/runtime-smoke /tmp/gst-inspect-1.0 /tmp/gst-launch-1.0; do sha256sum "$f" > "$f.sha256"; done
   ' >/dev/null
   docker cp "$OUT_DIR/runtime-dev-$arch.tar" "$CONTAINER:/tmp/runtime-dev.tar"
   docker cp "$RUNTIME_DIR/smoke/runtime_smoke.c" "$CONTAINER:/tmp/runtime_smoke.c"
   docker start -a "$CONTAINER" >&2 || fail "the smoke program did not compile"
   copy_out_checked /tmp/runtime-smoke "$WORK/runtime-smoke"
   copy_out_checked /tmp/gst-inspect-1.0 "$WORK/gst-inspect-1.0"
+  copy_out_checked /tmp/gst-launch-1.0 "$WORK/gst-launch-1.0"
   docker rm "$CONTAINER" >/dev/null
   CONTAINER=""
   log "compiled runtime-smoke against the dev tree"
@@ -126,7 +132,8 @@ SMOKE_SCRIPT='
     dconf-service gsettings-desktop-schemas fontconfig-config fonts-dejavu-core \
     xvfb xauth dbus-x11 $SMOKE_EXTRA_PACKAGES >/dev/null
   tar -xf /tmp/runtime.tar -C /
-  install -D -m 0755 -t /usr/lib/fermix-desktop/bin /tmp/runtime-smoke /tmp/gst-inspect-1.0
+  install -D -m 0755 -t /usr/lib/fermix-desktop/bin /tmp/runtime-smoke /tmp/gst-inspect-1.0 \
+    /tmp/gst-launch-1.0
   echo "--- the libraries the window resolves outside the prefix"
   ldd /usr/lib/fermix-desktop/bin/runtime-smoke | grep -v /usr/lib/fermix-desktop/ | sort
   export HOME=/root GSETTINGS_SCHEMA_DIR=/usr/lib/fermix-desktop/share/glib-2.0/schemas
@@ -148,6 +155,16 @@ SMOKE_SCRIPT='
       *) echo "gst-inspect-1.0 $element: loaded from \"$plugin\", not the prefix" >&2; exit 1 ;;
     esac
   done
+  # 1.504 s at 8 kHz, mono, 32-bit float: 48128 bytes, give or take the resampler.
+  /usr/lib/fermix-desktop/bin/gst-launch-1.0 -q filesrc location=/tmp/voice-note.ogg ! oggdemux \
+    ! opusdec ! audioconvert ! audioresample \
+    ! "audio/x-raw,format=F32LE,channels=1,rate=8000" ! filesink location=/tmp/voice-note.raw
+  decoded="$(stat -c %s /tmp/voice-note.raw)"
+  if [ "$decoded" -lt 47616 ] || [ "$decoded" -gt 48640 ]; then
+    echo "the voice note decoded to $decoded bytes, not 1.504 s of 8 kHz mono float" >&2
+    exit 1
+  fi
+  echo "decoded the voice note: $decoded bytes of 8 kHz mono float"
 '
 
 run_pass() {
@@ -161,6 +178,8 @@ run_pass() {
   docker cp "$OUT_DIR/runtime-$arch.tar" "$CONTAINER:/tmp/runtime.tar"
   docker cp "$WORK/runtime-smoke" "$CONTAINER:/tmp/runtime-smoke"
   docker cp "$WORK/gst-inspect-1.0" "$CONTAINER:/tmp/gst-inspect-1.0"
+  docker cp "$WORK/gst-launch-1.0" "$CONTAINER:/tmp/gst-launch-1.0"
+  docker cp "$VOICE_NOTE" "$CONTAINER:/tmp/voice-note.ogg"
   docker cp "$MARKS_DIR" "$CONTAINER:/tmp/marks"
   docker cp "$RUNTIME_DIR/smoke/sample.gif" "$CONTAINER:/tmp/sample.gif"
   docker start -a "$CONTAINER" >&2 || fail "the $renderer pass failed"
@@ -182,7 +201,7 @@ main() {
   # Cairo first: if the toolkit cannot draw at all, GL is the less useful answer.
   run_pass "$arch" cairo "" ""
   run_pass "$arch" gl 1 "libgl1-mesa-dri libglx-mesa0 libegl-mesa0"
-  log "the runtime draws a libadwaita window on $SMOKE_IMAGE with cairo and with GL"
+  log "the runtime draws a libadwaita window on $SMOKE_IMAGE with cairo and with GL, and decodes a voice note"
 }
 
 main "$@"

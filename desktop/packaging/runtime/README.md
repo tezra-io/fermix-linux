@@ -149,6 +149,8 @@ pinned versions' own `meson.build` requires:
 | webp-pixbuf-loader 0.2.7 | gdk-pixbuf > 2.22.0, libwebp >= 1.3.2 | libwebp 1.6.0 |
 | librsvg 2.62.4 | cairo >= 1.18.0, pango >= 1.50.0, glib >= 2.50.0, harfbuzz >= 2.0.0, freetype2 >= 20.0.14, libxml2 >= 2.9.0, gdk-pixbuf >= 2.20, meson >= 1.3.0, Rust >= 1.92.0, cargo-c >= 0.10.10 | Rust 1.97.1 and cargo-c 0.10.24 in the build image |
 | GStreamer 1.26.11 | glib >= 2.64, meson >= 1.4, flex >= 2.5.31 | |
+| gst-plugins-base 1.26.11 ogg | ogg >= 1.0 | libogg 1.3.6 |
+| gst-plugins-base 1.26.11 opus | opus >= 0.9.4 | opus 1.6.1 |
 | gst-plugins-bad 1.26.11 webrtcdsp | webrtc-audio-processing-2 >= 2.0 | webrtc-audio-processing 2.1 |
 | webrtc-audio-processing 2.1 | absl_base >= 20240722, C++17; its own wrap pins abseil-cpp 20240722.0 | abseil-cpp 20240722.2 |
 
@@ -158,6 +160,8 @@ because a requirement above moved it. adwaita-icon-theme is 50.0, the set GTK
 4.22 and libadwaita 1.9 ship with and the one the window's neutral icons are
 named from. librsvg is 2.62.4, the newest point release of the series GNOME 50
 ships; 2.63 is GNOME 51's. GStreamer is 1.26.11, the newest 1.26 point release.
+libogg 1.3.6 and opus 1.6.1 are the newest releases in xiph's release
+directories, and each sha256 is the one xiph's `SHA256SUMS` there publishes.
 
 **No glycin; librsvg for the SVG GTK cannot draw.** GTK 4.22.5's
 `meson.options` has no glycin option and its `meson.build` never looks for
@@ -370,12 +374,12 @@ records for a file the runtime compiles in or ships is in the component's
 expression, and it decides the unclear cases (the known residuals, below). Every component's
 unstable copyright file, at
 `https://metadata.ftp-master.debian.org/changelogs/main/<prefix>/<package>/unstable_copyright`,
-was read on 2026-10-06 at 02:10 UTC; Fedora's spec was never needed, since
-Debian packages all 35. For each licence Debian names that the expression
-lacked, the files it covers were looked up in the locked tarball, not
-Debian's, and followed to what ships: an option the lock sets, a platform
-directory, demos, tests, tools or documentation, or the compile line or
-`#include` that brings the file in.
+was read on 2026-10-06 at 02:10 UTC, and libogg's and opus's on 2026-10-18 at
+21:18 UTC; Fedora's spec was never needed, since Debian packages all 37. For
+each licence Debian names that the expression lacked, the files it covers were
+looked up in the locked tarball, not Debian's, and followed to what ships: an
+option the lock sets, a platform directory, demos, tests, tools or
+documentation, or the compile line or `#include` that brings the file in.
 
 - A licence whose files ship joined the expression, with its text from the
   component's own tree (an excerpt, or a file) where the tree carries one, and
@@ -425,7 +429,9 @@ expression or is ruled out beside it.
 | abseil-cpp 20240722.2 | [abseil 20260526.0-2](https://metadata.ftp-master.debian.org/changelogs/main/a/abseil/unstable_copyright) | None | None |
 | webrtc-audio-processing 2.1 | [webrtc-audio-processing 1.3-3](https://metadata.ftp-master.debian.org/changelogs/main/w/webrtc-audio-processing/unstable_copyright) | `BSD-2-Clause`: `webrtc/third_party/rnnoise/src/rnn_activations.h` (Octasic, Jean-Marc Valin), `#include`d by `agc2/rnn_vad/rnn_fc.cc` and `rnn_gru.cc` (`webrtc/modules/audio_processing/meson.build:91-92`). Excerpt 1-26 | `Custom-FFT`: `modules/third_party/fft/fft.c`, built into a library nothing links (above) |
 | gstreamer 1.26.11 | [gstreamer1.0 1.28.7-1](https://metadata.ftp-master.debian.org/changelogs/main/g/gstreamer1.0/unstable_copyright) | `LGPL-2.0-or-later`: nearly every source of libgstreamer, libgstbase, coreelements and gst-plugin-scanner, `gst/gst.c` among them, says "version 2 of the License". The standard text, since `COPYING` is the LGPL 2.1. `BSD-3-Clause`, which Debian does not record (it puts `gst/gsturi.c` under LGPL-2+ alone): `gst/gsturi.c:61-96` compiles FreeBSD's `strcasestr` (the Regents of the University of California) under `#ifndef HAVE_STRCASESTR`, and gstreamer's `meson.build` never defines `HAVE_STRCASESTR` (its `check_functions`, `meson.build:257-275`, does not probe for it), so the fallback is in libgstreamer. Excerpt 64-96 | `MPL-2.0`: `libs/gst/helpers/ptp/`, the PTP helper, which `-Dauto_features=disabled` leaves out; `GFDL` and public domain: `docs/` and `po/`, and no GStreamer catalogue ships |
-| gst-plugins-base 1.26.11 | [gst-plugins-base1.0 1.28.7-1](https://metadata.ftp-master.debian.org/changelogs/main/g/gst-plugins-base1.0/unstable_copyright) | `LGPL-2.0-or-later`: the sources of libgstaudio, libgsttag and libgstapp, and of the app, audioconvert, audioresample and audiotestsrc plugins. The standard text | `BSD-3-clause`: `gst-libs/gst/fft/` (libgstfft, dropped from the shipped tree) and `ext/ogg/` (not built); `MIT or LGPL-2+`: `gst-libs/gst/rtsp/` and `sdp/`, dropped; public domain: `po/` |
+| libogg 1.3.6 | [libogg 1.3.6-2](https://metadata.ftp-master.debian.org/changelogs/main/libo/libogg/unstable_copyright), read 2026-10-18 21:18 UTC | None | `rfc3533-license` and `rfc5334-license`: `doc/rfc3533.txt` and `doc/rfc5334.txt`, which do not ship (`-DINSTALL_DOCS=OFF`) |
+| opus 1.6.1 | [opus 1.6.1-1](https://metadata.ftp-master.debian.org/changelogs/main/o/opus/unstable_copyright), read 2026-10-18 21:18 UTC | `BSD-2-Clause`: most of CELT and `src/` carry a two-clause notice (`celt/bands.c`, `celt/celt.c`, `celt/entcode.c`, `src/opus.c` and their kin), while `COPYING` is the three-clause text and names eleven holders. The excerpts carry the two-clause text, and the holders of compiled two-clause code `COPYING` leaves out: `celt/kiss_fft.c` 1-27 (Mark Borgerding, Xiph.Org, CSIRO), `celt/laplace.c` 1-27 (CSIRO, Xiph.Org), `celt/mathops.c` 1-33 (Arm Limited, also in `src/opus.c` and `src/opus_decoder.c`), `src/mapping_matrix.c` 1-26 (Google, also in `src/opus_projection_*coder.c`) and `src/mlp.c` 1-26 (Octasic; the same lines as webrtc-audio-processing's `rnn_activations.h`) | None. Its `BSD-2-clause` files under `dnn/`, `celt/arm/`, `celt/x86/`, `silk/arm/`, `silk/x86/` and the tests are not compiled: `-Dauto_features=disabled` leaves deep-plc, intrinsics, rtcd and tests off |
+| gst-plugins-base 1.26.11 | [gst-plugins-base1.0 1.28.7-1](https://metadata.ftp-master.debian.org/changelogs/main/g/gst-plugins-base1.0/unstable_copyright); [1.28.8-1](https://metadata.ftp-master.debian.org/changelogs/main/g/gst-plugins-base1.0/unstable_copyright) for `ext/ogg/` and `ext/opus/`, read 2026-10-18 21:16 UTC, and for `gst-libs/gst/video/` at 21:58 UTC | `LGPL-2.0-or-later`: the sources of libgstaudio, libgsttag, libgstapp, libgstpbutils, libgstvideo and libgstriff, and of the app, audioconvert, audioresample, audiotestsrc, ogg and opus plugins. The standard text. `BSD-3-Clause`: `ext/ogg/vorbis_parse.c` (CSIRO, borrowed from liboggz) is in the ogg plugin's `ogg_sources` (`ext/ogg/meson.build:1-11`). Excerpt 4-34. `ext/ogg/dirac_parse.c` and `gst-libs/gst/video/video-orc-dist.c` and `.h` (generated from `video-orc.orc`) carry no notice and are in Debian's `Files: *` | `BSD-3-clause`: `gst-libs/gst/fft/` (libgstfft, dropped from the shipped tree); `MIT or LGPL-2+`: `gst-libs/gst/rtsp/` and `sdp/`, dropped; public domain: `po/` |
 | gst-plugins-good 1.26.11 | [gst-plugins-good1.0 1.28.7-1](https://metadata.ftp-master.debian.org/changelogs/main/g/gst-plugins-good1.0/unstable_copyright) | `LGPL-2.0-or-later`: `gst/level/` and `ext/pulse/`. The standard text | `BSD-3-clause`: `gst/monoscope/`, `sys/oss4/`; `LGPL-2`: `gst/rtp/gstrtpmp4adepay.*`; `MIT or LGPL-2+`: `gst/isomp4/`, `gst/rtsp/`, `ext/jack/`, `sys/osxaudio/`. None is built: the lock enables `pulse` and `level` alone |
 | gst-plugins-bad 1.26.11 | [gst-plugins-bad1.0 1.28.7-2](https://metadata.ftp-master.debian.org/changelogs/main/g/gst-plugins-bad1.0/unstable_copyright) | `LGPL-2.0-or-later`: `gst-libs/gst/audio/`, libgstbadaudio. The standard text | `GPL-2+`: `gst/audiovisualizers/`, `gst/mpegpsmux/`, `sys/dvb/`; `ISC`: `sys/decklink/`; `MIT`: `gst/librfb/`, `sys/shm/`; `MPL-1.1`, alone or as a choice: `ext/resindvd/`, `gst/mpegdemux/`, `gst/mpegpsmux/`, `gst/mpegtsmux/`; `MIT or LGPL-2+`: `ext/openal/`, `ext/opencv/` and other plugins; `GPL-3+`: a test. None is built: the lock enables `webrtcdsp` alone, and libgstbadaudio and that plugin are what ship |
 
@@ -450,14 +456,32 @@ Debian's files were read from unstable on 2026-10-06, at 02:04 UTC for gtk4
 **Voice.** The window's pipelines (`desktop/app/src/audio.rs`) make
 `pulsesrc`, `pulsesink`, `webrtcdsp`, `webrtcechoprobe`, `audioconvert`,
 `audioresample`, `capsfilter`, `audiotestsrc`, `fakesink`, `appsrc` and
-`appsink`. Each GStreamer module is configured with `-Dauto_features=disabled`
-and enables only the plugins that provide those: `tools` in core (for
-`gst-inspect-1.0`), `app`, `audioconvert`, `audioresample` and `audiotestsrc`
-in base, `pulse` and `level` in good, `webrtcdsp` in bad. The lock file test
+`appsink`, and a phone's voice notes need `oggdemux` and `opusdec`. Each
+GStreamer module is configured with `-Dauto_features=disabled` and enables
+only the plugins that provide those: `tools` in core (for `gst-inspect-1.0`),
+`app`, `audioconvert`, `audioresample`, `audiotestsrc`, `ogg` and `opus` in
+base, `pulse` and `level` in good, `webrtcdsp` in bad. The lock file test
 refuses any other enable. `level` is built because the plan names it;
 `audio.rs` computes its own meter today. The libraries each module always builds
 (gst-plugins-bad's `gst-libs`, for one) are built, and the ones nothing reaches
 are dropped from the shipped tree.
+
+**Voice notes.** The phones record Ogg/Opus, so base's `ogg` and `opus` plugins
+are built over libogg and opus, and they bring libgstpbutils, the libgstvideo
+it links, and libgstriff into the shipped tree. Both libraries are static
+(below). libogg builds with CMake, without its documentation or CMake package.
+opus takes `-Ddefault_library=static` and `-Dauto_features=disabled` and
+nothing else. The second builtin turns off every `feature` option, so no x86
+or ARM SIMD source, no run-time CPU detection and no deep-learning code
+(deep-plc, dred, osce) is compiled, nor the tests, documentation or extra
+programs. `check_options.py` holds both builtins to the values meson takes,
+and could not hold any of opus's own options anyway: three descriptions in
+opus 1.6.1's `meson_options.txt` hold an unbalanced `(`, and the checker
+balances brackets without skipping strings, so it finds only `fixed-point`.
+The opus tarball is 10 MB, mostly model weights
+the build never compiles; the source archive carries it whole. An `.ogg` with
+Vorbis or FLAC inside demuxes and then fails to link `opusdec`, so the window
+has to take that error to its file tile, as it does every other audio type.
 
 **Only what is reached ships.** `drop_unreachable.sh` walks the NEEDED graph of
 the shipped tree from its roots: the libraries the window links, which are the
@@ -469,10 +493,10 @@ by name appears in no NEEDED entry, so the script first searches every file
 that stays for the soname of each object it would drop, and stops, removing
 nothing, if one names it. The boundary gate then runs again over the pruned
 tree. What goes: the gst-plugins-base and gst-plugins-bad libraries no plugin
-the window uses links (codecparsers, video, pbutils, rtp, rtsp, sdp, webrtc and
-the like), GLib's girepository and gthread, pcre2-posix, wayland-server and
+the window uses links (codecparsers, rtp, rtsp, sdp, webrtc and the like),
+GLib's girepository and gthread, pcre2-posix, wayland-server and
 wayland-cursor, libdconf (the GSettings module carries its own copy of what it
-uses) and cairo's trace preload: 34 objects, about 5 MB.
+uses) and cairo's trace preload: 31 objects, 3750 KiB.
 
 **abseil is static.** webrtc-audio-processing 2.1 needs abseil and would
 otherwise download it as a meson subproject mid-build. abseil is a locked
@@ -480,6 +504,20 @@ component instead, built by CMake as position-independent static archives and
 linked into `libwebrtc-audio-processing-2.so.1`, so the shipped tree has no
 `libabsl_*` files. Its code still ships inside that library, so it keeps its
 licence entry.
+
+**ogg and opus are static.** The host's `libpulse.so.0` links
+libpulsecommon, which links libsndfile, which links the host's
+`libogg.so.0` and `libopus.so.0`. The loader finds those by the host's own
+paths, since a RUNPATH reaches only its object's own `NEEDED` entries, and
+once a library of that soname is loaded, a plugin that needs it gets that
+one, not the prefix's. So libogg and opus are built as position-independent
+static archives and linked into the only objects that need them,
+`gstreamer-1.0/libgstogg.so` and `libgstopus.so`, and the shipped tree has no
+`libogg*` or `libopus*` files. `-Wl,--exclude-libs,libopus.a:libogg.a` in
+`LDFLAGS` keeps their symbols out of the two plugins' exports, so each plugin
+calls its own copy and nothing else can bind to it; it names those archives
+alone, so it changes no other link. Their code still ships inside the
+plugins, so each keeps its licence entry.
 
 **The host boundary.** `host_libraries` is A§4.1's host column, plus
 `libpulse.so.0`, the PulseAudio client protocol and so the session's, and
@@ -546,7 +584,8 @@ notes and Python bytecode are removed because they vary between two builds of
 one tree. librsvg is patched so the order it links its system libraries in no
 longer follows Python's hash seed
 (`patches/librsvg-native-libs-in-rustc-order.patch`), and CMake writes
-abseil's static archives in `ar`'s deterministic mode. `tar --sort=name` makes
+abseil's and libogg's static archives in `ar`'s deterministic mode, as meson
+writes opus's. `tar --sort=name` makes
 each archive's digest a property of the tree. `--verify` rebuilds from empty
 volumes and compares file by file and archive by archive.
 

@@ -18,6 +18,9 @@
 //! - `StartAudio` / `StopAudio`: build and play the call pipeline, or set it to `Null`;
 //! - `Arm(bool)` / `MuteMic(bool)`: the two halves of the microphone gate;
 //! - `FlushPlayback` / `ResetAnchor`: `PlaybackQueue::clear` / `reset_anchor`;
+//! - `NewPlayback`: `PlaybackQueue::start_call`, an empty queue with no playback ids;
+//! - `ReportPlayback`: send `PlaybackQueue::take_progress` as `playback_progress`, while a call
+//!   is up. The controller also does this every `PROGRESS_INTERVAL` and when playback drains;
 //! - `WatchCallStart(n)`: apply `CallDeadline(n)` after `CALL_START_DEADLINE`;
 //! - `Disconnect`: drop the `Outbox` and `Inbox`; the connection is already over.
 //!
@@ -31,6 +34,7 @@
 //! - The daemon's `muted` and `idle` are authoritative about mute.
 //! - The speaking look outlasts the daemon's `speaking` until playback drains.
 //! - Any error frame or close tears the audio down; `End` keeps the connection.
+//! - A stop reports what played before `interrupt` goes out: a Grok call cuts the reply there.
 
 use crate::realtime::client::{CloseReason, ConnectError, Incoming};
 use crate::realtime::playback::{rms, smooth};
@@ -42,8 +46,11 @@ use std::time::Duration;
 
 /// From `call_start` to the first `listening`. The daemon's own limit is 10 s.
 pub const CALL_START_DEADLINE: Duration = Duration::from_secs(12);
-/// The engine whose calls have tasks that can be cancelled.
-const LIVE_ENGINE: &str = "openai_live";
+/// The engines whose calls hand tasks to the agent, which can be cancelled.
+const TASK_ENGINES: [&str; 2] = ["openai_live", "xai_realtime"];
+/// How often what has played of a Grok call's reply is reported while it plays: the
+/// contract's most frequent cadence.
+pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// How many lines of the call's transcript the Pet page keeps.
 pub const TRANSCRIPT_LINES: usize = 8;
 /// The microphone meter's scale: a block this quiet reads as empty, and one this loud as full.
@@ -60,7 +67,7 @@ const CONNECTION_FAILED: &str = "The voice connection to Fermix failed.";
 const CONNECTION_CLOSED: &str = "The voice connection to Fermix closed.";
 const NOT_READING: &str = "Fermix stopped taking voice audio.";
 /// Reasons that mean this app broke the wire (spec §1.4); tuples arrive as Elixir `inspect`.
-const VIOLATIONS: [&str; 14] = [
+const VIOLATIONS: [&str; 17] = [
     "handshake_required",
     "unexpected_client_hello",
     "invalid_json",
@@ -75,6 +82,9 @@ const VIOLATIONS: [&str; 14] = [
     "line_too_large",
     "not_connected",
     "unsupported_by_engine",
+    "unknown_playback",
+    "playback_regressed",
+    "playback_beyond_sent",
 ];
 const VIOLATION_TUPLES: [&str; 2] = ["{:unknown_event", "{:chunk_too_large"];
 
@@ -148,6 +158,8 @@ pub enum Effect {
     Arm(bool),
     MuteMic(bool),
     FlushPlayback,
+    NewPlayback,
+    ReportPlayback,
     ResetAnchor,
     WatchCallStart(u64),
     Disconnect,
@@ -280,10 +292,15 @@ impl Session {
         self.in_call && (self.mode == Mode::Thinking || self.visual_mode() == Mode::Speaking)
     }
 
-    /// Cancel is offered for a running task of a Live call; the Realtime engine refuses it.
+    /// Cancel is offered for a running task of a task-engine call; Realtime refuses it.
     pub fn can_cancel_task(&self) -> bool {
         let running = matches!(&self.task, Some(task) if task.status == TaskStatus::Running);
-        self.in_call && running && self.engine.as_deref() == Some(LIVE_ENGINE)
+        self.in_call
+            && running
+            && self
+                .engine
+                .as_deref()
+                .is_some_and(|e| TASK_ENGINES.contains(&e))
     }
 
     pub fn status(&self) -> Status {
@@ -389,7 +406,7 @@ impl Session {
         vec![
             Effect::Arm(false),
             Effect::MuteMic(false),
-            Effect::FlushPlayback,
+            Effect::NewPlayback,
             Effect::StartAudio,
             Effect::Send(ClientEvent::CallStart),
             Effect::WatchCallStart(self.call_number),
@@ -462,7 +479,11 @@ impl Session {
         let interrupt = ClientEvent::Interrupt {
             audio_end_ms: Some(played_ms),
         };
-        vec![Effect::FlushPlayback, Effect::Send(interrupt)]
+        vec![
+            Effect::FlushPlayback,
+            Effect::ReportPlayback,
+            Effect::Send(interrupt),
+        ]
     }
 
     fn cancel_task(&mut self) -> Vec<Effect> {
@@ -558,7 +579,7 @@ impl Session {
     fn event(&mut self, event: ServerEvent) -> Vec<Effect> {
         match event {
             ServerEvent::State { state } => self.turn_state(&state),
-            ServerEvent::AudioDelta { audio } => self.audio(rms(&audio)),
+            ServerEvent::AudioDelta { audio, .. } => self.audio(rms(&audio)),
             ServerEvent::PlaybackStop => self.playback_stop(),
             ServerEvent::ToolEvent { status, reason, .. } => self.tool_event(&status, reason),
             ServerEvent::Error(error) => self.server_error(&error),
@@ -680,10 +701,11 @@ impl Session {
     fn playback_stop(&mut self) -> Vec<Effect> {
         self.tail = false;
         self.level = 0.0;
-        if self.in_call {
-            self.mode = self.input_mode();
+        if !self.in_call {
+            return vec![Effect::FlushPlayback];
         }
-        vec![Effect::FlushPlayback]
+        self.mode = self.input_mode();
+        vec![Effect::FlushPlayback, Effect::ReportPlayback]
     }
 
     fn tool_event(&mut self, status: &ToolStatus, reason: Option<String>) -> Vec<Effect> {
@@ -816,7 +838,8 @@ fn lost_sentence(reason: &CloseReason) -> Option<&'static str> {
 }
 
 /// The sentence for a daemon refusal (spec §1.4 and §4.3). Realtime errors carry no `kind`,
-/// so a rule matches the kind or the reason.
+/// so a rule matches the kind or the reason. The voice provider goes unnamed, as on macOS: a
+/// refusal before `call_ready` does not say which engine, OpenAI's or Grok's, it came from.
 pub fn error_sentence(error: &ServerError) -> String {
     let is = |word: &str| error.reason == word || error.kind.as_deref() == Some(word);
     if is("unsupported_protocol_version") || is("update_required") {
@@ -829,10 +852,10 @@ pub fn error_sentence(error: &ServerError) -> String {
         return detail.clone();
     }
     if let Some(text) = error.reason.strip_prefix("provider_send_failed: ") {
-        return format!("OpenAI refused the voice call: {text}.");
+        return format!("The voice provider refused the call: {text}.");
     }
     if is("provider_refused") {
-        return "OpenAI refused the voice call.".into();
+        return "The voice provider refused the call.".into();
     }
     let violation = VIOLATIONS.contains(&error.reason.as_str())
         || VIOLATION_TUPLES.iter().any(|t| error.reason.starts_with(t));
@@ -859,10 +882,12 @@ fn limit_sentence(is: &impl Fn(&str) -> bool) -> Option<&'static str> {
     let sentence = if is("max_clients_reached") {
         "Four other voice clients are already connected to Fermix."
     } else if is("not_configured") {
-        "Add the OpenAI API key in Providers settings, or turn voice off. \
-         A ChatGPT sign-in does not cover voice; it needs an OpenAI API key."
+        "Add the voice provider's API key in Voice settings, or turn voice off. \
+         A subscription sign-in does not cover voice; it needs an API key."
     } else if is("provider_disconnected") {
-        "The connection to OpenAI dropped."
+        "The connection to the voice provider dropped."
+    } else if is("call_in_progress") {
+        "Another voice call is already up."
     } else if is("max_session_duration") {
         "This call reached the time limit set in Voice settings."
     } else if is("cost_limit") {

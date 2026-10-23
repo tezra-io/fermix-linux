@@ -77,7 +77,7 @@ RUN dnf -y install dnf-plugins-core \
 # other failure, of find or of grep, fails the step.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN found="$(find /usr/lib64/pkgconfig /usr/share/pkgconfig -name '*.pc' -printf '%f\n' \
-      | { grep -xE '(glib|gobject|gio|gio-unix|gmodule|gthread)-2\.0\.pc|libffi\.pc|libpcre2-8\.pc|libxml-2\.0\.pc|expat\.pc|libpng(16)?\.pc|libjpeg\.pc|libtiff-4\.pc|libwebp\.pc|freetype2\.pc|fribidi\.pc|pixman-1\.pc|fontconfig\.pc|harfbuzz\.pc|cairo\.pc|pango\.pc|graphene-1\.0\.pc|gdk-pixbuf-2\.0\.pc|xmlb\.pc|appstream\.pc|wayland-client\.pc|wayland-protocols\.pc|epoxy\.pc|gtk4\.pc|libadwaita-1\.pc|gstreamer-1\.0\.pc|absl_base\.pc|webrtc-audio-processing-2\.pc' \
+      | { grep -xE '(glib|gobject|gio|gio-unix|gmodule|gthread)-2\.0\.pc|libffi\.pc|libpcre2-8\.pc|libxml-2\.0\.pc|expat\.pc|libpng(16)?\.pc|libjpeg\.pc|libtiff-4\.pc|libwebp\.pc|freetype2\.pc|fribidi\.pc|pixman-1\.pc|fontconfig\.pc|harfbuzz\.pc|cairo\.pc|pango\.pc|graphene-1\.0\.pc|gdk-pixbuf-2\.0\.pc|xmlb\.pc|appstream\.pc|wayland-client\.pc|wayland-protocols\.pc|epoxy\.pc|gtk4\.pc|libadwaita-1\.pc|gstreamer-1\.0\.pc|absl_base\.pc|webrtc-audio-processing-2\.pc|ogg\.pc|opus\.pc' \
           || [ $? -eq 1 ]; })" \
     && if [ -n "$found" ]; then echo "private-pc-check: host .pc files of private components:" $found >&2; exit 1; fi \
     && echo "private-pc-check: no private component's .pc file is on the host"

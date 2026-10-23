@@ -12,3 +12,37 @@ warnings = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+
+# Debug builds (dev.sh run, the broadway harness) decode the chat's pictures at a usable speed: a
+# 12 MP JPEG takes 6.4 s unoptimised and 0.11 s optimised. Only the decoder's crates, so a debug
+# rebuild of everything else stays as it was.
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.zune-core]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.image-webp]
+opt-level = 3
+
+[profile.dev.package.gif]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.moxcms]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3

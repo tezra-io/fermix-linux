@@ -1,5 +1,5 @@
 //! The voice wire's events and framing: one JSON object per `\n`-terminated line over
-//! `realtime.sock`, protocol 2 (the vendored `contracts/realtime/PROTOCOL.md`). Pure: it turns
+//! `realtime.sock`, protocol 3 (the vendored `contracts/realtime/PROTOCOL.md`). Pure: it turns
 //! lines into typed events and back, and does no I/O.
 //!
 //! Decoding is lenient where the contract is open: unknown fields are ignored, an unknown event
@@ -12,8 +12,9 @@ use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-/// The version this app speaks. The daemon's window is 1..2 (fermix 0.11.0 and later).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// The version this app speaks: 3, Grok's (`xai_realtime`). The daemon's window is 1..3, and
+/// each engine asks for the version its frames were added in.
+pub const PROTOCOL_VERSION: u32 = 3;
 /// The longest line this client assembles from the daemon (macOS `RealtimeProtocol.swift`).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
 /// The most unscanned inbound bytes held at once.
@@ -60,10 +61,21 @@ pub enum ClientEvent {
         enabled: bool,
     },
     CallStop,
-    /// Live only: the Realtime engine refuses it and closes the connection.
+    /// The task engines only: the Realtime engine refuses it and closes the connection.
     TaskCancel {
         delegation_id: String,
     },
+    /// Grok only: how much of one playback id's audio has played (`PlaybackProgress`).
+    PlaybackProgress(PlaybackProgress),
+}
+
+/// What has played of the audio sent under one playback id. `played_ms` never decreases and
+/// never passes the audio sent; `drained` is true while everything sent under it has played.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackProgress {
+    pub playback_id: String,
+    pub played_ms: u64,
+    pub drained: bool,
 }
 
 /// A line that would reach the daemon's cap, which answers `line_too_large` and closes.
@@ -99,10 +111,12 @@ pub enum ServerEvent {
     State {
         state: TurnState,
     },
-    /// Decoded PCM16 LE mono 24 kHz.
+    /// Decoded PCM16 LE mono 24 kHz. A Grok call sends each stretch of a reply under a
+    /// `playback_id`, which the app echoes in `playback_progress`; OpenAI calls send none.
     AudioDelta {
         #[serde(deserialize_with = "base64_bytes")]
         audio: Vec<u8>,
+        playback_id: Option<String>,
     },
     /// Realtime only: the whole user utterance once transcribed, with an unlisted `role`.
     TranscriptDelta {
@@ -186,7 +200,7 @@ impl From<String> for ToolStatus {
     }
 }
 
-/// Cost facts, never a state change. Every field is optional: the Realtime and Live engines
+/// Cost facts, never a state change. Every field is optional: the Realtime and task engines
 /// send different shapes, and none of them is in the schema whole (spec §1.4).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Usage {
@@ -203,6 +217,8 @@ pub struct Usage {
     pub voice_seconds: Option<f64>,
     pub voice_cost_cents: Option<f64>,
     pub backend_turns: Option<u64>,
+    /// Grok: the text items the call sent the voice provider, each billed as a text event.
+    pub voice_text_items: Option<u64>,
     /// The daemon's word; `unknown` is never zero.
     pub backend_cost: Option<String>,
     /// `complete`, `incomplete` or `running`.
@@ -255,7 +271,7 @@ impl From<String> for Direction {
     }
 }
 
-/// Live only: the provider session is up. `captions` says whether caption frames will follow.
+/// The task engines (Live, Grok): the provider session is up. `captions` says whether caption frames will follow.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CallReady {
     pub engine: String,
@@ -266,7 +282,7 @@ pub struct CallReady {
     pub captions: bool,
 }
 
-/// Live only: one verbatim transcript fragment. Never trim or join it.
+/// The task engines: one verbatim transcript fragment. Never trim or join it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Caption {
     pub speaker: Speaker,
@@ -293,7 +309,7 @@ impl From<String> for Speaker {
     }
 }
 
-/// Live only: one backend delegation. `revision` fences a re-asked task.
+/// The task engines: one backend delegation. `revision` fences a re-asked task.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Task {
     pub delegation_id: String,
@@ -382,23 +398,45 @@ pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
 }
 
 /// Splits the inbound byte stream into lines, holding at most one unfinished line.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LineBuffer {
     pending: Vec<u8>,
+    max_frame: usize,
+    max_unscanned: usize,
+}
+
+impl Default for LineBuffer {
+    fn default() -> LineBuffer {
+        LineBuffer::with_caps(MAX_FRAME_BYTES, MAX_UNSCANNED_BYTES)
+    }
 }
 
 impl LineBuffer {
+    /// The voice wire's caps: `MAX_FRAME_BYTES` and `MAX_UNSCANNED_BYTES`.
     pub fn new() -> LineBuffer {
         LineBuffer::default()
     }
 
+    /// A buffer for another wire's caps: the longest line, and the most unscanned bytes held.
+    pub fn with_caps(max_frame: usize, max_unscanned: usize) -> LineBuffer {
+        assert!(
+            max_frame > 0 && max_frame <= max_unscanned,
+            "caps out of order"
+        );
+        LineBuffer {
+            pending: Vec::new(),
+            max_frame,
+            max_unscanned,
+        }
+    }
+
     /// Adds what was read and returns every line it completed, in order, without newlines and
-    /// without empty lines. A burst past `MAX_UNSCANNED_BYTES` is refused before scanning; a
-    /// line past `MAX_FRAME_BYTES` is refused, including one whose newline has not come yet.
-    /// After an error the buffer is empty, and the connection is over.
+    /// without empty lines. A burst past the unscanned cap is refused before scanning; a line
+    /// past the frame cap is refused, including one whose newline has not come yet. After an
+    /// error the buffer is empty, and the connection is over.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
         let total = self.pending.len() + bytes.len();
-        if total > MAX_UNSCANNED_BYTES {
+        if total > self.max_unscanned {
             self.pending.clear();
             return Err(DecodeError::BufferTooLarge(total));
         }
@@ -406,7 +444,7 @@ impl LineBuffer {
         let mut lines = Vec::new();
         let mut start = 0;
         while let Some(length) = self.pending[start..].iter().position(|&b| b == b'\n') {
-            if length > MAX_FRAME_BYTES {
+            if length > self.max_frame {
                 self.pending.clear();
                 return Err(DecodeError::FrameTooLarge(length));
             }
@@ -417,7 +455,7 @@ impl LineBuffer {
         }
         self.pending.drain(..start);
         let unfinished = self.pending.len();
-        if unfinished > MAX_FRAME_BYTES {
+        if unfinished > self.max_frame {
             self.pending.clear();
             return Err(DecodeError::FrameTooLarge(unfinished));
         }

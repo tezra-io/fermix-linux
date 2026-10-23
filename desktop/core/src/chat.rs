@@ -1,27 +1,34 @@
-//! One conversation as the Chat page draws it: the questions, the replies as
-//! they stream, the tools the assistant ran, and whether a reply is coming.
+//! The Chat page's entries, read off the timeline the chat wire keeps (`chat_wire::timeline`):
+//! the held rows, the questions still sending, the turn answering now with its tools, and why
+//! the last request failed. Nothing here is decided: it only says how the held facts read.
 
-use crate::acp::{Image, StopReason, ToolKind, ToolStatus, Update};
+use crate::activity::ToolKind;
+use crate::chat_wire::protocol::Row;
+use crate::chat_wire::timeline::{self, Chat, ToolState};
+use crate::media::{strip, words, Strip};
+use crate::places::{cards, Card};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
-    User(String),
-    /// Markdown, growing while it streams.
-    Assistant(String),
-    /// The assistant's reasoning, growing while it streams; drawn collapsed.
-    Thought(String),
-    Image(Image),
-    /// A file the assistant sent that cannot come through the chat, by name.
-    Attachment(String),
-    /// Tools that ran one after another, drawn as one group.
+    /// The person's words, and what their row shows under them.
+    User { text: String, media: Strip },
+    /// A question the daemon has not accepted yet.
+    Sending(String),
+    /// Markdown, growing while it streams, the cards of the places it links, and what its row
+    /// shows under it, which come with its row (none while it streams).
+    Assistant {
+        text: String,
+        places: Vec<Card>,
+        media: Strip,
+    },
+    /// The running turn's tools, drawn as one group.
     Tools(Vec<ToolRun>),
-    /// A quiet line about the conversation itself ("Stopped").
-    Notice(String),
-    /// Why a reply did not come.
+    /// Why the last request did not get its reply.
     Failure(String),
 }
 
-/// One tool's run. Times are wall-clock seconds, as the transcript's are.
+/// One tool's run. Times are the caller's clock, in seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRun {
     pub id: String,
@@ -31,21 +38,6 @@ pub struct ToolRun {
     pub state: RunState,
     pub started: i64,
     pub ended: Option<i64>,
-}
-
-/// How a run ended, or that it has not. The wire says only the first three;
-/// the last two are what this app knows when the reply ended around a run.
-impl ToolRun {
-    /// Follows the wire's status; only an ending changes the run.
-    fn settle(&mut self, status: ToolStatus, at: i64) {
-        let state = match status {
-            ToolStatus::Running => return,
-            ToolStatus::Completed => RunState::Done,
-            ToolStatus::Failed => RunState::Failed,
-        };
-        self.state = state;
-        self.ended = Some(at);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,341 +51,152 @@ pub enum RunState {
     Unfinished,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Phase {
-    #[default]
-    Idle,
-    /// Asked; nothing back yet.
-    Waiting,
-    Streaming,
-    /// Stop was asked for; the reply has not ended yet.
-    Stopping,
+/// The turn answering now, as the live line needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveTurn {
+    pub started: i64,
+    pub stopping: bool,
+    /// Only a turn this connection started can be stopped.
+    pub can_stop: bool,
 }
 
-/// Times are wall-clock seconds since the epoch, passed in so this stays pure.
+/// What an entry draws, which stays the same while the entry grows or is read again: the page
+/// keeps each entry's widget by it, so rows arriving above or below leave the rest drawn.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Key {
+    /// A held row's words and what it shows under them, by seq.
+    Row(u64),
+    /// A reply a turn streams, by the turn and its place among the turn's replies (a turn may
+    /// send more than one): its draft, and then the held row it became.
+    Reply(String, usize),
+    /// A question still sending, by its `client_msg_id`.
+    Sending(String),
+    /// The running turn's tools, by the turn.
+    Tools(String),
+    Failure,
+}
+
+/// The page's entries, each with its key, the daemon's time for it (RFC 3339) where it has
+/// one, and the held row it draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Transcript {
-    entries: Vec<Entry>,
-    /// One per entry: when a question was sent, or when the reply it ends ended.
-    times: Vec<Option<i64>>,
-    phase: Phase,
+pub struct View {
+    pub entries: Vec<Entry>,
+    pub keys: Vec<Key>,
+    pub times: Vec<Option<String>>,
+    pub seqs: Vec<Option<u64>>,
+    pub turn: Option<LiveTurn>,
+    /// A turn runs and nothing on screen shows its work yet: the page shows its own live line.
+    pub thinking: bool,
+    /// The oldest seq held, which a page read backward moves.
+    pub first_seq: Option<u64>,
 }
 
-impl Transcript {
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
-    }
-
-    pub fn phase(&self) -> Phase {
-        self.phase
-    }
-
-    pub fn can_send(&self) -> bool {
-        self.phase == Phase::Idle
-    }
-
-    /// The time shown under entry `index`: set on each question, and on the
-    /// last entry of each reply once the reply has ended.
-    pub fn time(&self, index: usize) -> Option<i64> {
-        self.times.get(index).copied().flatten()
-    }
-
-    /// Fermix is working on a reply and nothing on screen shows it: no text is
-    /// streaming in, no thought is coming in (it carries the orb in its title),
-    /// and the last entry is not a group of tools (it carries the live line).
-    /// The page shows its own live line.
-    pub fn thinking(&self) -> bool {
-        if self.phase == Phase::Idle {
-            return false;
-        }
-        !matches!(
-            self.entries.last(),
-            Some(Entry::Assistant(_)) | Some(Entry::Thought(_)) | Some(Entry::Tools(_))
-        )
-    }
-
-    /// When the question the running reply answers was asked; `None` while idle.
-    pub fn turn_started(&self) -> Option<i64> {
-        if self.phase == Phase::Idle {
-            return None;
-        }
-        let (index, _) = self.last_question()?;
-        self.time(index)
-    }
-
-    fn push(&mut self, entry: Entry, time: Option<i64>) {
+impl View {
+    fn push(&mut self, entry: Entry, key: Key, time: Option<String>, seq: Option<u64>) {
         self.entries.push(entry);
+        self.keys.push(key);
         self.times.push(time);
-    }
-
-    /// Records a question; false when it is blank or a reply is still coming.
-    pub fn send(&mut self, text: &str, at: i64) -> bool {
-        let text = text.trim();
-        if text.is_empty() || !self.can_send() {
-            return false;
-        }
-        self.push(Entry::User(text.to_owned()), Some(at));
-        self.phase = Phase::Waiting;
-        true
-    }
-
-    /// Adds what the agent sent at `at`. False when it was not shown: a kind of
-    /// update this app does not know, or a tool no entry has; the caller logs those.
-    pub fn apply(&mut self, update: &Update, at: i64) -> bool {
-        match update {
-            Update::MessageChunk(text) if text.is_empty() => return true,
-            Update::ThoughtChunk(text) if text.is_empty() => return true,
-            Update::MessageChunk(text) => self.append_reply(text),
-            Update::ThoughtChunk(text) => self.append_thought(text),
-            Update::Image(image) => self.push(Entry::Image(image.clone()), None),
-            Update::Attachment(name) => self.push(Entry::Attachment(name.clone()), None),
-            Update::ToolCall {
-                id,
-                title,
-                kind,
-                status,
-            } => self
-                .add_run(ToolRun {
-                    id: id.clone(),
-                    name: title.clone(),
-                    kind: *kind,
-                    state: RunState::Running,
-                    started: at,
-                    ended: None,
-                })
-                .settle(*status, at),
-            Update::ToolUpdate { id, status } => return self.set_tool_status(id, *status, at),
-            Update::Other(_) => return false,
-        }
-        self.mark_streaming();
-        true
-    }
-
-    fn append_reply(&mut self, text: &str) {
-        match self.entries.last_mut() {
-            Some(Entry::Assistant(reply)) => reply.push_str(text),
-            _ => self.push(Entry::Assistant(text.to_owned()), None),
-        }
-    }
-
-    fn append_thought(&mut self, text: &str) {
-        match self.entries.last_mut() {
-            Some(Entry::Thought(thought)) => thought.push_str(text),
-            _ => self.push(Entry::Thought(text.to_owned()), None),
-        }
-    }
-
-    fn mark_streaming(&mut self) {
-        if self.phase == Phase::Waiting {
-            self.phase = Phase::Streaming;
-        }
-    }
-
-    /// Joins the group the reply is in, or starts one after whatever came last.
-    fn add_run(&mut self, run: ToolRun) -> &mut ToolRun {
-        if !matches!(self.entries.last(), Some(Entry::Tools(_))) {
-            self.push(Entry::Tools(Vec::new()), None);
-        }
-        let Some(Entry::Tools(runs)) = self.entries.last_mut() else {
-            unreachable!("the last entry is a group of tools");
-        };
-        runs.push(run);
-        runs.last_mut().expect("a run was just added")
-    }
-
-    fn runs_mut(&mut self) -> impl Iterator<Item = &mut ToolRun> {
-        self.entries
-            .iter_mut()
-            .filter_map(|entry| match entry {
-                Entry::Tools(runs) => Some(runs),
-                _ => None,
-            })
-            .flatten()
-    }
-
-    /// False when no run has `tool_id`.
-    fn set_tool_status(&mut self, tool_id: &str, status: ToolStatus, at: i64) -> bool {
-        let Some(run) = self.runs_mut().filter(|run| run.id == tool_id).last() else {
-            return false;
-        };
-        run.settle(status, at);
-        true
-    }
-
-    /// A run still going when its reply ends will never say how it went.
-    fn end_runs(&mut self, state: RunState, at: i64) {
-        for run in self.runs_mut().filter(|run| run.state == RunState::Running) {
-            run.state = state;
-            run.ended = Some(at);
-        }
-    }
-
-    /// Asks the reply to stop; false when there is nothing to stop.
-    pub fn stop(&mut self) -> bool {
-        if !matches!(self.phase, Phase::Waiting | Phase::Streaming) {
-            return false;
-        }
-        self.phase = Phase::Stopping;
-        true
-    }
-
-    pub fn finish(&mut self, reason: &StopReason, at: i64) {
-        self.phase = Phase::Idle;
-        let left = match reason {
-            StopReason::Cancelled => RunState::Stopped,
-            StopReason::EndTurn | StopReason::Other(_) => RunState::Unfinished,
-        };
-        self.end_runs(left, at);
-        self.time_reply(at);
-        match reason {
-            StopReason::EndTurn => {}
-            StopReason::Cancelled => self.push(Entry::Notice("Stopped".into()), None),
-            StopReason::Other(reason) => self.push(Entry::Notice(cut_short(reason)), None),
-        }
-    }
-
-    /// Times the reply's last entry when it is a bubble; a reply that brought
-    /// nothing, or ended on a caption line (a thought, a tool), has none. Nor
-    /// does a reply in the same minute as its question, whose time says it.
-    fn time_reply(&mut self, at: i64) {
-        let asked = self.last_question().and_then(|(index, _)| self.time(index));
-        if asked.is_some_and(|asked| asked.div_euclid(60) == at.div_euclid(60)) {
-            return;
-        }
-        if let (Some(last), Some(time)) = (self.entries.last(), self.times.last_mut()) {
-            if matches!(
-                last,
-                Entry::Assistant(_) | Entry::Image(_) | Entry::Attachment(_)
-            ) {
-                *time = Some(at);
-            }
-        }
-    }
-
-    /// A quiet line between entries. Skipped on an empty conversation and when
-    /// it would repeat the line just above it.
-    pub fn note(&mut self, text: &str) {
-        let repeat = matches!(self.entries.last(), Some(Entry::Notice(last)) if last == text);
-        if self.entries.is_empty() || repeat {
-            return;
-        }
-        self.push(Entry::Notice(text.to_owned()), None);
-    }
-
-    pub fn fail(&mut self, sentence: &str, at: i64) {
-        self.phase = Phase::Idle;
-        self.end_runs(RunState::Unfinished, at);
-        self.push(Entry::Failure(sentence.to_owned()), Some(at));
-    }
-
-    /// True when the conversation ends in a failed reply that can be asked again.
-    pub fn can_retry(&self) -> bool {
-        self.phase == Phase::Idle
-            && matches!(self.entries.last(), Some(Entry::Failure(_)))
-            && self.last_question().is_some()
-    }
-
-    /// Asks the failed question again: what the failed reply left is cleared,
-    /// the question stays, and its text comes back to send. `None` when
-    /// `can_retry` is false.
-    pub fn retry(&mut self) -> Option<String> {
-        if !self.can_retry() {
-            return None;
-        }
-        let (index, question) = self.last_question()?;
-        let question = question.to_owned();
-        self.entries.truncate(index + 1);
-        self.times.truncate(index + 1);
-        self.phase = Phase::Waiting;
-        Some(question)
-    }
-
-    fn last_question(&self) -> Option<(usize, &str)> {
-        self.entries
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, entry)| match entry {
-                Entry::User(question) => Some((index, question.as_str())),
-                _ => None,
-            })
+        self.seqs.push(seq);
     }
 }
 
-/// Why a reply ended before its turn did, from ACP's stop reasons.
-fn cut_short(reason: &str) -> String {
-    match reason {
-        "max_tokens" => "The reply ran out of room.",
-        "refusal" => "Fermix declined to answer this.",
-        _ => "The reply ended early.",
-    }
-    .into()
-}
-
-/// The width to draw a `width` by `height` picture at so it fits a `bound`
-/// pixel square, never larger than itself and never zero wide.
-pub fn picture_width(width: i32, height: i32, bound: i32) -> i32 {
-    assert!(
-        width > 0 && height > 0 && bound > 0,
-        "a picture that has no size: {width}x{height} in {bound}"
-    );
-    let for_height = i64::from(bound) * i64::from(width) / i64::from(height);
-    let fitted = i64::from(width)
-        .min(i64::from(bound))
-        .min(for_height)
-        .max(1);
-    i32::try_from(fitted).expect("no wider than the picture itself")
-}
-
-/// The name a saved picture starts with: its type's usual extension, and none
-/// when the type is not a plain word, since the agent chose it.
-pub fn picture_file_name(mime: &str) -> String {
-    let subtype = mime.strip_prefix("image/").unwrap_or_default();
-    let extension = match subtype {
-        "jpeg" => "jpg",
-        "svg+xml" => "svg",
-        other => other,
+pub fn view(chat: &Chat) -> View {
+    let mut view = View {
+        first_seq: chat.rows.first().map(|held| held.row.server_seq),
+        ..View::default()
     };
-    let plain = !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric());
-    if plain {
-        format!("Fermix image.{extension}")
-    } else {
-        "Fermix image".into()
+    // A turn's replies are numbered in the order their rows are held; its draft takes the next
+    // number, which its row will have.
+    let mut replies: HashMap<&str, usize> = HashMap::new();
+    for held in &chat.rows {
+        let reply = held.turn_id.as_deref().map(|turn| {
+            let count = replies.entry(turn).or_default();
+            *count += 1;
+            Key::Reply(turn.to_owned(), *count - 1)
+        });
+        push_row(&mut view, &held.row, reply);
     }
-}
-
-/// JSON-RPC's code for a request the agent judged malformed.
-const INVALID_PARAMS: i64 = -32602;
-/// The engine answers a provider credential failure with -32000 and a message
-/// starting "Re-authenticate" (engine `Acp.Peer.failure_error/1`).
-const AUTH_REQUIRED: i64 = -32000;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplyError {
-    /// The provider rejected Fermix's credentials.
-    SignInAgain,
-    /// The engine refused the message itself, in its own words.
-    Refused(String),
-    /// The turn failed inside the engine; the reason is in the daemon's log.
-    Failed,
-}
-
-pub fn reply_error(code: i64, message: &str) -> ReplyError {
-    match code {
-        AUTH_REQUIRED => ReplyError::SignInAgain,
-        INVALID_PARAMS => ReplyError::Refused(message.to_owned()),
-        _ => ReplyError::Failed,
-    }
-}
-
-impl ReplyError {
-    pub fn sentence(&self) -> String {
-        match self {
-            ReplyError::SignInAgain => {
-                "Your provider refused Fermix's sign-in. Sign in again under Providers.".into()
-            }
-            ReplyError::Refused(message) => format!("Fermix refused the message: {message}"),
-            ReplyError::Failed => "Fermix could not answer. The reason is in Logs.".into(),
+    let held_ids: Vec<&str> = chat
+        .rows
+        .iter()
+        .filter_map(|held| held.row.client_msg_id.as_deref())
+        .collect();
+    for out in &chat.pending {
+        // An approval's route is a command, not a question: it draws no bubble.
+        let question = out.approval_id.is_none();
+        if question && !held_ids.contains(&out.client_msg_id.as_str()) {
+            let key = Key::Sending(out.client_msg_id.clone());
+            view.push(Entry::Sending(out.text.clone()), key, None, None);
         }
     }
+    let drafted = chat
+        .turn
+        .as_ref()
+        .and_then(|turn| replies.get(turn.turn_id.as_str()));
+    push_turn(&mut view, chat, drafted.copied().unwrap_or(0));
+    if let Some(error) = &chat.last_error {
+        view.push(Entry::Failure(error.clone()), Key::Failure, None, None);
+    }
+    view
+}
+
+/// A held row: its words and what it shows under them, as one entry, or none where it has
+/// neither. `reply` is its key as a reply this connection streamed; any other row is keyed by its
+/// seq.
+fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
+    let media = strip(row);
+    let text = words(row, &media);
+    if text.trim().is_empty() && media.is_empty() {
+        return;
+    }
+    let entry = match row.role.as_str() {
+        "user" => Entry::User {
+            text: text.trim().to_owned(),
+            media,
+        },
+        _ => Entry::Assistant {
+            text,
+            places: cards(&row.blocks),
+            media,
+        },
+    };
+    let key = reply.unwrap_or(Key::Row(row.server_seq));
+    view.push(entry, key, row.ts.clone(), Some(row.server_seq));
+}
+
+/// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.
+fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
+    let Some(turn) = &chat.turn else {
+        return;
+    };
+    view.turn = Some(LiveTurn {
+        started: turn.started,
+        stopping: turn.stopping,
+        can_stop: timeline::can_stop(chat),
+    });
+    if !turn.tools.is_empty() {
+        let runs = turn.tools.iter().enumerate().map(|(index, run)| ToolRun {
+            id: format!("{}-{index}", turn.turn_id),
+            name: run.name.clone(),
+            kind: ToolKind::Other,
+            state: match run.state {
+                ToolState::Running => RunState::Running,
+                ToolState::Done => RunState::Done,
+            },
+            started: run.started,
+            ended: run.ended,
+        });
+        let key = Key::Tools(turn.turn_id.clone());
+        view.push(Entry::Tools(runs.collect()), key, None, None);
+    }
+    if !turn.draft.is_empty() {
+        let key = Key::Reply(turn.turn_id.clone(), replied);
+        let draft = Entry::Assistant {
+            text: turn.draft.clone(),
+            places: Vec::new(),
+            media: Strip::default(),
+        };
+        view.push(draft, key, None, None);
+    }
+    view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
 }

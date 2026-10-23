@@ -149,6 +149,10 @@ impl App {
             self.shell.toast(sentence);
         }
         self.read_section(&section).await;
+        if section == fermix_client::phone::SECTION {
+            let app = self.clone();
+            glib::spawn_future_local(async move { app.phone_section_written().await });
+        }
         self.refresh().await;
     }
 

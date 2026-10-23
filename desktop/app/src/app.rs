@@ -5,14 +5,15 @@ use crate::assistant::Assistant;
 use crate::audio::Endpoints;
 use crate::background_flow::{binding_file, login_entry};
 use crate::chat::ChatPage;
+use crate::chat_session::ChatWire;
 use crate::companion::Companion;
-use crate::conversation::Conversation;
-use crate::daemon::Daemon;
+use crate::daemon::{fermix_home, Daemon};
 use crate::doctor::DoctorPage;
 use crate::home::HomePage;
 use crate::integrations::IntegrationsPane;
 use crate::logs::LogsPage;
 use crate::mascot;
+use crate::media_grants::Media;
 use crate::microphones::MicrophoneWatch;
 use crate::phone_flow::{intent, Phone};
 use crate::providers::ProvidersPage;
@@ -20,6 +21,8 @@ use crate::settings::{SettingsData, SettingsPage};
 use crate::shell::{self, Shell};
 use crate::state::{Connection, Snapshot, State, RECENT_FOR};
 use crate::tray::Tray;
+use crate::update_flow::Updater;
+use crate::update_install::{finish_update, install_update, update_try_again};
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
@@ -50,7 +53,9 @@ pub struct App {
     pub shell: Shell,
     pub daemon: Daemon,
     pub state: RefCell<State>,
-    pub conversation: RefCell<Conversation>,
+    pub wire: RefCell<ChatWire>,
+    /// The phone-side files the chat reads, asked for on the chat's connection.
+    pub media: Media,
     pub chat: ChatPage,
     pub settings: SettingsPage,
     pub settings_data: RefCell<SettingsData>,
@@ -80,6 +85,8 @@ pub struct App {
     pub tray: RefCell<Option<Tray>>,
     /// Where the window keeps the "Open at login" entry.
     pub login: PathBuf,
+    /// The app's own updates: their files, the dialog and the download.
+    pub updater: Updater,
 }
 
 /// `hidden`: started at login, so the window waits in the tray (see `start_tray`).
@@ -99,7 +106,8 @@ pub fn activate(application: &adw::Application, hidden: bool) {
 
 /// Every page, the window around them, and the controller that owns both.
 fn build_app(application: &adw::Application) -> Rc<App> {
-    let chat = ChatPage::new();
+    let media = Media::new(fermix_home().join("companion").join("media"));
+    let chat = ChatPage::new(&media, audio_endpoints());
     let home = HomePage::new();
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
@@ -131,7 +139,8 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         shell,
         daemon: Daemon::new(),
         state: RefCell::new(State::new()),
-        conversation: RefCell::default(),
+        wire: RefCell::default(),
+        media,
         chat,
         settings,
         settings_data: RefCell::default(),
@@ -151,11 +160,13 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         application: application.clone(),
         tray: RefCell::default(),
         login: login_entry(),
+        updater: Updater::new(),
     })
 }
 
 /// `FERMIX_AUDIO=test` swaps the microphone and speakers for a sine and a
-/// fakesink, for the development harness. Nothing else reads it.
+/// fakesink, for the development harness: the call's and the voice notes'.
+/// Nothing else reads it.
 fn audio_endpoints() -> Endpoints {
     match std::env::var("FERMIX_AUDIO") {
         Ok(value) if value == "test" => Endpoints::Test,
@@ -167,8 +178,10 @@ fn audio_endpoints() -> Endpoints {
 fn start(app: &Rc<App>, hidden: bool) {
     let opens_at_login = app.read_open_at_login();
     app.state.borrow_mut().background.opens_at_login = opens_at_login;
+    app.load_updates();
     install_actions(app);
     follow_visible_page(app);
+    mark_read_when_active(app);
     keep_alive_with_window(app);
     crate::voice_flow::install_companion(app);
     crate::voice_flow::install_call_actions(app);
@@ -184,19 +197,18 @@ fn start(app: &Rc<App>, hidden: bool) {
         first.refresh().await;
         first.open_first(launch);
         first.reassert_open_at_login();
+        first.start_updates().await;
     });
     start_idle_refresh(app);
+    app.chat_connect();
 }
 
 impl App {
     pub fn render(&self) {
         let state = self.state.borrow();
         let name = about_you_name(self.settings_data.borrow().rows.get(ABOUT_YOU));
-        self.chat.render(
-            &self.conversation.borrow().transcript,
-            &state,
-            name.as_deref(),
-        );
+        self.chat
+            .render(&self.wire.borrow(), &state, name.as_deref());
         self.home.render(&state);
         self.providers.render(&state, Instant::now());
         // Before Settings, which draws the Phones step's rows once the step has added them.
@@ -218,6 +230,7 @@ impl App {
         self.render_voice();
         self.render_assistant();
         self.show_tray();
+        self.redraw_update_dialog();
     }
 
     /// Re-reads the daemon and redraws. A failure is a state, never an error dialog.
@@ -231,15 +244,26 @@ impl App {
             Connection::Up(snapshot) => Some(snapshot.pid.clone()),
             _ => None,
         };
-        {
+        let came_up = {
             let mut state = self.state.borrow_mut();
+            let was_up = matches!(state.connection, Connection::Up(_));
             if matches!(connection, Connection::Up(_)) {
                 state.wake_failed = false;
             }
             state.connection = connection;
-        }
+            pid.is_some() && !was_up
+        };
         self.read_service().await;
+        self.read_restart_pending();
         self.render();
+        if came_up {
+            // A daemon just reached has its chat now, not at the backoff's next attempt. Through
+            // the window action, since `chat_connect` needs the `Rc` this `&self` lacks.
+            let window = &self.shell.window;
+            if let Err(e) = WidgetExt::activate_action(window, "win.chat-connect", None) {
+                glib::g_warning!("fermix", "could not connect the chat: {e}");
+            }
+        }
         if let Some(pid) = pid {
             self.follow_daemon_process(pid).await;
             self.read_about_you().await;
@@ -274,8 +298,9 @@ impl App {
         state.recent.remove(provider);
     }
 
-    /// Shows how the last action ended (failed, cancelled) on its row for
-    /// `RECENT_FOR`, then lets the row relax unless something newer replaced it.
+    /// Shows how the last action ended (failed, cancelled, completed with a
+    /// caveat) on its row for `RECENT_FOR`, then lets the row relax unless
+    /// something newer replaced it.
     pub fn settle(self: &Rc<Self>, provider: &str, ended: Activity) {
         assert!(
             !ended.in_flight(),
@@ -359,6 +384,7 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
     Connection::Up(Box::new(Snapshot {
         state,
         version: hello.engine.product_version,
+        build_id: hello.engine.build_id,
         pid: hello.engine.pid,
         architecture: hello.engine.architecture,
         distribution: hello.engine.distribution_identity,
@@ -404,9 +430,31 @@ fn follow_visible_page(app: &Rc<App>) {
                 Some("doctor") => app.doctor.shown(),
                 Some("logs") => app.logs.shown(),
                 Some("companion") => app.voice_page_shown(),
+                // Chat connects as it comes into view, also after a refusal (the engine may
+                // have been updated since). The newest row may have come in while Chat was
+                // away: it is read now. The page maps after this notify, so both wait for an
+                // idle.
+                Some("chat") => {
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || {
+                        app.chat_connect();
+                        app.chat_seen();
+                    });
+                }
                 _ => {}
             }
         });
+}
+
+/// The newest row is read only while the window is the one in use: coming back to it marks
+/// what arrived meanwhile.
+fn mark_read_when_active(app: &Rc<App>) {
+    let weak = Rc::downgrade(app);
+    app.shell.window.connect_is_active_notify(move |_| {
+        if let Some(app) = weak.upgrade() {
+            app.chat_seen();
+        }
+    });
 }
 
 /// The window owns the controller: actions and timers hold only weak references,
@@ -498,6 +546,7 @@ fn install_actions(app: &Rc<App>) {
     install_setup_actions(app);
     install_service_actions(app);
     install_chat_actions(app);
+    install_update_actions(app);
     install_accels(app);
     on(app, "door", |app, target| async move {
         app.open_door(&target).await
@@ -543,19 +592,44 @@ fn install_service_actions(app: &Rc<App>) {
     });
 }
 
-fn install_chat_actions(app: &Rc<App>) {
-    on_plain(app, "send-message", |app| async move {
-        app.send_message().await
+/// Where updates show (the tray, the main menu, Home, Settings) and the dialog's buttons.
+fn install_update_actions(app: &Rc<App>) {
+    on_plain(app, "updates-open", |app| async move { app.open_updates() });
+    on_plain(app, "updates-check", |app| async move {
+        app.check_updates(true).await
     });
+    on_value(app, "updates-automatic", |app, on: bool| async move {
+        app.set_automatic(on)
+    });
+    on_plain(app, "updates-install", |app| async move {
+        install_update(app).await
+    });
+    on_plain(app, "updates-skip", |app| async move { app.skip_update() });
+    on_plain(app, "updates-cancel", |app| async move {
+        app.updater.downloads.cancel()
+    });
+    on_plain(app, "updates-try-again", |app| async move {
+        update_try_again(app).await
+    });
+    on_plain(app, "updates-restart", |app| async move {
+        finish_update(&*app).await
+    });
+}
+
+fn install_chat_actions(app: &Rc<App>) {
+    on_plain(app, "send-message", |app| async move { app.send_message() });
     on_plain(app, "stop-reply", |app| async move { app.stop_reply() });
-    on_plain(
-        app,
-        "retry-reply",
-        |app| async move { app.retry_reply().await },
-    );
-    on_plain(app, "new-chat", |app| async move {
-        app.shell.show_page("chat");
-        app.new_conversation()
+    on_plain(app, "chat-older", |app| async move { app.chat_older() });
+    on_plain(app, "chat-seen", |app| async move { app.chat_seen() });
+    on_plain(app, "chat-on-screen", |app| async move {
+        app.chat_rows_on_screen()
+    });
+    on_plain(app, "chat-connect", |app| async move { app.chat_connect() });
+    on(app, "chat-approve", |app, id: String| async move {
+        app.answer_approval(&id, true)
+    });
+    on(app, "chat-deny", |app, id: String| async move {
+        app.answer_approval(&id, false)
     });
 }
 
@@ -565,7 +639,6 @@ fn install_accels(app: &Rc<App>) {
         .window
         .application()
         .expect("the window belongs to the application");
-    application.set_accels_for_action("win.new-chat", &["<Ctrl>n"]);
     application.set_accels_for_action("win.open-settings", &["<Ctrl>comma"]);
     application.set_accels_for_action("win.find-setting", &["<Ctrl>f"]);
     for (index, (page, _, _)) in shell::PAGES.iter().enumerate() {

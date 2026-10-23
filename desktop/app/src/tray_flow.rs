@@ -9,6 +9,7 @@ use crate::tray::{Tray, TrayEvent};
 use adw::prelude::*;
 use fermix_client::service::{background_switch, BackgroundSwitch};
 use fermix_client::tray::{tray_view, Command, Daemon, TrayFacts, TrayView};
+use fermix_client::update::view::tray_label;
 use gtk::glib;
 use std::rc::Rc;
 use std::time::Duration;
@@ -74,6 +75,8 @@ impl App {
             daemon,
             pet_shown: self.companion.window.is_visible(),
             background: &background,
+            update: tray_label(&state.updates),
+            restart_pending: state.updates.restart_pending,
         })
     }
 
@@ -100,6 +103,7 @@ impl App {
             Command::OpenFermix => {}
             Command::Settings => self.window_action("open-settings", None),
             Command::Doctor => self.show_page("doctor"),
+            Command::Update => self.window_action("updates-open", None),
             Command::Restart => self.window_action("restart", None),
             Command::RestartService => self.window_action("restart-service", None),
             Command::StartService => self.window_action("start-service", None),

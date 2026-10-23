@@ -1,29 +1,28 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
-//! the tools it ran, its collapsed thoughts, pictures, and failures. A streamed
+//! with a voice note's chip in its bubble over the words (its tile in the
+//! lane once it cannot play), the cards of the places a reply links under it
+//! and what a row shows under its words
+//! (pictures, files, link cards), the tools it ran, and failures. A streamed
 //! entry grows in place, so a chunk never redraws what is already on screen.
 
-use super::activity::{Group, Live, Thought};
+use super::activity::{Group, Live};
+use super::blocks::Shown;
+use super::places::Places;
+use super::strip::{Readers, StripView};
+use super::voice_chip::Chip;
 use adw::prelude::*;
-use fermix_client::acp::Image;
-use fermix_client::chat::{picture_file_name, picture_width, Entry};
-use fermix_client::markdown::{render, Block};
-use gtk::{gdk, gio, glib};
+use fermix_client::chat::Entry;
+use fermix_client::markdown::{Block, Draft};
+use fermix_client::media::Strip;
+use fermix_client::places::Card;
+use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// A picture in the conversation fits a square this many pixels wide.
-const PICTURE_BOUND: i32 = 420;
-/// The picture viewer opens no larger than this, and no smaller than `VIEWER_MIN`.
-const VIEWER_MAX: (i32, i32) = (1000, 760);
-const VIEWER_MIN: (i32, i32) = (360, 280);
-/// The viewer's header bar, which the picture's height does not include.
-const HEADER_HEIGHT: i32 = 47;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
     Person,
     Fermix,
-    Middle,
 }
 
 /// One drawn entry: its row in the list, the time under it, and the parts
@@ -37,26 +36,56 @@ pub struct Drawn {
 
 enum Parts {
     Fixed,
+    Message(Message),
     Reply(Reply),
-    Thought(Thought),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
-    Failure {
-        retry: gtk::Button,
-    },
 }
 
 struct Reply {
     body: gtk::Box,
-    blocks: Vec<(Block, gtk::Widget, Option<gtk::Label>)>,
+    blocks: Vec<(Block, Shown)>,
+    /// The reply's Markdown parsed so far, so a streamed piece re-parses only
+    /// the part still being written.
+    draft: Draft,
     /// The Markdown the copy button copies, kept current while the reply grows.
     source: Rc<RefCell<String>>,
+    /// The cards of the places it links, under the bubble; they come with its row.
+    places: Places,
+    /// What its row shows under the place cards.
+    strip: SharedStrip,
+    /// The row's voice note, over the words.
+    voice: Option<Rc<Chip>>,
+}
+
+/// The person's words, and what their row shows under them.
+struct Message {
+    /// The label alone, or with a voice note's chip over it.
+    bubble: gtk::Widget,
+    label: gtk::Label,
+    source: Source,
+    strip: SharedStrip,
+    voice: Option<Rc<Chip>>,
 }
 
 impl Drawn {
-    pub fn new(entry: &Entry) -> Drawn {
-        let (side, body, source, parts) = draw_body(entry);
+    pub fn new(entry: &Entry, readers: &Readers) -> Drawn {
+        let (side, body, source, parts) = draw_body(entry, readers);
         let (row, time) = row(side, &body, source);
+        let line = row.first_child();
+        // Between the bubble's line and the time under it.
+        let mut after = line.clone();
+        for widget in parts.under_line() {
+            row.insert_child_after(&widget, after.as_ref());
+            after = Some(widget);
+        }
+        if let Some(line) = &line {
+            // A row of files alone draws no empty bubble.
+            line.set_visible(!blank(entry, parts.note_plays()));
+            if let Some((chip, strip, words)) = parts.note() {
+                when_unplayable(chip, line, strip, words);
+            }
+        }
         Drawn {
             entry: entry.clone(),
             row,
@@ -67,11 +96,31 @@ impl Drawn {
 
     /// Grows this entry into `entry`, the same entry with more streamed in or
     /// a new status; false when `entry` is a different one and has to be
-    /// drawn anew.
+    /// drawn anew. Words coming to a row of files alone show its bubble, and
+    /// what the row shows stays as it is, read.
     pub fn grow(&mut self, entry: &Entry) -> bool {
         match (&mut self.parts, entry) {
-            (Parts::Reply(reply), Entry::Assistant(text)) => reply.grow(text),
-            (Parts::Thought(thought), Entry::Thought(text)) => thought.grow(text),
+            (
+                Parts::Reply(reply),
+                Entry::Assistant {
+                    text,
+                    places,
+                    media,
+                },
+            ) => {
+                if !same_note(reply.voice.as_ref(), media) {
+                    return false;
+                }
+                reply.grow(text);
+                reply.places.show(places);
+                reply.strip.borrow_mut().show(media);
+            }
+            (Parts::Message(message), Entry::User { text, media }) => {
+                if !same_note(message.voice.as_ref(), media) {
+                    return false;
+                }
+                message.grow(text, media);
+            }
             (Parts::Tools(group), Entry::Tools(runs)) => {
                 if !group.grow(runs) {
                     return false;
@@ -79,41 +128,124 @@ impl Drawn {
             }
             _ => return false,
         }
+        if let Some(line) = self.row.first_child() {
+            line.set_visible(!blank(entry, self.parts.note_plays()));
+        }
         self.entry = entry.clone();
         true
     }
 
     /// What depends on the rest of the conversation: the time under the entry,
-    /// whether a failure offers Retry, and whether the turn is still on it.
-    pub fn decorate(&self, time: Option<&str>, retry: bool, live: Option<&Live>) {
+    /// and whether the turn is still on it.
+    pub fn decorate(&self, time: Option<&str>, live: Option<&Live>) {
         self.time.set_visible(time.is_some());
         self.time.set_text(time.unwrap_or_default());
-        if let Parts::Failure { retry: button } = &self.parts {
-            button.set_visible(retry);
-        }
         self.set_live(live);
     }
 
     /// The parts that follow the running turn, which the page's clock also
     /// updates every second.
     pub fn set_live(&self, live: Option<&Live>) {
-        match (&self.parts, &self.entry) {
-            (Parts::Thought(thought), _) => thought.set_live(live),
-            (Parts::Tools(group), Entry::Tools(runs)) => group.set_live(runs, live),
-            _ => {}
+        if let (Parts::Tools(group), Entry::Tools(runs)) = (&self.parts, &self.entry) {
+            group.set_live(runs, live);
+        }
+    }
+
+    /// The entry is on screen: what its row shows is read, where it has not been.
+    pub fn on_screen(&self) {
+        let (strip, voice) = match &self.parts {
+            Parts::Message(message) => (&message.strip, &message.voice),
+            Parts::Reply(reply) => (&reply.strip, &reply.voice),
+            Parts::Fixed | Parts::Tools(_) => return,
+        };
+        strip.borrow().on_screen();
+        if let Some(chip) = voice {
+            chip.on_screen();
         }
     }
 }
 
-/// The entry's widget, its side, what copying it copies, and its parts.
-fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
-    match entry {
-        Entry::User(text) => {
-            let source = Rc::new(RefCell::new(text.clone()));
-            (Side::Person, user_bubble(text), Some(source), Parts::Fixed)
+impl Parts {
+    /// What stands under the entry's line, in order.
+    fn under_line(&self) -> Vec<gtk::Widget> {
+        match self {
+            Parts::Message(message) => vec![message.strip.borrow().widget.clone().upcast()],
+            Parts::Reply(reply) => vec![
+                reply.places.widget.clone().upcast(),
+                reply.strip.borrow().widget.clone().upcast(),
+            ],
+            Parts::Fixed | Parts::Tools(_) => Vec::new(),
         }
-        Entry::Assistant(text) => {
-            let reply = Reply::new(text);
+    }
+
+    /// The row's voice note, with its strip and its words, where it has one.
+    fn note(&self) -> Option<(&Rc<Chip>, &SharedStrip, &Source)> {
+        match self {
+            Parts::Message(message) => message
+                .voice
+                .as_ref()
+                .map(|chip| (chip, &message.strip, &message.source)),
+            Parts::Reply(reply) => reply
+                .voice
+                .as_ref()
+                .map(|chip| (chip, &reply.strip, &reply.source)),
+            Parts::Fixed | Parts::Tools(_) => None,
+        }
+    }
+
+    /// Whether the row has a voice note that can still play, in its bubble.
+    fn note_plays(&self) -> bool {
+        self.note().is_some_and(|(chip, _, _)| chip.plays())
+    }
+}
+
+/// When the row's voice note cannot play, its tile leads the row's lane, and a line left with no
+/// words goes, as a row of files alone draws none.
+fn when_unplayable(chip: &Chip, line: &gtk::Widget, strip: &SharedStrip, words: &Source) {
+    let line = line.downgrade();
+    let strip = Rc::downgrade(strip);
+    let words = Rc::downgrade(words);
+    chip.when_unplayable(move || {
+        if let Some(strip) = strip.upgrade() {
+            strip.borrow_mut().unplayable();
+        }
+        if let (Some(line), Some(words)) = (line.upgrade(), words.upgrade()) {
+            line.set_visible(!words.borrow().trim().is_empty());
+        }
+    });
+}
+
+/// Whether the entry is a message with nothing for its bubble: no words and no voice note that
+/// plays, a row of files alone.
+fn blank(entry: &Entry, note_plays: bool) -> bool {
+    match entry {
+        Entry::User { text, .. } | Entry::Assistant { text, .. } => {
+            text.trim().is_empty() && !note_plays
+        }
+        Entry::Sending(_) | Entry::Tools(_) | Entry::Failure(_) => false,
+    }
+}
+
+/// Whether `media` has the voice note `drawn` shows, or none as it shows none. Another note is
+/// another bubble, drawn anew.
+fn same_note(drawn: Option<&Rc<Chip>>, media: &Strip) -> bool {
+    drawn.map(|chip| chip.r#ref()) == media.voice.as_ref().map(|note| note.r#ref.as_str())
+}
+
+/// The entry's widget, its side, what copying it copies, and its parts.
+fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Source>, Parts) {
+    match entry {
+        Entry::User { text, media } => {
+            let message = Message::new(text, media, readers);
+            let (bubble, source) = (message.bubble.clone(), message.source.clone());
+            (Side::Person, bubble, Some(source), Parts::Message(message))
+        }
+        Entry::Assistant {
+            text,
+            places,
+            media,
+        } => {
+            let reply = Reply::new(text, places, media, readers);
             let source = reply.source.clone();
             (
                 Side::Fermix,
@@ -122,31 +254,19 @@ fn draw_body(entry: &Entry) -> (Side, gtk::Widget, Option<Source>, Parts) {
                 Parts::Reply(reply),
             )
         }
-        Entry::Thought(text) => {
-            let thought = Thought::new(text);
-            (
-                Side::Fermix,
-                thought.widget(),
-                None,
-                Parts::Thought(thought),
-            )
-        }
-        Entry::Image(image) => (Side::Fermix, picture(image), None, Parts::Fixed),
-        Entry::Attachment(name) => (Side::Fermix, attachment(name), None, Parts::Fixed),
+        Entry::Sending(text) => (Side::Person, sending_bubble(text), None, Parts::Fixed),
         Entry::Tools(runs) => {
             let group = Group::new(runs);
             (Side::Fermix, group.widget(), None, Parts::Tools(group))
         }
-        Entry::Notice(text) => (Side::Middle, notice_line(text), None, Parts::Fixed),
-        Entry::Failure(text) => {
-            let (widget, retry) = failure(text);
-            (Side::Fermix, widget, None, Parts::Failure { retry })
-        }
+        Entry::Failure(text) => (Side::Fermix, failure(text), None, Parts::Fixed),
     }
 }
 
 /// The Markdown or text a message's copy button and menu item copy.
 type Source = Rc<RefCell<String>>;
+/// What a row shows under its words, shared with its voice note's hook.
+type SharedStrip = Rc<RefCell<StripView>>;
 
 /// The entry on its side of the conversation, its copy button on the inside
 /// edge, and the time under it, hidden until there is one. A message's row
@@ -155,7 +275,6 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
     let align = match side {
         Side::Person => gtk::Align::End,
         Side::Fermix => gtk::Align::Start,
-        Side::Middle => gtk::Align::Center,
     };
     let line = gtk::Box::builder().spacing(6).halign(align).build();
     if let Some(source) = &source {
@@ -182,7 +301,6 @@ fn row(side: Side, body: &gtk::Widget, source: Option<Source>) -> (gtk::Box, gtk
     let side_class = match side {
         Side::Person => "person",
         Side::Fermix => "fermix",
-        Side::Middle => "middle",
     };
     let row = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -209,7 +327,7 @@ fn message_actions(line: &gtk::Box, source: Source) -> gio::SimpleActionGroup {
 }
 
 /// Added to a message label's own right-click menu (Copy, Select All).
-fn message_menu() -> gio::Menu {
+pub(super) fn message_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Copy Message"), Some("message.copy"));
     menu
@@ -227,18 +345,18 @@ fn copy_button(source: Source) -> gtk::Button {
     button
 }
 
-fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
+pub(super) fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
     widget.clipboard().set_text(text);
     toast(widget, "Copied");
 }
 
-fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
+pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Err(e) = widget.activate_action("win.toast", Some(&text.to_variant())) {
         glib::g_warning!("fermix", "could not show the toast {text:?}: {e}");
     }
 }
 
-fn user_bubble(text: &str) -> gtk::Widget {
+fn user_bubble(text: &str) -> gtk::Label {
     let label = gtk::Label::builder()
         .label(text)
         .wrap(true)
@@ -250,11 +368,65 @@ fn user_bubble(text: &str) -> gtk::Widget {
         .css_classes(["chat-user"])
         .build();
     label.update_property(&[gtk::accessible::Property::Description("Your message")]);
-    label.upcast()
+    label
+}
+
+/// A question on its way: the person's bubble, dimmed, until the daemon accepts it.
+fn sending_bubble(text: &str) -> gtk::Widget {
+    let bubble = user_bubble(text);
+    bubble.set_opacity(0.6);
+    bubble.set_tooltip_text(Some("Sending"));
+    bubble.upcast()
+}
+
+impl Message {
+    fn new(text: &str, media: &Strip, readers: &Readers) -> Message {
+        let strip = Rc::new(RefCell::new(StripView::new(gtk::Align::End, readers)));
+        strip.borrow_mut().show(media);
+        let label = user_bubble(text);
+        let voice = media.voice.as_ref().map(|note| Chip::new(note, readers));
+        let bubble = match &voice {
+            Some(chip) => voice_bubble(chip, &label, text),
+            None => label.clone().upcast(),
+        };
+        Message {
+            bubble,
+            label,
+            source: Rc::new(RefCell::new(text.to_owned())),
+            strip,
+            voice,
+        }
+    }
+
+    /// The row read again: its words as they stand now, and what it shows.
+    fn grow(&mut self, text: &str, media: &Strip) {
+        if self.label.label() != text {
+            self.label.set_label(text);
+            self.source.replace(text.to_owned());
+        }
+        if self.voice.is_some() {
+            self.label.set_visible(!text.trim().is_empty());
+        }
+        self.strip.borrow_mut().show(media);
+    }
+}
+
+/// The person's bubble for a voice note: its chip, and its transcript under it where there is one.
+fn voice_bubble(chip: &Chip, label: &gtk::Label, text: &str) -> gtk::Widget {
+    label.remove_css_class("chat-user");
+    label.set_visible(!text.trim().is_empty());
+    let bubble = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .css_classes(["chat-user"])
+        .build();
+    bubble.append(&chip.widget);
+    bubble.append(label);
+    bubble.upcast()
 }
 
 impl Reply {
-    fn new(text: &str) -> Reply {
+    fn new(text: &str, places: &[Card], media: &Strip, readers: &Readers) -> Reply {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -262,331 +434,57 @@ impl Reply {
             .css_classes(["chat-reply"])
             .build();
         body.update_property(&[gtk::accessible::Property::Label("Reply from Fermix")]);
+        let voice = media.voice.as_ref().map(|note| Chip::new(note, readers));
+        if let Some(chip) = &voice {
+            body.append(&chip.widget);
+        }
         let mut reply = Reply {
             body,
             blocks: Vec::new(),
+            draft: Draft::default(),
             source: Rc::default(),
+            places: Places::new(),
+            strip: Rc::new(RefCell::new(StripView::new(gtk::Align::Start, readers))),
+            voice,
         };
         reply.grow(text);
+        reply.places.show(places);
+        reply.strip.borrow_mut().show(media);
         reply
     }
 
-    /// Unchanged blocks stay, a changed text block is updated in place, and
-    /// anything after it is redrawn.
+    /// Unchanged blocks stay, the first changed one is updated in place when
+    /// it is the same kind, and anything after it is redrawn.
     fn grow(&mut self, text: &str) {
-        let fresh = render(text);
+        let tail = self.draft.update(text);
+        let fresh: Vec<&Block> = self.draft.settled().iter().chain(&tail).collect();
         let same = self
             .blocks
             .iter()
             .zip(&fresh)
-            .take_while(|((old, _, _), new)| old == *new)
+            .take_while(|((old, _), new)| old == **new)
             .count();
         let mut next = same;
-        if let (Some((old, _, Some(label))), Some(new)) =
-            (self.blocks.get_mut(same), fresh.get(same))
-        {
-            if set_in_place(label, old, new) {
-                *old = new.clone();
+        if let (Some((old, shown)), Some(new)) = (self.blocks.get_mut(same), fresh.get(same)) {
+            if shown.update(old, new) {
+                *old = (*new).clone();
                 next += 1;
             }
         }
-        for (_, widget, _) in self.blocks.drain(next..) {
-            self.body.remove(&widget);
+        for (_, shown) in self.blocks.drain(next..) {
+            self.body.remove(&shown.widget);
         }
         for block in fresh.into_iter().skip(next) {
-            let (widget, label) = block_widget(&block);
-            self.body.append(&widget);
-            self.blocks.push((block, widget, label));
+            let shown = Shown::new(block);
+            self.body.append(&shown.widget);
+            self.blocks.push((block.clone(), shown));
         }
         self.source.replace(text.to_owned());
     }
 }
 
-fn set_in_place(label: &gtk::Label, old: &Block, new: &Block) -> bool {
-    match (old, new) {
-        (Block::Text(_), Block::Text(markup)) | (Block::Quote(_), Block::Quote(markup)) => {
-            label.set_markup(markup);
-            true
-        }
-        (Block::Code(_), Block::Code(text)) => {
-            label.set_text(text);
-            true
-        }
-        _ => false,
-    }
-}
-
-/// A reply's text, no wider than reads comfortably.
-fn text_label(markup: &str) -> gtk::Label {
-    let label = gtk::Label::builder()
-        .wrap(true)
-        .wrap_mode(gtk::pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .selectable(true)
-        .max_width_chars(90)
-        .extra_menu(&message_menu())
-        .build();
-    label.set_markup(markup);
-    label
-}
-
-fn block_widget(block: &Block) -> (gtk::Widget, Option<gtk::Label>) {
-    match block {
-        Block::Text(markup) => {
-            let label = text_label(markup);
-            (label.clone().upcast(), Some(label))
-        }
-        Block::Heading(level, markup) => {
-            let size = match level {
-                1 => "x-large",
-                2 => "large",
-                _ => "medium",
-            };
-            let label = text_label(&format!(
-                "<span size=\"{size}\" weight=\"bold\">{markup}</span>"
-            ));
-            (label.upcast(), None)
-        }
-        Block::Quote(markup) => {
-            let label = text_label(markup);
-            label.add_css_class("chat-quote");
-            label.add_css_class("dimmed");
-            (label.clone().upcast(), Some(label))
-        }
-        Block::Code(text) => code_block(text),
-        Block::Rule => (
-            gtk::Separator::new(gtk::Orientation::Horizontal).upcast(),
-            None,
-        ),
-    }
-}
-
-/// Monospace, scrolled sideways when wide, with its own copy button.
-fn code_block(text: &str) -> (gtk::Widget, Option<gtk::Label>) {
-    let label = gtk::Label::builder()
-        .label(text)
-        .xalign(0.0)
-        .selectable(true)
-        .extra_menu(&message_menu())
-        .css_classes(["monospace"])
-        .build();
-    let scroller = gtk::ScrolledWindow::builder()
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .hexpand(true)
-        .child(&label)
-        .build();
-    let copy = gtk::Button::builder()
-        .icon_name("edit-copy-symbolic")
-        .tooltip_text("Copy code")
-        .valign(gtk::Align::Start)
-        .css_classes(["flat", "circular"])
-        .build();
-    copy.update_property(&[gtk::accessible::Property::Label("Copy code")]);
-    let source = label.clone();
-    copy.connect_clicked(move |button| copy_text(button, &source.text()));
-    let block = gtk::Box::builder()
-        .spacing(6)
-        .css_classes(["chat-code"])
-        .build();
-    block.append(&scroller);
-    block.append(&copy);
-    (block.upcast(), Some(label))
-}
-
-fn picture(image: &Image) -> gtk::Widget {
-    let bytes = glib::Bytes::from(&image.bytes[..]);
-    match gdk::Texture::from_bytes(&bytes) {
-        Ok(texture) => picture_button(&texture, image).upcast(),
-        Err(e) => {
-            glib::g_warning!("fermix", "a {} picture did not decode: {e}", image.mime);
-            let line = format!(
-                "Fermix sent a picture this app cannot open ({}).",
-                image.mime
-            );
-            quiet_line("image-missing-symbolic", &line)
-        }
-    }
-}
-
-/// The picture scaled to fit the conversation; a click opens it full size.
-fn picture_button(texture: &gdk::Texture, image: &Image) -> gtk::Button {
-    let picture = gtk::Picture::builder()
-        .paintable(texture)
-        .can_shrink(true)
-        .content_fit(gtk::ContentFit::ScaleDown)
-        .alternative_text("Picture from Fermix")
-        .overflow(gtk::Overflow::Hidden)
-        .css_classes(["chat-picture"])
-        .build();
-    let width = picture_width(texture.width(), texture.height(), PICTURE_BOUND);
-    let clamp = adw::Clamp::builder()
-        .maximum_size(width)
-        .tightening_threshold(width)
-        .child(&picture)
-        .build();
-    let button = gtk::Button::builder()
-        .child(&clamp)
-        .tooltip_text("Open full size")
-        .css_classes(["flat", "chat-picture-button"])
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label(
-        "Picture from Fermix. Open full size",
-    )]);
-    let (texture, image) = (texture.clone(), image.clone());
-    button.connect_clicked(move |button| open_viewer(button, &texture, &image));
-    button
-}
-
-fn open_viewer(anchor: &gtk::Button, texture: &gdk::Texture, image: &Image) {
-    let picture = gtk::Picture::builder()
-        .paintable(texture)
-        .can_shrink(true)
-        .content_fit(gtk::ContentFit::Contain)
-        .alternative_text("Picture from Fermix")
-        .hexpand(true)
-        .vexpand(true)
-        .build();
-    let header = adw::HeaderBar::new();
-    header.pack_start(&save_picture_button(image));
-    header.pack_start(&copy_picture_button(texture));
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&header);
-    view.set_content(Some(&picture));
-    let dialog = adw::Dialog::builder()
-        .title("Picture")
-        .content_width(texture.width().clamp(VIEWER_MIN.0, VIEWER_MAX.0))
-        .content_height((texture.height() + HEADER_HEIGHT).clamp(VIEWER_MIN.1, VIEWER_MAX.1))
-        .child(&view)
-        .build();
-    dialog.present(Some(anchor));
-}
-
-fn copy_picture_button(texture: &gdk::Texture) -> gtk::Button {
-    let button = gtk::Button::builder()
-        .icon_name("edit-copy-symbolic")
-        .tooltip_text("Copy")
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label("Copy picture")]);
-    let texture = texture.clone();
-    button.connect_clicked(move |button| {
-        button.clipboard().set_texture(&texture);
-        toast(button, "Copied");
-    });
-    button
-}
-
-fn save_picture_button(image: &Image) -> gtk::Button {
-    let button = gtk::Button::builder()
-        .icon_name("document-save-as-symbolic")
-        .tooltip_text("Save As…")
-        .build();
-    button.update_property(&[gtk::accessible::Property::Label("Save picture as")]);
-    let image = image.clone();
-    button.connect_clicked(move |button| {
-        let (button, image) = (button.clone(), image.clone());
-        glib::spawn_future_local(async move { save_picture(&button, &image).await });
-    });
-    button
-}
-
-/// Writes the picture's own bytes where the person chooses, through the portal.
-async fn save_picture(anchor: &gtk::Button, image: &Image) {
-    let window = anchor.root().and_downcast::<gtk::Window>();
-    let dialog = gtk::FileDialog::builder()
-        .title("Save Picture")
-        .initial_name(picture_file_name(&image.mime))
-        .modal(true)
-        .build();
-    let file = match dialog.save_future(window.as_ref()).await {
-        Ok(file) => file,
-        Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
-        Err(e) => {
-            glib::g_warning!("fermix", "the save dialog failed: {e}");
-            return toast(anchor, "The save dialog did not open.");
-        }
-    };
-    let written = file
-        .replace_contents_future(
-            image.bytes.to_vec(),
-            None,
-            false,
-            gio::FileCreateFlags::REPLACE_DESTINATION,
-        )
-        .await;
-    match written {
-        Ok(_) => toast(anchor, "Picture saved"),
-        Err((_, e)) => {
-            glib::g_warning!("fermix", "saving the picture failed: {e}");
-            toast(
-                anchor,
-                &format!("The picture was not saved: {}", e.message()),
-            );
-        }
-    }
-}
-
-/// A file Fermix sent that ACP cannot carry: named, and said plainly.
-fn attachment(name: &str) -> gtk::Widget {
-    let icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
-    icon.set_valign(gtk::Align::Center);
-    let title = gtk::Label::builder()
-        .label(name)
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
-        .max_width_chars(40)
-        .selectable(true)
-        .css_classes(["heading"])
-        .build();
-    let note = gtk::Label::builder()
-        .label("Fermix has this file but cannot send it here yet.")
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["dimmed", "caption"])
-        .build();
-    let text = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .build();
-    text.append(&title);
-    text.append(&note);
-    let chip = gtk::Box::builder()
-        .spacing(12)
-        .css_classes(["chat-file"])
-        .build();
-    chip.append(&icon);
-    chip.append(&text);
-    chip.upcast()
-}
-
-fn quiet_line(icon: &str, text: &str) -> gtk::Widget {
-    let row = gtk::Box::builder().spacing(8).build();
-    let image = gtk::Image::from_icon_name(icon);
-    image.add_css_class("dimmed");
-    row.append(&image);
-    let label = gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .xalign(0.0)
-        .css_classes(["dimmed", "caption"])
-        .build();
-    row.append(&label);
-    row.upcast()
-}
-
-fn notice_line(text: &str) -> gtk::Widget {
-    gtk::Label::builder()
-        .label(text)
-        .wrap(true)
-        .justify(gtk::Justification::Center)
-        .css_classes(["dimmed", "caption"])
-        .build()
-        .upcast()
-}
-
-/// Why the reply did not come, and a way to ask again while that can help.
-fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
+/// Why the reply did not come, and where the reason is.
+fn failure(text: &str) -> gtk::Widget {
     let icon = gtk::Image::from_icon_name("dialog-error-symbolic");
     icon.add_css_class("error");
     icon.set_valign(gtk::Align::Start);
@@ -595,11 +493,6 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .wrap(true)
         .xalign(0.0)
         .selectable(true)
-        .build();
-    let retry = gtk::Button::builder()
-        .label("Retry")
-        .action_name("win.retry-reply")
-        .visible(false)
         .build();
     // The reason for any failure is in the daemon's log, which Logs shows.
     let logs = gtk::Button::builder()
@@ -612,7 +505,6 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .spacing(6)
         .halign(gtk::Align::Start)
         .build();
-    actions.append(&retry);
     actions.append(&logs);
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -626,5 +518,5 @@ fn failure(text: &str) -> (gtk::Widget, gtk::Button) {
         .build();
     bubble.append(&icon);
     bubble.append(&column);
-    (bubble.upcast(), retry)
+    bubble.upcast()
 }

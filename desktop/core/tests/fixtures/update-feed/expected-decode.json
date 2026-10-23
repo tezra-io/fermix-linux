@@ -1,0 +1,145 @@
+{
+  "key_id": "linux-feed-test",
+  "payload": {
+    "format": 1,
+    "product": "fermix-desktop",
+    "generated_at": "2026-11-20T18:05:00Z",
+    "releases": [
+      {
+        "version": "0.5.0",
+        "published_at": "2026-11-20T18:00:00Z",
+        "critical": false,
+        "minimum_installed_version": "0.4.0",
+        "engine": {
+          "version": "0.18.0",
+          "tag": "v0.18.0",
+          "source_commit": "af3419ac3c0113e9be41d1935763f9edec8b34a6"
+        },
+        "notes": [
+          "Fermix checks for updates and installs them from the tray.",
+          "Settings → Updates shows the version you have and when Fermix last checked.",
+          "Places keep their accents, so a café reads as it should."
+        ],
+        "packages": {
+          "amd64": {
+            "deb": {
+              "file": "fermix-desktop_0.5.0_amd64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.5.0/fermix-desktop_0.5.0_amd64.deb",
+              "size": 44,
+              "sha256": "23fe8b7d826f5cae441f957e8e9c82278d3631adca6278aa8685959b0fb315b2"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.5.0-1.x86_64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.5.0/fermix-desktop-0.5.0-1.x86_64.rpm",
+              "size": 47,
+              "sha256": "a107e55c0cad484372de3ba404f0e8d7760700720d34725629599a3dee84caca"
+            }
+          },
+          "arm64": {
+            "deb": {
+              "file": "fermix-desktop_0.5.0_arm64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.5.0/fermix-desktop_0.5.0_arm64.deb",
+              "size": 44,
+              "sha256": "eadaef8f038962b49fe3f3914b9facb1e1005b26deae9ac9237d4d6238d380ce"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.5.0-1.aarch64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.5.0/fermix-desktop-0.5.0-1.aarch64.rpm",
+              "size": 48,
+              "sha256": "c14e7e0e1751f366fd5ded750c2df7848d78bee4a85554a5a8e1d8a212e4637d"
+            }
+          }
+        }
+      },
+      {
+        "version": "0.4.0",
+        "published_at": "2026-11-06T18:00:00Z",
+        "critical": true,
+        "minimum_installed_version": null,
+        "engine": {
+          "version": "0.17.0",
+          "tag": "v0.17.0",
+          "source_commit": "cb3f8c889eb5b39cb532e8176b32a99783813fc0"
+        },
+        "notes": [
+          "Fermix no longer stops answering when the tray menu opens twice."
+        ],
+        "packages": {
+          "amd64": {
+            "deb": {
+              "file": "fermix-desktop_0.4.0_amd64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.4.0/fermix-desktop_0.4.0_amd64.deb",
+              "size": 44,
+              "sha256": "478b5b8409d2cf05b84b1f42b1dd6575139f86ea2bfc10f9ff5f16569bff7753"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.4.0-1.x86_64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.4.0/fermix-desktop-0.4.0-1.x86_64.rpm",
+              "size": 47,
+              "sha256": "a12fb7e985a897da9dace9789d7f52eebe114836231e431cbedfbb0bf7b3c1c8"
+            }
+          },
+          "arm64": {
+            "deb": {
+              "file": "fermix-desktop_0.4.0_arm64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.4.0/fermix-desktop_0.4.0_arm64.deb",
+              "size": 44,
+              "sha256": "8db0e5091a8c6a482411d074e87803501ccd079fe74a9e27e04edbe17ac21a0e"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.4.0-1.aarch64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.4.0/fermix-desktop-0.4.0-1.aarch64.rpm",
+              "size": 48,
+              "sha256": "e0b9ccf8bb6aeaa559eeab5cd71110701cc3271293f6d2e7068e4c41c21ebe56"
+            }
+          }
+        }
+      },
+      {
+        "version": "0.3.0",
+        "published_at": "2026-10-23T18:00:00Z",
+        "critical": false,
+        "minimum_installed_version": null,
+        "engine": {
+          "version": "0.16.0",
+          "tag": "v0.16.0",
+          "source_commit": "3ea408255fc09042502f03ace6af6055cd34475e"
+        },
+        "notes": [
+          "Fermix plays the voice notes a phone sends, as a waveform in the chat.",
+          "Run `fermix status` to see which engine is running."
+        ],
+        "packages": {
+          "amd64": {
+            "deb": {
+              "file": "fermix-desktop_0.3.0_amd64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.3.0/fermix-desktop_0.3.0_amd64.deb",
+              "size": 44,
+              "sha256": "fa139495a11757cdf4127a39148f6d36bb337a354c61371aedba7ac589e3d325"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.3.0-1.x86_64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.3.0/fermix-desktop-0.3.0-1.x86_64.rpm",
+              "size": 47,
+              "sha256": "9fd931e3eb4e6fc7b19e433a20f77394eff9065c95cd822a6e842fe2bf3337a5"
+            }
+          },
+          "arm64": {
+            "deb": {
+              "file": "fermix-desktop_0.3.0_arm64.deb",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.3.0/fermix-desktop_0.3.0_arm64.deb",
+              "size": 44,
+              "sha256": "251c2ebe232c04b5c435003b6ebb05c8e5faaf713f3b1756edcdb2460420de87"
+            },
+            "rpm": {
+              "file": "fermix-desktop-0.3.0-1.aarch64.rpm",
+              "url": "https://github.com/tezra-io/fermix-linux/releases/download/v0.3.0/fermix-desktop-0.3.0-1.aarch64.rpm",
+              "size": 48,
+              "sha256": "cee09c79c3587d913a1ae979cc81f3a6ae35dc0779ec33b969dd1d398956dec8"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

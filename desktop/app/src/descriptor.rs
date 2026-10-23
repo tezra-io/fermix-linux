@@ -2,6 +2,10 @@
 //! one control; every write leaves as a window action carrying the section, the
 //! row key and the JSON value, so the controller in `settings_flow.rs` does the
 //! talking. A section is redrawn only when what it shows changed.
+//!
+//! A section's advanced rows come last, under one Advanced row that starts closed and stays as
+//! the person left it across redraws. A pane can put one line of its own under a row, such as
+//! where reach from anywhere stands under its switch.
 
 use crate::fields::{
     field_row, let_go, resume, secret_row as secret_row_into, still_active, typing_in, Live, Slot,
@@ -22,6 +26,8 @@ use std::time::Duration;
 const NUMBER_SETTLE: Duration = Duration::from_millis(700);
 /// What the button beside a model row whose listing failed does.
 const LIST_AGAIN: &str = "List the models again";
+/// The row the rows most people never change are folded under.
+const ADVANCED: &str = "Advanced";
 
 /// Everything a section's rows are drawn from.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +53,13 @@ pub struct SectionView {
     keep: Keep,
     /// Each row's widget, by row key (empty for the loading and unread rows).
     widgets: RefCell<Vec<(String, gtk::Widget)>>,
+    /// What was added to the group: the widgets above less the advanced ones, which sit in the
+    /// Advanced row, plus that row and the note.
+    children: RefCell<Vec<gtk::Widget>>,
+    /// Whether the Advanced row is open, kept when the section is drawn again.
+    advanced_open: Cell<bool>,
+    advanced: RefCell<Option<adw::ExpanderRow>>,
+    note: Option<Note>,
     live: RefCell<Live>,
     shown: RefCell<Option<Drawn>>,
 }
@@ -58,6 +71,16 @@ impl SectionView {
 
     /// A view of only the rows `keep` accepts.
     pub fn keeping(id: &str, title: Option<&str>, keep: Keep) -> Rc<SectionView> {
+        SectionView::build(id, title, keep, None)
+    }
+
+    /// A view of only the rows `keep` accepts, with a line of the pane's own under row `key`,
+    /// hidden until `set_note` gives it words.
+    pub fn keeping_with_note(id: &str, keep: Keep, key: &str) -> Rc<SectionView> {
+        SectionView::build(id, None, keep, Some(Note::new(key)))
+    }
+
+    fn build(id: &str, title: Option<&str>, keep: Keep, note: Option<Note>) -> Rc<SectionView> {
         let group = adw::PreferencesGroup::new();
         if let Some(title) = title {
             group.set_title(&glib::markup_escape_text(title));
@@ -67,6 +90,10 @@ impl SectionView {
             group,
             keep,
             widgets: RefCell::default(),
+            children: RefCell::default(),
+            advanced_open: Cell::new(false),
+            advanced: RefCell::default(),
+            note,
             live: RefCell::new(Rc::new(Cell::new(true))),
             shown: RefCell::default(),
         })
@@ -84,18 +111,24 @@ impl SectionView {
         if typing.is_some() {
             let_go(&self.widgets.borrow());
         }
-        for (_, old) in self.widgets.borrow_mut().drain(..) {
+        if let Some(advanced) = self.advanced.take() {
+            self.advanced_open.set(advanced.is_expanded());
+        }
+        for old in self.children.borrow_mut().drain(..) {
             self.group.remove(&old);
         }
+        self.widgets.borrow_mut().clear();
         let live: Live = Rc::new(Cell::new(true));
         let fresh = match (&drawn.rows, &drawn.unread) {
             (Some(section), _) => self.row_widgets(section, &drawn, &live),
-            (None, Some(sentence)) => vec![(String::new(), unread_row(&self.id, sentence))],
-            (None, None) => vec![(String::new(), loading_row())],
+            (None, Some(sentence)) => vec![(String::new(), false, unread_row(&self.id, sentence))],
+            (None, None) => vec![(String::new(), false, loading_row())],
         };
-        for (_, widget) in &fresh {
-            self.group.add(widget);
-        }
+        self.place(&fresh);
+        let fresh: Vec<(String, gtk::Widget)> = fresh
+            .into_iter()
+            .map(|(key, _, widget)| (key, widget))
+            .collect();
         self.group.set_sensitive(!drawn.locked);
         if let Some(typing) = typing {
             resume(&fresh, &typing);
@@ -105,12 +138,51 @@ impl SectionView {
         *self.shown.borrow_mut() = Some(drawn);
     }
 
+    /// Adds the rows to the group: the ordinary ones in order with the note under its row, then
+    /// the advanced ones under one Advanced row, where there are any.
+    fn place(&self, rows: &[(String, bool, gtk::Widget)]) {
+        let mut children = Vec::new();
+        for (key, _, widget) in rows.iter().filter(|(_, advanced, _)| !advanced) {
+            children.push(widget.clone());
+            if let Some(note) = self.note.as_ref().filter(|note| note.key == *key) {
+                children.push(note.row.clone().upcast());
+            }
+        }
+        let advanced: Vec<&gtk::Widget> = rows
+            .iter()
+            .filter(|(_, advanced, _)| *advanced)
+            .map(|(_, _, widget)| widget)
+            .collect();
+        if !advanced.is_empty() {
+            let expander = adw::ExpanderRow::builder()
+                .title(ADVANCED)
+                .expanded(self.advanced_open.get())
+                .build();
+            for widget in advanced {
+                expander.add_row(widget);
+            }
+            children.push(expander.clone().upcast());
+            self.advanced.replace(Some(expander));
+        }
+        for child in &children {
+            self.group.add(child);
+        }
+        *self.children.borrow_mut() = children;
+    }
+
+    /// Shows the pane's line under its row, or hides it.
+    pub fn set_note(&self, line: Option<(&str, NoteKind)>) {
+        if let Some(note) = &self.note {
+            note.show(line);
+        }
+    }
+
     fn row_widgets(
         &self,
         section: &SectionRows,
         drawn: &Drawn,
         live: &Live,
-    ) -> Vec<(String, gtk::Widget)> {
+    ) -> Vec<(String, bool, gtk::Widget)> {
         section
             .rows
             .iter()
@@ -125,9 +197,62 @@ impl SectionView {
                 if let Some((_, sentence)) = error {
                     show_refusal(&widget, sentence);
                 }
-                (row.key.clone(), widget)
+                (row.key.clone(), row.advanced, widget)
             })
             .collect()
+    }
+}
+
+/// How a pane's line is drawn: a plain note, a start that moves on by itself, or a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    Plain,
+    Progress,
+    Failure,
+}
+
+/// A pane's one line under a row. The same row is placed again on every redraw, so a change to
+/// the line never redraws the section.
+struct Note {
+    key: String,
+    row: adw::ActionRow,
+    spinner: adw::Spinner,
+}
+
+impl Note {
+    fn new(key: &str) -> Note {
+        let row = adw::ActionRow::builder()
+            .activatable(false)
+            .visible(false)
+            .build();
+        let spinner = adw::Spinner::builder().visible(false).build();
+        row.add_suffix(&spinner);
+        Note {
+            key: key.to_owned(),
+            row,
+            spinner,
+        }
+    }
+
+    fn show(&self, line: Option<(&str, NoteKind)>) {
+        let Some((text, kind)) = line else {
+            self.row.set_visible(false);
+            return;
+        };
+        self.row.set_title(&glib::markup_escape_text(text));
+        self.spinner.set_visible(kind == NoteKind::Progress);
+        let failure = kind == NoteKind::Failure;
+        set_class(&self.row, "error", failure);
+        set_class(&self.row, "dimmed", !failure);
+        self.row.set_visible(true);
+    }
+}
+
+fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
+    if on {
+        widget.add_css_class(class);
+    } else {
+        widget.remove_css_class(class);
     }
 }
 
@@ -656,7 +781,7 @@ fn add_info(widget: &gtk::Widget, info: &str) {
         .build();
     let popover = gtk::Popover::builder().child(&text).build();
     let more = gtk::MenuButton::builder()
-        .icon_name("help-about-symbolic")
+        .icon_name("dialog-information-symbolic")
         .tooltip_text("More about this setting")
         .valign(gtk::Align::Center)
         .css_classes(["flat"])

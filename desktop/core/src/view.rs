@@ -28,16 +28,19 @@ pub enum Activity {
     Switching,
     /// The daemon's own sentence for why the last action failed.
     Failed(String),
+    /// The last action completed, and the daemon's sentence says what it could
+    /// not do: a ChatGPT sign-in that left the default model unchecked.
+    Caveat(String),
     Cancelled,
 }
 
 impl Activity {
-    /// Work the app is still waiting on. `Failed` and `Cancelled` only explain the
-    /// last action, so they must never hold back a refresh.
+    /// Work the app is still waiting on. `Failed`, `Caveat` and `Cancelled` only
+    /// explain the last action, so they must never hold back a refresh.
     pub fn in_flight(&self) -> bool {
         !matches!(
             self,
-            Activity::Idle | Activity::Failed(_) | Activity::Cancelled
+            Activity::Idle | Activity::Failed(_) | Activity::Caveat(_) | Activity::Cancelled
         )
     }
 }
@@ -104,17 +107,25 @@ pub enum Suffix {
     },
 }
 
+/// How a row marks its subtitle: not at all, as a caveat, or as a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    Plain,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowView {
     pub subtitle: String,
-    pub is_error: bool,
+    pub notice: Notice,
     pub suffix: Suffix,
 }
 
 pub fn row_view(row: &ProviderRow, activity: &Activity, recent: Option<Recent>) -> RowView {
-    let resting = |subtitle: String, is_error: bool| RowView {
+    let resting = |subtitle: String, notice: Notice| RowView {
         subtitle,
-        is_error,
+        notice,
         suffix: idle_suffix(row),
     };
     match activity {
@@ -138,16 +149,20 @@ pub fn row_view(row: &ProviderRow, activity: &Activity, recent: Option<Recent>) 
         Activity::SigningOut => busy("Signing out", CopyLink::None, false),
         Activity::RemovingKey => busy("Removing the key", CopyLink::None, false),
         Activity::Switching => busy("Switching", CopyLink::None, false),
-        Activity::Failed(sentence) => resting(sentence.clone(), true),
-        Activity::Cancelled => resting("Sign-in cancelled".into(), false),
-        Activity::Idle => resting(with_primary(row, resting_sentence(row, recent)), false),
+        Activity::Failed(sentence) => resting(sentence.clone(), Notice::Error),
+        Activity::Caveat(sentence) => resting(sentence.clone(), Notice::Warning),
+        Activity::Cancelled => resting("Sign-in cancelled".into(), Notice::Plain),
+        Activity::Idle => resting(
+            with_primary(row, resting_sentence(row, recent)),
+            Notice::Plain,
+        ),
     }
 }
 
 fn busy(subtitle: &str, copy_link: CopyLink, cancel: bool) -> RowView {
     RowView {
         subtitle: subtitle.into(),
-        is_error: false,
+        notice: Notice::Plain,
         suffix: Suffix::Busy { copy_link, cancel },
     }
 }
@@ -390,6 +405,8 @@ pub fn channel_title(name: &str) -> &str {
 
 const CREDENTIALS_PREFIX: &str = "provider:missing_credentials:";
 const CHANNEL_PREFIX: &str = "channel:";
+/// Voice is on and its provider has no API key: `realtime:openai`, `realtime:xai`.
+pub(crate) const VOICE_KEY_PREFIX: &str = "realtime:";
 const UNRECOGNIZED_BODY: &str =
     "This Fermix build has no description for that gap, so the daemon's own name for it is shown.";
 
@@ -398,14 +415,18 @@ fn attention_copy(key: &str, state: &SetupState) -> (String, &'static str) {
         .strip_prefix(CREDENTIALS_PREFIX)
         .filter(|p| !p.is_empty())
     {
-        let label = state
-            .providers
-            .iter()
-            .find(|p| p.id == provider)
-            .map_or(provider, |p| p.label.as_str());
         return (
-            format!("Connect {label}"),
+            format!("Connect {}", state.provider_label(provider)),
             "Fermix has no working credential for this provider yet.",
+        );
+    }
+    if let Some(provider) = key.strip_prefix(VOICE_KEY_PREFIX).filter(|p| !p.is_empty()) {
+        return (
+            format!(
+                "The voice companion needs a key from {}",
+                state.provider_label(provider)
+            ),
+            "Voice calls take an API key, which a subscription sign-in does not authorize.",
         );
     }
     if let Some(channel) = key.strip_prefix(CHANNEL_PREFIX).filter(|c| !c.is_empty()) {
@@ -426,7 +447,6 @@ pub(crate) fn fixed_attention_copy(key: &str) -> Option<(&'static str, &'static 
         "provider:unknown_configured" => ("The configured provider is not one Fermix knows", "Choose a provider Fermix can reach, or the assistant has nothing to answer with."),
         "provider:multiple_primary" => ("More than one provider is marked primary", "Exactly one provider answers each conversation, so pick which of them it is."),
         "provider:invalid_auth_mode" => ("A provider is set to sign in a way it does not offer", "Pick an authentication mode that provider supports, or it will refuse every call."),
-        "realtime:openai" => ("The voice companion needs an OpenAI key", "Voice uses the OpenAI Realtime API, which a ChatGPT or Claude sign-in does not authorize."),
         "sandbox:env_missing" => ("Some allowed environment variables are not set", "Sandboxed commands run without them until each value is stored or its name is removed from the allowed list."),
         "sandbox:env_helper_failed" => ("A helper command for an environment variable failed", "Sandboxed commands run without that value until the helper command in the settings file works again."),
         "restart_pending" => ("Restart to apply your changes", "A saved change is waiting for Fermix to restart."),

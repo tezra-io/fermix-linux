@@ -190,7 +190,7 @@ impl Drop for AudioCall {
 
 /// Takes the pipeline to Null and waits for it, CLOSE_WAIT_MS at most; past
 /// that it logs and carries on.
-fn close(pipeline: &gst::Pipeline) {
+pub(crate) fn close(pipeline: &gst::Pipeline) {
     if let Err(e) = pipeline.set_state(gst::State::Null) {
         glib::g_warning!("fermix", "the voice pipeline refused Null: {e}");
     }
@@ -217,7 +217,7 @@ fn broken(what: &str, e: glib::BoolError) -> AudioFailure {
     AudioFailure::Other(format!("could not {what}: {e}"))
 }
 
-fn make(factory: &str) -> Result<gst::Element, AudioFailure> {
+pub(crate) fn make(factory: &str) -> Result<gst::Element, AudioFailure> {
     gst::ElementFactory::make(factory)
         .build()
         .map_err(|e| broken(&format!("make {factory}"), e))
@@ -628,7 +628,7 @@ mod tests {
 
     fn queue_with(samples: usize) -> Arc<Mutex<PlaybackQueue>> {
         let mut queue = PlaybackQueue::new();
-        queue.push_pcm16(&vec![0x20; samples * 2]);
+        queue.push_pcm16(&vec![0x20; samples * 2], None);
         Arc::new(Mutex::new(queue))
     }
 
@@ -798,7 +798,7 @@ mod tests {
             playback
                 .lock()
                 .expect("unpoisoned")
-                .push_pcm16(&[0x20; 960]);
+                .push_pcm16(&[0x20; 960], None);
             assert!(run_until(context, PATIENCE, || seen.drained.get() == 2));
             assert!(seen.failures.borrow().is_empty());
             call.stop();
@@ -829,7 +829,7 @@ mod tests {
             playback
                 .lock()
                 .expect("unpoisoned")
-                .push_pcm16(&[0x20; 960]);
+                .push_pcm16(&[0x20; 960], None);
             run_for(context, Duration::from_millis(500));
             assert_eq!(seen.blocks().len(), blocks, "on_mic after stop");
             assert!(seen.failures.borrow().is_empty(), "on_failure after stop");
