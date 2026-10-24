@@ -145,7 +145,8 @@ expect_text "$work/check.out" "build-only, with no paragraph: wayland-protocols 
 out="$work/copyright"
 [ "$(head -n 1 "$out")" = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/" ] ||
   fail "the file does not open with the Format line"
-expect_text "$out" "Source: https://download.fermix.ai/linux/v1.2.3/fermix_desktop_runtime_sources_1.2.3.tar.gz"
+expect_text "$out" "https://download.fermix.ai/linux/v1.2.3/fermix_desktop_runtime_sources_1.2.3.tar.gz"
+! grep -q '^Source:' "$out" || fail "the header names a Source, and the repository is private"
 expect_text "$out" "Files: *"
 expect_text "$out" "Files: desktop/vendor/thing/*"
 expect_text "$out" "Files: runtime/glib-2.88.3/*"
