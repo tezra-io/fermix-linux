@@ -7,7 +7,8 @@
 # system the release claims.
 #
 # A vX.Y.Z tag does all of that, then signs every asset with cosign under this workflow's GitHub
-# identity and stages them on a draft GitHub release. Publishing the draft is a person's act.
+# identity and stages them on a draft GitHub release. Publishing the draft is a person's act, and
+# it starts publish.yml, which writes the packages once to download.fermix.ai.
 # Creating such a tag is limited by the repository's protected-release-tags ruleset. As with the
 # macOS app, X.Y.Z is the app's own version, from desktop/app/Cargo.toml; the engine it carries
 # is pinned apart from it.

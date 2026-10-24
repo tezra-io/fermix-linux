@@ -129,9 +129,9 @@ trust the new current key, and the feed job can still verify the live feed and t
 key that leaked must leave `update-keys.json` in the very next release, because every app that
 carries it trusts a feed it signs. The feed job then cannot verify the old feed, so that release
 rebuilds the feed from the published releases' own `appcast-item.json` assets. That step is not
-scripted yet. A release's packages are its own
-release assets, unless the repository variable `LINUX_PACKAGE_BASE_URL` names another https base,
-to which the workflow adds `/vX.Y.Z`.
+scripted yet. The feed names each package at the repository variable `LINUX_PACKAGE_BASE_URL`,
+`https://download.fermix.ai/linux`, with `/vX.Y.Z` added. Without the variable it would name the
+release's own assets, which no one signed out can download once the repository is private.
 
 1. The release version is the app's own, X.Y.Z, the `version` in `app/Cargo.toml`, as the macOS
    app's is its marketing version. It does not follow the engine's. A release bumps it there, on
@@ -165,11 +165,18 @@ to which the workflow adds `/vX.Y.Z`.
    it. The assets are both packages for both architectures,
    `fermix_desktop_runtime_sources_X.Y.Z.tar.gz`, `appcast.json` and `appcast-item.json`.
 7. Read the draft, then publish it. A published release is never refilled: a fix is the next
-   version.
+   version. Publishing starts `.github/workflows/publish.yml`. It checks the checksum and signature
+   of both packages for both architectures and of the sources archive, then writes each, with its
+   `.sha256`, `.sig` and `.pem`, once to `https://download.fermix.ai/linux/vX.Y.Z/`
+   (`scripts/publish_downloads.sh`, with the `release-linux` environment's R2 credentials). The
+   bucket's lock rule keeps every file there for good, so a bad upload is fixed only by the next
+   version. GitHub runs a release's workflows from its tagged commit, so a release tagged before
+   `publish.yml` reached `main` has no such run, and its files are uploaded by hand.
 8. Then, and not before, put the release's `appcast.json` where
-   `https://fermix.ai/linux/appcast.json` serves it. A draft's asset urls are not public, so a feed
-   that named them earlier would offer packages no one can download. Check what is served,
-   downloaded to a file:
+   `https://fermix.ai/linux/appcast.json` serves it, and pin the site's Linux downloads to the tag
+   (`node scripts/pin-linux-release.mjs vX.Y.Z` in fermix-site). The feed names the files on
+   download.fermix.ai, so a feed served before `publish.yml` is green would offer packages no one
+   can download. Check what is served, downloaded to a file:
 
    ```
    packaging/update_feed.py verify --feed <file> --keys packaging/update-keys.json

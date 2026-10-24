@@ -10,9 +10,8 @@ set Fermix up, chat with it, talk to it, and keep an eye on it.
 
 ## Install
 
-Download the package for your system and architecture from a
-[release](https://github.com/tezra-io/fermix-linux/releases), then install it with your package
-manager.
+Download the package for your system and architecture from
+[fermix.ai/download](https://fermix.ai/download), then install it with your package manager.
 
 Ubuntu, Debian and the systems built on them:
 
@@ -46,9 +45,9 @@ system. It brings its own GTK, so the version of GTK on the system does not matt
 
 ### Verifying a download
 
-Each file on a release has a `.sha256`, a cosign signature (`.sig`) and its certificate (`.pem`)
-beside it. The release workflow signs with its GitHub Actions identity, keyless. Verify a download
-with:
+Each file of a release, at `https://download.fermix.ai/linux/v<version>/`, has a `.sha256`, a
+cosign signature (`.sig`) and its certificate (`.pem`) beside it. The release workflow signs with
+its GitHub Actions identity, keyless. Verify a download with:
 
 ```sh
 sha256sum --check fermix-desktop_<version>_amd64.deb.sha256
@@ -93,8 +92,9 @@ A machine with no desktop installs the engine-only `fermix` package from
 
 ### Sources
 
-The package's private runtime includes LGPL libraries. Each release carries
-`fermix_desktop_runtime_sources_<version>.tar.gz`, which holds the source of every library in that
+The package's private runtime includes LGPL libraries. Each release publishes
+`fermix_desktop_runtime_sources_<version>.tar.gz` beside its packages, at
+`https://download.fermix.ai/linux/v<version>/`. It holds the source of every library in that
 runtime as it was built: each upstream tarball, the patches, the Rust crates compiled in, the
 licence files, and the scripts and container definition that build it.
 
