@@ -26,7 +26,8 @@
 # must answer with the new engine, while `fermix status` still names the old engine, with the same
 # pid. After `systemctl --user daemon-reload` and a restart of fermix.service, `fermix status` must
 # name the new engine, with another pid. The libraries check and its control must still hold. The
-# account's journal is kept in account.journal, whether the upgrade passes or fails.
+# account's journal is kept in account.journal, and the container's in system.journal, whether the
+# upgrade passes or fails.
 #
 # Usage: smoke_in_container.sh --family <deb|rpm> --package <file> --sha256 <hex>
 #          --displays "<x11 | wayland | x11 wayland>"
@@ -66,6 +67,8 @@ USER_MANAGER_WAIT_SECONDS=60
 ENGINE_WAIT_SECONDS=180
 # The last answer of `fermix status`, which a failed wait quotes.
 STATUS_ANSWER=/tmp/fermix-status.txt
+# The file PAM reads the account from when it starts the account's user manager.
+SHADOW=/etc/shadow
 
 fail() {
   echo "smoke_in_container: $*" >&2
@@ -454,6 +457,12 @@ as_account() {
 start_service() {
   local uid
   useradd --create-home --home-dir "$ACCOUNT_HOME" "$ACCOUNT" || fail "useradd cannot create the account $ACCOUNT"
+  # The linger starts the user manager, whose PAM account check runs unix_chkpwd, and that reads the
+  # account from the shadow file. Fedora's is mode 0000, which root reads only through
+  # CAP_DAC_READ_SEARCH or CAP_DAC_OVERRIDE. This container is unconfined, so an Ubuntu host's
+  # AppArmor profile for unix_chkpwd attaches to it by path, and that profile grants neither
+  # (upstream AppArmor added dac_read_search in 556396a1). Owner read needs no capability.
+  chmod u+r "$SHADOW" || fail "cannot give root owner read on $SHADOW"
   loginctl enable-linger "$ACCOUNT" || fail "loginctl cannot make $ACCOUNT linger"
   uid="$(id -u "$ACCOUNT")"
   wait_for "$USER_MANAGER_WAIT_SECONDS" test -S "/run/user/$uid/systemd/private" ||
@@ -490,9 +499,11 @@ restart_service() {
   log "reloaded $ACCOUNT's user manager and restarted fermix.service"
 }
 
-# What the account's user manager and engine logged, into account.journal.
+# What the container logged since it booted, logind's start of the account's user manager among it,
+# into system.journal, and what that user manager and the engine logged, into account.journal.
 save_journal() {
   local uid
+  journalctl --no-pager > "$OUT/system.journal" 2>&1 || log "journalctl cannot read the system journal"
   # Before the account exists there is nothing of its to keep.
   uid="$(id -u "$ACCOUNT" 2> /dev/null)" || return 0
   journalctl --no-pager "_UID=$uid" > "$OUT/account.journal" 2>&1 || log "journalctl cannot read $ACCOUNT's journal"
