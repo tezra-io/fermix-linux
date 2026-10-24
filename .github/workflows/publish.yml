@@ -1,0 +1,80 @@
+# Publishes a release's downloads to download.fermix.ai when a person publishes its draft.
+#
+# release.yml stages a tag's packages on a draft GitHub release. Publishing the draft is a person's
+# act and it starts this workflow, so nothing reaches the public host before someone has read the
+# draft. The job downloads the release's four packages and its runtime sources archive, each with
+# its .sha256, .sig and .pem, checks every checksum and every cosign signature under release.yml's
+# identity for the tag, and writes them once to the R2 bucket behind download.fermix.ai as
+# linux/vX.Y.Z/<file> (desktop/scripts/publish_downloads.sh). The update feed's package urls and the
+# site's Linux downloads point there, so they keep working when this repository is private.
+#
+# GitHub runs a release's workflows from the tagged commit, so this covers the releases tagged after
+# it reached main; an earlier release's files are uploaded by hand (desktop/README.md, Releasing).
+# The R2 credentials are the release-linux environment's, which only a vX.Y.Z tag can enter.
+name: publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to download.fermix.ai
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release-linux
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # The five signed files a release carries, each with its three sidecars; appcast.json and
+      # appcast-item.json stay on the release, since fermix.ai serves the feed.
+      - name: Download the release's files
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a release tag, vX.Y.Z"; exit 1; }
+          version="${TAG#v}"
+          printf '%s\n' "fermix-desktop_${version}_amd64.deb" "fermix-desktop_${version}_arm64.deb" \
+            "fermix-desktop-${version}-1.x86_64.rpm" "fermix-desktop-${version}-1.aarch64.rpm" \
+            "fermix_desktop_runtime_sources_${version}.tar.gz" > "$RUNNER_TEMP/signed.txt"
+          patterns=()
+          while read -r name; do
+            patterns+=(--pattern "$name" --pattern "$name.sha256" --pattern "$name.sig" --pattern "$name.pem")
+          done < "$RUNNER_TEMP/signed.txt"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release "${patterns[@]}"
+          ls -l release
+
+      - name: Check every checksum and signature
+        working-directory: release
+        run: |
+          set -euo pipefail
+          mapfile -t signed < "$RUNNER_TEMP/signed.txt"
+          for name in "${signed[@]}"; do
+            sha256sum --check --strict -- "$name.sha256"
+            cosign verify-blob --certificate "$name.pem" --signature "$name.sig" \
+              --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$name"
+          done
+
+      - name: Write them once to download.fermix.ai
+        working-directory: release
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          mapfile -t signed < "$RUNNER_TEMP/signed.txt"
+          files=()
+          for name in "${signed[@]}"; do
+            files+=("$name" "$name.sha256" "$name.sig" "$name.pem")
+          done
+          ../desktop/scripts/publish_downloads.sh "linux/$TAG" "${files[@]}"
