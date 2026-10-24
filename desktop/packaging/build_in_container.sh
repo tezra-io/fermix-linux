@@ -145,20 +145,21 @@ stage_tree() {
   log "the tree is staged: $(find "$ROOT" -type f | wc -l) files, $(du -sh "$ROOT" | cut -f1)"
 }
 
-# The flags copyright.py and check_copyright.sh both take.
+# The flags copyright.py and check_copyright.sh both take, for the package's version.
 copyright_flags() {
+  local version="$1"
   printf '%s\n' --repo "$WORKSPACE/src" --lock "$LOCK" \
     --runtime-licenses "$RUNTIME/runtime-licenses.json" --runtime-texts "$BUILD/runtime-texts" \
     --window-crates "$BUILD/window-crates.json" \
     --vendored "$DESKTOP/packaging/vendored.json" --standard-texts "$DESKTOP/packaging/licenses" \
-    --engine-copyright "$ROOT/usr/share/doc/fermix/copyright"
+    --engine-copyright "$ROOT/usr/share/doc/fermix/copyright" --version "$version"
 }
 
 write_copyright() {
-  local flags
+  local version="$1" flags
   mkdir -p "$BUILD/runtime-texts"
   tar -xzf "$RUNTIME/runtime-licenses.tar.gz" -C "$BUILD/runtime-texts"
-  mapfile -t flags < <(copyright_flags)
+  mapfile -t flags < <(copyright_flags "$version")
   python3 "$DESKTOP/packaging/copyright.py" "${flags[@]}" --out "$COPYRIGHT" >&2
   chmod 0644 "$COPYRIGHT"
 }
@@ -177,9 +178,9 @@ check_metainfo() {
 }
 
 run_gates() {
-  local flags
+  local version="$1" flags
   bash "$DESKTOP/scripts/check_private_runtime.sh" "$ROOT" "$LOCK" >&2
-  mapfile -t flags < <(copyright_flags)
+  mapfile -t flags < <(copyright_flags "$version")
   bash "$DESKTOP/scripts/check_copyright.sh" "$COPYRIGHT" "${flags[@]}" >&2
   check_metainfo
 }
@@ -305,8 +306,8 @@ main() {
   list_window_crates "$triple"
   check_app_version "$version"
   stage_tree "$arch" "$version" "$mtime"
-  write_copyright
-  run_gates
+  write_copyright "$version"
+  run_gates "$version"
   run_nfpm "$version" "$engine" "$arch" "$mtime" "$deb" "$rpm"
   check_packages "$version" "$engine" "$arch" "$rpm_arch" "$deb" "$rpm"
   write_outputs "$deb" "$rpm"
