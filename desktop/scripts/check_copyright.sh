@@ -22,14 +22,14 @@
 #
 # Usage: check_copyright.sh <copyright file> --repo <dir> --lock <file> --runtime-licenses <file>
 #          --runtime-texts <dir> --window-crates <file> --vendored <file> --standard-texts <dir>
-#          --engine-copyright <file>
+#          --engine-copyright <file> --version <version>
 set -euo pipefail
 shopt -s inherit_errexit
 
 here=$(cd "$(dirname "$0")" && pwd)
 GENERATOR="$here/../packaging/copyright.py"
 FLAGS=(repo lock runtime-licenses runtime-texts window-crates vendored standard-texts
-  engine-copyright)
+  engine-copyright version)
 ENGINE_COPYRIGHT=/usr/share/doc/fermix/copyright
 
 fail() {

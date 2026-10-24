@@ -116,7 +116,7 @@ flags() {
   printf '%s\n' --repo "$dir/repo" --lock "$dir/lock.json" --runtime-licenses "$dir/runtime-licenses.json" \
     --runtime-texts "$dir/texts" \
     --window-crates "$dir/window-crates.json" --vendored "$dir/vendored.json" \
-    --standard-texts "$dir/licenses" --engine-copyright "$dir/engine-copyright"
+    --standard-texts "$dir/licenses" --engine-copyright "$dir/engine-copyright" --version 1.2.3
 }
 
 generate() {
@@ -145,6 +145,7 @@ expect_text "$work/check.out" "build-only, with no paragraph: wayland-protocols 
 out="$work/copyright"
 [ "$(head -n 1 "$out")" = "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/" ] ||
   fail "the file does not open with the Format line"
+expect_text "$out" "Source: https://download.fermix.ai/linux/v1.2.3/fermix_desktop_runtime_sources_1.2.3.tar.gz"
 expect_text "$out" "Files: *"
 expect_text "$out" "Files: desktop/vendor/thing/*"
 expect_text "$out" "Files: runtime/glib-2.88.3/*"

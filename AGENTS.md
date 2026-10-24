@@ -39,6 +39,10 @@ desktop/scripts/    dev.sh (build, run and check inside the GNOME 50 SDK); the p
   what a record permits.
 - Done means `desktop/scripts/dev.sh check` is green: rustfmt, `clippy --workspace --all-targets
   -D warnings`, and every test. Zero warnings.
+- Every public download comes from `https://download.fermix.ai/linux/vX.Y.Z/`. A `vX.Y.Z` tag
+  stages the signed packages and the runtime sources archive on a draft GitHub release, and
+  publishing the draft runs `publish.yml`, which writes them there once (`desktop/README.md`,
+  Releasing). The GitHub release is the private record; never send a person to it.
 - Tests and harnesses never touch the host: no real daemon socket, nothing written under
   `~/.fermix`, no real microphone or speakers (`FERMIX_AUDIO=test`), and no portal dialogs
   (`GDK_DEBUG=no-portals`).
