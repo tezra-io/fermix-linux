@@ -2,7 +2,8 @@
 # desktop entry validated, then the same `scripts/dev.sh check` a developer runs
 # (rustfmt, clippy with warnings as errors, every test, all inside the GNOME 50
 # SDK). release.yml builds the packages. A push to dev runs nothing; `gh workflow
-# run desktop.yml --ref <branch>` runs it on any branch by hand.
+# run desktop.yml --ref <branch>` runs it on any branch by hand. It runs on Blacksmith's 4-vCPU
+# runner, which needs Blacksmith's app enabled for this repository; no release runs here.
 name: desktop
 
 on:
@@ -21,7 +22,7 @@ concurrency:
 
 jobs:
   desktop:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     # GNOME 50 Platform and SDK preinstalled; flatpak needs the privileges for bubblewrap.
     container:
