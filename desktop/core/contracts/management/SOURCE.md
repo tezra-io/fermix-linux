@@ -12,15 +12,14 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `95ee575b4de961bcc43f138038e06b8c379f4ba8`, the released engine v0.16.0. The last commit
-  to touch `priv/management` is `7b8eba6a439d31de9c877fc63887b2a2b39e3d8f` (2026-10-21, "fix(mcp):
-  an owner's client ID and secret stay with the authorization server they were signed in with (M74
-  E5)"): the `mcp.servers.*` methods, `auth.start mcp:<name>` and the optional
-  `environment_override` on `secret.set` and `secret.clear`, all added within version 2
+- Commit: `b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`, the engine v0.17.0. The last commit to touch
+  `priv/management` is `fe7fe1c01fa5313a70ee3049470f853f546f6883` (2026-10-26, "feat(cues): every
+  build has cues, off until the owner turns them on, and a release user is told the Tailscale
+  command and the source's settings, never a Mix task only a checkout has"). Since v0.16.0, all
+  within version 2: the `cues.*` methods (sources, watchers, mandates, proposals), and
+  `mobile.status` saying whether the phone channel is held until setup is finished.
 - Protocol version: 2, daemon window 1..2.
-- `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format. The digests match the
-  macOS app 0.6.0's pin (`Sources/FermixAppCore/Resources/Contracts/CHECKSUMS.txt`, `management/`
-  rows).
+- `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 
 Never edit these files by hand. To take a new engine contract, copy the six files again from a
 committed engine, rewrite `CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json
