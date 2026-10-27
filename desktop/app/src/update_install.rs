@@ -66,7 +66,7 @@ pub trait Host: 'static {
 
 /// What the install keeps between its steps.
 pub struct Downloads {
-    /// Where packages download to, which only this app writes.
+    /// This app's downloads folder, private to the user.
     pub dir: PathBuf,
     /// Set to stop the download running now.
     cancel: RefCell<Option<Arc<AtomicBool>>>,
@@ -168,9 +168,12 @@ async fn hand_over<H: Host>(host: &Rc<H>, package: &Package, file: &Path) -> Opt
     Some(ending)
 }
 
-/// The package read again and held to the feed's size and sha256, so what
-/// PackageKit is handed is what was checked. One that changed is deleted,
-/// and the step says the download failed.
+/// The package read again and held to the feed's size and sha256, so one
+/// that changed since its download, or during the pass before, is never
+/// handed over. PackageKit then opens it by its path: a process of this
+/// user's could still rewrite it, which is outside Fermix's boundary
+/// (SECURITY.md). One that changed is deleted, and the step says the
+/// download failed.
 async fn still_checked(host: &impl Host, package: &Package, file: &Path) -> bool {
     set_step(host, Some(Step::Verifying));
     let (wanted, at) = (package.clone(), file.to_owned());
@@ -272,7 +275,7 @@ async fn fetch(
 
 /// After PackageKit: whether the package database now names `version`.
 /// The package is deleted once it does; until then it stays for the command
-/// that installs it by hand, until the next launch.
+/// that installs what is at its path, until the next launch.
 async fn installed(host: &impl Host, ending: &Ending, file: &Path, version: Version) -> bool {
     let format = host
         .updates()
@@ -834,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn a_package_that_changed_since_its_check_is_never_handed_over() {
+    fn a_package_that_changed_during_the_trusted_pass_is_not_handed_to_the_untrusted_one() {
         let unsigned = Answer::Fail(error::MISSING_GPG_SIGNATURE, "package is not signed");
         let plant = Plant {
             answers: vec![unsigned, Answer::Succeed],

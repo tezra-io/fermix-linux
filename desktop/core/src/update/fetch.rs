@@ -226,8 +226,8 @@ impl Fetcher {
 }
 
 /// Reads `file` again and holds it to `package`'s size and sha256 (rule 7), so
-/// what the system installs is what was checked, a package downloaded on an
-/// earlier try included. A link in its place is refused.
+/// a package that changed since its download, one from an earlier try
+/// included, is refused, and so is a link in its place.
 pub fn check_file(file: &Path, package: &Package) -> Result<(), FetchError> {
     let mut opened = OpenOptions::new()
         .read(true)

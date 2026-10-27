@@ -1,4 +1,4 @@
-//! Installs a downloaded, checked package through PackageKit on the system
+//! Installs the package at a path through PackageKit on the system
 //! bus (proposal, revision 5): one transaction for each InstallFiles, with the
 //! flags the install asks for. The install (`update_install`) asks with
 //! only-trusted, and once more without it when PackageKit says the package

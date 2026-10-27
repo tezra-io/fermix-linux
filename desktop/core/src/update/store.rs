@@ -162,7 +162,7 @@ pub fn prepare_downloads(dir: &Path) -> io::Result<()> {
     private_folder(dir)
 }
 
-/// Deletes every file in the downloads folder, which only this app writes:
+/// Deletes every file in this app's downloads folder:
 /// a package installed, refused or left by a run that ended mid-download.
 /// A folder that is not private, or a link, is refused, never emptied.
 /// Returns how many went.

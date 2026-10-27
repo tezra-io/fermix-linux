@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 
-/// The version this app speaks. The daemon's window is 2..3.
+/// The version this app speaks. Engine v0.17.0's daemon serves 3..4.
 pub const PROTOCOL_VERSION: u64 = 3;
 /// The one profile the wire serves.
 pub const PROFILE: &str = "main";

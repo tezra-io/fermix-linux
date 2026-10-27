@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "fermix-desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fermix-client",
  "fermix-rive",
