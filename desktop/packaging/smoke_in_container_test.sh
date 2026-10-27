@@ -15,8 +15,9 @@
 # version `fermix --version` has to answer with from what the installed package provides;
 # status_names, which reads the engine `fermix status` names running during an upgrade;
 # save_journal, which keeps the account's journal and the container's; start_service, which gives
-# root owner read on the shadow file before the linger starts the user manager; and the flags the
-# script accepts.
+# root owner read on the shadow file before the linger starts the user manager; check_helper, which
+# holds the engine's payload to its fermix-iroh helper and that helper's notices, and the package's
+# file list to the notices' doc copy; and the flags the script accepts.
 #   desktop/packaging/smoke_in_container_test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -319,6 +320,87 @@ fi
 [ "$(cat "$work/linger-saw")" = 400 ] ||
   fail "the shadow file was mode $(cat "$work/linger-saw"), not 400, when the user manager started"
 echo "  ok: Fedora's mode 0000 is 0400 by then, which root reads with no capability"
+
+# A stand-in fermix whose --version extracts a payload as Burrito does, under
+# $FERMIX_LINUX_PACKAGE_INSTALL_DIR: the engine $PAYLOAD_ENGINE's iroh_helper folder, in the shape
+# $PAYLOAD_SHAPE names. A stand-in dpkg and rpm list fermix-desktop's files from $LIST_FILE.
+mkdir -p "$work/helper-bin"
+cat > "$work/helper-bin/fermix" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = --version ] || { echo "stand-in fermix was asked: $*" >&2; exit 2; }
+[ "$PAYLOAD_SHAPE" != failing ] || { echo "payload extraction failed" >&2; exit 1; }
+dir="$FERMIX_LINUX_PACKAGE_INSTALL_DIR/.burrito/fermix_linux_package_erts-16.3_$PAYLOAD_ENGINE"
+dir="$dir/lib/fermix_core-$PAYLOAD_ENGINE/priv/iroh_helper"
+mkdir -p "$dir/bin"
+answer='fermix-iroh 0.2.2 (iroh 1.3.0)'
+[ "$PAYLOAD_SHAPE" != wrong-answer ] || answer='erl: not a helper'
+[ "$PAYLOAD_SHAPE" = no-helper ] || printf '#!/bin/sh\necho "%s"\n' "$answer" > "$dir/bin/fermix-iroh"
+[ "$PAYLOAD_SHAPE" = no-helper ] || [ "$PAYLOAD_SHAPE" = not-executable ] || chmod 0755 "$dir/bin/fermix-iroh"
+case "$PAYLOAD_SHAPE" in
+  no-notices) ;;
+  empty-notices) : > "$dir/THIRD-PARTY-NOTICES.txt" ;;
+  *) echo 'attohttpc 0.30.1: Mozilla Public License 2.0' > "$dir/THIRD-PARTY-NOTICES.txt" ;;
+esac
+echo "fermix $PAYLOAD_ENGINE"
+STUB
+cat > "$work/helper-bin/dpkg" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = '-L fermix-desktop' ] || { echo "stand-in dpkg was asked: $*" >&2; exit 2; }
+cat "$LIST_FILE"
+STUB
+cat > "$work/helper-bin/rpm" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = '-ql fermix-desktop' ] || { echo "stand-in rpm was asked: $*" >&2; exit 2; }
+cat "$LIST_FILE"
+STUB
+chmod 0755 "$work/helper-bin/fermix" "$work/helper-bin/dpkg" "$work/helper-bin/rpm"
+export LIST_FILE="$work/list" PAYLOAD_ENGINE=0.17.0 PAYLOAD_SHAPE=whole
+printf '%s\n' /usr/bin/fermix /usr/share/doc/fermix/fermix-iroh-THIRD-PARTY-NOTICES.txt > "$LIST_FILE"
+
+# check_helper <args...> from the script, as sourced() runs it, with the stand-ins first on PATH and
+# a payload folder of its own each time.
+helper_check() {
+  rm -rf "$work/payload" "$work/out"
+  mkdir -p "$work/out"
+  (
+    # shellcheck source=desktop/packaging/smoke_in_container.sh
+    source "$here/smoke_in_container.sh"
+    trap - ERR
+    PAYLOAD_DIR="$work/payload" OUT="$work/out"
+    PATH="$work/helper-bin:$PATH" check_helper "$@"
+  )
+}
+
+echo "smoke_in_container_test: the engine's payload holds its fermix-iroh helper and notices"
+for family in deb rpm; do
+  helper_check 0.17.0 "$family" 2> /dev/null || fail "the $family's whole payload was refused"
+done
+grep -qxF 'fermix-iroh 0.2.2 (iroh 1.3.0)' "$work/out/fermix-iroh-version.txt" ||
+  fail "the helper's answer was not kept: $(cat "$work/out/fermix-iroh-version.txt" 2> /dev/null)"
+echo "  ok: a payload with the helper and its notices, from a deb and from an rpm"
+PAYLOAD_ENGINE=0.16.0 expect_refusal "the payload of another engine" \
+  "the engine 0.17.0's payload holds 0 iroh_helper folders, not 1" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=failing expect_refusal "a payload fermix cannot extract" \
+  "fermix --version failed to extract its payload" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=no-helper expect_refusal "a payload with no helper, as engine v0.16.0's" \
+  "has no executable fermix-iroh" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=not-executable expect_refusal "a helper that cannot run" \
+  "has no executable fermix-iroh" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=wrong-answer expect_refusal "a helper that answers as something else" \
+  "fermix-iroh --version answers 'erl: not a helper'" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=no-notices expect_refusal "a helper with no notices" \
+  "has no third-party notices beside its helper" helper_check 0.17.0 deb
+PAYLOAD_SHAPE=empty-notices expect_refusal "a helper with empty notices" \
+  "has no third-party notices beside its helper" helper_check 0.17.0 deb
+printf '%s\n' /usr/bin/fermix > "$LIST_FILE"
+for family in deb rpm; do
+  expect_refusal "the $family's file list without the notices' doc copy" \
+    "fermix-desktop does not install /usr/share/doc/fermix/fermix-iroh-THIRD-PARTY-NOTICES.txt" \
+    helper_check 0.17.0 "$family"
+done
+rm "$LIST_FILE"
+expect_refusal "a package database that cannot list the package" \
+  "the rpm database cannot list fermix-desktop's files" helper_check 0.17.0 rpm
 
 echo "smoke_in_container_test: the flags it accepts"
 run_script() {

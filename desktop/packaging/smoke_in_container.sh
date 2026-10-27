@@ -5,8 +5,10 @@
 # which brings in exactly what the package declares from the distribution's own archive. Then,
 # before anything else is installed: `fermix --version` answers with the version of the engine the
 # package carries, which is the version the installed package provides fermix at, as dpkg-query or
-# rpm reads it here; and ldd resolves every ELF object under /usr/lib/fermix-desktop, each private
-# library from the prefix. A control copies the window out of the prefix and expects that check to
+# rpm reads it here; the payload that engine extracts holds its fermix-iroh helper, which answers
+# --version, with its third-party notices beside it, and the package's file list names the notices'
+# doc copy; and ldd resolves every ELF object under /usr/lib/fermix-desktop, each private library
+# from the prefix. A control copies the window out of the prefix and expects that check to
 # refuse it. Only then are the display tools installed, and the window drawn on each display it is
 # given, in the state it shows when Fermix is not running:
 #   x11      under Xvfb, the screen dumped by xwd in the X server's own format with the window's
@@ -69,6 +71,10 @@ ENGINE_WAIT_SECONDS=180
 STATUS_ANSWER=/tmp/fermix-status.txt
 # The file PAM reads the account from when it starts the account's user manager.
 SHADOW=/etc/shadow
+# Where the helper check has `fermix --version` extract the engine's payload, and the doc copy of
+# the helper's notices, which the package's file list names.
+PAYLOAD_DIR=/tmp/payload
+HELPER_NOTICES_DOC=/usr/share/doc/fermix/fermix-iroh-THIRD-PARTY-NOTICES.txt
 
 fail() {
   echo "smoke_in_container: $*" >&2
@@ -141,6 +147,37 @@ check_engine() {
   grep -qF -- "$engine" <<< "$answer" || fail "fermix --version answers '$answer', not $engine"
   printf '%s\n' "$answer" > "$OUT/$2"
   log "fermix --version: $answer"
+}
+
+# <engine> <family>: reach from anywhere has its fermix-iroh helper (M62 stage 5). Engine v0.16.0
+# shipped none, and only a phone that could not connect said so. The payload `fermix --version`
+# extracts into PAYLOAD_DIR holds one iroh_helper folder for <engine>, whose helper answers
+# --version, kept in fermix-iroh-version.txt, beside a non-empty THIRD-PARTY-NOTICES.txt. The doc
+# copy is read from the package's file list: a Docker image's dpkg may leave /usr/share/doc out.
+check_helper() {
+  local engine="$1" family="$2" answer helper list
+  local -a found
+  answer="$(FERMIX_LINUX_PACKAGE_INSTALL_DIR="$PAYLOAD_DIR" fermix --version 2>&1)" ||
+    fail "fermix --version failed to extract its payload into $PAYLOAD_DIR: $answer"
+  shopt -s nullglob
+  found=("$PAYLOAD_DIR"/.burrito/*/lib/"fermix_core-$engine"/priv/iroh_helper)
+  shopt -u nullglob
+  [ "${#found[@]}" -eq 1 ] ||
+    fail "the engine $engine's payload holds ${#found[@]} iroh_helper folders, not 1"
+  helper="${found[0]}/bin/fermix-iroh"
+  [ -f "$helper" ] && [ -x "$helper" ] || fail "the engine $engine's payload has no executable fermix-iroh"
+  answer="$("$helper" --version 2>&1)" || fail "fermix-iroh --version failed: $answer"
+  [[ "$answer" == "fermix-iroh "* ]] || fail "fermix-iroh --version answers '$answer'"
+  [ -s "${found[0]}/THIRD-PARTY-NOTICES.txt" ] ||
+    fail "the engine $engine's payload has no third-party notices beside its helper"
+  case "$family" in
+    deb) list="$(dpkg -L fermix-desktop)" ;;
+    rpm) list="$(rpm -ql fermix-desktop)" ;;
+    *) fail "the family is deb or rpm, not '$family'" ;;
+  esac || fail "the $family database cannot list fermix-desktop's files"
+  grep -qxF -- "$HELPER_NOTICES_DOC" <<< "$list" || fail "fermix-desktop does not install $HELPER_NOTICES_DOC"
+  printf '%s\n' "$answer" > "$OUT/fermix-iroh-version.txt"
+  log "the engine's payload holds $answer, beside its notices; the package's file list names $HELPER_NOTICES_DOC"
 }
 
 is_elf() {
@@ -566,6 +603,7 @@ fresh_smoke() {
   engine="$(provided_engine "$family")"
   log "fermix-desktop provides fermix $engine"
   check_engine "$engine" fermix-version.txt
+  check_helper "$engine" "$family"
   check_libraries
   check_control
   install_display_tools "$family" "$displays"
