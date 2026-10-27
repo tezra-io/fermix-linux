@@ -30,3 +30,13 @@ as `fermix-desktop` beside the `fermix` engine package.
 
 For the Fermix engine's own boundary (secret handling, the sandbox, channel
 ingress, signed upgrades), see the [Fermix security policy](https://github.com/tezra-io/fermix/blob/main/SECURITY.md).
+
+A process already running as your user is outside Fermix for Linux's
+boundary. It can change how Fermix starts, and ask your system for anything
+Fermix can, behind the same password prompt. So an update's checks (the
+signed feed, then the package's size and sha256 before each install pass)
+protect against a tampered download or server, not against your own account:
+a process running as you could rewrite the downloaded package after the last
+check, before PackageKit or the install command the update dialog shows
+opens it, but it could as well ask PackageKit to install a package of its
+own.

@@ -188,7 +188,8 @@ pub enum Stage {
 /// What the person can do instead when the app could not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Manual {
-    /// The checked package, and the command that installs it.
+    /// The downloaded package's path, and the command that installs what is
+    /// there when it is run.
     Command { command: String, file: PathBuf },
     /// The package's own address, when it never downloaded whole.
     Link { url: String },
