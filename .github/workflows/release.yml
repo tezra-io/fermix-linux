@@ -24,6 +24,12 @@
 # with the release-linux environment's LINUX_FEED_SIGNING_KEY. The draft then carries appcast.json
 # and appcast-item.json. A person copies appcast.json to fermix.ai once the release is published
 # (desktop/README.md, Releasing).
+#
+# Where the jobs run: a tag's run is the release, so every job in it stays on GitHub's runners,
+# because any job in a run could replace the artifact the sign job signs. Every other run builds
+# on Blacksmith's 4-vCPU runners and checks the packages on its 2-vCPU ones; the version job, which
+# names those runners, and the locked sources stay on GitHub's. Blacksmith's app must be enabled
+# for this repository, or those jobs wait for a runner that never comes.
 name: release
 
 on:
@@ -58,6 +64,11 @@ jobs:
     outputs:
       version: ${{ steps.read.outputs.version }}
       engine_version: ${{ steps.read.outputs.engine_version }}
+      # The runners the later jobs take (header): GitHub's for a tag, Blacksmith's otherwise.
+      builder: ${{ github.ref_type == 'tag' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+      builder_arm: ${{ github.ref_type == 'tag' && 'ubuntu-24.04-arm' || 'blacksmith-4vcpu-ubuntu-2404-arm' }}
+      checker: ${{ github.ref_type == 'tag' && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
+      checker_arm: ${{ github.ref_type == 'tag' && 'ubuntu-24.04-arm' || 'blacksmith-2vcpu-ubuntu-2404-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -152,14 +163,12 @@ jobs:
   build:
     name: Build (${{ matrix.arch }})
     needs: [version, sources]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'arm64' && needs.version.outputs.builder_arm || needs.version.outputs.builder }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04 }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+        arch: [amd64, arm64]
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -276,7 +285,7 @@ jobs:
   lint:
     name: Lint (${{ matrix.arch }})
     needs: [version, build]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.version.outputs.checker }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -314,7 +323,7 @@ jobs:
   smoke:
     name: Install on ${{ matrix.image }} (${{ matrix.arch }})
     needs: [version, build]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: ${{ matrix.arch == 'arm64' && needs.version.outputs.checker_arm || needs.version.outputs.checker }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -377,7 +386,7 @@ jobs:
   upgrade:
     name: Upgrade on ${{ matrix.image }} (amd64)
     needs: [version, build]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.version.outputs.checker }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -457,7 +466,7 @@ jobs:
     name: Write a test update feed
     if: github.ref_type != 'tag'
     needs: [version, build]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.version.outputs.checker }}
     timeout-minutes: 15
     env:
       VERSION: ${{ needs.version.outputs.version }}

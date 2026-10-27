@@ -196,11 +196,32 @@ check_control() {
   log "control: the window copied out of the prefix is refused"
 }
 
+# The distribution's ID in <os-release>.
+os_id() {
+  sed -n 's/^ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$1"
+}
+
+# AlmaLinux's mirror list picks mirrors by the caller's address, and some runners' addresses draw
+# mirrors that serve tens of kB/s, which ran a smoke past its limit. So on AlmaLinux, by the ID in
+# <os-release>, every repository in <dir> reads from the address its own file names in place of the
+# list, AlmaLinux's, which a CDN serves, and every runner installs at the same speed. Any other image
+# keeps its mirrors.
+use_almalinux_origin() {
+  local file
+  [ "$(os_id "$1")" = almalinux ] || return 0
+  for file in "$2"/almalinux*.repo; do
+    [ -f "$file" ] || fail "$2 holds no AlmaLinux repository file"
+    sed -i -e 's|^mirrorlist=|#mirrorlist=|' -e 's|^# baseurl=|baseurl=|' "$file"
+    [ "$(grep -c '^\[' "$file")" = "$(grep -c '^baseurl=' "$file")" ] ||
+      fail "$file has a repository with no baseurl to read from in place of its mirror list"
+  done
+}
+
 # Whether an rpm image takes its display tools from EPEL, by the ID in <os-release>: AlmaLinux 9
 # has no xwd and AlmaLinux 10 no Weston in its own archive. Fedora has both.
 tools_from_epel() {
   local id
-  id="$(sed -n 's/^ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$1")"
+  id="$(os_id "$1")"
   case "$id" in
     almalinux) return 0 ;;
     fedora) return 1 ;;
@@ -564,6 +585,7 @@ usage() {
 main() {
   local family="" package="" digest="" displays="" previous="" previous_digest="" display
   local -a words
+  use_almalinux_origin /etc/os-release /etc/yum.repos.d
   if [ "${1:-}" = --boot ]; then
     [ $# -eq 2 ] || usage
     boot_systemd "$2"
