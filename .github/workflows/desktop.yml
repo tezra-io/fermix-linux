@@ -37,10 +37,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Mesa's GL: the mascot's render tests draw offscreen with llvmpipe, as there is no GPU here.
+      # Both go to the user installation, which flatpak searches for extensions as it does the
+      # system one. The image's system installation already holds a GL.default, and updating it
+      # moves the old deployment out of the image's layer, which Blacksmith's container storage
+      # refuses with "Invalid cross-device link".
       - name: Install the Rust SDK extension and Mesa
         run: |
           mkdir -p -m 700 "$XDG_RUNTIME_DIR"
-          flatpak install -y --noninteractive --or-update flathub \
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive --or-update flathub \
             org.freedesktop.Sdk.Extension.rust-stable//25.08 org.freedesktop.Platform.GL.default//25.08
 
       - name: Validate the desktop entry

@@ -10,7 +10,8 @@
 # does not authorise says so and still exits 0, writing nothing, so a capture is the file it wrote.
 #
 # check_wayland_client, which holds the window to the private libwayland-client; tools_from_epel,
-# which says where an rpm image's test tools come from; provided_engine, which reads the engine
+# which says where an rpm image's test tools come from; use_almalinux_origin, which points
+# AlmaLinux's repositories at AlmaLinux's own address; provided_engine, which reads the engine
 # version `fermix --version` has to answer with from what the installed package provides;
 # status_names, which reads the engine `fermix status` names running during an upgrade;
 # save_journal, which keeps the account's journal and the container's; start_service, which gives
@@ -158,6 +159,41 @@ echo "  ok: AlmaLinux's from EPEL, Fedora's from its own archive"
 expect_refusal "a distribution the smoke has no rule for" \
   "the smoke knows where fedora's and almalinux's test tools come from, not rocky's" \
   sourced tools_from_epel "$work/os-rocky"
+
+echo "smoke_in_container_test: AlmaLinux reads its own repository, not the mirrors its list picks"
+# Two sections of almalinux-repos' almalinux-baseos.repo as AlmaLinux 10 ships it.
+mkdir -p "$work/repos" "$work/repos-fedora" "$work/repos-bare"
+cat > "$work/baseos.repo" << 'REPO'
+[baseos]
+name=AlmaLinux $releasever - BaseOS
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/$releasever/baseos
+# baseurl=https://repo.almalinux.org/almalinux/$releasever/BaseOS/$basearch/os/
+enabled=1
+
+[baseos-source]
+name=AlmaLinux $releasever - BaseOS - Source
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/$releasever/baseos-source
+# baseurl=https://vault.almalinux.org/$releasever/BaseOS/Source/
+enabled=0
+REPO
+cp "$work/baseos.repo" "$work/repos/almalinux-baseos.repo"
+cp "$work/baseos.repo" "$work/repos-fedora/almalinux-baseos.repo"
+sourced use_almalinux_origin "$work/os-almalinux" "$work/repos"
+! grep -q '^mirrorlist=' "$work/repos/almalinux-baseos.repo" || fail "AlmaLinux still reads a mirror list"
+# shellcheck disable=SC2016 # dnf's own variables, written as the file holds them
+grep -qx 'baseurl=https://repo.almalinux.org/almalinux/$releasever/BaseOS/$basearch/os/' \
+  "$work/repos/almalinux-baseos.repo" || fail "AlmaLinux's BaseOS does not read repo.almalinux.org"
+sourced use_almalinux_origin "$work/os-almalinux" "$work/repos"
+[ "$(grep -c '^baseurl=' "$work/repos/almalinux-baseos.repo")" = 2 ] || fail "a second run changed the file again"
+sourced use_almalinux_origin "$work/os-fedora" "$work/repos-fedora"
+cmp -s "$work/baseos.repo" "$work/repos-fedora/almalinux-baseos.repo" || fail "an image that is not AlmaLinux lost its mirrors"
+echo "  ok: every AlmaLinux section reads the address its file names, twice the same, and Fedora keeps its mirrors"
+grep -v 'vault' "$work/baseos.repo" > "$work/repos-bare/almalinux-baseos.repo"
+expect_refusal "an AlmaLinux section with no address of its own" \
+  "has a repository with no baseurl to read from in place of its mirror list" \
+  sourced use_almalinux_origin "$work/os-almalinux" "$work/repos-bare"
+expect_refusal "an AlmaLinux image with no repository file" "holds no AlmaLinux repository file" \
+  sourced use_almalinux_origin "$work/os-almalinux" "$work/repos-none"
 
 # A stand-in dpkg-query and rpm that answer what fermix-desktop provides with $PROVIDES_FILE: the
 # deb's Provides field, or the rpm's provides one a line.
