@@ -96,13 +96,13 @@ fn the_sixteen_panes_sit_in_four_groups() {
         }
     }
     assert_eq!(pane("coding").unwrap().title, "Coding agents");
-    // Where secrets are kept leads the System group; updates, the app's own, close it, after
-    // Always On, where Fermix runs (M75).
+    // Always On, where Fermix runs (M75), leads the System group as on the Mac; updates, the
+    // app's own, close it.
     assert_eq!(
         GROUPS[3],
         (
             "System",
-            &["secrets", "sandbox", "permissions", "always_on", "updates"][..]
+            &["always_on", "secrets", "sandbox", "permissions", "updates"][..]
         )
     );
     assert_eq!(pane("always_on").unwrap().title, "Always On");

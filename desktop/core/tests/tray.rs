@@ -185,6 +185,13 @@ fn the_restart_row_offers_what_home_offers() {
         (restart.label.as_str(), restart.enabled),
         ("Restart Fermix", true)
     );
+    let away = DaemonProblem::PrimaryUnreachable("The server fermix-vm is unreachable.".into());
+    let unreachable = tray_view(&facts(Daemon::Down(&away), &switch));
+    assert_eq!(unreachable.status, "Server unreachable");
+    assert!(
+        !item(&unreachable.rows, Command::Restart).enabled,
+        "Fermix here runs: restarting it reaches no server sooner"
+    );
     let too_old = DaemonProblem::UpdateNeeded("Update the fermix package.".into());
     let update = tray_view(&facts(Daemon::Down(&too_old), &switch));
     assert_eq!(update.status, "Update needed");

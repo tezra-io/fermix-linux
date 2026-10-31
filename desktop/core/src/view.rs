@@ -471,6 +471,9 @@ pub enum DaemonProblem {
     Broken(String),
     /// One side is too old for the other; the sentence says which to update.
     UpdateNeeded(String),
+    /// After a move, the server this computer's Fermix forwards to cannot be reached (M75). The
+    /// sentence is the daemon's, naming the server.
+    PrimaryUnreachable(String),
 }
 
 const APP_TOO_OLD: &str = "This app is older than Fermix. Update the Fermix app.";
@@ -483,6 +486,7 @@ impl DaemonProblem {
             DaemonProblem::NotResponding => "Not responding",
             DaemonProblem::Broken(_) => "Needs attention",
             DaemonProblem::UpdateNeeded(_) => "Update needed",
+            DaemonProblem::PrimaryUnreachable(_) => "Server unreachable",
         }
     }
 
@@ -494,7 +498,9 @@ impl DaemonProblem {
             DaemonProblem::Broken(_) => {
                 "Fermix answered in a way this app does not understand.".into()
             }
-            DaemonProblem::UpdateNeeded(sentence) => sentence.clone(),
+            DaemonProblem::UpdateNeeded(sentence) | DaemonProblem::PrimaryUnreachable(sentence) => {
+                sentence.clone()
+            }
         }
     }
 }
@@ -514,6 +520,7 @@ fn refusal_problem(refusal: &Refusal) -> DaemonProblem {
     match refusal.code.as_str() {
         "client_too_old" => DaemonProblem::UpdateNeeded(APP_TOO_OLD.into()),
         "daemon_too_old" | "method_not_found" => DaemonProblem::UpdateNeeded(DAEMON_TOO_OLD.into()),
+        "primary_unreachable" => DaemonProblem::PrimaryUnreachable(refusal.sentence.clone()),
         _ => DaemonProblem::Broken(refusal.sentence.clone()),
     }
 }

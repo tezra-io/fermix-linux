@@ -100,7 +100,10 @@ impl App {
         }
         match self.daemon.call(|m| m.settings_sections()).await {
             Ok(answer) => {
-                self.settings_data.borrow_mut().sections = Some(answer.sections);
+                let mut data = self.settings_data.borrow_mut();
+                data.sections = Some(answer.sections);
+                data.sections_missing = answer.primary_missing;
+                drop(data);
                 self.render();
                 true
             }
@@ -292,6 +295,7 @@ impl App {
     pub fn forget_settings(&self) {
         let mut data = self.settings_data.borrow_mut();
         data.sections = None;
+        data.sections_missing = None;
         data.rows.clear();
         data.listings.clear();
         data.unread.clear();
@@ -300,9 +304,14 @@ impl App {
     }
 
     /// A restarted daemon may publish different rows: drop what the old one
-    /// said, and read the pane on screen again.
+    /// said, and read the pane on screen again. So does a desktop whose list
+    /// lacked the server's sections, once Fermix answers in full again.
     pub async fn follow_daemon_process(&self, pid: Option<String>) {
-        if self.settings_data.borrow().pid == pid {
+        let same = {
+            let data = self.settings_data.borrow();
+            data.pid == pid && data.sections_missing.is_none()
+        };
+        if same {
             return;
         }
         self.forget_settings();

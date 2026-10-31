@@ -49,6 +49,10 @@ const OWN_PANES: [&str; 2] = ["updates", always_on::PANE];
 #[derive(Default)]
 pub struct SettingsData {
     pub sections: Option<Vec<Section>>,
+    /// On a desktop whose server is unreachable (M75), the daemon's sentence for why the server's
+    /// sections are missing from `sections`, which then lists only this computer's own. The list
+    /// is read again once Fermix answers in full.
+    pub sections_missing: Option<String>,
     pub rows: HashMap<String, SectionRows>,
     /// The models a provider section's model row offers, by section, once
     /// listed; a re-read of the section keeps them.
@@ -249,7 +253,7 @@ impl SettingsPage {
         self.down_shown.set(false);
         show_root(&self.root, &self.panes, false);
         if let Some(sections) = &data.sections {
-            self.ensure_views(sections);
+            self.ensure_views(sections, data.sections_missing.is_some());
         }
         let config = snapshot.state.coexistence.config_state.as_str();
         let locked = config != "clear";
@@ -301,9 +305,11 @@ impl SettingsPage {
         show_root(&self.root, &self.panes, true);
     }
 
-    /// Adds one group per section to each descriptor pane, once the sections are known.
-    fn ensure_views(&self, sections: &[Section]) {
-        if !self.views.borrow().is_empty() {
+    /// Adds one group per section to each descriptor pane, once the sections are known, from a
+    /// complete list: `partial` says it holds only this computer's own sections, the server's
+    /// missing.
+    fn ensure_views(&self, sections: &[Section], partial: bool) {
+        if partial || !self.views.borrow().is_empty() {
             return;
         }
         let mut views = Vec::new();

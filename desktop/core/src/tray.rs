@@ -183,7 +183,10 @@ fn restart_row(daemon: &Daemon) -> Row {
             plain(Command::RestartService, "Restart Fermix", true)
         }
         Daemon::Up { .. } => plain(Command::Restart, "Restart Fermix…", true),
-        Daemon::Reading | Daemon::Waking | Daemon::Down(DaemonProblem::UpdateNeeded(_)) => {
+        // The engine here runs; restarting it reaches no server sooner.
+        Daemon::Reading
+        | Daemon::Waking
+        | Daemon::Down(DaemonProblem::UpdateNeeded(_) | DaemonProblem::PrimaryUnreachable(_)) => {
             plain(Command::Restart, "Restart Fermix…", false)
         }
     }

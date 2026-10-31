@@ -7,7 +7,8 @@ use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::management::{CallError, Management};
 use fermix_client::mobile::{DeviceKind, OutcomeReason, SessionState};
 use fermix_client::phone::switch_starts_in_place;
-use fermix_client::settings::{switch_key, SectionRows};
+use fermix_client::settings::{switch_key, SectionRows, Sections};
+use fermix_client::view::{daemon_problem, DaemonProblem};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixListener;
@@ -314,6 +315,64 @@ fn the_phone_refusals_carry_their_codes_and_the_daemons_words() {
             other => panic!("{golden} should refuse, got {other:?}"),
         });
     }
+}
+
+/// After a move, a request the server cannot be reached for says so in the daemon's words, and the
+/// window says the server is unreachable rather than that Fermix here is not responding.
+#[test]
+fn an_unreachable_server_and_a_device_class_refusal_carry_their_sentences() {
+    let response = named(ERRORS, "primary_unreachable")["response"].clone();
+    let sentence =
+        "The server fermix-vm is unreachable. Fermix keeps your message until it is back.";
+    serve(response, |m| {
+        let refused = m.setup_state().expect_err("the call is refused");
+        let problem = daemon_problem(&refused);
+        let CallError::Refused(refusal) = refused else {
+            panic!("primary_unreachable should refuse, got {refused:?}");
+        };
+        assert_eq!(refusal.code, "primary_unreachable");
+        assert_eq!(refusal.sentence, sentence);
+        assert_eq!(problem, DaemonProblem::PrimaryUnreachable(sentence.into()));
+        assert_eq!(problem.status_word(), "Server unreachable");
+        assert_eq!(problem.sentence(), sentence);
+    });
+    let response = named(ERRORS, "device_class_method")["response"].clone();
+    serve(response, |m| match m.settings_get("sandbox") {
+        Err(CallError::Refused(refusal)) => {
+            assert_eq!(refusal.code, "device_class_method");
+            assert_eq!(
+                refusal.sentence,
+                "This request configures the computer it came from, so the server does not \
+                 answer it."
+            );
+        }
+        other => panic!("device_class_method should refuse, got {other:?}"),
+    });
+}
+
+/// On a desktop whose server is unreachable, `settings.sections` lists this computer's own
+/// sections and says in `primary_missing` why the server's are missing.
+#[test]
+fn the_sections_say_when_the_servers_are_missing() {
+    let listed = named(SUCCESS, "settings_sections")["response"]["result"].clone();
+    let sections: Sections = serde_json::from_value(listed.clone()).expect("decodes");
+    assert_eq!(sections.primary_missing, None);
+    let mut composed = listed;
+    let own: Vec<Value> = composed["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .filter(|s| s["id"] == "sandbox" || s["id"] == "computer_use")
+        .cloned()
+        .collect();
+    composed["sections"] = Value::Array(own);
+    composed["primary_missing"] = Value::from("The server fermix-vm is unreachable.");
+    let sections: Sections = serde_json::from_value(composed).expect("decodes");
+    assert_eq!(sections.sections.len(), 2);
+    assert_eq!(
+        sections.primary_missing.as_deref(),
+        Some("The server fermix-vm is unreachable.")
+    );
 }
 
 /// The section's first row is the channel's switch; reach from anywhere's switch follows it, and

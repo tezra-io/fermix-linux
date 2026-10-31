@@ -57,11 +57,11 @@ pub const PANES: [Pane; 16] = [
     pane_of("coding", "Coding agents", "utilities-terminal-symbolic"),
     pane_of("search", "Search", "system-search-symbolic"),
     pane_of("images", "Images", "image-x-generic-symbolic"),
+    // Where Fermix runs (M75): drawn from `home.status`, with the `snapshots` section.
+    pane_of("always_on", "Always On", "network-server-symbolic"),
     pane_of("secrets", "Secrets", "channel-secure-symbolic"),
     pane_of("sandbox", "Sandbox", "security-medium-symbolic"),
     pane_of("permissions", "Permissions", "security-high-symbolic"),
-    // Where Fermix runs (M75): drawn from `home.status`, with the `snapshots` section.
-    pane_of("always_on", "Always On", "network-server-symbolic"),
     // The app's own: it reads nothing from the daemon, so it shows while Fermix is down.
     pane_of("updates", "Updates", "software-update-available-symbolic"),
 ];
@@ -81,7 +81,7 @@ pub const GROUPS: [(&str, &[&str]); 4] = [
     ),
     (
         "System",
-        &["secrets", "sandbox", "permissions", "always_on", "updates"],
+        &["always_on", "secrets", "sandbox", "permissions", "updates"],
     ),
 ];
 
@@ -99,6 +99,10 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Sections {
     pub sections: Vec<Section>,
+    /// On a desktop linked to a server (M75), the daemon's sentence while the server's own
+    /// sections are missing: only this computer's are listed, and the rest come back with it.
+    #[serde(default)]
+    pub primary_missing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

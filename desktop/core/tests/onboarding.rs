@@ -196,6 +196,8 @@ fn a_daemon_that_answered_but_cannot_serve_this_app_stops_starting_with_its_sent
             "Fermix is older than this app. Update the fermix package.".into(),
         ),
         DaemonProblem::Broken("unexpected reply".into()),
+        // Fermix here runs; it is the server it forwards to that does not answer.
+        DaemonProblem::PrimaryUnreachable("The server fermix-vm is unreachable.".into()),
     ];
     for problem in problems {
         assert_eq!(
