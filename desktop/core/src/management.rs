@@ -18,6 +18,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 2;
+/// The calls that walk the whole home before they answer: on a primary in the call itself, and on
+/// a desktop that forwards one, the 60 s it waits for the server (PROTOCOL.md, "After a move",
+/// "Forward deadlines"). They get at least 65 s, as the protocol asks of a client.
+const HOME_WALKS: [&str; 2] = ["home.move.readiness", "home.move.start"];
+const HOME_WALK_DEADLINE: Duration = Duration::from_secs(65);
+/// The provisioner's reads, each up to three Hetzner calls of at most 10 s.
+const HETZNER_READS: [&str; 3] = [
+    "home.provision.connect",
+    "home.provision.options",
+    "home.provision.resources",
+];
+const HETZNER_READ_DEADLINE: Duration = Duration::from_secs(35);
 /// The most models one `providers.models.list` page holds; the app asks for one page.
 const MODEL_PAGE: u64 = 200;
 
@@ -77,24 +89,34 @@ impl Management {
             "params": params,
         });
         let body = serde_json::to_vec(&request).expect("a JSON value always serializes");
-        let mut stream = self.connect()?;
+        let mut stream = self.connect(self.deadline_for(method))?;
         write_frame(&mut stream, &body).map_err(frame_error)?;
         let answer = read_frame(&mut stream).map_err(frame_error)?;
         drop(stream);
         decode_response(&answer, &request_id)
     }
 
-    fn connect(&self) -> Result<UnixStream, CallError> {
+    /// How long one exchange of `method` may take: the calls that walk the whole home and the
+    /// provisioner's Hetzner reads get their own deadlines, never shorter than this client's,
+    /// which every other call keeps.
+    pub fn deadline_for(&self, method: &str) -> Duration {
+        let own = if HOME_WALKS.contains(&method) {
+            HOME_WALK_DEADLINE
+        } else if HETZNER_READS.contains(&method) {
+            HETZNER_READ_DEADLINE
+        } else {
+            return self.timeout;
+        };
+        self.timeout.max(own)
+    }
+
+    fn connect(&self, deadline: Duration) -> Result<UnixStream, CallError> {
         let stream = UnixStream::connect(&self.socket).map_err(|e| match e.kind() {
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => CallError::DaemonDown(e.kind()),
             _ => CallError::Io(e.to_string()),
         })?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .map_err(io_error)?;
-        stream
-            .set_write_timeout(Some(self.timeout))
-            .map_err(io_error)?;
+        stream.set_read_timeout(Some(deadline)).map_err(io_error)?;
+        stream.set_write_timeout(Some(deadline)).map_err(io_error)?;
         Ok(stream)
     }
 
@@ -228,7 +250,7 @@ impl Management {
 }
 
 /// A job that ended badly must say why; the UI renders that sentence and has no other.
-fn checked_job(job: JobView) -> Result<JobView, CallError> {
+pub(crate) fn checked_job(job: JobView) -> Result<JobView, CallError> {
     let ended_badly = matches!(job.status, JobStatus::Failed | JobStatus::TimedOut);
     if ended_badly && job.failure.is_none() {
         return Err(CallError::Protocol(format!(

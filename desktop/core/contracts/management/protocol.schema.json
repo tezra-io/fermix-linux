@@ -16,6 +16,7 @@
   "x-plugin-vocabulary": {
     "description": "The closed sets a plugin row draws on. Published so a reader can enumerate them and a support log can be searched by status; a client renders `status_sentence` and `primary_verb` and never switches on those words — it switches on `primary_action` and `actions`, which name the method each button runs.",
     "statuses": [
+      "reinstall_failed",
       "not_configured",
       "missing_host_runtime",
       "needs_config",
@@ -108,6 +109,10 @@
       "on",
       "paused",
       "needs_update",
+      "held"
+    ],
+    "follow_up_states": [
+      "ready",
       "held"
     ],
     "mandate_actions": [
@@ -221,7 +226,22 @@
     "cues.mandates.approve": 2,
     "cues.proposals.list": 2,
     "cues.proposals.get": 2,
-    "cues.proposals.decide": 2
+    "cues.proposals.decide": 2,
+    "home.status": 2,
+    "home.snapshots.status": 2,
+    "home.snapshots.run": 2,
+    "home.snapshots.passphrase": 2,
+    "home.enroll.open": 2,
+    "home.enroll.withdraw": 2,
+    "home.candidates.list": 2,
+    "home.move.readiness": 2,
+    "home.move.start": 2,
+    "home.provision.connect": 2,
+    "home.provision.options": 2,
+    "home.provision.create": 2,
+    "home.provision.power": 2,
+    "home.provision.resources": 2,
+    "home.provision.delete": 2
   },
   "$defs": {
     "request": {
@@ -321,7 +341,22 @@
             "cues.mandates.approve",
             "cues.proposals.list",
             "cues.proposals.get",
-            "cues.proposals.decide"
+            "cues.proposals.decide",
+            "home.status",
+            "home.snapshots.status",
+            "home.snapshots.run",
+            "home.snapshots.passphrase",
+            "home.enroll.open",
+            "home.enroll.withdraw",
+            "home.candidates.list",
+            "home.move.readiness",
+            "home.move.start",
+            "home.provision.connect",
+            "home.provision.options",
+            "home.provision.create",
+            "home.provision.power",
+            "home.provision.resources",
+            "home.provision.delete"
           ]
         },
         "params": { "type": "object" }
@@ -922,6 +957,111 @@
             "properties": { "method": { "const": "cues.proposals.decide" } }
           },
           "then": { "properties": { "params": { "$ref": "#/$defs/cues_proposals_decide_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.status" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_status_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.snapshots.status" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_snapshots_status_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.snapshots.run" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_snapshots_run_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.snapshots.passphrase" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_snapshots_passphrase_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.enroll.open" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_enroll_open_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.enroll.withdraw" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_enroll_withdraw_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.candidates.list" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_candidates_list_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.move.readiness" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_move_readiness_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.move.start" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_move_start_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.connect" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_connect_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.options" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_options_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.create" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_create_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.power" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_power_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.resources" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_resources_params" } } }
+        },
+        {
+          "if": {
+            "required": ["method"],
+            "properties": { "method": { "const": "home.provision.delete" } }
+          },
+          "then": { "properties": { "params": { "$ref": "#/$defs/home_provision_delete_params" } } }
         }
       ]
     },
@@ -965,7 +1105,10 @@
                 "unknown_job",
                 "external_change",
                 "config_unreadable",
-                "unknown_pairing_session"
+                "unknown_pairing_session",
+                "primary_unreachable",
+                "device_class_method",
+                "unconfirmed"
               ]
             },
             "message": { "type": "string", "minLength": 1 },
@@ -1072,7 +1215,22 @@
         { "$ref": "#/$defs/cues_mandates_approve_result" },
         { "$ref": "#/$defs/cues_proposals_list_result" },
         { "$ref": "#/$defs/cues_proposals_get_result" },
-        { "$ref": "#/$defs/cues_proposals_decide_result" }
+        { "$ref": "#/$defs/cues_proposals_decide_result" },
+        { "$ref": "#/$defs/home_status_result" },
+        { "$ref": "#/$defs/home_snapshots_status_result" },
+        { "$ref": "#/$defs/home_snapshots_run_result" },
+        { "$ref": "#/$defs/home_snapshots_passphrase_result" },
+        { "$ref": "#/$defs/home_enroll_open_result" },
+        { "$ref": "#/$defs/home_enroll_withdraw_result" },
+        { "$ref": "#/$defs/home_candidates_list_result" },
+        { "$ref": "#/$defs/home_move_readiness_result" },
+        { "$ref": "#/$defs/home_move_start_result" },
+        { "$ref": "#/$defs/home_provision_connect_result" },
+        { "$ref": "#/$defs/home_provision_options_result" },
+        { "$ref": "#/$defs/home_provision_create_result" },
+        { "$ref": "#/$defs/home_provision_power_result" },
+        { "$ref": "#/$defs/home_provision_resources_result" },
+        { "$ref": "#/$defs/home_provision_delete_result" }
       ]
     },
     "hello_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
@@ -1652,7 +1810,8 @@
         "images",
         "sandbox",
         "secrets",
-        "permissions"
+        "permissions",
+        "always_on"
       ]
     },
     "readinessFailure": {
@@ -1966,13 +2125,18 @@
     },
     "settings_sections_result": {
       "type": "object",
-      "required": ["sections"],
+      "required": ["sections", "primary_missing"],
       "additionalProperties": false,
       "properties": {
         "sections": {
+          "description": "On a linked desktop, the sections that configure this computer (sandbox, computer_use, computer_history, channels.imessage) and the primary's others; on any other engine, its own.",
           "type": "array",
           "maxItems": 30,
           "items": { "$ref": "#/$defs/settingsSection" }
+        },
+        "primary_missing": {
+          "description": "On a linked desktop whose primary did not answer within 5 s, the sentence a person is shown for why the primary's sections are missing (this computer's own are still listed); null otherwise.",
+          "type": ["string", "null"]
         }
       }
     },
@@ -2098,7 +2262,8 @@
         "browser_install",
         "imessage_grant",
         "imessage_policy_confirm",
-        "mcp_check"
+        "mcp_check",
+        "home_provision"
       ]
     },
     "jobStatus": {
@@ -3349,10 +3514,12 @@
     },
     "mobileDevice": {
       "type": "object",
+      "description": "A paired device: a phone, or a desktop engine (kind desktop). A desktop has no platform, signer role, boot state or push registration of its own.",
       "required": [
         "device_id",
         "name",
         "model",
+        "kind",
         "platform",
         "signer_role",
         "boot_state",
@@ -3365,6 +3532,7 @@
         "device_id": { "type": "string" },
         "name": { "type": "string" },
         "model": { "type": "string" },
+        "kind": { "enum": ["phone", "desktop"] },
         "platform": { "type": ["string", "null"] },
         "signer_role": { "enum": ["release", "development", null] },
         "boot_state": {
@@ -3719,6 +3887,7 @@
         "status_sentence",
         "sources",
         "task",
+        "follow_up",
         "task_notes",
         "daily_cap",
         "filter_budget",
@@ -3784,6 +3953,7 @@
           }
         },
         "task": {
+          "description": "The job a passing item starts: the watcher's task, or for a watcher with only a follow-up, its follow-up's job (then follow_up.job_id names the same job). Never null, so a client that predates follow-ups still reads every row.",
           "type": "object",
           "required": [
             "job_id",
@@ -3805,6 +3975,62 @@
               "type": "boolean"
             }
           }
+        },
+        "follow_up": {
+          "description": "The job a passing item sets off, handed nothing from the item (read-only, made in chat); null for a watcher with none.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "job_id",
+                "name",
+                "mode",
+                "approved",
+                "state",
+                "status_sentence"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "job_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mode": {
+                  "enum": [
+                    "approve",
+                    "auto"
+                  ],
+                  "description": "`approve` asks first on a card for each run; `auto` runs on its own within the daily cap once approved."
+                },
+                "approved": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether an automatic follow-up is approved for what it runs now; null for one that asks first. Unapproved, each run asks first."
+                },
+                "state": {
+                  "enum": [
+                    "ready",
+                    "held"
+                  ],
+                  "description": "Published for logs and support; a client draws `status_sentence`."
+                },
+                "status_sentence": {
+                  "type": "string",
+                  "description": "Fermix's sentence: how it runs, or, while it is held, what is missing and where to fix it."
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "task_notes": {
           "type": "boolean"
@@ -3884,6 +4110,7 @@
         "status_sentence",
         "sources",
         "task",
+        "follow_up",
         "task_notes",
         "daily_cap",
         "filter_budget",
@@ -3923,6 +4150,9 @@
         },
         "task": {
           "$ref": "#/$defs/cueWatcherRow/properties/task"
+        },
+        "follow_up": {
+          "$ref": "#/$defs/cueWatcherRow/properties/follow_up"
         },
         "task_notes": {
           "$ref": "#/$defs/cueWatcherRow/properties/task_notes"
@@ -5454,6 +5684,614 @@
         "proposal": {
           "$ref": "#/$defs/cueProposalRecord"
         }
+      }
+    },
+    "home_status_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_status_result": {
+      "type": "object",
+      "required": ["role", "epoch", "moved", "primary", "desktops", "snapshots", "enrollment", "candidates", "move", "secrets_missing", "primary_home", "primary_missing"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "enum": ["primary", "device", "candidate"] },
+        "epoch": { "type": ["integer", "null"], "minimum": 1 },
+        "moved": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["to", "moved_at", "epoch"],
+              "additionalProperties": false,
+              "properties": {
+                "to": { "type": "string" },
+                "moved_at": { "type": "string" },
+                "epoch": { "type": "integer", "minimum": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "primary": {
+          "description": "In the device role after a move, the primary this desktop reaches; null on any other engine.",
+          "oneOf": [{ "$ref": "#/$defs/homePrimary" }, { "type": "null" }]
+        },
+        "desktops": {
+          "description": "On the primary, each desktop that holds a session to it; empty on any other engine.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/homeDesktop" }
+        },
+        "snapshots": { "$ref": "#/$defs/homeSnapshots" },
+        "enrollment": {
+          "description": "On the primary, the enrollment window opened since the engine started: its state and when it expires, never its code. Null when none was opened, while Fermix is stopped, and in every other role.",
+          "oneOf": [{ "$ref": "#/$defs/homeEnrollment" }, { "type": "null" }]
+        },
+        "candidates": {
+          "description": "On the primary, the candidate primaries it holds; empty in any other role.",
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/homeCandidate" }
+        },
+        "move": {
+          "description": "The move this home started or, on a candidate, the one it waits for; null when there is none.",
+          "oneOf": [{ "$ref": "#/$defs/homeMove" }, { "type": "null" }]
+        },
+        "secrets_missing": {
+          "description": "On the primary, the ids (as secret.set takes them) of the secret references in its settings that did not resolve on this host: a keychain reference a restore carried without its value, a locked keychain, a file the store lacks. Each needs entering again. Empty in any other role.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "primary_home": {
+          "description": "On a linked desktop, the primary's own home.status (its recovery, enrollment, candidates and move), asked within 5 s; null on any other engine and while it is missing. A desktop's own snapshots lists no target: its status file is a retired copy.",
+          "oneOf": [{ "$ref": "#/$defs/home_status_result" }, { "type": "null" }]
+        },
+        "primary_missing": {
+          "description": "On a linked desktop whose primary is unreachable or did not answer within 5 s, the sentence a person is shown for why primary_home is missing; null otherwise.",
+          "type": ["string", "null"]
+        },
+        "summary": {
+          "description": "Where Always On stands, in one sentence and at most one action (PROTOCOL.md, The Always On summary). Absent from an engine older than it, which a client draws as one that needs updating.",
+          "$ref": "#/$defs/homeSummary"
+        },
+        "disk": {
+          "description": "On the primary, how full its disk is; null in any other role and when it cannot be read.",
+          "oneOf": [{ "$ref": "#/$defs/homeDisk" }, { "type": "null" }]
+        },
+        "version": {
+          "description": "This engine's version.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "homeSummary": {
+      "type": "object",
+      "description": "Where Always On stands: state maps to a screen, sentence and action.label are printed as they are, detail sits behind Details.",
+      "required": ["state", "sentence", "action", "detail"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["off", "connect", "choose", "creating", "ready", "moving", "on", "undone", "retired", "candidate", "primary", "problem"] },
+        "sentence": { "type": "string", "minLength": 1 },
+        "action": { "oneOf": [{ "$ref": "#/$defs/homeSummaryAction" }, { "type": "null" }] },
+        "detail": { "$ref": "#/$defs/homeSummaryDetail" }
+      }
+    },
+    "homeSummaryAction": {
+      "type": "object",
+      "description": "One action a summary offers: its id (PROTOCOL.md says what a client does for each) and the label it is shown under.",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "enum": ["set_up", "create_server", "cancel", "move_now", "try_again", "learn_more", "turn_on", "restart_server", "start_again", "create_in", "open_hetzner", "paste_token", "update", "back_up_now", "replace_server", "check_again", "own_server", "delete_server"] },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
+    "homeSummaryDetail": {
+      "type": "object",
+      "description": "What Details holds for the state, and nothing else: on off the token step its action opens (connect); on connect the steps and alternatives; on choose billing; on ready server, readiness and waits_until; on on server, backups, copies_bytes, disk_used, data and actions; on problem kind, note, seen_at and alternatives (next_location and readiness where the problem has them).",
+      "additionalProperties": false,
+      "properties": {
+        "connect": {
+          "type": "object",
+          "required": ["sentence", "steps", "alternatives"],
+          "additionalProperties": false,
+          "properties": {
+            "sentence": { "type": "string", "minLength": 1 },
+            "steps": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1 } },
+            "alternatives": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/homeSummaryAction" } }
+          }
+        },
+        "steps": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1 } },
+        "alternatives": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/homeSummaryAction" } },
+        "actions": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/homeSummaryAction" } },
+        "billing": { "type": "string", "minLength": 1 },
+        "server": { "$ref": "#/$defs/homeSummaryServer" },
+        "readiness": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/homeReadinessItem" } },
+        "waits_until": { "type": ["string", "null"] },
+        "backups": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["place", "at"],
+            "additionalProperties": false,
+            "properties": {
+              "place": { "type": "string", "minLength": 1 },
+              "at": { "type": "string" }
+            }
+          }
+        },
+        "copies_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "disk_used": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "data": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["turned_off", "cannot_reach", "deleted", "not_set_up", "waited_too_long", "no_capacity", "account_limit", "read_only_token", "token_refused", "create_failed", "update", "disk_full", "backup_old", "not_ready", "unreadable", "delete_failed"] },
+        "note": { "type": ["string", "null"] },
+        "seen_at": { "type": ["string", "null"] },
+        "next_location": { "enum": ["fsn1", "nbg1", "hel1"] }
+      }
+    },
+    "homeSummaryServer": {
+      "type": "object",
+      "description": "The server a summary names: Hetzner's facts (type, location as a city, ipv4) are null for a server of the owner's own; on ready the system and version it enrolled with, on on the version it answers with.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "type": { "type": ["string", "null"] },
+        "location": { "type": ["string", "null"] },
+        "ipv4": { "type": ["string", "null"] },
+        "system": { "type": "string" },
+        "version": { "type": ["string", "null"] }
+      }
+    },
+    "homeDisk": {
+      "type": "object",
+      "description": "How full the primary's disk is: used, the fraction in use, and nearly_full from 0.85.",
+      "required": ["used", "nearly_full"],
+      "additionalProperties": false,
+      "properties": {
+        "used": { "type": "number", "minimum": 0, "maximum": 1 },
+        "nearly_full": { "type": "boolean" }
+      }
+    },
+    "homePrimary": {
+      "type": "object",
+      "description": "The primary a desktop reaches: its name, whether the session is up, the link's state in one closed word, since when the session is up (null while not), the highest primary epoch this desktop has seen, and one sentence. status: connected (a session is up); renewing (a session opening with nothing known to be wrong: the first since the engine started, or a quiet renewal after the primary ended one normally; draw it quietly); unreachable (an outage, retried with a backoff, or a link this engine refused to use); revoked (the primary no longer knows this computer; never retried until the engine restarts); stale (the primary answered as an older copy; retried).",
+      "required": ["name", "connected", "status", "since", "epoch", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "connected": { "type": "boolean" },
+        "status": { "enum": ["connected", "renewing", "unreachable", "revoked", "stale"] },
+        "since": { "type": ["string", "null"] },
+        "epoch": { "type": ["integer", "null"], "minimum": 1 },
+        "sentence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "homeDesktop": {
+      "type": "object",
+      "description": "A desktop of the primary: its device id and name, and whether its session is up and since when (null while not).",
+      "required": ["device_id", "name", "connected", "since"],
+      "additionalProperties": false,
+      "properties": {
+        "device_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "connected": { "type": "boolean" },
+        "since": { "type": ["string", "null"] }
+      }
+    },
+    "home_snapshots_status_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_snapshots_status_result": { "$ref": "#/$defs/homeSnapshots" },
+    "home_snapshots_run_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_snapshots_run_result": {
+      "type": "object",
+      "required": ["started", "snapshots"],
+      "additionalProperties": false,
+      "properties": {
+        "started": { "const": true },
+        "snapshots": { "$ref": "#/$defs/homeSnapshots" }
+      }
+    },
+    "home_snapshots_passphrase_params": {
+      "type": "object",
+      "required": ["recovery_passphrase"],
+      "additionalProperties": false,
+      "properties": {
+        "recovery_passphrase": { "type": "string", "minLength": 12, "maxLength": 1024 }
+      }
+    },
+    "home_snapshots_passphrase_result": {
+      "type": "object",
+      "required": ["recipient", "key_id", "snapshots", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "recipient": { "type": "string", "pattern": "^fxsnap1\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}$" },
+        "key_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "snapshots": { "$ref": "#/$defs/homeSnapshots" },
+        "sentence": {
+          "description": "That snapshots from now on open with this passphrase, naming its key id, and those written before only with the earlier one.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "homeSnapshots": {
+      "type": "object",
+      "required": ["configured", "recipient_set", "interval_hours", "running", "next_run_at", "targets", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "configured": { "type": "boolean" },
+        "recipient_set": { "type": "boolean" },
+        "interval_hours": { "type": "integer", "minimum": 1, "maximum": 168 },
+        "running": { "type": "boolean" },
+        "next_run_at": { "type": ["string", "null"] },
+        "targets": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/homeSnapshotTarget" } },
+        "sentence": { "type": "string" }
+      }
+    },
+    "homeSnapshotTarget": {
+      "type": "object",
+      "required": ["id", "label", "configured", "destination", "last_attempt_at", "last_result", "last_verified", "last_error", "waiting"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "configured": { "type": "boolean" },
+        "destination": { "type": ["string", "null"] },
+        "last_attempt_at": { "type": ["string", "null"] },
+        "last_result": {
+          "description": "waiting is a target that could not take the last snapshot and takes one at a later run (a desktop asleep or offline): no failure.",
+          "enum": ["verified", "failed", "waiting", null]
+        },
+        "last_verified": {
+          "oneOf": [{ "$ref": "#/$defs/homeSnapshotPoint" }, { "type": "null" }]
+        },
+        "last_error": { "type": ["string", "null"] },
+        "waiting": {
+          "description": "When the last run left this target waiting, the sentence that says why; null otherwise.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "homeSnapshotPoint": {
+      "type": "object",
+      "required": ["at", "name", "epoch", "size", "sha256", "location", "key_id"],
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "string" },
+        "name": { "type": ["string", "null"] },
+        "epoch": { "type": ["integer", "null"] },
+        "size": { "type": ["integer", "null"] },
+        "sha256": { "type": ["string", "null"] },
+        "location": { "type": ["string", "null"] },
+        "key_id": {
+          "description": "The recovery key this snapshot was written for, as home.snapshots.passphrase answers it; null for one recorded before keys were named.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "home_enroll_open_params": {
+      "type": "object",
+      "description": "kind is manual (the default: thirty minutes, the code a person copies) or provisioned (24 hours, the code inside a server Fermix creates), which the primary opens only for a request a desktop forwarded.",
+      "additionalProperties": false,
+      "properties": { "kind": { "enum": ["manual", "provisioned"] } }
+    },
+    "home_enroll_open_result": {
+      "description": "The enrollment code, shown once: single use, valid until expires_at, never logged and never answered again.",
+      "type": "object",
+      "required": ["code", "expires_at"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "maxLength": 2048, "pattern": "^fxenroll1\\.[A-Za-z0-9_-]+$" },
+        "expires_at": { "type": "string" }
+      }
+    },
+    "home_enroll_withdraw_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_enroll_withdraw_result": {
+      "description": "The primary's 24-hour window is released: an open one ended, a used one no longer holds a manual code back.",
+      "type": "object",
+      "required": ["withdrawn"],
+      "additionalProperties": false,
+      "properties": { "withdrawn": { "const": true } }
+    },
+    "home_candidates_list_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_candidates_list_result": {
+      "type": "object",
+      "required": ["candidates"],
+      "additionalProperties": false,
+      "properties": {
+        "candidates": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/homeCandidate" } }
+      }
+    },
+    "home_move_readiness_params": {
+      "type": "object",
+      "required": ["candidate_id"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "home_move_readiness_result": {
+      "description": "What the owner reviews before moving this home to the candidate. ready is false while any item blocks, and home.move.start refuses then.",
+      "type": "object",
+      "required": ["ready", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "ready": { "type": "boolean" },
+        "items": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/homeReadinessItem" } }
+      }
+    },
+    "homeReadinessItem": {
+      "type": "object",
+      "description": "One fact about the move. id is keychain_secrets, engine_version, disk, s3_size, plugins, stays_here, whatsapp, slack, coding_agents, cutover_gap or serves_nothing; a client that does not know an id shows its sentence as it is.",
+      "required": ["id", "status", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["ok", "warn", "block"] },
+        "sentence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "home_move_start_params": {
+      "type": "object",
+      "required": ["candidate_id", "recovery_passphrase"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recovery_passphrase": { "type": "string", "minLength": 12, "maxLength": 1024 },
+        "keep_as_desktop": {
+          "description": "Whether this computer becomes a desktop of the new primary; true unless said. False when the source is a server being replaced: it then serves nothing.",
+          "type": "boolean"
+        }
+      }
+    },
+    "home_move_start_result": {
+      "description": "The move as it was written. The engine then restarts in the device role and carries it out; home.status follows it.",
+      "type": "object",
+      "required": ["move_id", "candidate", "recovery_recipient", "key_id", "keep_as_desktop", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "move_id": { "type": "string", "pattern": "^mv-[0-9a-f]{20}$" },
+        "candidate": { "$ref": "#/$defs/homeCandidate" },
+        "recovery_recipient": { "type": "string", "pattern": "^fxsnap1\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}$" },
+        "key_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "keep_as_desktop": { "type": "boolean" },
+        "sentence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "home_provision_connect_params": {
+      "type": "object",
+      "required": ["token"],
+      "additionalProperties": false,
+      "properties": {
+        "token": {
+          "description": "A Read & Write API token of the Hetzner project made for Fermix. Kept only in this computer's device/provision/hetzner.json, never logged, traced or answered.",
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 512,
+          "pattern": "^[!-~]+$"
+        }
+      }
+    },
+    "home_provision_connect_result": { "$ref": "#/$defs/homeProvisionView" },
+    "home_provision_options_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_provision_options_result": {
+      "description": "What Hetzner sells now, read live: every x86 type with at least 4 GB that is not deprecated, wherever it is in stock in Falkenstein, Nuremberg and Helsinki, cheapest first. recommended is the cheapest type in the first of the three where it is in stock, more_room the cheapest type with more memory; either is null when nothing fits. sentence says the recommendation, or that nothing is in stock.",
+      "type": "object",
+      "required": ["currency", "locations", "offers", "recommended", "more_room", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "currency": { "type": "string" },
+        "locations": { "type": "array", "maxItems": 3, "items": { "$ref": "#/$defs/homeProvisionLocation" } },
+        "offers": { "type": "array", "maxItems": 150, "items": { "$ref": "#/$defs/homeProvisionOffer" } },
+        "recommended": { "oneOf": [{ "$ref": "#/$defs/homeProvisionPick" }, { "type": "null" }] },
+        "more_room": { "oneOf": [{ "$ref": "#/$defs/homeProvisionPick" }, { "type": "null" }] },
+        "sentence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "homeProvisionLocation": {
+      "type": "object",
+      "required": ["id", "city", "country"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "enum": ["fsn1", "nbg1", "hel1"] },
+        "city": { "type": "string" },
+        "country": { "type": "string" }
+      }
+    },
+    "homeProvisionOffer": {
+      "type": "object",
+      "description": "One type in one location. The prices are monthly, gross, with VAT as the account is billed, as decimal strings in the account's currency; total_monthly adds the IPv4 address.",
+      "required": ["type", "description", "cores", "memory_gb", "disk_gb", "dedicated", "location", "monthly", "ipv4_monthly", "total_monthly"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string" },
+        "description": { "type": "string" },
+        "cores": { "type": "integer" },
+        "memory_gb": { "type": "number" },
+        "disk_gb": { "type": "integer" },
+        "dedicated": { "type": "boolean" },
+        "location": { "enum": ["fsn1", "nbg1", "hel1"] },
+        "monthly": { "type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$" },
+        "ipv4_monthly": { "type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$" },
+        "total_monthly": { "type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$" }
+      }
+    },
+    "homeProvisionPick": {
+      "type": "object",
+      "required": ["type", "location"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string" },
+        "location": { "enum": ["fsn1", "nbg1", "hel1"] }
+      }
+    },
+    "home_provision_create_params": {
+      "type": "object",
+      "description": "replace (default false) is true only on the linked desktop whose ledger holds the server the home lives on: the new server is created with a 24-hour code the old server opens, and the old one is deleted once the move to the new one is done.",
+      "required": ["type", "location"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "location": { "enum": ["fsn1", "nbg1", "hel1"] },
+        "replace": { "type": "boolean" }
+      }
+    },
+    "home_provision_create_result": { "$ref": "#/$defs/jobView" },
+    "home_provision_power_params": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": { "action": { "enum": ["on", "reset"] } }
+    },
+    "home_provision_power_result": { "$ref": "#/$defs/jobView" },
+    "home_provision_resources_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_provision_resources_result": { "$ref": "#/$defs/homeProvisionView" },
+    "home_provision_delete_params": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "home_provision_delete_result": { "$ref": "#/$defs/jobView" },
+    "homeProvisionView": {
+      "type": "object",
+      "description": "What Fermix created on Hetzner, from this computer's ledger. state is none (no token), connected, creating, created (the server exists and waits for its enrollment and move), deleting, gone (deleted outside Fermix), failed (the last create stopped; failure says why) or unreadable. replace, while one is recorded, says where a replace of the server stands, and state and server are then the new server's. other_servers is answered by home.provision.connect, checked and sentence by home.provision.resources: whether Hetzner was read just now, and why not. The token is never answered.",
+      "required": ["state", "token", "server", "failure", "replace", "resources", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["none", "connected", "creating", "created", "deleting", "gone", "failed", "unreadable"] },
+        "token": { "enum": ["none", "accepted", "refused"] },
+        "server": { "oneOf": [{ "$ref": "#/$defs/homeProvisionServer" }, { "type": "null" }] },
+        "failure": { "oneOf": [{ "$ref": "#/$defs/homeProvisionFailure" }, { "type": "null" }] },
+        "replace": { "oneOf": [{ "$ref": "#/$defs/homeProvisionReplace" }, { "type": "null" }] },
+        "resources": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/homeProvisionResource" } },
+        "sentence": { "type": ["string", "null"] },
+        "other_servers": { "type": "boolean" },
+        "checked": { "type": "boolean" }
+      }
+    },
+    "homeProvisionReplace": {
+      "type": "object",
+      "description": "A replace of the server from the linked desktop. state is creating (the new server), waiting (it exists and waits for its enrollment and move), moving (this desktop started the move to it; the old server serves nothing meanwhile), deleting (the move is done and the old server is being deleted, once), done, failed (failure says why: the new server's create stopped or it was deleted in Hetzner, reason gone, with current old; or deleting the old server stopped, with current new, and it stays listed for home.provision.delete) or cancelling (the new server is being deleted before the move). current is the server that holds the home: old until the move is done, then new. old is the old server's facts, null once it is deleted.",
+      "required": ["state", "current", "old", "failure"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["creating", "waiting", "moving", "deleting", "done", "failed", "cancelling"] },
+        "current": { "enum": ["old", "new"] },
+        "old": { "oneOf": [{ "$ref": "#/$defs/homeProvisionServer" }, { "type": "null" }] },
+        "failure": { "oneOf": [{ "$ref": "#/$defs/homeProvisionFailure" }, { "type": "null" }] }
+      }
+    },
+    "homeProvisionServer": {
+      "type": "object",
+      "required": ["name", "type", "location", "status", "power", "ipv4", "created_at", "seen_at"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^fermix-[a-z0-9-]+-[0-9a-f]{4}$" },
+        "type": { "type": "string" },
+        "location": { "enum": ["fsn1", "nbg1", "hel1"] },
+        "status": { "$ref": "#/$defs/homeProvisionStatus" },
+        "power": {
+          "description": "The server's status as Hetzner last reported it (running, off, starting and the like), and when; null before it was read.",
+          "type": ["string", "null"]
+        },
+        "ipv4": { "type": ["string", "null"] },
+        "created_at": { "type": ["string", "null"] },
+        "seen_at": { "type": ["string", "null"] }
+      }
+    },
+    "homeProvisionStatus": {
+      "description": "requested (written before the call that creates it), creating, created, deleting or gone (deleted outside Fermix).",
+      "enum": ["requested", "creating", "created", "deleting", "gone"]
+    },
+    "homeProvisionFailure": {
+      "type": "object",
+      "description": "Why the last create stopped, or why deleting a replaced server stopped: reason is a word (unavailable, account_limit, read_only_token, token_refused, gone and others), sentence the daemon's words, next_location the next location in stock when Hetzner had no capacity.",
+      "required": ["reason", "sentence", "next_location", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "type": "string" },
+        "sentence": { "type": "string", "minLength": 1 },
+        "next_location": { "oneOf": [{ "enum": ["fsn1", "nbg1", "hel1"] }, { "type": "null" }] },
+        "at": { "type": "string" }
+      }
+    },
+    "homeProvisionResource": {
+      "type": "object",
+      "description": "One thing Fermix created and Hetzner bills for until it is deleted: the server, its firewall or one of its primary addresses (named by the address). replaced is true for the old server's, while a replace keeps it.",
+      "required": ["kind", "name", "id", "status", "replaced"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["server", "firewall", "primary_ip"] },
+        "name": { "type": ["string", "null"] },
+        "id": { "type": ["integer", "null"] },
+        "status": { "$ref": "#/$defs/homeProvisionStatus" },
+        "replaced": { "type": "boolean" }
+      }
+    },
+    "homeCandidate": {
+      "type": "object",
+      "description": "A candidate primary the primary holds, for 24 hours after it enrolled, never its keys. snapshots is the bucket it was told to keep snapshots in, null when the host gave none.",
+      "required": ["candidate_id", "name", "os", "arch", "version", "node_id", "snapshots", "enrolled_at", "expires_at"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": { "type": "string", "pattern": "^cand-[0-9a-f]{16}$" },
+        "name": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "version": { "type": "string" },
+        "node_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "snapshots": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["s3_bucket", "s3_region"],
+              "properties": {
+                "s3_bucket": { "type": "string" },
+                "s3_region": { "type": "string" }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "enrolled_at": { "type": "string" },
+        "expires_at": { "type": "string" }
+      }
+    },
+    "homeEnrollment": {
+      "type": "object",
+      "description": "The primary's enrollment window: open until expires_at, used once a candidate enrolled with it, or expired. kind is manual (the code a person copies) or provisioned (the code inside a server Fermix created); candidate_id is the candidate that enrolled with it, null until one did, which is how the server Fermix created is known.",
+      "required": ["state", "expires_at", "kind", "candidate_id"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["open", "used", "expired"] },
+        "expires_at": { "type": "string" },
+        "kind": { "enum": ["manual", "provisioned"] },
+        "candidate_id": { "oneOf": [{ "type": "string", "pattern": "^cand-[0-9a-f]{16}$" }, { "type": "null" }] }
+      }
+    },
+    "homeMove": {
+      "type": "object",
+      "description": "Where a move stands. On the home that moves, phase is requested, streaming, committing, committed (restarting as a desktop), done, aborting, undoing (restarting as the primary) or aborted, and candidate the name of the host it moves to; done and aborted are written only by the engine that came back after the restart. On a candidate, phase is enrolling, enrolled, receiving, staged, activating, expired or failed and candidate is null. sentence is the daemon's.",
+      "required": ["phase", "candidate", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "enum": [
+            "requested",
+            "streaming",
+            "committing",
+            "committed",
+            "done",
+            "aborting",
+            "undoing",
+            "aborted",
+            "enrolling",
+            "enrolled",
+            "receiving",
+            "staged",
+            "activating",
+            "expired",
+            "failed"
+          ]
+        },
+        "candidate": { "type": ["string", "null"] },
+        "sentence": { "type": "string", "minLength": 1 }
       }
     },
     "logEntry": {

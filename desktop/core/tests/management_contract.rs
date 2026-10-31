@@ -5,7 +5,7 @@
 
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::management::{CallError, Management};
-use fermix_client::mobile::{OutcomeReason, SessionState};
+use fermix_client::mobile::{DeviceKind, OutcomeReason, SessionState};
 use fermix_client::phone::switch_starts_in_place;
 use fermix_client::settings::{switch_key, SectionRows};
 use serde_json::Value;
@@ -213,20 +213,41 @@ fn a_decision_and_a_cancel_answer_the_terminal_view() {
 }
 
 #[test]
-fn the_paired_phones_and_a_forget_decode() {
+fn the_paired_devices_and_a_forget_decode() {
     exchange("mobile_devices_list", "mobile_devices_list", |m| {
         let list = m.mobile_devices_list().expect("decodes");
-        assert_eq!(list.devices.len(), 1);
+        assert_eq!(list.devices.len(), 2);
         let phone = &list.devices[0];
         assert_eq!(phone.name, "Sam's phone");
         assert_eq!(phone.model, "Google Pixel 9 Pro");
+        assert_eq!(phone.kind, DeviceKind::Phone);
         assert_eq!(phone.last_seen.as_deref(), Some("2026-09-26T12:04:40Z"));
+        let desktop = &list.devices[1];
+        assert_eq!(desktop.name, "Studio Mac");
+        assert_eq!(desktop.kind, DeviceKind::Desktop, "a desktop a move paired");
     });
     let device = "3f4a1a55-69a0-4f8a-9132-17d6ac728f84";
     exchange("mobile_devices_revoke", "mobile_devices_revoke", |m| {
         let revoked = m.mobile_devices_revoke(device).expect("decodes");
         assert_eq!(revoked.device_id, device);
         assert!(revoked.revoked);
+    });
+}
+
+/// A desktop is never offered Forget; were one sent anyway, the daemon says why in its words.
+#[test]
+fn a_desktops_forget_is_refused_in_the_daemons_words() {
+    let response = named(ERRORS, "unavailable_mobile_desktop_revoke")["response"].clone();
+    serve(response, |m| {
+        match m.mobile_devices_revoke("c41e9d27-5a8b-4f63-9e20-7d1b3c5a8f94") {
+            Err(CallError::Refused(refusal)) => {
+                assert_eq!(refusal.code, "unavailable");
+                assert!(refusal
+                    .sentence
+                    .starts_with("This desktop cannot be removed"));
+            }
+            other => panic!("a desktop's forget is refused, got {other:?}"),
+        }
     });
 }
 

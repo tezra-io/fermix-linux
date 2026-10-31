@@ -183,18 +183,47 @@ impl fmt::Debug for PairingStart {
     }
 }
 
+/// What a paired device is. An engine from before M75 names no kind: every device was a phone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    #[default]
+    Phone,
+    /// A desktop engine a move paired (M75): listed, and never forgotten from here.
+    Desktop,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MobileDevice {
     pub device_id: String,
     pub name: String,
     pub model: String,
+    #[serde(default)]
+    pub kind: DeviceKind,
     pub last_seen: Option<String>,
 }
 
-/// `mobile.devices.list`: every paired phone, oldest first. Empty while the channel is not running.
+/// `mobile.devices.list`: every paired device, oldest first. Empty while the channel is not
+/// running.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MobileDevices {
     pub devices: Vec<MobileDevice>,
+}
+
+impl MobileDevices {
+    /// Whether `device_id` is a phone in the list, the only kind of device Forget is offered for:
+    /// a desktop a move paired cannot be linked to the server again.
+    pub fn forgettable(&self, device_id: &str) -> bool {
+        self.devices
+            .iter()
+            .any(|d| d.device_id == device_id && d.kind == DeviceKind::Phone)
+    }
+
+    pub fn has_phone(&self) -> bool {
+        self.devices.iter().any(|d| d.kind == DeviceKind::Phone)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

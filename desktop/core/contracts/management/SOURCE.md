@@ -12,12 +12,17 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`, the engine v0.17.0. The last commit to touch
-  `priv/management` is `fe7fe1c01fa5313a70ee3049470f853f546f6883` (2026-10-26, "feat(cues): every
-  build has cues, off until the owner turns them on, and a release user is told the Tailscale
-  command and the source's settings, never a Mix task only a checkout has"). Since v0.16.0, all
-  within version 2: the `cues.*` methods (sources, watchers, mandates, proposals), and
-  `mobile.status` saying whether the phone channel is held until setup is finished.
+- Commit: `1d69c35ee2d77e307cb32fb79fd6a0d01d947ec9` (2026-10-31, branch `m75/hz-wave3`, not yet on
+  `dev`), the M75 lean v1 Always On build. The last commit to touch `priv/management` is
+  `d108d817ec8fa98eee95d4892340177f9c98647f` (2026-10-31, "docs(management): PROTOCOL.md lists
+  the six home.provision methods in its method catalog beside every other method, so the forward
+  deadlines table under After a move holds only the two long deadlines"). Since v0.17.0
+  (`b9dce743`), all within version 2: the fifteen `home.*` methods (the home's status with its
+  Always On `summary`, `disk` and `version`, recovery snapshots, enrollment, candidates, the move,
+  and the six `home.provision.*` methods of the Hetzner provisioner), the `snapshots` section
+  under pane `always_on`, `settings.sections.primary_missing`, a paired device's `kind`, the
+  codes `primary_unreachable`, `device_class_method` and `unconfirmed`, the plugin status
+  `reinstall_failed`, the job kind `home_provision`, and a cue watcher's `follow_up`.
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

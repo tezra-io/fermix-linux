@@ -520,7 +520,16 @@ impl App {
         self.phone_phones(token).await;
     }
 
+    /// Only a phone in the list is asked about: a desktop a move paired is never forgotten.
     pub fn phone_forget_ask(&self, device: &str) {
+        let listed = self.settings_data.borrow().phone_devices.clone();
+        if !matches!(listed, Some(Ok(list)) if list.forgettable(device)) {
+            glib::g_warning!(
+                "fermix",
+                "Forget was asked for {device}, which is no listed phone"
+            );
+            return;
+        }
         self.phone.borrow_mut().forgetting.ask(device);
         self.render();
     }

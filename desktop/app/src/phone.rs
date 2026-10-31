@@ -8,7 +8,7 @@
 
 use crate::descriptor::{NoteKind, SectionView};
 use adw::prelude::*;
-use fermix_client::mobile::{MobileDevice, MobileDevices};
+use fermix_client::mobile::{DeviceKind, MobileDevice, MobileDevices};
 use fermix_client::pairing::{Compare, PairingCode, Progress, Scan, Step, TurnOn};
 use fermix_client::phone::{
     self as words, Forgetting, CANCEL, CANT_SCAN, CODE_LABEL, COMPARE_LINE, COPY_LINK, DONE,
@@ -718,7 +718,7 @@ impl PhonesParts {
             self.group.remove(&old);
         }
         let (mut rows, cancel) = phone_rows(screen);
-        let paired_any = matches!(screen.devices, Some(Ok(list)) if !list.devices.is_empty());
+        let paired_any = matches!(screen.devices, Some(Ok(list)) if list.has_phone());
         let pair = adw::ButtonRow::builder()
             .title(if paired_any { PAIR_ANOTHER } else { PAIR })
             .action_name("win.phone-pair-another")
@@ -770,9 +770,10 @@ fn sentence_row(sentence: &str) -> gtk::Widget {
     row.upcast()
 }
 
-/// One paired phone: its name, its model and when it was seen, and Forget, which asks in the row
-/// before anything is forgotten. A refusal takes the line under the name, in the daemon's words.
-/// While the row asks, its Cancel comes back too.
+/// One paired device: its name, its model and when it was seen, and for a phone Forget, which
+/// asks in the row before anything is forgotten. A desktop a move paired has no Forget. A refusal
+/// takes the line under the name, in the daemon's words. While the row asks, its Cancel comes
+/// back too.
 fn phone_row(
     device: &MobileDevice,
     forgetting: &Forgetting,
@@ -785,6 +786,9 @@ fn phone_row(
     row.set_subtitle(&glib::markup_escape_text(refusal.unwrap_or(&detail)));
     if refusal.is_some() {
         row.add_css_class("setting-refused");
+    }
+    if device.kind != DeviceKind::Phone {
+        return (row, None);
     }
     let idle = forgetting.forgetting().is_none();
     let asking = forgetting.asking() == Some(device.device_id.as_str());

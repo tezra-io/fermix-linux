@@ -2,7 +2,7 @@
 //! `mobile.status` and `mobile.devices.list`, never from `configured`, and every sentence the app
 //! adds to the daemon's facts.
 
-use fermix_client::mobile::{MobileDevices, MobileStatus};
+use fermix_client::mobile::{DeviceKind, MobileDevices, MobileStatus};
 use fermix_client::phone::{
     countdown, detail, grouped, heading, offers_phone, paired_line, row, seen, spoken,
     switch_starts_in_place, unix_seconds, Forgetting, Intent, CHANGE, PAIR, SCAN_LINE, SETUP_ROW,
@@ -97,6 +97,41 @@ fn a_running_channel_names_its_one_phone_or_counts_them() {
     );
     assert_eq!(three.status, "3 phones");
     assert_eq!(three.opens, Intent::Phones);
+}
+
+/// A desktop a move paired is listed with the phones and never offered Forget; an engine from
+/// before desktops names no kind, and every device it lists is a phone.
+#[test]
+fn a_desktop_a_move_paired_is_listed_and_never_forgotten() {
+    let list: MobileDevices = golden("mobile_devices_list", |_| {});
+    let (phone, desktop) = (&list.devices[0], &list.devices[1]);
+    assert_eq!(desktop.kind, DeviceKind::Desktop);
+    assert!(list.forgettable(&phone.device_id));
+    assert!(!list.forgettable(&desktop.device_id));
+    assert!(!list.forgettable("an-id-no-one-has"));
+    assert!(list.has_phone());
+    let desktops_only: MobileDevices = golden("mobile_devices_list", |l| {
+        l["devices"].as_array_mut().expect("a list").remove(0);
+    });
+    assert!(
+        !desktops_only.has_phone(),
+        "Pair another phone counts phones"
+    );
+    let older: MobileDevices = golden("mobile_devices_list", |l| {
+        for device in l["devices"].as_array_mut().expect("a list") {
+            device.as_object_mut().expect("a row").remove("kind");
+        }
+    });
+    assert!(older.devices.iter().all(|d| d.kind == DeviceKind::Phone));
+}
+
+#[test]
+fn the_one_paired_phone_is_named_even_behind_a_desktop() {
+    let desktop_first: MobileDevices = golden("mobile_devices_list", |l| {
+        l["devices"].as_array_mut().expect("a list").reverse();
+    });
+    let one = row(status(|_| {}).as_ref(), Some(Ok(desktop_first)).as_ref());
+    assert_eq!(one.status, "Sam's phone");
 }
 
 #[test]

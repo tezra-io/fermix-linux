@@ -224,6 +224,34 @@ fn an_unknown_action_draws_no_button_and_its_neighbours_keep_their_pairing() {
     );
 }
 
+/// After a move from another system the server installs the plugins again (M75 L19); one it
+/// could not is `reinstall_failed`, enabled or not. The status is a published word the app never
+/// switches on: the row says the daemon's sentence, stays under Installed, and leads with its
+/// Install, which runs the install as any other does.
+#[test]
+fn a_plugin_the_server_could_not_install_again_leads_with_install_in_the_daemons_words() {
+    let r = row(json!({
+        "status": "reinstall_failed",
+        "installed": true,
+        "enabled": true,
+        "status_sentence": "Fermix could not install it again after the move.",
+        "verbs": ["Install…", "Turn off"],
+        "actions": ["install", "disable"],
+        "primary_verb": "Install…", "primary_action": "install"
+    }));
+    assert_eq!(
+        line(&r),
+        "Fermix could not install it again after the move."
+    );
+    assert!(Filter::Installed.admits(&r));
+    let drawn = verbs(&r);
+    assert_eq!(
+        (drawn[0].label.as_str(), drawn[0].action, drawn[0].primary),
+        ("Install…", PluginAction::Install, true)
+    );
+    assert!(!needs_operator(&r), "an install is the person's own button");
+}
+
 #[test]
 fn a_row_with_no_verbs_draws_no_buttons() {
     let r = row(json!({"verbs": [], "actions": [], "primary_verb": null, "primary_action": null}));

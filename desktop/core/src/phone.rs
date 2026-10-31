@@ -3,7 +3,7 @@
 //! is always configured, so the generic channel word said Connected with no phone paired. The
 //! sentences are macOS's, word for word.
 
-use crate::mobile::{ListenerStatus, MobileDevices, MobileStatus};
+use crate::mobile::{DeviceKind, ListenerStatus, MobileDevices, MobileStatus};
 use crate::settings::{Section, SectionRows};
 
 /// The channel's name in `setup.state.get`.
@@ -147,12 +147,13 @@ pub fn row(
     }
 }
 
-/// The one paired phone's name, from the list that names it.
+/// The one paired phone's name, from the list that names it beside any desktop.
 fn phone_name(devices: Option<&Result<MobileDevices, String>>) -> String {
     match devices {
         Some(Ok(list)) => list
             .devices
-            .first()
+            .iter()
+            .find(|d| d.kind == DeviceKind::Phone)
             .map_or_else(|| STATUS_CHECKING.to_owned(), |d| d.name.clone()),
         Some(Err(sentence)) => sentence.clone(),
         None => STATUS_CHECKING.to_owned(),
