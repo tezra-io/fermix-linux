@@ -474,7 +474,7 @@ pub enum DaemonProblem {
 }
 
 const APP_TOO_OLD: &str = "This app is older than Fermix. Update the Fermix app.";
-const DAEMON_TOO_OLD: &str = "Fermix is older than this app. Update the fermix package.";
+pub const DAEMON_TOO_OLD: &str = "Fermix is older than this app. Update the fermix package.";
 
 impl DaemonProblem {
     pub fn status_word(&self) -> &'static str {

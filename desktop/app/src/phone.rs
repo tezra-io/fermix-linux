@@ -603,8 +603,8 @@ fn link_reveal(
 }
 
 /// Offers the link as text with the secret hint beside it, and remembers the offer so Scan can
-/// take it back.
-fn copy_secret(
+/// take it back. Always On copies its own server's command the same way.
+pub(crate) fn copy_secret(
     clipboard: &gdk::Clipboard,
     copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
     link: &str,
@@ -616,12 +616,15 @@ fn copy_secret(
     ]);
     match clipboard.set_content(Some(&provider)) {
         Ok(()) => *copied.borrow_mut() = Some(provider),
-        Err(e) => glib::g_warning!("fermix", "the pairing link was not copied: {e}"),
+        Err(e) => glib::g_warning!("fermix", "a secret was not copied: {e}"),
     }
 }
 
 /// Takes this step's copy off the clipboard, if the clipboard still holds it.
-fn withdraw(clipboard: &gdk::Clipboard, copied: &Rc<RefCell<Option<gdk::ContentProvider>>>) {
+pub(crate) fn withdraw(
+    clipboard: &gdk::Clipboard,
+    copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
+) {
     let Some(mine) = copied.borrow_mut().take() else {
         return;
     };
@@ -631,7 +634,7 @@ fn withdraw(clipboard: &gdk::Clipboard, copied: &Rc<RefCell<Option<gdk::ContentP
     if let Err(e) = clipboard.set_content(None::<&gdk::ContentProvider>) {
         glib::g_warning!(
             "fermix",
-            "the pairing link was not taken off the clipboard: {e}"
+            "a copied secret was not taken off the clipboard: {e}"
         );
     }
 }

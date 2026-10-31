@@ -1,9 +1,10 @@
-//! Settings: fifteen panes in four groups (M38 §5.7), a searchable pane list
+//! Settings: sixteen panes in four groups (M38 §5.7), a searchable pane list
 //! that replaces the sidebar, and the banner for a settings file changed or
 //! broken outside Fermix. Most panes are the daemon's sections drawn by
 //! `descriptor.rs`; Providers, Channels and Permissions add rows of their own,
-//! and Updates is the app's own.
+//! Always On draws `home.status` above its sections, and Updates is the app's own.
 
+use crate::always_on::AlwaysOnPane;
 use crate::capability_panes::{ComputerPane, Facts, MeetingsPane, Running, MEETINGS_SIGN_IN};
 use crate::channels::ChannelsPane;
 use crate::descriptor::{Drawn, SectionView};
@@ -11,6 +12,7 @@ use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage};
 use crate::updates_pane::UpdatesPane;
 use adw::prelude::*;
+use fermix_client::always_on;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
 use fermix_client::mobile::{MobileDevices, MobileStatus, Remote};
@@ -38,8 +40,10 @@ const DESCRIPTOR_PANES: [&str; 8] = [
     "sandbox",
 ];
 
-/// Panes that read nothing from the daemon, so they show while it is down.
-const OWN_PANES: [&str; 1] = ["updates"];
+/// Panes that draw their own state, so they show while Fermix is down: Updates reads nothing
+/// from it, and Always On reads `home.status` itself, which this computer answers even while the
+/// server it forwards to does not, and says itself when Fermix here is down.
+const OWN_PANES: [&str; 2] = ["updates", always_on::PANE];
 
 /// What the controller knows about settings, beside `State`.
 #[derive(Default)]
@@ -149,6 +153,8 @@ pub struct SettingsPage {
     search: gtk::SearchEntry,
     /// Pages whose groups are the daemon's sections, by pane slug.
     pages: HashMap<&'static str, adw::PreferencesPage>,
+    /// Always On, whose page places the daemon's sections below its own groups.
+    always_on: Rc<AlwaysOnPane>,
     /// The Providers pane's own page, which gains the shared routing section.
     providers_page: adw::PreferencesPage,
     views: RefCell<Vec<Rc<SectionView>>>,
@@ -163,11 +169,12 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     /// `providers` is the Providers pane built by `providers.rs`, and `providers_page` its list;
-    /// `integrations` is the pane `integrations.rs` builds and feeds itself.
+    /// `integrations` and `always_on` are panes that feed themselves.
     pub fn new(
         providers: &gtk::Widget,
         providers_page: &adw::PreferencesPage,
         integrations: &adw::PreferencesPage,
+        always_on: &Rc<AlwaysOnPane>,
     ) -> SettingsPage {
         let panes = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -183,6 +190,7 @@ impl SettingsPage {
         panes.add_named(&computer.page, Some("computer"));
         let updates = UpdatesPane::new();
         panes.add_named(&updates.page, Some("updates"));
+        panes.add_named(&always_on.root, Some(always_on::PANE));
         let mut pages = HashMap::new();
         for slug in DESCRIPTOR_PANES {
             let page = adw::PreferencesPage::new();
@@ -220,6 +228,7 @@ impl SettingsPage {
             updates,
             search,
             pages,
+            always_on: always_on.clone(),
             providers_page: providers_page.clone(),
             views: RefCell::default(),
             dialog_views: Rc::default(),
@@ -309,7 +318,20 @@ impl SettingsPage {
         }
         views.push(self.channels.editors_view(sections));
         views.extend(self.providers_views(sections));
+        views.extend(self.always_on_views(sections));
         *self.views.borrow_mut() = views;
+    }
+
+    /// Always On's sections sit below its own groups, each under its own title.
+    fn always_on_views(&self, sections: &[Section]) -> Vec<Rc<SectionView>> {
+        sections_for(always_on::PANE, sections)
+            .into_iter()
+            .map(|s| {
+                let view = SectionView::new(&s.id, Some(&s.title));
+                self.always_on.add_section(&view.group);
+                view
+            })
+            .collect()
     }
 
     /// Providers draws its own list; below it sits the one shared section, "Model behavior".

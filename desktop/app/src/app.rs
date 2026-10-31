@@ -1,6 +1,7 @@
 //! The controller: owns `State`, turns window actions into daemon calls, and
 //! redraws the pages. Pages never call the daemon themselves.
 
+use crate::always_on::AlwaysOnPane;
 use crate::assistant::Assistant;
 use crate::audio::Endpoints;
 use crate::background_flow::{binding_file, login_entry};
@@ -26,6 +27,7 @@ use crate::update_install::{finish_update, install_update, update_try_again};
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
+use fermix_client::always_on::{self, notices::Notice};
 use fermix_client::greeting::{about_you_name, ABOUT_YOU};
 use fermix_client::management::{CallError, PROTOCOL_VERSION};
 use fermix_client::model::{Hello, SetupState};
@@ -65,6 +67,8 @@ pub struct App {
     pub phone: RefCell<Phone>,
     /// Pages that read the daemon themselves while they are in view.
     pub integrations: Rc<IntegrationsPane>,
+    /// Reads the summary for as long as the app runs, and raises its notifications.
+    pub always_on: Rc<AlwaysOnPane>,
     doctor: Rc<DoctorPage>,
     logs: Rc<LogsPage>,
     pub voice: VoicePage,
@@ -112,10 +116,12 @@ fn build_app(application: &adw::Application) -> Rc<App> {
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
     let integrations = IntegrationsPane::new(Daemon::new(), Rc::new(toast));
+    let always_on = AlwaysOnPane::new(Daemon::new(), Rc::new(notifier(application)));
     let settings = SettingsPage::new(
         providers.root.upcast_ref(),
         &providers.page,
         &integrations.page,
+        &always_on,
     );
     let doctor = DoctorPage::new(
         Daemon::new(),
@@ -147,6 +153,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         assistant: RefCell::default(),
         phone: RefCell::default(),
         integrations,
+        always_on,
         doctor,
         logs,
         voice,
@@ -200,6 +207,7 @@ fn start(app: &Rc<App>, hidden: bool) {
         first.start_updates().await;
     });
     start_idle_refresh(app);
+    app.always_on.start_follow();
     app.chat_connect();
 }
 
@@ -393,6 +401,24 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
             .inspect_err(|e| glib::g_warning!("fermix", "overview.get failed: {e:?}"))
             .ok(),
     }))
+}
+
+/// Raises one of Always On's notifications through the desktop's own: a newer one of a kind
+/// replaces the one before it.
+fn notifier(application: &adw::Application) -> impl Fn(&Notice) {
+    let application = application.downgrade();
+    move |notice: &Notice| {
+        let Some(application) = application.upgrade() else {
+            glib::g_warning!(
+                "fermix",
+                "an Always On notice arrived after the application"
+            );
+            return;
+        };
+        let raised = gio::Notification::new(always_on::NOTICE_TITLE);
+        raised.set_body(Some(&notice.body));
+        application.send_notification(Some(notice.kind.id()), &raised);
+    }
 }
 
 /// A callback for a page built before its window: it fires the window action
