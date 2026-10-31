@@ -12,8 +12,8 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `1d69c35ee2d77e307cb32fb79fd6a0d01d947ec9` (2026-10-31, branch `m75/hz-wave3`, not yet on
-  `dev`), the M75 lean v1 Always On build. The last commit to touch `priv/management` is
+- Commit: `42f02f6f3a4b901820785c29647d174856c40b76` (2026-10-31, branch `dev`), the M75 lean v1
+  Always On build. The last commit to touch `priv/management` is
   `d108d817ec8fa98eee95d4892340177f9c98647f` (2026-10-31, "docs(management): PROTOCOL.md lists
   the six home.provision methods in its method catalog beside every other method, so the forward
   deadlines table under After a move holds only the two long deadlines"). Since v0.17.0
