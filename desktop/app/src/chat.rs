@@ -27,6 +27,7 @@ use entries::Drawn;
 use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
+use fermix_client::view::DaemonProblem;
 use gtk::gdk;
 use gtk::glib;
 use picture::Decoder;
@@ -46,6 +47,8 @@ const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.
 /// starting. `None` while it answers, or before the first read.
 fn down_state(state: &State) -> Option<DownView> {
     match &state.connection {
+        // Fermix here runs: chat says what its own connection says, the server's sentence.
+        Connection::Down(DaemonProblem::PrimaryUnreachable(_)) => None,
         Connection::Down(problem) if !state.waking => Some(down_view(
             problem,
             state.wake_failed,
@@ -55,6 +58,15 @@ fn down_state(state: &State) -> Option<DownView> {
         Connection::Down(_) => Some(waiting("Starting Fermix")),
         Connection::Up(_) | Connection::Connecting => None,
     }
+}
+
+/// Whether Fermix on this computer answers. After a move it does while the server it forwards
+/// to is unreachable, and what is typed then waits in the outbox until the server is back.
+fn fermix_here(state: &State) -> bool {
+    matches!(
+        &state.connection,
+        Connection::Up(_) | Connection::Down(DaemonProblem::PrimaryUnreachable(_))
+    )
 }
 
 pub struct ChatPage {
@@ -159,7 +171,8 @@ impl ChatPage {
         self.root.set_visible_child_name("chat");
         self.show_banner(down.as_ref(), &wire.session.shown());
         self.approvals.show(&wire.chat);
-        self.render_conversation(&shown, state, name);
+        let open = fermix_here(state) && wire.session.queues();
+        self.render_conversation(&shown, open, name);
     }
 
     /// With a conversation on screen the page stays, and the banner says why the
@@ -207,7 +220,9 @@ impl ChatPage {
         self.on_screen.seqs()
     }
 
-    fn render_conversation(&self, shown: &View, state: &State, name: Option<&str>) {
+    /// `open`: the composer takes a message, which Fermix here answers and the chat has not
+    /// refused for good.
+    fn render_conversation(&self, shown: &View, open: bool, name: Option<&str>) {
         // The time of day on this computer's clock; each render follows it.
         let time = match glib::DateTime::now_local() {
             Ok(now) => Some(time_of_day(now.hour() as u32)),
@@ -233,7 +248,7 @@ impl ChatPage {
             self.thinking.thinking(live);
         }
         self.keep_time(turn.is_some());
-        self.show_composer(shown.turn, state.snapshot().is_some());
+        self.show_composer(shown.turn, open);
     }
 
     /// Send, or Stop while a turn this app started runs.

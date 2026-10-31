@@ -85,25 +85,27 @@ fn sections_keep_the_daemons_order_and_linux_drops_computer_history() {
 }
 
 #[test]
-fn the_fifteen_panes_sit_in_four_groups() {
-    assert_eq!(PANES.len(), 15);
+fn the_sixteen_panes_sit_in_four_groups() {
+    assert_eq!(PANES.len(), 16);
     assert_eq!(GROUPS.len(), 4);
     let grouped: usize = GROUPS.iter().map(|(_, panes)| panes.len()).sum();
-    assert_eq!(grouped, 15);
+    assert_eq!(grouped, 16);
     for (_, panes) in GROUPS {
         for slug in panes {
             assert!(pane(slug).is_some(), "{slug} is a pane");
         }
     }
     assert_eq!(pane("coding").unwrap().title, "Coding agents");
-    // Where secrets are kept leads the System group; updates, the app's own, close it.
+    // Where secrets are kept leads the System group; where Fermix runs comes before updates,
+    // the app's own, which close it.
     assert_eq!(
         GROUPS[3],
         (
             "System",
-            &["secrets", "sandbox", "permissions", "updates"][..]
+            &["secrets", "sandbox", "permissions", "always_on", "updates"][..]
         )
     );
+    assert_eq!(pane("always_on").unwrap().title, "Always On");
     assert_eq!(pane("secrets").unwrap().title, "Secrets");
     assert_eq!(pane("updates").unwrap().title, "Updates");
     assert_eq!(

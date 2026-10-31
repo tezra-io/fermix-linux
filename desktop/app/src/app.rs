@@ -1,6 +1,7 @@
 //! The controller: owns `State`, turns window actions into daemon calls, and
 //! redraws the pages. Pages never call the daemon themselves.
 
+use crate::always_on::AlwaysOnPane;
 use crate::assistant::Assistant;
 use crate::audio::Endpoints;
 use crate::background_flow::{binding_file, login_entry};
@@ -65,6 +66,7 @@ pub struct App {
     pub phone: RefCell<Phone>,
     /// Pages that read the daemon themselves while they are in view.
     pub integrations: Rc<IntegrationsPane>,
+    pub always_on: Rc<AlwaysOnPane>,
     doctor: Rc<DoctorPage>,
     logs: Rc<LogsPage>,
     pub voice: VoicePage,
@@ -112,10 +114,13 @@ fn build_app(application: &adw::Application) -> Rc<App> {
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
     let integrations = IntegrationsPane::new(Daemon::new(), Rc::new(toast));
+    let toast = through_window(application, "win.toast");
+    let always_on = AlwaysOnPane::new(Daemon::new(), Rc::new(toast));
     let settings = SettingsPage::new(
         providers.root.upcast_ref(),
         &providers.page,
         &integrations.page,
+        &always_on,
     );
     let doctor = DoctorPage::new(
         Daemon::new(),
@@ -147,6 +152,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         assistant: RefCell::default(),
         phone: RefCell::default(),
         integrations,
+        always_on,
         doctor,
         logs,
         voice,

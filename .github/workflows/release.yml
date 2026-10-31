@@ -111,6 +111,20 @@ jobs:
           }
           cat "$notes"
 
+      # A contract copied from an engine's working tree is a draft for review: no engine commit
+      # publishes it, so nothing the app decodes is held to a release. Its SOURCE.md says so in a
+      # "- Draft:" line, and no release is built until it is re-vendored from a commit. Only a tag
+      # builds a release, so pull requests and branch pushes still build and check their packages.
+      - name: Refuse a vendored contract copied from an uncommitted engine
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          drafts="$(grep -l '^- Draft:' desktop/core/contracts/*/SOURCE.md || true)"
+          if [ -n "$drafts" ]; then
+            echo "::error::re-vendor these from a committed engine first: $drafts"
+            exit 1
+          fi
+
       # The assets a person has downloaded are the release. Replacing them under the same tag
       # would make every recorded digest a lie, so a fix is the next version.
       - name: Refuse a tag whose release is already published

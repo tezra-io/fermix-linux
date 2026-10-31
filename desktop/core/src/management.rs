@@ -18,6 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 2;
+/// The calls that walk the whole home before they answer: on a primary in the call itself, and on
+/// a desktop that forwards one, the 60 s it waits for the primary (PROTOCOL.md, "After a move",
+/// "Forward deadlines"). They get `LONG_CALL_DEADLINE`; every other call keeps the client's own.
+pub const LONG_CALLS: [&str; 2] = ["home.move.readiness", "home.move.start"];
+/// At least 65 s, as the protocol asks of a client for `LONG_CALLS`.
+pub const LONG_CALL_DEADLINE: Duration = Duration::from_secs(65);
 /// The most models one `providers.models.list` page holds; the app asks for one page.
 const MODEL_PAGE: u64 = 200;
 
@@ -77,24 +83,31 @@ impl Management {
             "params": params,
         });
         let body = serde_json::to_vec(&request).expect("a JSON value always serializes");
-        let mut stream = self.connect()?;
+        let mut stream = self.connect(self.deadline_for(method))?;
         write_frame(&mut stream, &body).map_err(frame_error)?;
         let answer = read_frame(&mut stream).map_err(frame_error)?;
         drop(stream);
         decode_response(&answer, &request_id)
     }
 
-    fn connect(&self) -> Result<UnixStream, CallError> {
+    /// How long one exchange of `method` may take: `LONG_CALL_DEADLINE` for the calls that walk
+    /// the whole home, never shorter than this client's own deadline, which every other call
+    /// keeps.
+    pub fn deadline_for(&self, method: &str) -> Duration {
+        if LONG_CALLS.contains(&method) {
+            self.timeout.max(LONG_CALL_DEADLINE)
+        } else {
+            self.timeout
+        }
+    }
+
+    fn connect(&self, deadline: Duration) -> Result<UnixStream, CallError> {
         let stream = UnixStream::connect(&self.socket).map_err(|e| match e.kind() {
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => CallError::DaemonDown(e.kind()),
             _ => CallError::Io(e.to_string()),
         })?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .map_err(io_error)?;
-        stream
-            .set_write_timeout(Some(self.timeout))
-            .map_err(io_error)?;
+        stream.set_read_timeout(Some(deadline)).map_err(io_error)?;
+        stream.set_write_timeout(Some(deadline)).map_err(io_error)?;
         Ok(stream)
     }
 

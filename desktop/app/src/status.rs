@@ -63,6 +63,10 @@ pub fn down_view(
             "Its socket is there but nothing answers. Restarting it usually fixes this.".to_owned(),
             Some(("Restart Fermix", "win.restart-service")),
         ),
+        // Fermix here runs and reconnects on its own; restarting it reaches no server sooner.
+        DaemonProblem::PrimaryUnreachable(sentence) => {
+            ("The server is unreachable", sentence.clone(), None)
+        }
     };
     let icon = match problem {
         DaemonProblem::UpdateNeeded(_) => "software-update-available-symbolic",

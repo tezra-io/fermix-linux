@@ -3,9 +3,23 @@
 
 use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
 use fermix_client::chat_wire::session::{
-    closes, delay, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
+    closes, delay, ends_with, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
 };
+use fermix_client::chat_wire::timeline::{self, Chat};
+use std::collections::BTreeSet;
 use std::time::Duration;
+
+/// The engine's own lines for a computer whose home moved (its companion export's
+/// `fixtures/server_events.jsonl`, M75 §6), which the vendored version 3 contract predates.
+const UNREACHABLE: &str = r#"{"type":"error","reason":"primary_unreachable","message":"The server fermix-vm is unreachable. Fermix keeps your message until it is back."}"#;
+const UNATTENDED: &str = r#"{"type":"error","reason":"unattended_client","message":"Only the Fermix app chats with the server from this computer, and this process was started by Fermix or runs detached."}"#;
+/// What a desktop's engine answers every connection once the server no longer knows this
+/// computer, verbatim from the engine's companion `fixtures/server_events.jsonl`.
+const REVOKED: &str = r#"{"type":"error","reason":"desktop_revoked","message":"The server fermix-vm does not know this computer: it was removed from the server's devices, or the server was restored from a snapshot taken before this computer joined it. Fermix stopped reaching it."}"#;
+/// What the engine answers a message while its home moves away (its companion `PROTOCOL.md`,
+/// "Errors"): the message is refused as for an unreachable server, naming the message, and the
+/// connection is closed.
+const MOVING: &str = r#"{"type":"error","reason":"primary_unreachable","message":"Fermix is moving this home to north-box; your message is kept until it is done.","client_msg_id":"linux-1"}"#;
 
 const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
 
@@ -184,4 +198,151 @@ fn a_connect_that_lands_after_its_attempt_ended_is_refused() {
     assert_eq!(session.phase(), &Phase::Waiting);
     session.start();
     assert!(session.connected());
+}
+
+#[test]
+fn an_unreachable_server_is_said_in_its_sentence_and_tried_again() {
+    let sentence =
+        "The server fermix-vm is unreachable. Fermix keeps your message until it is back.";
+    let mut session = handshaking();
+    let Handshake::Lost(lost) = session.hello(&line(UNREACHABLE)) else {
+        panic!("an unreachable server loses the attempt");
+    };
+    assert_eq!(lost, Lost::Said(sentence.into()));
+    assert_eq!(session.lost(lost), Some(Duration::from_secs(1)));
+    assert_eq!(session.shown(), Shown::Disconnected(sentence.into()));
+    assert!(session.start(), "the next attempt runs after the backoff");
+    assert_eq!(
+        session.shown(),
+        Shown::Disconnected(sentence.into()),
+        "a retry keeps the sentence"
+    );
+    assert_eq!(handshake(&server(0)), Handshake::Ok);
+}
+
+#[test]
+fn a_live_connection_ended_for_the_server_is_a_loss_not_a_refused_request() {
+    let sentence =
+        "The server fermix-vm is unreachable. Fermix keeps your message until it is back.";
+    assert_eq!(
+        ends_with(&line(UNREACHABLE)),
+        Some(Lost::Said(sentence.into()))
+    );
+    let Some(Lost::Said(unattended)) = ends_with(&line(UNATTENDED)) else {
+        panic!("an unattended client is told why");
+    };
+    assert!(
+        unattended.starts_with("Only the Fermix app chats"),
+        "{unattended}"
+    );
+    let failed = line(
+        r#"{"type":"error","reason":"request_failed","message":"No.","client_msg_id":"linux-1"}"#,
+    );
+    assert_eq!(ends_with(&failed), None, "a refused request ends nothing");
+    let unknown = line(r#"{"type":"error","reason":"unknown_event","event":"x"}"#);
+    assert_eq!(ends_with(&unknown), None);
+    for reason in ["primary_unreachable", "unattended_client"] {
+        assert!(closes(reason), "{reason}");
+    }
+}
+
+/// A message typed while the server is unreachable waits in the outbox and goes out after the
+/// next handshake, as after any dropped connection.
+#[test]
+fn the_outbox_waits_out_an_unreachable_server() {
+    let mut session = handshaking();
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    let Handshake::Lost(lost) = session.hello(&line(UNREACHABLE)) else {
+        panic!("lost");
+    };
+    timeline::disconnected(&mut chat);
+    assert!(session.lost(lost).is_some());
+    assert!(timeline::send(&mut chat, "still there?", "linux-1".into()).is_empty());
+    assert_eq!(chat.pending.len(), 1, "kept while away");
+    assert!(session.start());
+    assert!(session.connected());
+    assert_eq!(session.hello(&server(0)), Handshake::Ok);
+    let sent = timeline::negotiated(&mut chat, &BTreeSet::new());
+    let lines: Vec<String> = sent.iter().map(|e| e.line().expect("a line")).collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("still there?") && l.contains("linux-1")),
+        "{lines:?}"
+    );
+}
+
+/// A message typed while the home moves is answered with the daemon's sentence that it is kept,
+/// and it is: the refusal names it, yet it stays in the outbox and goes out again after the next
+/// handshake (M75 review, edges F3).
+#[test]
+fn a_message_typed_while_the_home_moves_is_kept_and_sent_again() {
+    let sentence =
+        "Fermix is moving this home to north-box; your message is kept until it is done.";
+    let mut session = handshaking();
+    assert_eq!(session.hello(&server(0)), Handshake::Ok);
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    let sent = timeline::send(&mut chat, "did the move work?", "linux-1".into());
+    assert_eq!(sent.len(), 1, "sent while connected");
+    let Some(lost) = ends_with(&line(MOVING)) else {
+        panic!("the refusal ends the connection rather than the message");
+    };
+    assert_eq!(lost, Lost::Said(sentence.into()));
+    timeline::disconnected(&mut chat);
+    assert!(session.lost(lost).is_some());
+    assert_eq!(session.shown(), Shown::Disconnected(sentence.into()));
+    assert_eq!(chat.pending.len(), 1, "kept, as the sentence says");
+    assert!(session.start() && session.connected());
+    assert_eq!(session.hello(&server(0)), Handshake::Ok);
+    let again = timeline::negotiated(&mut chat, &BTreeSet::new());
+    let lines: Vec<String> = again.iter().map(|e| e.line().expect("a line")).collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("did the move work?") && l.contains("linux-1")),
+        "{lines:?}"
+    );
+}
+
+/// A revoked desktop: its sentence is shown, chat stops trying, and nothing more is queued, since
+/// nothing typed here can reach the server (M75 cleanup, item 5). An unreachable server keeps the
+/// outbox as before.
+#[test]
+fn a_revoked_desktop_says_so_and_queues_nothing() {
+    let sentence = "The server fermix-vm does not know this computer: it was removed from the \
+        server's devices, or the server was restored from a snapshot taken before this computer \
+        joined it. Fermix stopped reaching it.";
+    assert!(closes("desktop_revoked"));
+    let mut session = handshaking();
+    assert_eq!(
+        session.hello(&line(REVOKED)),
+        Handshake::Refused(sentence.into())
+    );
+    assert_eq!(
+        session.lost(Lost::Broken("closed".into())),
+        None,
+        "no retry"
+    );
+    assert_eq!(session.shown(), Shown::Refused(sentence.into()));
+    assert!(!session.queues());
+
+    let mut live = handshaking();
+    assert_eq!(live.hello(&server(0)), Handshake::Ok);
+    let lost = ends_with(&line(REVOKED)).expect("it ends the connection");
+    assert_eq!(lost, Lost::Revoked(sentence.into()));
+    assert_eq!(live.lost(lost), None, "no backoff, no retry");
+    assert_eq!(live.shown(), Shown::Refused(sentence.into()));
+    assert!(!live.queues());
+    assert!(live.start(), "asked for again, chat tries once more");
+
+    let mut away = handshaking();
+    assert_eq!(away.hello(&server(0)), Handshake::Ok);
+    let lost = ends_with(&line(UNREACHABLE)).expect("a loss");
+    assert!(
+        away.lost(lost).is_some(),
+        "an unreachable server is retried"
+    );
+    assert!(away.queues(), "and what is typed waits for it");
 }

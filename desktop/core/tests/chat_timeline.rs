@@ -657,3 +657,34 @@ fn a_forgotten_row_leaves_no_read_behind() {
     receive(&mut chat, live(MAX_HELD as u64 + 1, "new"));
     assert!(timeline::rows_on_screen(&mut chat, &BTreeSet::from([1])).is_empty());
 }
+
+/// A card of kind `device` (M75 §11) is the agent asking to run a command on one of the owner's
+/// desktops. It is held and answered like a sandbox card, and the words it draws keep the
+/// computer and the exact command the daemon wrote, line for line.
+#[test]
+fn a_device_card_names_the_computer_and_the_command_and_answers_like_sandbox() {
+    let text = "Run this command on your Studio Mac? It runs there, inside that computer's own \
+        sandbox.\nComputer: Studio Mac\nCommand: ls -la ~/Projects";
+    let mut chat = holding(0);
+    timeline::receive(
+        &mut chat,
+        event(
+            json!({"type": "approval", "approval_id": "device-d1", "kind": "device",
+        "text": text, "token": "tok", "ttl_s": 120,
+        "approve_command": "/confirm tok", "deny_command": "/deny tok"}),
+        ),
+        0,
+    );
+    assert_eq!(chat.approvals.len(), 1);
+    let card = &chat.approvals[0].approval;
+    assert_eq!(card.kind, "device");
+    assert_eq!(card.text, text);
+    assert!(card.text.contains("Computer: Studio Mac"));
+    assert!(card.text.contains("Command: ls -la ~/Projects"));
+    assert!(!card.text.contains("tok"), "the token is never drawn");
+    let sent = timeline::answer(&mut chat, "device-d1", true, "linux-9".into());
+    assert_eq!(
+        sent,
+        [ClientEvent::command("linux-9", "confirm", Some("tok"))]
+    );
+}

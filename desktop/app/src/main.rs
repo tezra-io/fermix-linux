@@ -1,6 +1,7 @@
 //! Fermix for Linux: set up Fermix and chat with it. A client of the daemon
 //! that the `fermix` package runs; it holds no config and no secrets of its own.
 
+mod always_on;
 mod app;
 mod assistant;
 mod assistant_flow;

@@ -70,7 +70,9 @@ pub fn opening(launch: Launch, binding: &Binding, daemon: Option<&SetupState>) -
 pub fn already_answered(problem: &DaemonProblem) -> Option<String> {
     match problem {
         DaemonProblem::NotRunning | DaemonProblem::NotResponding => None,
-        DaemonProblem::UpdateNeeded(_) | DaemonProblem::Broken(_) => Some(problem.sentence()),
+        DaemonProblem::UpdateNeeded(_)
+        | DaemonProblem::Broken(_)
+        | DaemonProblem::PrimaryUnreachable(_) => Some(problem.sentence()),
     }
 }
 

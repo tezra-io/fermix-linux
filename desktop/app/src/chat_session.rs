@@ -6,7 +6,9 @@ use crate::app::App;
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use fermix_client::chat_wire::protocol::{ClientEvent, Row, ServerEvent};
-use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
+use fermix_client::chat_wire::session::{
+    closes, ends_with, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
+};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use gtk::glib;
 use std::rc::Rc;
@@ -111,7 +113,7 @@ impl App {
                     glib::g_warning!("fermix", "chat refused: {sentence}");
                     return Err(Lost::Broken(sentence));
                 }
-                Handshake::Lost(reason) => return Err(Lost::Broken(reason)),
+                Handshake::Lost(lost) => return Err(lost),
                 Handshake::Ignore => glib::g_debug!("fermix", "before hello: {event:?}"),
             }
         }
@@ -152,6 +154,11 @@ impl App {
     }
 
     fn on_chat_event(self: &Rc<Self>, event: ServerEvent) {
+        // After a move, the server going away ends the connection with a sentence for the
+        // person (M75 §6): it is a loss like any other, so the outbox waits and chat reconnects.
+        if let Some(lost) = ends_with(&event) {
+            return self.chat_lost(lost);
+        }
         // A file's answer is for the reads waiting on it, never the timeline's.
         if self.media.answered(&event) {
             return;
@@ -221,6 +228,11 @@ impl App {
     }
 
     pub fn send_message(self: &Rc<Self>) {
+        // Refused for good (a revoked desktop, a version the daemon cannot speak): nothing typed
+        // could ever be sent, so nothing is queued; the banner says why.
+        if !self.wire.borrow().session.queues() {
+            return;
+        }
         let text = self.chat.input_text();
         let (events, queued) = {
             let chat = &mut self.wire.borrow_mut().chat;

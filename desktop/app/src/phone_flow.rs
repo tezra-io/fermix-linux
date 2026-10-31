@@ -8,7 +8,7 @@ use crate::app::App;
 use crate::phone::{PhoneView, Screen};
 use adw::prelude::*;
 use fermix_client::management::CallError;
-use fermix_client::mobile::{MobileStatus, PairingStart};
+use fermix_client::mobile::{MobileDevices, MobileStatus, PairingStart};
 use fermix_client::pairing::{reduce, Answer, EndAction, Progress, Step, TurnOn, TurnOnAction};
 use fermix_client::phone::{
     switch_starts_in_place, Forgetting, Intent, CHANNEL, ENDED_UNREADABLE, POLL_MS, SECTION,
@@ -564,7 +564,10 @@ impl App {
             self.phone_refusal(&e, "mobile.status");
         }
         let devices = self.daemon.call(|m| m.mobile_devices_list()).await;
-        let devices = devices.map_err(|e| self.phone_refusal(&e, "mobile.devices.list"));
+        // A desktop a move paired is Always On's, not a phone to forget here.
+        let devices = devices
+            .map(MobileDevices::phones)
+            .map_err(|e| self.phone_refusal(&e, "mobile.devices.list"));
         self.settings_data.borrow_mut().phone_devices = Some(devices);
         self.render();
     }

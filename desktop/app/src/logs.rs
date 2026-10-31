@@ -424,6 +424,10 @@ impl LogsPage {
                 "Fermix answered in a way this app does not understand",
                 WHERE_LOGS_ARE.to_owned(),
             ),
+            DaemonProblem::PrimaryUnreachable(sentence) => (
+                "The server is unreachable",
+                format!("{sentence} {WHERE_LOGS_ARE}"),
+            ),
         };
         self.down.set_title(title);
         let description = glib::markup_escape_text(&description);

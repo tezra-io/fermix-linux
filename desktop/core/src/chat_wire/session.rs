@@ -7,7 +7,7 @@
 //! daemon that cannot speak this build's version ends that, until chat is asked for again
 //! (macOS `CompanionSession`).
 
-use crate::chat_wire::protocol::{Direction, ServerEvent, PROTOCOL_VERSION};
+use crate::chat_wire::protocol::{Direction, ServerError, ServerEvent, PROTOCOL_VERSION};
 use std::time::Duration;
 
 /// How long each consecutive failure waits; the last delay repeats.
@@ -16,7 +16,7 @@ pub const RECONNECT_DELAYS_S: [u64; 6] = [1, 2, 4, 8, 16, 30];
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The error reasons after which the daemon closes the connection (PROTOCOL.md "Errors").
-const CLOSING_REASONS: [&str; 15] = [
+const CLOSING_REASONS: [&str; 18] = [
     "invalid_json",
     "invalid_event",
     "missing_type",
@@ -32,7 +32,21 @@ const CLOSING_REASONS: [&str; 15] = [
     "unsupported_protocol_version",
     "max_clients_reached",
     "unidentified_client",
+    "unattended_client",
+    "primary_unreachable",
+    "desktop_revoked",
 ];
+
+/// The closing reasons whose `message` is a sentence for the person, shown as the daemon wrote
+/// it. Both come only from a computer whose home moved (M75 §6): the server it forwards to is
+/// unreachable, or this process may not chat through it.
+const SAID_REASONS: [&str; 2] = ["primary_unreachable", "unattended_client"];
+
+/// The server no longer knows this computer (M75): its engine refuses every connection with this
+/// reason and a sentence, and nothing typed here can ever reach the server, so chat stops: no
+/// retry and nothing queued, until chat is asked for again. The engine's companion contract names
+/// it; the vendored version 3 copy predates it.
+const REVOKED: &str = "desktop_revoked";
 
 // The macOS app's ProductStrings wording (`companion.connection.*`), "this Mac" made "this computer".
 const UPDATE_APP: &str =
@@ -61,7 +75,7 @@ pub enum Handshake {
     /// The two sides cannot talk at this version; the sentence says which to update. No retry.
     Refused(String),
     /// Any other refusal: the connection is over, and the next attempt may work.
-    Lost(String),
+    Lost(Lost),
     /// Not a handshake answer: log it and keep waiting, the deadline still running.
     Ignore,
 }
@@ -73,9 +87,10 @@ pub fn handshake(event: &ServerEvent) -> Handshake {
             min_version,
             max_version,
         } => window(*min_version, *max_version),
-        ServerEvent::Error(error) => match &error.direction {
-            Some(direction) => Handshake::Refused(refusal(direction)),
-            None => Handshake::Lost(error.reason.clone()),
+        ServerEvent::Error(error) => match (&error.direction, lost_to(error)) {
+            (Some(direction), _) => Handshake::Refused(refusal(direction)),
+            (None, Lost::Revoked(sentence)) => Handshake::Refused(sentence),
+            (None, lost) => Handshake::Lost(lost),
         },
         _ => Handshake::Ignore,
     }
@@ -107,8 +122,38 @@ pub fn refusal(direction: &Direction) -> String {
 pub enum Lost {
     /// No `companion.sock` file: an engine that predates chat.
     NoSocket,
+    /// The daemon closed it with a sentence for the person (`SAID_REASONS`), which the page
+    /// shows as written while the next attempts run. The outbox waits, as after any loss.
+    Said(String),
+    /// The server no longer knows this computer (`desktop_revoked`): the sentence is shown, and
+    /// chat stops, queueing nothing, until it is asked for again.
+    Revoked(String),
     /// Anything else; the detail is for the log.
     Broken(String),
+}
+
+/// What a refusal the daemon closes the connection with means for the page.
+pub fn lost_to(error: &ServerError) -> Lost {
+    match &error.message {
+        Some(message) if error.reason == REVOKED => Lost::Revoked(message.clone()),
+        Some(message) if SAID_REASONS.contains(&error.reason.as_str()) => {
+            Lost::Said(message.clone())
+        }
+        _ => Lost::Broken(error.reason.clone()),
+    }
+}
+
+/// A live connection's event that ends it with a sentence for the person, which the app then
+/// treats as the loss it is rather than as a refused request. None for every other event.
+pub fn ends_with(event: &ServerEvent) -> Option<Lost> {
+    match event {
+        ServerEvent::Error(error)
+            if SAID_REASONS.contains(&error.reason.as_str()) || error.reason == REVOKED =>
+        {
+            Some(lost_to(error))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -191,13 +236,17 @@ impl Session {
 
     /// The connection ended or never began; returns how long to wait before `start` again.
     /// `None` when no attempt was running: a refusal's own close, or a second report of one
-    /// loss, changes nothing.
+    /// loss, changes nothing; and `None` for a revoked desktop, which is refused from then on.
     pub fn lost(&mut self, why: Lost) -> Option<Duration> {
         let running = matches!(
             self.phase,
             Phase::Connecting | Phase::Handshaking | Phase::Connected
         );
         if !running {
+            return None;
+        }
+        if let Lost::Revoked(sentence) = why {
+            self.phase = Phase::Refused(sentence);
             return None;
         }
         let wait = delay(self.failures);
@@ -207,6 +256,13 @@ impl Session {
         Some(wait)
     }
 
+    /// Whether a message typed now may wait in the outbox for the connection: not once the
+    /// daemon refused this app for good (a version it cannot speak, or a revoked desktop), when
+    /// nothing could ever carry it.
+    pub fn queues(&self) -> bool {
+        !matches!(self.phase, Phase::Refused(_))
+    }
+
     pub fn shown(&self) -> Shown {
         match (&self.phase, &self.last_lost) {
             (Phase::Idle, _) => Shown::Idle,
@@ -214,6 +270,8 @@ impl Session {
             (Phase::Refused(sentence), _) => Shown::Refused(sentence.clone()),
             (_, None) => Shown::Connecting,
             (_, Some(Lost::NoSocket)) => Shown::NoChat,
+            (_, Some(Lost::Said(sentence))) => Shown::Disconnected(sentence.clone()),
+            (_, Some(Lost::Revoked(sentence))) => Shown::Refused(sentence.clone()),
             (_, Some(Lost::Broken(_))) => Shown::Disconnected(RECONNECTING.into()),
         }
     }

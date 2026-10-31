@@ -183,18 +183,48 @@ impl fmt::Debug for PairingStart {
     }
 }
 
+/// What a paired device is. An engine older than M75 names no kind: every device was a phone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    #[default]
+    Phone,
+    /// A desktop engine a move paired (M75 §3). Always On shows it, not the phone list.
+    Desktop,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MobileDevice {
     pub device_id: String,
     pub name: String,
     pub model: String,
+    #[serde(default)]
+    pub kind: DeviceKind,
+    /// A desktop's executor switch; null on a phone.
+    #[serde(default)]
+    pub executor: Option<bool>,
     pub last_seen: Option<String>,
 }
 
-/// `mobile.devices.list`: every paired phone, oldest first. Empty while the channel is not running.
+/// `mobile.devices.list`: every paired device, oldest first. Empty while the channel is not running.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MobileDevices {
     pub devices: Vec<MobileDevice>,
+}
+
+impl MobileDevices {
+    /// The phones alone, which is what the phone surfaces list and forget.
+    pub fn phones(self) -> MobileDevices {
+        MobileDevices {
+            devices: self
+                .devices
+                .into_iter()
+                .filter(|d| d.kind == DeviceKind::Phone)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -255,6 +285,23 @@ impl Management {
         decoded(
             "mobile.devices.list",
             self.call("mobile.devices.list", json!({}))?,
+        )
+    }
+
+    /// Turns a desktop's executor switch on or off, and answers its row as it now stands.
+    pub fn mobile_devices_set_executor(
+        &self,
+        device_id: &str,
+        executor: bool,
+    ) -> Result<MobileDevice, CallError> {
+        assert!(
+            !device_id.is_empty(),
+            "mobile.devices.set_executor needs a device id"
+        );
+        let params = json!({ "device_id": device_id, "executor": executor });
+        decoded(
+            "mobile.devices.set_executor",
+            self.call("mobile.devices.set_executor", params)?,
         )
     }
 

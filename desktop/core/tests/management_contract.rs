@@ -3,11 +3,15 @@
 //! app's own client to a fake daemon answering with the golden, so the request it writes is held
 //! to the contract's request fixture too. A drift in the engine fails here rather than on a call.
 
+use fermix_client::always_on::{
+    passphrase, unconfirmed, Candidate, ItemStatus, MoveFrom, Role, Snapshots,
+};
 use fermix_client::frame::{read_frame, write_frame};
-use fermix_client::management::{CallError, Management};
-use fermix_client::mobile::{OutcomeReason, SessionState};
+use fermix_client::management::{CallError, Management, LONG_CALL_DEADLINE};
+use fermix_client::mobile::{DeviceKind, OutcomeReason, SessionState};
 use fermix_client::phone::switch_starts_in_place;
-use fermix_client::settings::{switch_key, SectionRows};
+use fermix_client::settings::{switch_key, SectionRows, Sections};
+use fermix_client::view::{daemon_problem, DaemonProblem};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixListener;
@@ -216,8 +220,16 @@ fn a_decision_and_a_cancel_answer_the_terminal_view() {
 fn the_paired_phones_and_a_forget_decode() {
     exchange("mobile_devices_list", "mobile_devices_list", |m| {
         let list = m.mobile_devices_list().expect("decodes");
-        assert_eq!(list.devices.len(), 1);
-        let phone = &list.devices[0];
+        assert_eq!(list.devices.len(), 2, "a phone and a desktop a move paired");
+        let phones = list.phones();
+        assert_eq!(
+            phones.devices.len(),
+            1,
+            "the phone list leaves the desktop out"
+        );
+        let phone = &phones.devices[0];
+        assert_eq!(phone.kind, DeviceKind::Phone);
+        assert_eq!(phone.executor, None);
         assert_eq!(phone.name, "Sam's phone");
         assert_eq!(phone.model, "Google Pixel 9 Pro");
         assert_eq!(phone.last_seen.as_deref(), Some("2026-09-26T12:04:40Z"));
@@ -228,6 +240,339 @@ fn the_paired_phones_and_a_forget_decode() {
         assert_eq!(revoked.device_id, device);
         assert!(revoked.revoked);
     });
+}
+
+/// A desktop's executor switch (M75 §3): the row names its kind and switch, and the write sends
+/// exactly the request the contract names and decodes the row it answers.
+#[test]
+fn a_desktops_executor_switch_decodes_and_is_written_as_the_contract_says() {
+    exchange("mobile_devices_list", "mobile_devices_list", |m| {
+        let list = m.mobile_devices_list().expect("decodes");
+        let desktop = &list.devices[1];
+        assert_eq!(desktop.kind, DeviceKind::Desktop);
+        assert_eq!(desktop.executor, Some(true));
+    });
+    let desktop = "c41e9d27-5a8b-4f63-9e20-7d1b3c5a8f94";
+    exchange(
+        "mobile_devices_set_executor",
+        "mobile_devices_set_executor",
+        |m| {
+            let row = m
+                .mobile_devices_set_executor(desktop, false)
+                .expect("decodes");
+            assert_eq!(row.device_id, desktop);
+            assert_eq!(row.kind, DeviceKind::Desktop);
+            assert_eq!(row.executor, Some(false));
+        },
+    );
+}
+
+/// The home goldens the Always On pane reads decode through the client, which sends what the
+/// request fixtures name.
+#[test]
+fn the_home_goldens_decode_through_the_client() {
+    exchange("home_status", "home_status", |m| {
+        let status = m.home_status().expect("decodes");
+        assert_eq!(status.role, Role::Primary);
+        assert_eq!(status.epoch, Some(4));
+        assert!(status.primary.is_none() && status.desktops.is_empty());
+        assert!(status.snapshots.configured);
+        let target = &status.snapshots.targets[0];
+        assert_eq!(target.label, "S3");
+        let verified = target.last_verified.as_ref().expect("a verified point");
+        assert_eq!(verified.name.as_deref(), Some("20261027T093000Z-e4.fxsnap"));
+        assert_eq!(
+            status.snapshots.sentence,
+            "The last snapshot was stored at 2026-10-27 09:30 UTC."
+        );
+        assert_eq!(status.secrets_missing, ["anthropic_api_key"]);
+        assert_eq!(verified.key_id.as_deref(), Some("08c15ca36dd935c4"));
+        assert!(status.primary_home.is_none() && status.primary_missing.is_none());
+    });
+    exchange("home_snapshots_run", "home_snapshots_run", |m| {
+        let run = m.home_snapshots_run().expect("decodes");
+        assert!(run.started && run.snapshots.running);
+        assert_eq!(run.snapshots.sentence, "A snapshot is being written now.");
+    });
+}
+
+/// After a move, a forwarded call the server cannot answer is refused in the daemon's words,
+/// and the app shows that sentence rather than calling the daemon broken (M75 §6).
+#[test]
+fn an_unreachable_server_and_a_device_class_refusal_carry_their_sentences() {
+    let response = named(ERRORS, "primary_unreachable")["response"].clone();
+    let sentence =
+        "The server fermix-vm is unreachable. Fermix keeps your message until it is back.";
+    serve(response, |m| {
+        let refused = m
+            .settings_get("snapshots")
+            .expect_err("the call is refused");
+        let problem = daemon_problem(&refused);
+        let CallError::Refused(refusal) = refused else {
+            panic!("primary_unreachable should refuse, got {refused:?}");
+        };
+        assert_eq!(refusal.code, "primary_unreachable");
+        assert_eq!(refusal.sentence, sentence);
+        assert_eq!(problem, DaemonProblem::PrimaryUnreachable(sentence.into()));
+        assert_eq!(problem.status_word(), "Server unreachable");
+        assert_eq!(problem.sentence(), sentence);
+    });
+    let response = named(ERRORS, "device_class_method")["response"].clone();
+    serve(response, |m| match m.settings_get("engine") {
+        Err(CallError::Refused(refusal)) => {
+            assert_eq!(refusal.code, "device_class_method");
+            assert_eq!(
+                refusal.sentence,
+                "This request configures the computer it came from, so the server does not \
+                 answer it."
+            );
+        }
+        other => panic!("device_class_method should refuse, got {other:?}"),
+    });
+}
+
+/// The code comes back once and no print of it spells it; the move goes out with exactly the
+/// candidate and the passphrase the request fixture names, and its answer decodes.
+#[test]
+fn the_enrollment_code_and_the_move_go_as_the_contract_says() {
+    exchange("home_enroll_open", "home_enroll_open", |m| {
+        let code = m.home_enroll_open().expect("decodes");
+        assert!(code.text().starts_with("fxenroll1."));
+        assert!(!format!("{code:?}").contains(code.text()));
+        assert_eq!(code.expires_at, "2026-10-27T09:40:00Z");
+    });
+    let params = &named(REQUESTS, "home_move_start")["frame"]["params"];
+    let candidate = params["candidate_id"]
+        .as_str()
+        .expect("a candidate")
+        .to_owned();
+    let typed = params["recovery_passphrase"]
+        .as_str()
+        .expect("a passphrase")
+        .to_owned();
+    exchange("home_move_start", "home_move_start", |m| {
+        let held = passphrase(&typed, &typed).expect("the two entries agree");
+        let started = m
+            .home_move_start(&candidate, &held, MoveFrom::ThisComputer)
+            .expect("decodes");
+        assert_eq!(started.candidate.candidate_id, candidate);
+        assert_eq!(started.candidate.name, "north-box");
+        assert!(started.keep_as_desktop);
+        assert_eq!(
+            started.sentence,
+            "Fermix restarts in the device role and moves this home to north-box; keep the \
+             recovery passphrase somewhere safe."
+        );
+    });
+}
+
+/// Replacing the server from a desktop is the same move, sent with `keep_as_desktop: false`, so
+/// the server being replaced keeps no desktop key, row or link (M75 fix plan, decision 4).
+#[test]
+fn replacing_the_server_sends_the_move_that_keeps_no_desktop() {
+    let params = &named(REQUESTS, "home_move_start_replacing_the_server")["frame"]["params"];
+    assert_eq!(params["keep_as_desktop"], Value::Bool(false));
+    let candidate = params["candidate_id"]
+        .as_str()
+        .expect("a candidate")
+        .to_owned();
+    let typed = params["recovery_passphrase"]
+        .as_str()
+        .expect("a passphrase")
+        .to_owned();
+    exchange(
+        "home_move_start_replacing_the_server",
+        "home_move_start",
+        |m| {
+            let held = passphrase(&typed, &typed).expect("the two entries agree");
+            let started = m
+                .home_move_start(&candidate, &held, MoveFrom::TheServer)
+                .expect("decodes");
+            assert_eq!(started.candidate.name, "north-box");
+        },
+    );
+}
+
+/// The readiness report goes out for the candidate the request fixture names, and every item
+/// decodes with its status and the daemon's sentence.
+#[test]
+fn the_readiness_report_goes_as_the_contract_says() {
+    let params = &named(REQUESTS, "home_move_readiness")["frame"]["params"];
+    let candidate = params["candidate_id"]
+        .as_str()
+        .expect("a candidate")
+        .to_owned();
+    exchange("home_move_readiness", "home_move_readiness", |m| {
+        let report = m.home_move_readiness(&candidate).expect("decodes");
+        assert!(report.ready);
+        let ids: Vec<&str> = report.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "keychain_secrets",
+                "engine_version",
+                "disk",
+                "s3_size",
+                "plugins",
+                "stays_here",
+                "cutover_gap",
+                "serves_nothing"
+            ]
+        );
+        assert!(report
+            .items
+            .iter()
+            .all(|i| matches!(i.status, ItemStatus::Ok | ItemStatus::Warn)));
+        assert!(report.items.iter().all(|i| i.sentence.ends_with('.')));
+    });
+}
+
+/// A primary that stays one sets its recovery passphrase from the app (M75 review, edges F8):
+/// the passphrase goes out as typed and the answer carries the daemon's sentence.
+#[test]
+fn the_recovery_passphrase_is_set_through_the_client() {
+    let params = &named(REQUESTS, "home_snapshots_passphrase")["frame"]["params"];
+    let typed = params["recovery_passphrase"]
+        .as_str()
+        .expect("a passphrase")
+        .to_owned();
+    exchange(
+        "home_snapshots_passphrase",
+        "home_snapshots_passphrase",
+        |m| {
+            let held = passphrase(&typed, &typed).expect("the two entries agree");
+            let set = m.home_snapshots_passphrase(&held).expect("decodes");
+            assert_eq!(set.key_id, "08c15ca36dd935c4");
+            assert!(set.snapshots.recipient_set);
+            assert!(set
+                .sentence
+                .starts_with("Snapshots from now on open with this passphrase"));
+        },
+    );
+}
+
+/// On a linked desktop `settings.sections` lists this computer's own sections, and says in
+/// `primary_missing` why the server's are missing (M75 review, edges F13).
+#[test]
+fn the_sections_say_when_the_servers_are_missing() {
+    let listed = named(SUCCESS, "settings_sections")["response"]["result"].clone();
+    let sections: Sections = serde_json::from_value(listed.clone()).expect("decodes");
+    assert_eq!(sections.primary_missing, None);
+    let mut composed = listed;
+    let own: Vec<Value> = composed["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .filter(|s| s["id"] == "engine" || s["id"] == "sandbox")
+        .cloned()
+        .collect();
+    composed["sections"] = Value::Array(own);
+    composed["primary_missing"] = Value::from(
+        "The server fermix-vm is unreachable. Fermix keeps your message until it is back.",
+    );
+    let sections: Sections = serde_json::from_value(composed).expect("decodes");
+    assert_eq!(sections.sections.len(), 2);
+    assert!(sections
+        .primary_missing
+        .is_some_and(|s| s.starts_with("The server fermix-vm")));
+}
+
+/// Production Fermix is managed through the app, so no settings row the app draws (Always On's
+/// sections among them) tells the owner to run a `fermix` command: not a label, a footer or an
+/// info (M75 review, edges F7 and F8; fix plan, decision 13).
+#[test]
+fn no_settings_row_prescribes_a_fermix_command() {
+    let goldens: Vec<Value> = SUCCESS
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
+        .filter(|v| {
+            v["name"]
+                .as_str()
+                .is_some_and(|n| n.starts_with("settings_get"))
+        })
+        .collect();
+    let names: Vec<&str> = goldens.iter().filter_map(|v| v["name"].as_str()).collect();
+    assert!(names.contains(&"settings_get_engine") && names.contains(&"settings_get_snapshots"));
+    for golden in &goldens {
+        let rows = golden["response"]["result"]["rows"]
+            .as_array()
+            .expect("rows");
+        for row in rows {
+            for field in ["label", "footer", "info"] {
+                let words = row[field].as_str().unwrap_or_default();
+                assert!(
+                    !names_a_command(words),
+                    "{} {} {field}: {words}",
+                    golden["name"],
+                    row["key"]
+                );
+            }
+        }
+    }
+}
+
+/// Whether `words` name a `fermix` command: the word, a space, and a verb.
+fn names_a_command(words: &str) -> bool {
+    words.match_indices("fermix ").any(|(at, found)| {
+        words[at + found.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+    })
+}
+
+/// Every home golden is decoded here or by a test above, so a golden the engine adds fails here
+/// until the app reads it. The app reads candidates and snapshots through `home.status`, so
+/// those goldens are decoded into the same types.
+#[test]
+fn no_home_golden_goes_unread() {
+    let candidates =
+        named(SUCCESS, "home_candidates_list")["response"]["result"]["candidates"].clone();
+    let candidates: Vec<Candidate> = serde_json::from_value(candidates).expect("decodes");
+    assert_eq!(candidates[0].name, "north-box");
+    for (golden, pointer) in [
+        ("home_snapshots_status", ""),
+        ("home_snapshots_passphrase", "/snapshots"),
+    ] {
+        let result = &named(SUCCESS, golden)["response"]["result"];
+        let value = result.pointer(pointer).expect("the snapshots").clone();
+        let snapshots: Snapshots = serde_json::from_value(value).expect("decodes");
+        assert!(snapshots.configured, "{golden}");
+    }
+    let read: BTreeSet<&str> = [
+        "home_status",
+        "home_snapshots_status",
+        "home_snapshots_run",
+        "home_snapshots_passphrase",
+        "home_enroll_open",
+        "home_candidates_list",
+        "home_move_readiness",
+        "home_move_start",
+    ]
+    .into_iter()
+    .collect();
+    let published: Vec<String> = SUCCESS
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
+        .filter_map(|v| v["name"].as_str().map(str::to_owned))
+        .filter(|name| name.starts_with("home_"))
+        .collect();
+    for name in &published {
+        assert!(read.contains(name.as_str()), "{name} is not decoded");
+    }
+    assert_eq!(published.len(), read.len());
+}
+
+/// The recovery passphrase the request fixture carries goes out as written, and never in a
+/// print of the value that holds it.
+#[test]
+fn the_passphrase_is_sent_as_typed_and_never_printed() {
+    let frame = &named(REQUESTS, "home_snapshots_passphrase")["frame"];
+    let typed = frame["params"]["recovery_passphrase"]
+        .as_str()
+        .expect("the fixture's passphrase");
+    let held = passphrase(typed, typed).expect("the two entries agree");
+    assert!(!format!("{held:?}").contains(typed));
 }
 
 /// Every phone golden is decoded by one of the tests above, so a golden the engine adds fails
@@ -250,6 +595,7 @@ fn no_phone_golden_goes_unread() {
         "mobile_pair_cancel",
         "mobile_devices_list",
         "mobile_devices_revoke",
+        "mobile_devices_set_executor",
     ]
     .into_iter()
     .collect();
@@ -327,5 +673,111 @@ fn the_phone_sections_switch_is_mobile_enabled() {
     assert!(
         reach.info.is_some(),
         "reach from anywhere explains what off keeps"
+    );
+}
+
+/// The two move calls walk the whole home before they answer, and a desktop forwarding one waits
+/// 60 s for the server: the client gives them at least 65 s (PROTOCOL.md, "Forward deadlines");
+/// every other call keeps its own.
+#[test]
+fn the_move_calls_wait_at_least_sixty_five_seconds() {
+    let protocol = include_str!("../contracts/management/PROTOCOL.md");
+    assert!(protocol.contains("| `home.move.start` | 60 s | at least 65 s |"));
+    assert!(LONG_CALL_DEADLINE >= Duration::from_secs(65));
+    let usual = Duration::from_secs(10);
+    let client = Management::new(PathBuf::from("/nonexistent/daemon.sock"), usual);
+    for method in ["home.move.readiness", "home.move.start"] {
+        assert!(
+            client.deadline_for(method) >= Duration::from_secs(65),
+            "{method}"
+        );
+    }
+    for method in [
+        "home.status",
+        "settings.get",
+        "home.snapshots.run",
+        "home.enroll.open",
+    ] {
+        assert_eq!(client.deadline_for(method), usual, "{method}");
+    }
+    let patient = Management::new(
+        PathBuf::from("/nonexistent/daemon.sock"),
+        Duration::from_secs(90),
+    );
+    assert_eq!(
+        patient.deadline_for("home.move.start"),
+        Duration::from_secs(90)
+    );
+}
+
+/// A forwarded start whose answer was lost is `unconfirmed`, with the daemon's sentence: the pane
+/// follows the move rather than calling it refused.
+#[test]
+fn an_unconfirmed_start_carries_its_sentence() {
+    let response = named(ERRORS, "unconfirmed")["response"].clone();
+    serve(response, |m| {
+        let params = &named(REQUESTS, "home_move_start")["frame"]["params"];
+        let candidate = params["candidate_id"].as_str().expect("a candidate");
+        let typed = params["recovery_passphrase"]
+            .as_str()
+            .expect("a passphrase");
+        let held = passphrase(typed, typed).expect("they agree");
+        let refused = m
+            .home_move_start(candidate, &held, MoveFrom::TheServer)
+            .expect_err("unconfirmed");
+        assert_eq!(
+            unconfirmed(&refused),
+            Some(
+                "The server fermix-vm did not confirm in time whether the move started. Its \
+                 state shows once the server answers again, and starting it again never starts \
+                 a second move."
+            )
+        );
+    });
+    let other = named(ERRORS, "unavailable_home_owner_decision")["response"].clone();
+    serve(other, |m| {
+        let refused = m.home_enroll_open().expect_err("refused");
+        assert_eq!(unconfirmed(&refused), None);
+    });
+}
+
+/// The read grants: listed and removed through the client as the request fixtures name them, and
+/// a removal by a process that is not the owner refused in the daemon's words.
+#[test]
+fn the_read_grants_go_as_the_contract_says() {
+    exchange("device_grants_list", "device_grants_list", |m| {
+        let listed = m.device_grants_list().expect("decodes");
+        assert_eq!(listed.grants.len(), 2);
+        assert_eq!(listed.grants[1].path, "/Users/ana/Taxes");
+        assert!(listed.sentence.starts_with("The server may read 2 folders"));
+    });
+    let path = named(REQUESTS, "device_grants_remove")["frame"]["params"]["path"]
+        .as_str()
+        .expect("a path")
+        .to_owned();
+    exchange("device_grants_remove", "device_grants_remove", |m| {
+        let removed = m.device_grants_remove(&path).expect("decodes");
+        assert_eq!(removed.removed, path);
+        assert_eq!(removed.grants.len(), 1);
+        assert_eq!(
+            removed.sentence,
+            "The server can no longer read that folder on this computer."
+        );
+    });
+    let refusal = named(ERRORS, "unavailable_device_owner_decision")["response"].clone();
+    serve(refusal, |m| match m.device_grants_remove(&path) {
+        Err(CallError::Refused(r)) => assert!(r.sentence.starts_with("Only the owner can change")),
+        other => panic!("an owner decision, got {other:?}"),
+    });
+    let published: Vec<String> = SUCCESS
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
+        .filter_map(|v| v["name"].as_str().map(str::to_owned))
+        .filter(|name| name.starts_with("device_"))
+        .collect();
+    assert_eq!(
+        published,
+        ["device_grants_list", "device_grants_remove"],
+        "each one read above"
     );
 }

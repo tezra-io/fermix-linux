@@ -260,6 +260,9 @@ impl DoctorPage {
                 "Fermix answered in a way this app does not understand",
                 "Doctor runs its checks inside Fermix. Restart it from Home.",
             ),
+            DaemonProblem::PrimaryUnreachable(sentence) => {
+                ("The server is unreachable", sentence.as_str())
+            }
         };
         let description = glib::markup_escape_text(description);
         self.down.set_title(title);

@@ -8,6 +8,7 @@ use crate::descriptor::{Keep, SectionView};
 use crate::dialogs::{leave, secret_dialog, SecretPrompt};
 use crate::secret_save::set_secret;
 use adw::prelude::*;
+use fermix_client::always_on;
 use fermix_client::management::CallError;
 use fermix_client::model::ProviderRow;
 use fermix_client::providers::{uses_chatgpt_plan, MANAGE_USAGE, MANAGE_USAGE_HINT, USING_PLAN};
@@ -66,6 +67,11 @@ impl App {
     /// Reads every section of `pane` not read yet. Sections already on screen
     /// stay while they are read again elsewhere; only a first read shows a spinner.
     pub async fn open_pane(&self, pane: String) {
+        // Always On reads `home.status`, which this computer answers even when the server it
+        // forwards to cannot, so it reads whatever becomes of the sections.
+        if pane == always_on::PANE {
+            self.always_on.shown();
+        }
         if !self.ensure_sections().await {
             return;
         }
@@ -100,7 +106,10 @@ impl App {
         }
         match self.daemon.call(|m| m.settings_sections()).await {
             Ok(answer) => {
-                self.settings_data.borrow_mut().sections = Some(answer.sections);
+                let mut data = self.settings_data.borrow_mut();
+                data.sections = Some(answer.sections);
+                data.sections_missing = answer.primary_missing;
+                drop(data);
                 self.render();
                 true
             }
@@ -292,6 +301,7 @@ impl App {
     pub fn forget_settings(&self) {
         let mut data = self.settings_data.borrow_mut();
         data.sections = None;
+        data.sections_missing = None;
         data.rows.clear();
         data.listings.clear();
         data.unread.clear();
@@ -300,9 +310,14 @@ impl App {
     }
 
     /// A restarted daemon may publish different rows: drop what the old one
-    /// said, and read the pane on screen again.
+    /// said, and read the pane on screen again. So does a desktop whose list
+    /// lacked the server's sections, once Fermix answers in full again.
     pub async fn follow_daemon_process(&self, pid: Option<String>) {
-        if self.settings_data.borrow().pid == pid {
+        let same = {
+            let data = self.settings_data.borrow();
+            data.pid == pid && data.sections_missing.is_none()
+        };
+        if same {
             return;
         }
         self.forget_settings();

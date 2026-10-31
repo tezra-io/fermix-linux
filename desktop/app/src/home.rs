@@ -415,6 +415,9 @@ fn down_copy(problem: &DaemonProblem) -> DownCopy {
             detail.clone(),
             Some(("Restart Fermix", "win.restart-service")),
         ),
+        DaemonProblem::PrimaryUnreachable(sentence) => {
+            ("The server is unreachable", sentence.clone(), None)
+        }
     }
 }
 

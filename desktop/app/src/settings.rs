@@ -1,9 +1,10 @@
-//! Settings: fifteen panes in four groups (M38 §5.7), a searchable pane list
+//! Settings: sixteen panes in four groups (M38 §5.7), a searchable pane list
 //! that replaces the sidebar, and the banner for a settings file changed or
 //! broken outside Fermix. Most panes are the daemon's sections drawn by
 //! `descriptor.rs`; Providers, Channels and Permissions add rows of their own,
-//! and Updates is the app's own.
+//! Always On draws `home.status` above its sections, and Updates is the app's own.
 
+use crate::always_on::AlwaysOnPane;
 use crate::capability_panes::{ComputerPane, Facts, MeetingsPane, Running, MEETINGS_SIGN_IN};
 use crate::channels::ChannelsPane;
 use crate::descriptor::{Drawn, SectionView};
@@ -11,6 +12,7 @@ use crate::state::{Connection, State};
 use crate::status::{down_view, waiting, DownPage};
 use crate::updates_pane::UpdatesPane;
 use adw::prelude::*;
+use fermix_client::always_on;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
 use fermix_client::mobile::{MobileDevices, MobileStatus, Remote};
@@ -38,13 +40,19 @@ const DESCRIPTOR_PANES: [&str; 8] = [
     "sandbox",
 ];
 
-/// Panes that read nothing from the daemon, so they show while it is down.
-const OWN_PANES: [&str; 1] = ["updates"];
+/// Panes that draw their own state, so they show while Fermix is down: Updates reads nothing
+/// from it, and Always On reads `home.status` itself, which this computer answers even when the
+/// server it forwards to does not, and says itself when Fermix here is down.
+const OWN_PANES: [&str; 2] = ["updates", always_on::PANE];
 
 /// What the controller knows about settings, beside `State`.
 #[derive(Default)]
 pub struct SettingsData {
     pub sections: Option<Vec<Section>>,
+    /// On a desktop whose server is unreachable (M75), the daemon's sentence for why the server's
+    /// sections are missing from `sections`, which then lists only this computer's own. The list
+    /// is read again once the server is back.
+    pub sections_missing: Option<String>,
     pub rows: HashMap<String, SectionRows>,
     /// The models a provider section's model row offers, by section, once
     /// listed; a re-read of the section keeps them.
@@ -149,9 +157,13 @@ pub struct SettingsPage {
     search: gtk::SearchEntry,
     /// Pages whose groups are the daemon's sections, by pane slug.
     pages: HashMap<&'static str, adw::PreferencesPage>,
+    /// Always On, whose page places the daemon's sections among its own groups.
+    always_on: Rc<AlwaysOnPane>,
     /// The Providers pane's own page, which gains the shared routing section.
     providers_page: adw::PreferencesPage,
     views: RefCell<Vec<Rc<SectionView>>>,
+    /// Set once the views of every pane but Always On are built, from a complete list.
+    views_built: Cell<bool>,
     /// Views inside open dialogs; each dialog removes its own when it closes.
     pub dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>,
     /// Pane slugs the search leaves visible.
@@ -163,11 +175,13 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     /// `providers` is the Providers pane built by `providers.rs`, and `providers_page` its list;
-    /// `integrations` is the pane `integrations.rs` builds and feeds itself.
+    /// `integrations` and `always_on` are panes that feed themselves. Always On's page also takes
+    /// the daemon's sections filed under it, below its own groups.
     pub fn new(
         providers: &gtk::Widget,
         providers_page: &adw::PreferencesPage,
         integrations: &adw::PreferencesPage,
+        always_on: &Rc<AlwaysOnPane>,
     ) -> SettingsPage {
         let panes = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -183,6 +197,7 @@ impl SettingsPage {
         panes.add_named(&computer.page, Some("computer"));
         let updates = UpdatesPane::new();
         panes.add_named(&updates.page, Some("updates"));
+        panes.add_named(&always_on.root, Some(always_on::PANE));
         let mut pages = HashMap::new();
         for slug in DESCRIPTOR_PANES {
             let page = adw::PreferencesPage::new();
@@ -220,8 +235,10 @@ impl SettingsPage {
             updates,
             search,
             pages,
+            always_on: always_on.clone(),
             providers_page: providers_page.clone(),
             views: RefCell::default(),
+            views_built: Cell::new(false),
             dialog_views: Rc::default(),
             visible,
             down,
@@ -233,15 +250,16 @@ impl SettingsPage {
         let engine = state.snapshot().map(|s| s.version.as_str());
         self.updates
             .render(&settings_view(&state.updates, engine, unix_now()));
+        if let Some(sections) = &data.sections {
+            self.ensure_views(sections, data.sections_missing.is_some());
+        }
         let Connection::Up(snapshot) = &state.connection else {
-            return self.render_down(state);
+            self.render_down(state);
+            return self.render_always_on(data);
         };
         self.down.reset();
         self.down_shown.set(false);
         show_root(&self.root, &self.panes, false);
-        if let Some(sections) = &data.sections {
-            self.ensure_views(sections);
-        }
         let config = snapshot.state.coexistence.config_state.as_str();
         let locked = config != "clear";
         let views = self.views.borrow();
@@ -292,12 +310,37 @@ impl SettingsPage {
         show_root(&self.root, &self.panes, true);
     }
 
-    /// Adds one group per section to each descriptor pane, once the sections are known.
-    fn ensure_views(&self, sections: &[Section]) {
-        if !self.views.borrow().is_empty() {
+    /// The sections under Always On while the rest of Settings shows Fermix down: the pane draws
+    /// itself, and the section that configures this computer is answered here even while the
+    /// server is unreachable (M75 review, edges F13). A refused save says why under its row.
+    fn render_always_on(&self, data: &SettingsData) {
+        let views = self.views.borrow();
+        let own = sections_for(
+            always_on::PANE,
+            data.sections.as_deref().unwrap_or_default(),
+        );
+        for view in views.iter().filter(|v| own.iter().any(|s| s.id == v.id)) {
+            view.show(data.drawn(&view.id, false));
+        }
+    }
+
+    /// Adds one group per section to each pane, once the sections are known. Always On's take
+    /// their place as they are listed; every other pane's are built once, from a complete list:
+    /// `partial` says the list holds only this computer's own sections, the server's missing.
+    fn ensure_views(&self, sections: &[Section], partial: bool) {
+        let mut views = self.views.borrow_mut();
+        for section in sections_for(always_on::PANE, sections) {
+            if views.iter().any(|v| v.id == section.id) {
+                continue;
+            }
+            let view = SectionView::new(&section.id, Some(&section.title));
+            self.always_on.add_section(&section.id, &view.group);
+            views.push(view);
+        }
+        if partial || self.views_built.get() {
             return;
         }
-        let mut views = Vec::new();
+        self.views_built.set(true);
         for (slug, page) in &self.pages {
             let title = pane(slug).map_or("", |p| p.title);
             for section in sections_for(slug, sections) {
@@ -309,7 +352,6 @@ impl SettingsPage {
         }
         views.push(self.channels.editors_view(sections));
         views.extend(self.providers_views(sections));
-        *self.views.borrow_mut() = views;
     }
 
     /// Providers draws its own list; below it sits the one shared section, "Model behavior".
