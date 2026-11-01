@@ -12,23 +12,28 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `bcae16b9b983da22831a55cd01fc41ed4ac2f558` (2026-10-31, branch `dev`), which is also
-  the last commit to touch `priv/management` ("feat(web): adding a source on the Cues tab lists
-  every choice at once, as the Mac app does, with nothing folded under Something else"). Since
-  v0.17.0 (`b9dce743`), all within version 2: the sixteen `home.*` methods (the home's status with
-  its Always On `summary`, `disk` and `version`, recovery snapshots, enrollment, candidates, the
-  move, and the seven `home.provision.*` methods of the cloud provisioner, `providers` among them),
+- Commit: `2cb506b0fc5ad8ff63777981aeedec6b579a3e7a` (2026-11-01, branch `aos/engine`), whose
+  last change to `priv/management` is `ba5b609d` ("fix(home): home.act's changed refusal carries
+  its sentence alone, and the surface reads home.status again as after any act, so no error detail
+  ever nears the protocol's 4,096-byte bound"). Since v0.17.0 (`b9dce743`), all within version 2:
+  the `home.*` methods (the home's status with its Always On `summary`, `disk` and `version`,
+  recovery snapshots, enrollment, candidates, the move, `home.provision.options` and `home.act`),
   the `snapshots` section under pane `always_on`, `settings.sections.primary_missing`, a paired
-  device's `kind`, the codes `primary_unreachable`, `device_class_method` and `unconfirmed`, the
-  plugin status `reinstall_failed`, the job kind `home_provision`, a cue watcher's `follow_up`
-  with `always_allowed`, and `cues.watchers.always_allow.revoke`. Since the previous pin
-  (`42f02f6f`): `home.provision.providers`; `provider` on `home.provision.connect`, `options` and
-  `create` and in the provisioner's view; locations and `next_location` as open strings; a
-  resource's `id` as a string; the summary action `open_console` in place of `open_hetzner`; the
-  failure reasons `rate_limited`, `unreachable` and `other`; the provider-neutral owner-decision
-  sentence; that `home_status_changed` (companion protocol 6) says when the summary changed;
-  `cues.watchers.always_allow.revoke` and the watcher row's `follow_up.always_allowed` in place of
-  `mode` and `approved`; and the cue screen's wording.
+  device's `kind`, the codes `primary_unreachable`, `device_class_method`, `unconfirmed` and
+  `changed`, the plugin status `reinstall_failed`, the job kind `home_provision`, a cue watcher's
+  `follow_up` with `always_allowed`, and `cues.watchers.always_allow.revoke`. Since the previous
+  pin (`bcae16b9`): every Always On step is one `home.act {action, key, input}` the engine runs,
+  answered `{summary, result}` or `changed` with its sentence alone; every summary action is one
+  record (`id`, `label`, `needs`, `confirm`, `url`, `key`), `set_up` gone for `paste_token`; the
+  summary's `key`, `notice`, `detail.providers`, `detail.lines` and `detail.progress`, with
+  `detail.connect` and `detail.steps` gone; the problem `power_failed`; `home.status {after,
+  wait_ms}`; `home.move.readiness`, `home.move.start`, `home.enroll.open`, `home.enroll.withdraw`
+  and `home.snapshots.run` rail-only (refused on this socket by name); `home.provision.providers`,
+  `connect`, `create`, `power`, `resources` and `delete` gone; the move checks the recovery
+  passphrase against the one set, or sets it; the review's `service` item; `setup.session.create`
+  an owner decision; the owner-only sentences naming the Fermix app, the setup page and the
+  owner's own terminal; `job.cancel` answering once the run stopped; and the Cues screen's
+  decision model (`cues_decision_provider`).
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

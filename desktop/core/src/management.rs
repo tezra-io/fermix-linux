@@ -18,18 +18,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 2;
-/// The calls that walk the whole home before they answer: on a primary in the call itself, and on
-/// a desktop that forwards one, the 60 s it waits for the server (PROTOCOL.md, "After a move",
-/// "Forward deadlines"). They get at least 65 s, as the protocol asks of a client.
-const HOME_WALKS: [&str; 2] = ["home.move.readiness", "home.move.start"];
-const HOME_WALK_DEADLINE: Duration = Duration::from_secs(65);
-/// The provisioner's reads of its provider, each up to three calls of at most 10 s.
-const PROVIDER_READS: [&str; 3] = [
-    "home.provision.connect",
-    "home.provision.options",
-    "home.provision.resources",
-];
-const PROVIDER_READ_DEADLINE: Duration = Duration::from_secs(35);
+/// One Always On step: a token checked with its provider takes up to about 45 s, and a review a
+/// desktop sends its server up to 60 s, so a client gives it 90 s, as the protocol asks.
+const STEP: &str = "home.act";
+const STEP_DEADLINE: Duration = Duration::from_secs(90);
+/// The provider's offers, read live: up to three calls of at most 10 s.
+const OFFERS: &str = "home.provision.options";
+const OFFERS_DEADLINE: Duration = Duration::from_secs(35);
 /// The most models one `providers.models.list` page holds; the app asks for one page.
 const MODEL_PAGE: u64 = 200;
 
@@ -96,16 +91,13 @@ impl Management {
         decode_response(&answer, &request_id)
     }
 
-    /// How long one exchange of `method` may take: the calls that walk the whole home and the
-    /// provisioner's reads of its provider get their own deadlines, never shorter than this
-    /// client's, which every other call keeps.
+    /// How long one exchange of `method` may take: an Always On step and the provider's offers
+    /// get their own deadlines, never shorter than this client's, which every other call keeps.
     pub fn deadline_for(&self, method: &str) -> Duration {
-        let own = if HOME_WALKS.contains(&method) {
-            HOME_WALK_DEADLINE
-        } else if PROVIDER_READS.contains(&method) {
-            PROVIDER_READ_DEADLINE
-        } else {
-            return self.timeout;
+        let own = match method {
+            STEP => STEP_DEADLINE,
+            OFFERS => OFFERS_DEADLINE,
+            _ => return self.timeout,
         };
         self.timeout.max(own)
     }

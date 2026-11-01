@@ -27,8 +27,9 @@ use crate::update_install::{finish_update, install_update, update_try_again};
 use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
-use fermix_client::always_on::{self, notices::Notice};
+use fermix_client::always_on;
 use fermix_client::greeting::{about_you_name, ABOUT_YOU};
+use fermix_client::home::Notice;
 use fermix_client::management::{CallError, PROTOCOL_VERSION};
 use fermix_client::model::{Hello, SetupState};
 use fermix_client::onboarding::{opening, Launch, Opening};
@@ -402,8 +403,8 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
     }))
 }
 
-/// Raises one of Always On's notifications through the desktop's own: a newer one of a kind
-/// replaces the one before it.
+/// Raises one of Always On's notices through the desktop's own: a newer one replaces the one
+/// before it.
 fn notifier(application: &adw::Application) -> impl Fn(&Notice) {
     let application = application.downgrade();
     move |notice: &Notice| {
@@ -415,8 +416,8 @@ fn notifier(application: &adw::Application) -> impl Fn(&Notice) {
             return;
         };
         let raised = gio::Notification::new(always_on::NOTICE_TITLE);
-        raised.set_body(Some(&notice.body));
-        application.send_notification(Some(notice.kind.id()), &raised);
+        raised.set_body(Some(&notice.sentence));
+        application.send_notification(Some(always_on::NOTICE_ID), &raised);
     }
 }
 

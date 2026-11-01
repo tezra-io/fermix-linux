@@ -1,38 +1,37 @@
-//! The Always On pane (M75 lean v1 §7): one sentence and at most one main action per screen, the
-//! engine's words, Details for the expert and Learn more to the docs. Which screen shows, what it
-//! says, where each action goes and the calls it makes are `fermix_client::always_on`'s; this
-//! file only draws the model and runs the calls it hands over, each off the window's thread.
+//! The Always On pane (Always On setup §8.4): it draws the engine's summary and sends each press
+//! as one `home.act`. Which screen shows, what a press collects and when to read are
+//! `fermix_client::always_on`'s; this file draws the model and runs the calls it hands over, each
+//! off the window's thread. It keeps only how it asks for a token and a passphrase, how it draws
+//! a choice of size and place, and that Fermix restarts after its own Move now.
 //!
 //! The pane owns its daemon calls, as Integrations does. It reads `home.status` on no timer:
-//! when it is shown, after its own step, when the engine says the summary changed
+//! when it is shown, after each act, when the engine says the summary changed
 //! (`home_status_changed`, which the chat wire hands to `home_status_changed` here), and when a
 //! new engine answers while it shows; so while Always On is off and the pane is closed the app
-//! asks nothing. The model says which read is due; this runs them in turn and raises the
-//! desktop's own notifications from what changed between two reads. The `snapshots` section,
-//! which the daemon files under this pane, is added below by `SettingsPage` and drawn by the one
-//! settings model; it shows while Details is open. The fields someone types in stay for the
-//! pane's life, so a read never wipes a token or a passphrase being typed.
+//! asks nothing. The engine's notices are raised as desktop notifications, each once. The
+//! `snapshots` section, which the daemon files under this pane, is added below by `SettingsPage`
+//! and drawn by the one settings model; it shows while Details is open. The token field stays
+//! for the pane's life, so a read never wipes a token being pasted.
 
 use crate::daemon::Daemon;
 use crate::dialogs::{form_dialog, leave};
 use crate::phone::{copy_secret, withdraw};
 use crate::status::{down_view, DownPage};
 use adw::prelude::*;
-use fermix_client::always_on::actions::{perform, Context, Outcome};
-use fermix_client::always_on::model::{Model, Press, Read};
-use fermix_client::always_on::notices::Notice;
+use fermix_client::always_on::model::{Act, Dialog, Model, Press, Read};
 use fermix_client::always_on::{
-    self as words, details, own_server_command, sentence, Fact, Page, Screen, ScreenKind,
-    TokenTarget,
+    self as words, destructive, sentence, Fact, Page, Screen, TokenTarget,
 };
-use fermix_client::home::{Action, ActionId, HomeStatus, ItemStatus, ReadinessItem};
+use fermix_client::home::{
+    Action, ActionId, HomeStatus, ItemStatus, Notice, OwnServer, ReadinessItem,
+};
 use fermix_client::management::{CallError, Management};
-use fermix_client::provision::{Options, Pick, Provider, Token};
+use fermix_client::provision::{Options, Pick};
 use fermix_client::view::{daemon_problem, DAEMON_TOO_OLD};
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// A token is at least this long, so a change that adds this much at once was pasted.
 const PASTED: usize = 16;
@@ -41,13 +40,13 @@ const PULSE: Duration = Duration::from_millis(120);
 const DIALOG_WIDTH: i32 = 480;
 const DIALOG_HEIGHT: i32 = 560;
 /// The most reads one run of `read_due` makes: what is still due after it waits for the next
-/// trigger. A pane's own reads are at most six; the rest are notices that came meanwhile.
+/// trigger. A pane's own reads are at most two; the rest are notices that came meanwhile.
 const READS_AT_ONCE: usize = 32;
 
 /// Hears each size and place picked in a list of offers, with the widget it came from.
 type Chosen = Rc<dyn Fn(Pick, &gtk::Widget)>;
 
-/// One read: the methods `hello` lists, and `home.status` where it lists it.
+/// One read: the methods `hello` lists, and `home.status` where it lists what the pane needs.
 struct HomeRead {
     methods: Vec<String>,
     status: Option<Result<HomeStatus, CallError>>,
@@ -55,7 +54,9 @@ struct HomeRead {
 
 fn read_home(m: &Management) -> Result<HomeRead, CallError> {
     let methods = m.hello()?.capabilities.methods;
-    let serves = methods.iter().any(|name| name == "home.status");
+    let serves = words::NEEDED
+        .iter()
+        .all(|needed| methods.iter().any(|name| name == needed));
     let status = serves.then(|| m.home_status());
     Ok(HomeRead { methods, status })
 }
@@ -64,20 +65,15 @@ fn read_home(m: &Management) -> Result<HomeRead, CallError> {
 #[derive(Clone, PartialEq)]
 struct Drawn {
     page: Page,
-    sentence: String,
     note: Option<String>,
-    readiness: Vec<ReadinessItem>,
-    facts: Vec<Fact>,
     working: Option<ActionId>,
     refusal: Option<String>,
-    notice: Option<String>,
-    provisioner: bool,
-    /// Whose token the field takes, on a screen with the field.
+    /// Whose token the field takes, while one is asked for.
     target: Option<TokenTarget>,
-    options_read: bool,
-    code: Option<(String, String)>,
-    code_refusal: Option<String>,
-    getting_code: bool,
+    options: Option<Result<Options, String>>,
+    reads_offers: bool,
+    chosen: Option<Pick>,
+    handout: Option<OwnServer>,
 }
 
 /// A group whose rows follow what was drawn.
@@ -106,44 +102,38 @@ impl Rows {
     }
 }
 
-/// The paste field and what sits with it.
+/// The paste field and what sits with it, in the words of the provider it is for.
 struct TokenField {
     group: adw::PreferencesGroup,
+    /// The provider's own sentence, where the screen's says something else.
+    said: adw::ActionRow,
     entry: adw::PasswordEntryRow,
     checking: adw::ActionRow,
     refusal: adw::ActionRow,
-    /// The update sentence, in the field's place on an engine without the provisioner.
-    newer: adw::ActionRow,
     how: adw::ExpanderRow,
     steps: RefCell<(Vec<String>, Vec<gtk::Widget>)>,
     /// Open the provider's console, after the steps.
     open: adw::ButtonRow,
+    /// The Always On docs page at the provider's part.
+    learn: adw::ButtonRow,
     length: Cell<usize>,
 }
 
-/// The recovery passphrase, typed twice while the server starts.
-struct PassphraseFields {
-    group: adw::PreferencesGroup,
-    first: adw::PasswordEntryRow,
-    second: adw::PasswordEntryRow,
-    set: gtk::Button,
-    spinner: adw::Spinner,
-    refusal: adw::ActionRow,
-}
-
 struct Widgets {
-    /// The sentence, the bar and a note on the last read, with Learn more in its header.
+    /// The sentence, the step in hand, the bar and a note on the last read.
     screen: Rows,
-    learn: gtk::Button,
-    /// Where the engine offers more than one provider: their names, to pick one.
+    /// Where the engine lists more than one provider: their names, to pick one.
     pick: Rows,
     token: TokenField,
-    /// What the screen holds below the field: its links, Change, the review.
-    body: Rows,
-    /// The one main action, and what the daemon said of the last one.
+    /// The size and place the main action creates, with Change.
+    choice: Rows,
+    /// The review's warnings and blocks.
+    review: Rows,
+    /// The one main action, and what the daemon said of the last act.
     action: Rows,
-    passphrase: PassphraseFields,
-    /// The own server's command, with its code inside.
+    /// The other actions the screen offers.
+    others: Rows,
+    /// The own server's command and code.
     own: Rows,
     details: adw::PreferencesGroup,
     details_row: adw::ExpanderRow,
@@ -152,7 +142,7 @@ struct Widgets {
 
 pub struct AlwaysOnPane {
     me: Weak<AlwaysOnPane>,
-    /// The page, or the down page while Fermix on this computer cannot be read.
+    /// The page, or the down page while Fermix on this computer was never read.
     pub root: gtk::Stack,
     page: adw::PreferencesPage,
     down: DownPage,
@@ -165,9 +155,10 @@ pub struct AlwaysOnPane {
     sections: RefCell<Vec<adw::PreferencesGroup>>,
     /// The reads due are being run, one after another, so they land in order.
     draining: Cell<bool>,
-    /// The command this pane copied, taken back when the pane goes.
+    /// What this pane copied, taken back when the pane goes.
     copied: Rc<RefCell<Option<gdk::ContentProvider>>>,
-    dialog: RefCell<Option<adw::Dialog>>,
+    /// The dialog up, and whether it is one the model asked for (else Change's own).
+    dialog: RefCell<Option<(adw::Dialog, bool)>>,
 }
 
 impl AlwaysOnPane {
@@ -179,9 +170,10 @@ impl AlwaysOnPane {
             &w.screen.group,
             &w.pick.group,
             &w.token.group,
-            &w.body.group,
+            &w.choice.group,
+            &w.review.group,
             &w.action.group,
-            &w.passphrase.group,
+            &w.others.group,
             &w.own.group,
             &w.details,
         ] {
@@ -230,8 +222,8 @@ impl AlwaysOnPane {
         self.read_due();
     }
 
-    /// A new engine process answers here: what the pane read of its providers goes, and it is
-    /// read again only while the pane shows.
+    /// A new engine process answers here: it is read again only while the pane shows, and it
+    /// ends the restart after this app's own Move now.
     pub fn engine_restarted(&self) {
         self.model.borrow_mut().engine_restarted();
         self.read_due();
@@ -263,19 +255,12 @@ impl AlwaysOnPane {
             }
         });
         let me = self.me.clone();
-        self.w.learn.connect_clicked(move |_| {
-            if let Some(pane) = me.upgrade() {
-                pane.act(ActionId::LearnMore);
-            }
-        });
-        let me = self.me.clone();
         self.w.details_row.connect_expanded_notify(move |_| {
             if let Some(pane) = me.upgrade() {
                 pane.show_sections();
             }
         });
         self.wire_token();
-        self.wire_passphrase();
     }
 
     fn wire_token(&self) {
@@ -297,24 +282,19 @@ impl AlwaysOnPane {
         let me = self.me.clone();
         self.w.token.open.connect_activated(move |_| {
             if let Some(pane) = me.upgrade() {
-                pane.open_token_console();
+                pane.open_provider(|p| p.console_url.clone());
             }
         });
-    }
-
-    fn wire_passphrase(&self) {
         let me = self.me.clone();
-        self.w.passphrase.set.connect_clicked(move |_| {
+        self.w.token.learn.connect_activated(move |_| {
             if let Some(pane) = me.upgrade() {
-                pane.spawn(|pane| async move { pane.set_passphrase().await });
+                pane.open_provider(|p| p.docs_url.clone());
             }
         });
     }
 
     // ---- Coming and going ----------------------------------------------------------------
 
-    /// The pane appeared: it reads the summary, the providers and, where the summary rests on
-    /// what the provider last said, that back first; and what the provider sells on choose.
     fn shown(&self) {
         self.model.borrow_mut().pane_shown();
         self.read_due();
@@ -330,7 +310,7 @@ impl AlwaysOnPane {
     // ---- Reads -----------------------------------------------------------------------------
 
     /// Runs the reads the model says are due, one after another, until none is; a run already
-    /// going takes up what is asked meanwhile. Then the console Open console waited for opens.
+    /// going takes up what is asked meanwhile.
     fn read_due(&self) {
         if self.draining.replace(true) {
             return;
@@ -350,15 +330,11 @@ impl AlwaysOnPane {
                     "Always On made {READS_AT_ONCE} reads in one run; the rest wait for the next"
                 );
             }
-            let opening = pane.model.borrow_mut().take_opening();
-            if let Some(url) = opening {
-                pane.open(&url).await;
-            }
         });
     }
 
-    /// One read, and what it answered handed to the model; the notification a change of the
-    /// summary calls for is raised.
+    /// One read, and what it answered handed to the model; a notice the summary carries for the
+    /// first time is raised.
     async fn perform_read(&self, read: Read) {
         match read {
             Read::Status => {
@@ -367,22 +343,15 @@ impl AlwaysOnPane {
                     (self.notify)(&notice);
                 }
             }
-            Read::Providers => {
-                let answer = self.daemon.call(|m| m.provision_providers()).await;
-                let answer = logged("home.provision.providers", answer);
-                self.model.borrow_mut().providers_read(answer);
-            }
-            Read::Record => {
-                let answer = self.daemon.call(|m| m.provision_resources()).await;
-                let answer = logged("home.provision.resources", answer);
-                self.model.borrow_mut().record_read(answer);
-            }
             Read::Options(provider) => {
                 let answer = self
                     .daemon
                     .call(move |m| m.provision_options(&provider))
                     .await;
-                let answer = logged("home.provision.options", answer);
+                let answer = answer.map_err(|e| {
+                    glib::g_warning!("fermix", "home.provision.options was not read: {e:?}");
+                    sentence(&e)
+                });
                 self.model.borrow_mut().options_read(answer);
             }
         }
@@ -401,7 +370,7 @@ impl AlwaysOnPane {
         };
         model.served(read.methods);
         match read.status? {
-            Ok(status) => model.answered(status, unix_now()),
+            Ok(status) => model.answered(status),
             Err(e) => {
                 glib::g_debug!("fermix", "home.status was not read: {e:?}");
                 model.unanswered(daemon_problem(&e));
@@ -410,11 +379,11 @@ impl AlwaysOnPane {
         }
     }
 
-    // ---- Actions -----------------------------------------------------------------------------
+    // ---- Presses -----------------------------------------------------------------------------
 
     /// One action the screen offers was pressed.
-    fn act(&self, id: ActionId) {
-        let press = self.model.borrow_mut().press(id);
+    fn act(&self, action: &Action) {
+        let press = self.model.borrow_mut().press(action);
         self.render();
         self.spawn(|pane| async move { pane.pressed(press).await });
     }
@@ -425,108 +394,54 @@ impl AlwaysOnPane {
             Press::Read => self.read_due(),
             Press::Open(url) => self.open(&url).await,
             Press::Update => self.activate("win.updates-open"),
-            Press::GetCode => self.get_code().await,
-            Press::Run(context) => self.run(*context).await,
+            Press::Run(act) => self.run(act).await,
             Press::Ignored => {}
         }
     }
 
-    /// The calls of one action, off the window's thread, then a read of what they changed.
-    async fn run(&self, context: Context) {
+    /// The one `home.act`, off the window's thread: its answer is drawn, the summary read
+    /// again, and a notice it carries for the first time raised.
+    async fn run(&self, act: Act) {
         self.render();
-        let answer = self.daemon.call(move |m| Ok(perform(m, &context))).await;
-        let outcome = answer.unwrap_or_else(|e| Outcome {
-            refusal: Some(sentence(&e)),
-            ..Outcome::default()
-        });
-        self.model.borrow_mut().finished(outcome, unix_now());
+        let id = act.action;
+        let answer = self
+            .daemon
+            .call(move |m| m.home_act(act.action, &act.key, &act.input))
+            .await;
+        if let Err(e) = &answer {
+            glib::g_debug!("fermix", "home.act {id:?} did not run: {e:?}");
+        }
+        let took_token = id == ActionId::PasteToken && answer.is_ok();
+        let notice = self.model.borrow_mut().acted(answer);
+        if took_token {
+            self.w.token.entry.set_text("");
+        }
+        if let Some(notice) = notice {
+            (self.notify)(&notice);
+        }
         self.render();
         self.read_due();
     }
 
-    /// Checks a pasted token with the provider the field is for; the answer names it from then
-    /// on, and the summary is read again.
+    /// A pasted token, or Return in the field: the model hands over its act.
     fn check_token(&self) {
-        let Some(token) = Token::pasted(&self.w.token.entry.text()) else {
-            return;
-        };
-        let Some(provider) = self.token_provider() else {
-            return;
-        };
-        if self.model.borrow().checking_token {
-            return;
-        }
-        self.model.borrow_mut().checking_token = true;
+        let text = self.w.token.entry.text();
+        let press = self.model.borrow_mut().token_entered(&text);
         self.render();
-        self.spawn(|pane| async move {
-            let id = provider.id;
-            let answer = pane
-                .daemon
-                .call(move |m| m.provision_connect(&id, &token))
-                .await;
-            let answer = answer.map_err(|e| sentence(&e));
-            let worked = answer.is_ok();
-            pane.model.borrow_mut().token_checked(answer);
-            if worked {
-                pane.w.token.entry.set_text("");
-            }
-            pane.render();
-            pane.read_due();
-        });
+        self.spawn(|pane| async move { pane.pressed(press).await });
     }
 
-    /// The provider whose token the field shown takes.
-    fn token_provider(&self) -> Option<Provider> {
-        match self.model.borrow().token_target_now() {
-            Some(TokenTarget::Provider(provider)) => Some(provider),
-            _ => None,
-        }
-    }
-
-    /// Open, after the steps: the console of the provider the field is for.
-    fn open_token_console(&self) {
-        let Some(provider) = self.token_provider() else {
+    /// Opens a page of the provider the field is for.
+    fn open_provider(&self, page: impl Fn(&fermix_client::home::Provider) -> String) {
+        let Some(TokenTarget::Provider(provider)) = self.model.borrow().token_target() else {
             return;
         };
-        self.spawn(|pane| async move { pane.open(&provider.console_url).await });
+        let url = page(&provider);
+        self.spawn(|pane| async move { pane.open(&url).await });
     }
 
     fn pick_provider(&self, id: &str) {
         self.model.borrow_mut().pick_provider(id);
-        self.render();
-    }
-
-    async fn set_passphrase(&self) {
-        let (first, second) = (
-            self.w.passphrase.first.text(),
-            self.w.passphrase.second.text(),
-        );
-        let typed = self.model.borrow_mut().passphrase_typed(&first, &second);
-        self.render();
-        let Some(typed) = typed else { return };
-        self.model.borrow_mut().setting_passphrase = true;
-        self.render();
-        let sent = typed.clone();
-        let answer = self
-            .daemon
-            .call(move |m| m.home_snapshots_passphrase(&sent))
-            .await;
-        let answer = answer.map(|_| ()).map_err(|e| sentence(&e));
-        let worked = answer.is_ok();
-        self.model.borrow_mut().passphrase_set(typed, answer);
-        if worked {
-            self.w.passphrase.first.set_text("");
-            self.w.passphrase.second.set_text("");
-        }
-        self.render();
-        self.read_due();
-    }
-
-    /// The code for a server of the owner's own, shown once inside the command it runs.
-    async fn get_code(&self) {
-        let answer = self.daemon.call(|m| m.home_enroll_open()).await;
-        let answer = answer.map_err(|e| sentence(&e));
-        self.model.borrow_mut().code_answered(answer);
         self.render();
         self.read_due();
     }
@@ -553,7 +468,7 @@ impl AlwaysOnPane {
 
     fn render(&self) {
         let drawn = self.drawn_now();
-        self.render_fields(&drawn);
+        self.render_token(&drawn);
         self.present_dialogs();
         if self.drawn.borrow().as_ref() == Some(&drawn) {
             return;
@@ -565,40 +480,16 @@ impl AlwaysOnPane {
 
     fn drawn_now(&self) -> Drawn {
         let model = self.model.borrow();
-        let page = model.page();
-        let screen = page.clone().screen();
-        let offer = model.pick().and_then(|pick| {
-            let options = model.loaded_options()?;
-            Some((options.offer(&pick)?.clone(), options.currency.clone()))
-        });
-        let code = model.handout.as_ref().and_then(|code| {
-            let line = words::own_server_line(&local_time(&code.expires_at));
-            Some((line, own_server_command(code)?))
-        });
         Drawn {
-            sentence: screen
-                .as_ref()
-                .map(|s| model.choose_sentence(s))
-                .unwrap_or_default(),
+            page: model.page(),
             note: model.read_note(),
-            readiness: screen
-                .as_ref()
-                .map(|s| model.readiness(s))
-                .unwrap_or_default(),
-            facts: screen
-                .as_ref()
-                .map(|s| details(s, offer.as_ref().map(|(o, c)| (o, c.as_str()))))
-                .unwrap_or_default(),
-            page,
-            target: model.token_target_now(),
             working: model.working,
             refusal: model.refusal.clone(),
-            notice: model.notice.clone(),
-            provisioner: model.serves_provisioner(),
-            options_read: model.loaded_options().is_some(),
-            code,
-            code_refusal: model.code_refusal.clone(),
-            getting_code: model.getting_code,
+            target: model.token_target(),
+            options: model.options().cloned(),
+            reads_offers: model.reads_offers(),
+            chosen: model.chosen().cloned(),
+            handout: model.handout.clone(),
         }
     }
 
@@ -612,63 +503,35 @@ impl AlwaysOnPane {
         self.down.reset();
         self.root.set_visible_child_name("page");
         let screen = drawn.page.clone().screen();
-        self.w
-            .screen
-            .replace(self.screen_rows(drawn, screen.as_ref()));
-        self.w.body.replace(match &screen {
-            Some(screen) => self.body_rows(drawn, screen),
-            None => Vec::new(),
-        });
+        self.w.screen.replace(screen_rows(drawn, screen.as_ref()));
         self.w.pick.replace(self.pick_rows(drawn));
+        let review = screen.as_ref().map(|s| s.readiness.as_slice());
+        self.w
+            .review
+            .replace(review.unwrap_or_default().iter().map(item_row).collect());
+        let choice = if screen.as_ref().is_some_and(|s| s.choice) {
+            self.choice_rows(drawn)
+        } else {
+            Vec::new()
+        };
+        self.w.choice.replace(choice);
         let action = screen.as_ref().and_then(|s| s.action.clone());
         self.w
             .action
             .replace(self.action_rows(drawn, action.as_ref()));
+        let others = screen.as_ref().map(|s| s.others.as_slice());
+        let others = others.unwrap_or_default().iter();
+        self.w
+            .others
+            .replace(others.map(|a| self.action_row(a, drawn).upcast()).collect());
         self.w.own.replace(self.own_rows(drawn));
-        self.show_details(drawn, screen.as_ref());
+        self.show_details(screen.as_ref());
     }
 
-    /// The sentence, the bar and a note on the last read; a spinner while the first read is out,
-    /// and the update sentence for an engine older than the summary.
-    fn screen_rows(&self, drawn: &Drawn, screen: Option<&Screen>) -> Vec<gtk::Widget> {
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        match (&drawn.page, screen) {
-            (Page::Reading, _) => column.append(&spinner_line(words::READING)),
-            (Page::NeedsUpdate, _) => column.append(&text(DAEMON_TOO_OLD)),
-            (_, Some(screen)) => {
-                column.append(&text(&drawn.sentence));
-                if screen.shows_progress {
-                    column.append(&pulsing_bar());
-                }
-            }
-            (_, None) => {}
-        }
-        if let Some(note) = &drawn.note {
-            column.append(&attention(note));
-        }
-        vec![column.upcast()]
-    }
-
-    /// The token screen's links, Change on choose, and the review's warnings on ready.
-    fn body_rows(&self, drawn: &Drawn, screen: &Screen) -> Vec<gtk::Widget> {
-        match screen.kind {
-            ScreenKind::Token => screen
-                .alternatives
-                .iter()
-                .map(|a| self.action_row(a, drawn).upcast())
-                .collect(),
-            ScreenKind::Choose => vec![self.change_row(drawn).upcast()],
-            ScreenKind::Ready => drawn.readiness.iter().map(item_row).collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Where the engine offers more than one provider and none is picked: their names, one of
-    /// which the token screen is then for.
+    /// Where the engine lists more than one provider and none is picked: their names, one of
+    /// which the token field is then for.
     fn pick_rows(&self, drawn: &Drawn) -> Vec<gtk::Widget> {
-        let Some(TokenTarget::Pick(providers)) =
-            drawn.target.as_ref().filter(|_| drawn.provisioner)
-        else {
+        let Some(TokenTarget::Pick(providers)) = &drawn.target else {
             return Vec::new();
         };
         let mut rows = vec![note_row(words::PROVIDER_CHOOSE).upcast::<gtk::Widget>()];
@@ -687,8 +550,31 @@ impl AlwaysOnPane {
         rows
     }
 
-    /// The one main action, its spinner while it waits on the daemon, and the daemon's refusal
-    /// or notice under it.
+    /// The choice the main action makes: the engine's recommendation, or the owner's own, with
+    /// Change; nothing while there is no provider to read the offers of.
+    fn choice_rows(&self, drawn: &Drawn) -> Vec<gtk::Widget> {
+        let options = match &drawn.options {
+            None if drawn.reads_offers => return vec![spinner_row(words::READING).upcast()],
+            None => return Vec::new(),
+            Some(Err(why)) => return vec![refused_row(why).upcast()],
+            Some(Ok(options)) => options,
+        };
+        let picked = drawn.chosen.as_ref().and_then(|pick| options.offer(pick));
+        let said: gtk::Widget = match picked {
+            Some(offer) => offer_row(options, offer).upcast(),
+            None => note_row(&options.sentence).upcast(),
+        };
+        let change = adw::ButtonRow::builder().title(words::CHANGE).build();
+        let me = self.me.clone();
+        change.connect_activated(move |_| {
+            if let Some(pane) = me.upgrade() {
+                pane.open_change();
+            }
+        });
+        vec![said, change.upcast()]
+    }
+
+    /// The one main action, its spinner while it runs, and the daemon's refusal under it.
     fn action_rows(&self, drawn: &Drawn, action: Option<&Action>) -> Vec<gtk::Widget> {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
         if let Some(action) = action {
@@ -696,9 +582,6 @@ impl AlwaysOnPane {
         }
         if let Some(refusal) = &drawn.refusal {
             column.append(&attention(refusal));
-        }
-        if let Some(notice) = &drawn.notice {
-            column.append(&text(notice));
         }
         match column.first_child() {
             Some(_) => vec![column.upcast()],
@@ -712,10 +595,10 @@ impl AlwaysOnPane {
             .css_classes(["pill", "suggested-action"])
             .sensitive(drawn.working.is_none())
             .build();
-        let (me, id) = (self.me.clone(), action.id);
+        let (me, pressed) = (self.me.clone(), action.clone());
         button.connect_clicked(move |_| {
             if let Some(pane) = me.upgrade() {
-                pane.act(id);
+                pane.act(&pressed);
             }
         });
         let line = gtk::Box::builder()
@@ -729,57 +612,42 @@ impl AlwaysOnPane {
         line
     }
 
-    /// An action offered as a row: the token screen's own-server link, and Details' others.
+    /// Another action the screen offers, as a row.
     fn action_row(&self, action: &Action, drawn: &Drawn) -> adw::ButtonRow {
-        let busy = drawn.working == Some(action.id)
-            || (action.id == ActionId::OwnServer && drawn.getting_code);
         let row = adw::ButtonRow::builder()
             .title(glib::markup_escape_text(&action.label))
-            .sensitive(drawn.working.is_none() && !drawn.getting_code)
+            .sensitive(drawn.working.is_none())
             .build();
-        if busy {
+        if drawn.working == Some(action.id) {
             row.set_end_icon_name(Some("content-loading-symbolic"));
         }
-        let (me, id) = (self.me.clone(), action.id);
+        let (me, pressed) = (self.me.clone(), action.clone());
         row.connect_activated(move |_| {
             if let Some(pane) = me.upgrade() {
-                pane.act(id);
+                pane.act(&pressed);
             }
         });
         row
     }
 
-    fn change_row(&self, drawn: &Drawn) -> adw::ButtonRow {
-        let row = adw::ButtonRow::builder()
-            .title(words::CHANGE)
-            .sensitive(drawn.options_read)
-            .build();
-        let me = self.me.clone();
-        row.connect_activated(move |_| {
-            if let Some(pane) = me.upgrade() {
-                pane.open_change();
-            }
-        });
-        row
-    }
-
-    /// The command for a server of the owner's own, with its code inside, shown once and copied
-    /// for this computer only.
+    /// The command for a server of the owner's own and the code it asks for, shown once and
+    /// copied for this computer only.
     fn own_rows(&self, drawn: &Drawn) -> Vec<gtk::Widget> {
-        let mut rows = Vec::new();
-        if let Some((line, command)) = &drawn.code {
-            rows.push(note_row(line).upcast());
-            rows.push(self.command_row(command).upcast());
-        }
-        if let Some(refusal) = &drawn.code_refusal {
-            rows.push(refused_row(refusal).upcast());
-        }
-        rows
+        let Some(handout) = &drawn.handout else {
+            return Vec::new();
+        };
+        let line = words::own_server_line(&local_time(&handout.expires_at));
+        vec![
+            note_row(&line).upcast(),
+            self.copy_row(&handout.command, words::COPY_COMMAND)
+                .upcast(),
+            self.copy_row(handout.code(), words::COPY_CODE).upcast(),
+        ]
     }
 
-    fn command_row(&self, command: &str) -> adw::ActionRow {
+    fn copy_row(&self, text: &str, label: &str) -> adw::ActionRow {
         let shown = gtk::Label::builder()
-            .label(command)
+            .label(text)
             .selectable(true)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::Char)
@@ -788,14 +656,10 @@ impl AlwaysOnPane {
             .css_classes(["monospace"])
             .build();
         let copy = gtk::Button::builder()
-            .label(words::COPY_COMMAND)
+            .label(label)
             .valign(gtk::Align::Center)
             .build();
-        let (board, mine, value) = (
-            self.page.clipboard(),
-            self.copied.clone(),
-            command.to_owned(),
-        );
+        let (board, mine, value) = (self.page.clipboard(), self.copied.clone(), text.to_owned());
         copy.connect_clicked(move |_| copy_secret(&board, &mine, &value));
         let row = adw::ActionRow::new();
         row.add_prefix(&shown);
@@ -803,35 +667,17 @@ impl AlwaysOnPane {
         row
     }
 
-    fn show_details(&self, drawn: &Drawn, screen: Option<&Screen>) {
-        let shows = screen.is_some_and(Screen::has_details);
-        self.w.details.set_visible(shows);
+    fn show_details(&self, screen: Option<&Screen>) {
+        let facts = screen.map(|s| s.details.as_slice()).unwrap_or_default();
+        self.w.details.set_visible(!facts.is_empty());
         for row in self.w.details_rows.borrow_mut().drain(..) {
             self.w.details_row.remove(&row);
         }
-        let rows: Vec<gtk::Widget> = drawn
-            .facts
-            .iter()
-            .map(|fact| self.fact_row(fact, drawn))
-            .collect();
+        let rows: Vec<gtk::Widget> = facts.iter().map(fact_row).collect();
         for row in &rows {
             self.w.details_row.add_row(row);
         }
         *self.w.details_rows.borrow_mut() = rows;
-    }
-
-    fn fact_row(&self, fact: &Fact, drawn: &Drawn) -> gtk::Widget {
-        match fact {
-            Fact::Line(line) => note_row(line).upcast(),
-            Fact::Value(label, value) => property_row(label, value).upcast(),
-            Fact::Time(label, at) => property_row(label, &local_time(at)).upcast(),
-            Fact::Bytes(label, bytes) => property_row(label, &glib::format_size(*bytes)).upcast(),
-            Fact::Share(label, used) => property_row(label, &percent(*used)).upcast(),
-            Fact::WaitsUntil(at) => note_row(&words::waits_until(&local_time(at))).upcast(),
-            Fact::Seen(at) => note_row(&words::seen_line(&local_time(at))).upcast(),
-            Fact::Item(item) => item_row(item),
-            Fact::Act(action) => self.action_row(action, drawn).upcast(),
-        }
     }
 
     /// The daemon's sections show while Details is open on a screen that has it.
@@ -842,57 +688,40 @@ impl AlwaysOnPane {
         }
     }
 
-    /// The token field, the passphrase fields and their words, set on every draw: they stay
-    /// for the pane's life so nothing typed in them is lost. The field, its label, the check's
-    /// words, How to get one and the console link are the provider's the field is for; while
-    /// the providers are read the field waits, and a read that failed says why in its place.
-    fn render_fields(&self, drawn: &Drawn) {
-        let model = self.model.borrow();
+    /// The token field and its words, set on every draw: it stays for the pane's life so
+    /// nothing pasted in it is lost. The field, its label, the check's words, How to get one,
+    /// the console and Learn more are the provider's the field is for.
+    fn render_token(&self, drawn: &Drawn) {
         let t = &self.w.token;
-        let target = drawn.target.as_ref().filter(|_| drawn.provisioner);
-        let provider = match target {
+        let provider = match &drawn.target {
             Some(TokenTarget::Provider(provider)) => Some(provider),
             _ => None,
         };
-        let unread = match target {
-            Some(TokenTarget::Unknown(why)) => Some(why.as_deref()),
-            _ => None,
+        t.group.set_visible(provider.is_some());
+        let Some(provider) = provider else {
+            return;
         };
-        t.group
-            .set_visible(drawn.target.is_some() && !matches!(target, Some(TokenTarget::Pick(_))));
-        t.newer.set_visible(!drawn.provisioner);
-        t.entry.set_visible(provider.is_some());
-        t.entry.set_sensitive(!model.checking_token);
-        if let Some(provider) = provider {
-            t.entry
-                .set_title(&glib::markup_escape_text(&provider.token_label));
-            t.open
-                .set_title(&glib::markup_escape_text(&words::console_label(
-                    &provider.name,
-                )));
-        }
-        let checking = match (provider, unread) {
-            (Some(provider), _) if model.checking_token => {
-                Some(words::token_checking(&provider.name))
-            }
-            (_, Some(None)) => Some(words::READING.to_owned()),
-            _ => None,
-        };
-        t.checking.set_visible(checking.is_some());
-        t.checking.set_title(&glib::markup_escape_text(
-            checking.as_deref().unwrap_or_default(),
-        ));
-        let refused = unread.flatten().or(model.token_refusal.as_deref());
-        show_refusal(&t.refusal, refused);
-        // How to get one is the field's: an engine without the provisioner gets neither.
-        self.show_steps(provider.map(|p| p.steps.as_slice()).unwrap_or_default());
         let screen = drawn.page.clone().screen();
-        let p = &self.w.passphrase;
-        p.group
-            .set_visible(screen.as_ref().is_some_and(|s| s.asks_passphrase));
-        p.set.set_sensitive(!model.setting_passphrase);
-        p.spinner.set_visible(model.setting_passphrase);
-        show_refusal(&p.refusal, model.passphrase_refusal.as_deref());
+        let repeats = screen.is_some_and(|s| s.sentence == provider.sentence);
+        t.said.set_visible(!repeats);
+        t.said
+            .set_title(&glib::markup_escape_text(&provider.sentence));
+        t.entry
+            .set_title(&glib::markup_escape_text(&provider.token_label));
+        let checking = drawn.working == Some(ActionId::PasteToken);
+        t.entry.set_sensitive(!checking);
+        t.checking.set_visible(checking);
+        t.checking
+            .set_title(&glib::markup_escape_text(&words::token_checking(
+                &provider.name,
+            )));
+        let refused = self.model.borrow().token_refusal.clone();
+        show_refusal(&t.refusal, refused.as_deref());
+        t.open
+            .set_title(&glib::markup_escape_text(&words::console_label(
+                &provider.name,
+            )));
+        self.show_steps(&provider.steps);
     }
 
     fn show_steps(&self, steps: &[String]) {
@@ -920,24 +749,31 @@ impl AlwaysOnPane {
 
     // ---- Dialogs -------------------------------------------------------------------------------
 
-    /// The dialogs the model asks for: Replace, and the passphrase Move now needs.
+    /// The dialog the model asks for; one it no longer asks for closes.
     fn present_dialogs(&self) {
-        if self.dialog.borrow().is_some() {
+        let wanted = self.model.borrow().dialog();
+        let open = self.dialog.borrow().clone();
+        if let Some((dialog, asked)) = open {
+            if asked && wanted.is_none() {
+                dialog.close();
+            }
             return;
         }
-        let (asks, replacing, options) = {
-            let model = self.model.borrow();
-            let options = model.loaded_options().cloned();
-            (model.asks_move_passphrase, model.replacing, options)
-        };
-        if asks {
-            self.present(self.passphrase_page(), None);
-        } else if let (true, Some(options)) = (replacing, options) {
-            let pick = self.model.borrow().pick();
-            self.present(self.replace_page(&options, pick), Some(DIALOG_HEIGHT));
+        match wanted {
+            Some(Dialog::Choice(action)) => {
+                let page = self.choice_page(&action);
+                self.present(page, Some(DIALOG_HEIGHT), true);
+            }
+            Some(Dialog::Passphrase { action, twice }) => {
+                let page = self.passphrase_page(&action, twice);
+                self.present(page, None, true);
+            }
+            Some(Dialog::Confirm(action)) => self.present_confirm(&action),
+            None => {}
         }
     }
 
+    /// Change, on a screen that draws the choice: the offers, the one selected checked.
     fn open_change(&self) {
         let Some(options) = self.model.borrow().loaded_options().cloned() else {
             return;
@@ -951,49 +787,58 @@ impl AlwaysOnPane {
             }
             leave(from);
         });
-        let body = offers(&options, pick.as_ref(), &chosen);
+        let body = offers(Some(&options), pick.as_ref(), &chosen);
         let page = dialog_page(words::CHANGE_TITLE, &body, words::DONE, None);
-        self.present(page, Some(DIALOG_HEIGHT));
+        self.present(page, Some(DIALOG_HEIGHT), false);
     }
 
-    fn replace_page(&self, options: &Options, pick: Option<Pick>) -> adw::NavigationPage {
-        let choice = Rc::new(RefCell::new(pick.clone()));
-        let keep = choice.clone();
-        let chosen: Chosen = Rc::new(move |pick, _| *keep.borrow_mut() = Some(pick));
-        let body = offers(options, pick.as_ref(), &chosen);
-        let lead = adw::PreferencesGroup::builder()
-            .description(words::REPLACE_BODY)
-            .build();
-        body.insert(&lead, 0);
-        let create = gtk::Button::builder()
-            .label(words::REPLACE_CREATE)
+    /// An action's choice in its own dialog, with its confirm: answering it is accepting it.
+    fn choice_page(&self, action: &Action) -> adw::NavigationPage {
+        let (options, pick) = {
+            let model = self.model.borrow();
+            (model.loaded_options().cloned(), model.pick())
+        };
+        let me = self.me.clone();
+        let chosen: Chosen = Rc::new(move |pick, _| {
+            if let Some(pane) = me.upgrade() {
+                pane.model.borrow_mut().choose(pick);
+            }
+        });
+        let body = offers(options.as_ref(), pick.as_ref(), &chosen);
+        if let Some(confirm) = &action.confirm {
+            let lead = adw::PreferencesGroup::builder()
+                .description(confirm)
+                .build();
+            body.insert(&lead, 0);
+        }
+        let answer = gtk::Button::builder()
+            .label(&action.label)
             .css_classes(["suggested-action"])
             .build();
         let me = self.me.clone();
-        create.connect_clicked(move |button| {
-            let (Some(pane), Some(pick)) = (me.upgrade(), choice.borrow().clone()) else {
-                return;
-            };
-            let context = pane.model.borrow_mut().replace_with(pick);
+        answer.connect_clicked(move |button| {
+            let Some(pane) = me.upgrade() else { return };
+            let press = pane.model.borrow_mut().choice_answered();
             leave(button);
-            if let Some(context) = context {
-                pane.spawn(|pane| async move { pane.run(context).await });
-            }
+            pane.spawn(|pane| async move { pane.pressed(press).await });
         });
-        dialog_page(words::REPLACE_TITLE, &body, words::CANCEL, Some(&create))
+        dialog_page(&action.label, &body, words::CANCEL, Some(&answer))
     }
 
-    fn passphrase_page(&self) -> adw::NavigationPage {
+    /// The recovery passphrase, twice where none is set, under the action's confirm: answering
+    /// it is accepting it.
+    fn passphrase_page(&self, action: &Action, twice: bool) -> adw::NavigationPage {
         let first = adw::PasswordEntryRow::builder()
             .title(words::PASSPHRASE)
             .build();
         let second = adw::PasswordEntryRow::builder()
             .title(words::PASSPHRASE_AGAIN)
+            .visible(twice)
             .build();
         let refusal = refused_row("");
         refusal.set_visible(false);
         let group = adw::PreferencesGroup::builder()
-            .description(words::PASSPHRASE_MOVE_BODY)
+            .description(passphrase_said(action, twice))
             .build();
         for row in [
             first.upcast_ref::<gtk::Widget>(),
@@ -1002,15 +847,15 @@ impl AlwaysOnPane {
         ] {
             group.add(row);
         }
-        let body = adw::PreferencesPage::new();
-        body.add(&group);
-        let go = gtk::Button::builder()
-            .label(words::MOVE_NOW)
+        let page = adw::PreferencesPage::new();
+        page.add(&group);
+        let answer = gtk::Button::builder()
+            .label(&action.label)
             .css_classes(["suggested-action"])
             .build();
         let me = self.me.clone();
         let (first, second, refusal) = (first.downgrade(), second.downgrade(), refusal.downgrade());
-        go.connect_clicked(move |button| {
+        answer.connect_clicked(move |button| {
             let (Some(pane), Some(first), Some(second), Some(refusal)) = (
                 me.upgrade(),
                 first.upgrade(),
@@ -1019,57 +864,77 @@ impl AlwaysOnPane {
             ) else {
                 return;
             };
-            let context = pane
+            let again = twice.then(|| second.text());
+            let press = pane
                 .model
                 .borrow_mut()
-                .move_with_passphrase(&first.text(), &second.text());
-            let Some(context) = context else {
+                .passphrase_entered(&first.text(), again.as_deref());
+            if !matches!(press, Press::Run(_)) {
                 show_refusal(&refusal, pane.model.borrow().passphrase_refusal.as_deref());
                 return;
-            };
+            }
             leave(button);
-            pane.spawn(|pane| async move { pane.run(context).await });
+            pane.spawn(|pane| async move { pane.pressed(press).await });
         });
-        dialog_page(words::PASSPHRASE_TITLE, &body, words::CANCEL, Some(&go))
+        dialog_page(words::PASSPHRASE_TITLE, &page, words::CANCEL, Some(&answer))
     }
 
-    /// Presents one dialog at a time; closing it lets go of what the model asked it for.
-    fn present(&self, page: adw::NavigationPage, height: Option<i32>) {
+    /// The action's confirm, under its label: a step that deletes never takes Return for yes.
+    fn present_confirm(&self, action: &Action) {
+        let confirm = action.confirm.as_deref().unwrap_or_default();
+        let alert = adw::AlertDialog::new(Some(&action.label), Some(confirm));
+        alert.add_responses(&[("cancel", words::CANCEL), ("ok", action.label.as_str())]);
+        let deletes = destructive(action.id);
+        let appearance = if deletes {
+            adw::ResponseAppearance::Destructive
+        } else {
+            adw::ResponseAppearance::Suggested
+        };
+        alert.set_response_appearance("ok", appearance);
+        alert.set_default_response(Some(if deletes { "cancel" } else { "ok" }));
+        alert.set_close_response("cancel");
+        let me = self.me.clone();
+        alert.connect_response(Some("ok"), move |_, _| {
+            let Some(pane) = me.upgrade() else { return };
+            let press = pane.model.borrow_mut().confirmed();
+            pane.spawn(|pane| async move { pane.pressed(press).await });
+        });
+        self.watch(alert.upcast_ref(), true);
+        alert.present(Some(&self.root));
+    }
+
+    /// Presents one dialog at a time.
+    fn present(&self, page: adw::NavigationPage, height: Option<i32>, asked: bool) {
         let dialog = form_dialog(&page, DIALOG_WIDTH, height);
+        self.watch(&dialog, asked);
+        dialog.present(Some(&self.root));
+    }
+
+    /// Keeps `dialog` as the one up; closing it lets go of what the model asked it for.
+    fn watch(&self, dialog: &adw::Dialog, asked: bool) {
         let me = self.me.clone();
         dialog.connect_closed(move |_| {
             let Some(pane) = me.upgrade() else { return };
             pane.dialog.replace(None);
-            let mut model = pane.model.borrow_mut();
-            model.close_replace();
-            model.dismiss_move_passphrase();
-            drop(model);
+            pane.model.borrow_mut().dismissed();
             pane.render();
         });
-        dialog.present(Some(&self.root));
-        self.dialog.replace(Some(dialog));
+        self.dialog.replace(Some((dialog.clone(), asked)));
     }
 }
 
 fn widgets() -> Widgets {
-    let learn = gtk::Button::builder()
-        .label(words::LEARN_MORE)
-        .css_classes(["flat"])
-        .valign(gtk::Align::Center)
-        .build();
-    let screen = adw::PreferencesGroup::new();
-    screen.set_header_suffix(Some(&learn));
     let details_row = adw::ExpanderRow::builder().title(words::DETAILS).build();
     let details = adw::PreferencesGroup::new();
     details.add(&details_row);
     Widgets {
-        screen: Rows::new(screen),
-        learn,
+        screen: Rows::new(adw::PreferencesGroup::new()),
         pick: Rows::new(adw::PreferencesGroup::new()),
         token: token_field(),
-        body: Rows::new(adw::PreferencesGroup::new()),
+        choice: Rows::new(adw::PreferencesGroup::new()),
+        review: Rows::new(adw::PreferencesGroup::new()),
         action: Rows::new(adw::PreferencesGroup::new()),
-        passphrase: passphrase_fields(),
+        others: Rows::new(adw::PreferencesGroup::new()),
         own: Rows::new(adw::PreferencesGroup::new()),
         details,
         details_row,
@@ -1080,83 +945,91 @@ fn widgets() -> Widgets {
 /// The paste field and what sits with it; their words are set on each draw, from the provider
 /// the field is for.
 fn token_field() -> TokenField {
+    let said = note_row("");
     let entry = adw::PasswordEntryRow::new();
     let checking = adw::ActionRow::builder().visible(false).build();
     checking.add_suffix(&adw::Spinner::new());
     let refusal = refused_row("");
-    let newer = note_row(DAEMON_TOO_OLD);
     let how = adw::ExpanderRow::builder()
         .title(words::HOW_TO_GET_ONE)
         .build();
     let open = adw::ButtonRow::new();
     how.add_row(&open);
+    let learn = adw::ButtonRow::builder().title(words::LEARN_MORE).build();
     let group = adw::PreferencesGroup::builder().visible(false).build();
     for row in [
-        entry.upcast_ref::<gtk::Widget>(),
+        said.upcast_ref::<gtk::Widget>(),
+        entry.upcast_ref(),
         checking.upcast_ref(),
         refusal.upcast_ref(),
-        newer.upcast_ref(),
         how.upcast_ref(),
+        learn.upcast_ref(),
     ] {
         group.add(row);
     }
     TokenField {
         group,
+        said,
         entry,
         checking,
         refusal,
-        newer,
         how,
         steps: RefCell::default(),
         open,
+        learn,
         length: Cell::new(0),
     }
 }
 
-fn passphrase_fields() -> PassphraseFields {
-    let first = adw::PasswordEntryRow::builder()
-        .title(words::PASSPHRASE)
-        .build();
-    let second = adw::PasswordEntryRow::builder()
-        .title(words::PASSPHRASE_AGAIN)
-        .build();
-    // Not the default button: the screen's own action, Cancel, keeps Return.
-    let set = gtk::Button::builder()
-        .label(words::SET_PASSPHRASE)
-        .valign(gtk::Align::Center)
-        .build();
-    let spinner = adw::Spinner::builder().visible(false).build();
-    let setting = adw::ActionRow::new();
-    setting.add_suffix(&spinner);
-    setting.add_suffix(&set);
-    let refusal = refused_row("");
-    let group = adw::PreferencesGroup::builder()
-        .title(words::PASSPHRASE_TITLE)
-        .description(words::PASSPHRASE_BODY)
-        .visible(false)
-        .build();
-    for row in [
-        first.upcast_ref::<gtk::Widget>(),
-        second.upcast_ref(),
-        setting.upcast_ref(),
-        refusal.upcast_ref(),
-    ] {
-        group.add(row);
+/// The sentence, the step in hand, the bar and a note on the last read; a spinner while the
+/// first read is out, and the update sentence for an engine that does not serve the pane.
+fn screen_rows(drawn: &Drawn, screen: Option<&Screen>) -> Vec<gtk::Widget> {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    match (&drawn.page, screen) {
+        (Page::Reading, _) => column.append(&spinner_line(words::READING)),
+        (Page::NeedsUpdate, _) => column.append(&text(DAEMON_TOO_OLD)),
+        (_, Some(screen)) => {
+            column.append(&text(&screen.sentence));
+            if let Some(progress) = &screen.progress {
+                column.append(&dim(progress));
+            }
+            if screen.shows_progress {
+                column.append(&pulsing_bar());
+            }
+        }
+        (_, None) => {}
     }
-    PassphraseFields {
-        group,
-        first,
-        second,
-        set,
-        spinner,
-        refusal,
+    if let Some(note) = &drawn.note {
+        column.append(&attention(note));
+    }
+    vec![column.upcast()]
+}
+
+/// Over the passphrase entries: the action's confirm, which answering accepts, then what the
+/// passphrase is for.
+fn passphrase_said(action: &Action, twice: bool) -> String {
+    let body = if twice {
+        words::PASSPHRASE_NEW_BODY
+    } else {
+        words::PASSPHRASE_BODY
+    };
+    match &action.confirm {
+        Some(confirm) => format!("{confirm}\n\n{body}"),
+        None => body.to_owned(),
     }
 }
 
-/// The offers, by location, cheapest first, the one selected checked. `chosen` hears each pick
-/// with the widget it came from.
-fn offers(options: &Options, selected: Option<&Pick>, chosen: &Chosen) -> adw::PreferencesPage {
+/// The offers, by location, cheapest first, the one selected checked; none where they could
+/// not be read. `chosen` hears each pick with the widget it came from.
+fn offers(
+    options: Option<&Options>,
+    selected: Option<&Pick>,
+    chosen: &Chosen,
+) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
+    let Some(options) = options else {
+        return page;
+    };
     let mut first: Option<gtk::CheckButton> = None;
     for location in &options.locations {
         let group = adw::PreferencesGroup::builder()
@@ -1173,15 +1046,8 @@ fn offers(options: &Options, selected: Option<&Pick>, chosen: &Chosen) -> adw::P
                 .build();
             radio.set_group(first.as_ref());
             first.get_or_insert_with(|| radio.clone());
-            let row = adw::ActionRow::builder()
-                .title(glib::markup_escape_text(&offer.description))
-                .subtitle(glib::markup_escape_text(&words::shape(offer)))
-                .build();
+            let row = offer_row(options, offer);
             row.add_prefix(&radio);
-            row.add_suffix(&gtk::Label::new(Some(&words::monthly(
-                offer,
-                &options.currency,
-            ))));
             row.set_activatable_widget(Some(&radio));
             let chosen = chosen.clone();
             radio.connect_toggled(move |radio| {
@@ -1194,6 +1060,23 @@ fn offers(options: &Options, selected: Option<&Pick>, chosen: &Chosen) -> adw::P
         page.add(&group);
     }
     page
+}
+
+/// One offer: its name, its shape and place, and what it costs a month.
+fn offer_row(options: &Options, offer: &fermix_client::provision::Offer) -> adw::ActionRow {
+    let city = options.city(&offer.location).unwrap_or(&offer.location);
+    let row = adw::ActionRow::builder()
+        .title(glib::markup_escape_text(&offer.description))
+        .subtitle(glib::markup_escape_text(&format!(
+            "{}, {city}",
+            words::shape(offer)
+        )))
+        .build();
+    row.add_suffix(&gtk::Label::new(Some(&words::monthly(
+        offer,
+        &options.currency,
+    ))));
+    row
 }
 
 /// A dialog's page: its body, with the way out and, where there is one, its answer in the
@@ -1223,12 +1106,25 @@ fn dialog_page(
         .build()
 }
 
+fn fact_row(fact: &Fact) -> gtk::Widget {
+    match fact {
+        Fact::Sentence(line) => note_row(line).upcast(),
+        Fact::Line(line) => property_row(&line.label, &line.value).upcast(),
+    }
+}
+
 fn text(line: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(line)
         .wrap(true)
         .xalign(0.0)
         .build()
+}
+
+fn dim(line: &str) -> gtk::Label {
+    let label = text(line);
+    label.add_css_class("dim-label");
+    label
 }
 
 fn attention(line: &str) -> gtk::Label {
@@ -1241,6 +1137,12 @@ fn spinner_line(line: &str) -> gtk::Box {
     let row = gtk::Box::builder().spacing(12).build();
     row.append(&adw::Spinner::new());
     row.append(&text(line));
+    row
+}
+
+fn spinner_row(line: &str) -> adw::ActionRow {
+    let row = note_row(line);
+    row.add_suffix(&adw::Spinner::new());
     row
 }
 
@@ -1306,23 +1208,4 @@ fn local_time(at: &str) -> String {
             at.to_owned()
         }
     }
-}
-
-/// A read's answer as the model takes it: a failure's sentence, logged.
-fn logged<T>(method: &str, answer: Result<T, CallError>) -> Result<T, String> {
-    answer.map_err(|e| {
-        glib::g_warning!("fermix", "{method} was not read: {e:?}");
-        sentence(&e)
-    })
-}
-
-fn percent(fraction: f64) -> String {
-    format!("{:.0}%", fraction * 100.0)
-}
-
-fn unix_now() -> i64 {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is past 1970");
-    i64::try_from(since.as_secs()).expect("the clock fits an i64")
 }
