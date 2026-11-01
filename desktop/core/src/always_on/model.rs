@@ -21,7 +21,7 @@ use super::{
 };
 use crate::home::{
     passphrase, ActResult, Acted, Action, ActionId, HomeStatus, Input, Need, Notice, OwnServer,
-    Passphrase, Provider, Summary, SummaryState, Token,
+    Passphrase, Summary, SummaryState, Token,
 };
 use crate::management::CallError;
 use crate::provision::{Options, Pick};
@@ -32,8 +32,8 @@ use crate::view::DaemonProblem;
 pub enum Read {
     /// `hello`'s methods, then `home.status` where it lists what the pane needs.
     Status,
-    /// `home.provision.options` of that provider.
-    Options(String),
+    /// `home.provision.options`: the provider in use's offers.
+    Options,
 }
 
 /// Where a press goes.
@@ -112,9 +112,6 @@ pub struct Model {
     last: Option<Summary>,
     /// The last read's failure, while it is the latest word.
     failure: Option<DaemonProblem>,
-    /// The providers the latest summary that listed any named: the offers are read of one, and
-    /// the summary a choice shows on names none.
-    providers: Vec<Provider>,
     /// The provider picked on the token screen, where the engine lists several.
     picked: Option<String>,
     /// What the provider sells, read while a choice shows.
@@ -132,12 +129,26 @@ pub struct Model {
     /// pane shows it.
     pub handout: Option<OwnServer>,
     restart: Option<Restart>,
+    /// The notices raised, kept across launches by the window.
     posted: Posted,
     pub pane_visible: bool,
     due_status: bool,
 }
 
 impl Model {
+    /// A model that knows the notices earlier runs raised.
+    pub fn with_posted(posted: Posted) -> Model {
+        Model {
+            posted,
+            ..Model::default()
+        }
+    }
+
+    /// The notices raised, for the window to keep.
+    pub fn posted(&self) -> &Posted {
+        &self.posted
+    }
+
     pub fn page(&self) -> Page {
         let lacks =
             !self.served.is_empty() && !NEEDED.iter().all(|m| self.served.iter().any(|s| s == m));
@@ -180,7 +191,9 @@ impl Model {
     pub fn dialog(&self) -> Option<Dialog> {
         match self.asking.as_ref()? {
             Asking::Token(_) => None,
-            Asking::Choice(action) => self.choice_ready().then(|| Dialog::Choice(action.clone())),
+            Asking::Choice(action) => self
+                .loaded_options()
+                .map(|_| Dialog::Choice(action.clone())),
             Asking::Passphrase { action, twice } => Some(Dialog::Passphrase {
                 action: action.clone(),
                 twice: *twice,
@@ -234,9 +247,6 @@ impl Model {
     /// A newer summary: what a press waited on goes once it no longer offers that action under
     /// its key, the code once it is no longer open, the offers once no choice shows.
     fn take(&mut self, summary: Summary) -> Option<Notice> {
-        if !summary.detail.providers.is_empty() {
-            self.providers = summary.detail.providers.clone();
-        }
         if self
             .asking
             .as_ref()
@@ -298,10 +308,8 @@ impl Model {
         if std::mem::take(&mut self.due_status) {
             return Some(Read::Status);
         }
-        if !self.pane_visible || self.options.is_some() || !self.choosing() {
-            return None;
-        }
-        self.options_provider().map(Read::Options)
+        let wanted = self.pane_visible && self.options.is_none() && self.choosing();
+        wanted.then_some(Read::Options)
     }
 
     /// What the provider sells, or why not. A choice's dialog does not open on a failed read,
@@ -319,29 +327,6 @@ impl Model {
         let main = self.last.as_ref().and_then(|s| s.action.as_ref());
         matches!(self.asking, Some(Asking::Choice(_)))
             || main.is_some_and(|a| offered(a) && a.needs.contains(&Need::Choice))
-    }
-
-    /// The provider whose offers a choice reads: the only one listed, else the one picked. None
-    /// where no summary listed one since this app started.
-    fn options_provider(&self) -> Option<String> {
-        match self.providers.as_slice() {
-            [only] => Some(only.id.clone()),
-            many => self
-                .picked
-                .clone()
-                .filter(|picked| many.iter().any(|p| &p.id == picked)),
-        }
-    }
-
-    /// Whether a choice reads its offers: a summary listed the provider to read them of.
-    pub fn reads_offers(&self) -> bool {
-        self.options_provider().is_some()
-    }
-
-    /// The choice can be drawn: its offers are read, or there is no provider to read them of
-    /// and the act makes the recommendation.
-    fn choice_ready(&self) -> bool {
-        self.loaded_options().is_some() || self.options_provider().is_none()
     }
 
     // ---- Presses -----------------------------------------------------------------------
@@ -391,14 +376,17 @@ impl Model {
     }
 
     /// The main action's choice is drawn on the screen, so its press goes to the confirm; any
-    /// other opens its dialog once the offers are read.
+    /// other opens its dialog once the offers are read, a failed read read again.
     fn ask_choice(&mut self, action: &Action) -> Press {
         let main = self.last.as_ref().and_then(|s| s.action.as_ref());
         if main == Some(action) {
             return self.confirm_or_run(action, Input::choice(self.chosen.clone()));
         }
         self.asking = Some(Asking::Choice(action.clone()));
-        if self.choice_ready() {
+        if matches!(self.options, Some(Err(_))) {
+            self.options = None;
+        }
+        if self.loaded_options().is_some() {
             Press::Drawn
         } else {
             Press::Read
@@ -433,9 +421,6 @@ impl Model {
     /// The provider whose token screen shows, where the engine lists several.
     pub fn pick_provider(&mut self, id: &str) {
         assert!(!id.is_empty(), "a provider is picked by its id");
-        if self.picked.as_deref() != Some(id) {
-            self.options = None;
-        }
         self.picked = Some(id.to_owned());
     }
 

@@ -358,11 +358,14 @@ fn an_odd_answer_to_an_act_is_never_quoted() {
     assert!(!detail.contains("fxenroll1."), "{detail}");
 }
 
+/// The offers take no params: the engine answers for the provider in use and names it, so a
+/// surface that restarted after the token step still reads them.
 #[test]
-fn the_offers_are_asked_of_one_provider() {
+fn the_offers_are_asked_with_no_params_for_the_provider_in_use() {
     exchange("home_provision_options", "home_provision_options", |m| {
-        let options = m.provision_options(PROVIDER).expect("decodes");
-        assert_eq!(options.currency, "EUR");
+        let options = m.provision_options().expect("decodes");
+        assert_eq!(options.provider.id, PROVIDER);
+        assert_eq!(options.provider.name, "Hetzner");
         let recommended = options.recommended.clone().expect("a recommendation");
         assert_eq!(
             recommended,
@@ -372,8 +375,11 @@ fn the_offers_are_asked_of_one_provider() {
             }
         );
         let offer = options.offer(&recommended).expect("its offer");
-        assert_eq!((offer.cores, offer.memory_gb, offer.disk_gb), (2, 4.0, 80));
-        assert_eq!(offer.total_monthly, "20.09");
+        assert_eq!(offer.label, "CPX22: 2 cores, 4 GB memory, 80 GB disk");
+        assert_eq!(
+            offer.price,
+            "€20.09 a month, billed by the hour until deleted"
+        );
         assert_eq!(options.city("hel1"), Some("Helsinki"));
         assert_eq!(options.city("invented-ash2"), None);
         assert_eq!(

@@ -6,10 +6,10 @@
 //! summaries its handoff generated from the code.
 
 use fermix_client::always_on::model::{Act, Dialog, Model, Press, Read};
-use fermix_client::always_on::notices::{Posted, POSTED};
+use fermix_client::always_on::notices::{notices_file, Posted, POSTED};
 use fermix_client::always_on::{
-    destructive, offered, screen, token_target, Fact, Page, TokenTarget, LINK_FAILED, NEEDED,
-    RESTARTING,
+    by_city, destructive, offered, screen, token_target, Fact, Page, TokenTarget, LINK_FAILED,
+    NEEDED, RESTARTING,
 };
 use fermix_client::home::{
     Acted, Action, ActionId, HomeStatus, Input, Line, Notice, Passphrase, Provider, Summary,
@@ -432,11 +432,14 @@ fn nothing_is_read_until_told_and_each_notice_is_one_read() {
 }
 
 #[test]
-fn choose_reads_the_offers_of_the_provider_the_engine_listed() {
-    let mut model = model_on(off());
-    model.answered(answering(choose()));
+fn a_choice_reads_the_offers_of_the_provider_in_use_once_while_the_pane_shows() {
+    let mut model = model_on(choose());
     assert!(screen_of(&model).choice);
-    assert_eq!(model.next_read(), Some(Read::Options(PROVIDER.into())));
+    assert_eq!(
+        model.next_read(),
+        Some(Read::Options),
+        "nothing remembered: the engine answers for the provider in use"
+    );
     model.options_read(Ok(options()));
     assert_eq!(model.next_read(), None, "read once while the pane shows");
     assert_eq!(model.loaded_options(), Some(&options()));
@@ -447,45 +450,41 @@ fn choose_reads_the_offers_of_the_provider_the_engine_listed() {
     model.answered(answering(choose()));
     assert_eq!(
         model.next_read(),
-        Some(Read::Options(PROVIDER.into())),
-        "the providers outlive the pane"
+        Some(Read::Options),
+        "read again as it shows again"
     );
-}
-
-/// The choose summary names no provider, and `home.provision.options` takes one: with none
-/// listed since this app started, nothing is read and Create server makes the recommendation.
-#[test]
-fn with_no_provider_listed_the_offers_are_not_read_and_create_makes_the_recommendation() {
-    let mut model = model_on(choose());
-    assert_eq!(model.next_read(), None);
-    let create = screen_of(&model).action.expect("Create server");
-    assert_eq!(model.press(&create), Press::Drawn);
-    assert_eq!(model.dialog(), Some(Dialog::Confirm(create.clone())));
-    assert_eq!(
-        model.confirmed(),
-        act(ActionId::CreateServer, &create.key, Input::choice(None))
-    );
-    let mut on = model_on(result("home_status_on")["summary"].clone());
-    let replace = screen_of(&on).others[1].clone();
-    assert_eq!(on.press(&replace), Press::Drawn, "nothing to read first");
-    assert_eq!(on.next_read(), None);
-    assert_eq!(on.dialog(), Some(Dialog::Choice(replace.clone())));
-    assert_eq!(
-        on.choice_answered(),
-        act(ActionId::ReplaceServer, &replace.key, Input::choice(None))
-    );
-}
-
-#[test]
-fn with_several_providers_the_offers_are_those_of_the_one_picked() {
-    let mut model = model_on(off_with(json!([hetzner(), nimbus()])));
-    model.answered(answering(choose()));
-    assert_eq!(model.next_read(), None, "none picked yet");
-    model.pick_provider("nimbus");
-    assert_eq!(model.next_read(), Some(Read::Options("nimbus".into())));
+    let mut off = model_on(off());
+    assert_eq!(off.next_read(), None, "no choice shows, so no offers");
+    off.pick_provider("hetzner");
+    assert_eq!(off.next_read(), None);
 }
 
 // ---- Every press is one home.act --------------------------------------------------------------
+
+/// Each offer is drawn as the engine words it, its label and its price, grouped by the city of
+/// its place; the app words no size and no price.
+#[test]
+fn the_offers_are_the_engines_label_and_price_grouped_by_city() {
+    let offers = options();
+    assert_eq!(offers.provider.name, "Hetzner");
+    let first = &offers.offers[0];
+    assert_eq!(first.label, "CPX22: 2 cores, 4 GB memory, 80 GB disk");
+    assert_eq!(
+        first.price,
+        "€20.09 a month, billed by the hour until deleted"
+    );
+    assert_eq!(offers.city(&first.location), Some("Falkenstein"));
+    let grouped = by_city(&offers);
+    let cities: Vec<&str> = grouped.iter().map(|(city, _)| *city).collect();
+    assert_eq!(cities, ["Falkenstein", "Nuremberg", "Helsinki"]);
+    assert!(grouped.iter().all(|(_, rows)| !rows.is_empty()));
+    let (_, helsinki) = &grouped[2];
+    assert!(helsinki.iter().all(|o| o.location == "hel1"));
+    assert_eq!(
+        grouped.iter().map(|(_, rows)| rows.len()).sum::<usize>(),
+        offers.offers.len()
+    );
+}
 
 #[test]
 fn a_press_with_nothing_to_ask_acts_at_once_with_the_key_it_was_drawn_with() {
@@ -614,8 +613,7 @@ fn with_several_providers_the_owner_picks_one_and_the_token_names_it() {
 
 #[test]
 fn create_server_takes_the_recommendation_unless_the_owner_changed_it() {
-    let mut model = model_on(off());
-    model.answered(answering(choose()));
+    let mut model = model_on(choose());
     model.next_read();
     model.options_read(Ok(options()));
     let create = screen_of(&model).action.expect("Create server");
@@ -656,12 +654,11 @@ fn create_server_takes_the_recommendation_unless_the_owner_changed_it() {
 
 #[test]
 fn replace_asks_its_choice_in_a_dialog_that_shows_its_confirm() {
-    let mut model = model_on(off());
-    model.answered(answering(result("home_status_on")["summary"].clone()));
+    let mut model = model_on(result("home_status_on")["summary"].clone());
     let replace = screen_of(&model).others[1].clone();
     assert_eq!(model.press(&replace), Press::Read);
     assert_eq!(model.dialog(), None, "the offers are read first");
-    assert_eq!(model.next_read(), Some(Read::Options(PROVIDER.into())));
+    assert_eq!(model.next_read(), Some(Read::Options));
     model.options_read(Ok(options()));
     assert_eq!(model.dialog(), Some(Dialog::Choice(replace.clone())));
     assert_eq!(
@@ -708,6 +705,14 @@ fn replace_asks_its_choice_in_a_dialog_that_shows_its_confirm() {
         model.refusal.as_deref(),
         Some("Paste a Hetzner API token first.")
     );
+    assert_eq!(
+        model.press(&replace),
+        Press::Read,
+        "a press reads them again"
+    );
+    assert_eq!(model.next_read(), Some(Read::Options));
+    model.options_read(Ok(options()));
+    assert_eq!(model.dialog(), Some(Dialog::Choice(replace)));
 }
 
 #[test]
@@ -960,6 +965,81 @@ fn a_notice_is_raised_once_for_each_id_and_the_last_sixteen_are_kept() {
     assert!(
         posted.fresh(&notice("ready:cand-0".into())),
         "the oldest of sixteen is let go: an id can come back after an outage clears"
+    );
+}
+
+/// The ids raised outlive the app, bounded at sixteen, so a standing notice is not raised again
+/// at every launch.
+#[test]
+fn the_raised_ids_outlive_the_app_and_stay_sixteen() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let file = dir
+        .path()
+        .join("state/fermix-desktop/always-on-notices.json");
+    let mut posted = Posted::load(&file).expect("nothing saved yet is none raised");
+    let notice = |n: usize| Notice {
+        id: format!("ready:cand-{n}"),
+        sentence: "Your server is ready for the move.".into(),
+    };
+    for n in 0..20 {
+        assert!(posted.fresh(&notice(n)));
+    }
+    posted.save(&file).expect("saved");
+    let mut again = Posted::load(&file).expect("read back");
+    assert_eq!(again.ids().len(), POSTED);
+    assert!(!again.fresh(&notice(19)), "raised in the last run");
+    assert!(again.fresh(&notice(0)), "let go of before the save");
+    let mut model = Model::with_posted(Posted::load(&file).expect("read back"));
+    model.pane_shown();
+    model.next_read();
+    model.served(served());
+    let ready = result("home_status_ready")["summary"]["notice"].clone();
+    let mut raised = Posted::default();
+    raised.fresh(&decoded(ready));
+    raised.save(&file).expect("saved");
+    let mut model_after = Model::with_posted(Posted::load(&file).expect("read back"));
+    model_after.pane_shown();
+    model_after.next_read();
+    model_after.served(served());
+    assert_eq!(
+        model_after.answered(status("home_status_ready")),
+        None,
+        "raised before the app started"
+    );
+    assert!(model.answered(status("home_status_ready")).is_some());
+    assert_eq!(
+        model.posted().ids().last().map(String::as_str),
+        Some("ready:cand-5e2a9c1f7b3d4086")
+    );
+}
+
+#[test]
+fn a_damaged_or_oversized_notices_file_is_an_error_and_a_long_one_keeps_its_last_sixteen() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let file = dir.path().join("always-on-notices.json");
+    std::fs::write(&file, "{not json").expect("written");
+    assert!(Posted::load(&file).is_err());
+    std::fs::write(&file, "x".repeat(64 * 1024)).expect("written");
+    let too_big = Posted::load(&file).expect_err("over the bound");
+    assert!(too_big.contains("larger"), "{too_big}");
+    let ids: Vec<String> = (0..40).map(|n| format!("moved:{n}")).collect();
+    std::fs::write(&file, json!({ "posted": ids }).to_string()).expect("written");
+    let kept = Posted::load(&file).expect("read");
+    let expected: Vec<String> = (24..40).map(|n| format!("moved:{n}")).collect();
+    assert_eq!(kept.ids(), expected, "the newest sixteen");
+    assert_eq!(
+        notices_file(
+            Some(std::ffi::OsStr::new("/state")),
+            std::path::Path::new("/home/ada")
+        ),
+        std::path::PathBuf::from("/state/fermix-desktop/always-on-notices.json")
+    );
+    assert_eq!(
+        notices_file(
+            Some(std::ffi::OsStr::new("relative")),
+            std::path::Path::new("/home/ada")
+        ),
+        std::path::PathBuf::from("/home/ada/.local/state/fermix-desktop/always-on-notices.json")
     );
 }
 

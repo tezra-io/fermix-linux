@@ -1,8 +1,9 @@
 //! What the updater remembers between runs: the "Check for updates
 //! automatically" switch, the newest feed it accepted (rule 2), its last
-//! check and how that ended, and the version the person skipped (rule 5). The
-//! app keeps no other per-user state, so this is its own file under
-//! `$XDG_STATE_HOME`, replaced in one step on every save. Downloads go to a
+//! check and how that ended, and the version the person skipped (rule 5). It is
+//! its own file under `$XDG_STATE_HOME`, replaced in one step on every save; the
+//! one other file there is Always On's raised notices, saved the same way
+//! (`always_on::notices`). Downloads go to a
 //! folder in the cache that only this account can open, which every launch
 //! empties.
 
@@ -78,7 +79,12 @@ pub enum Checked {
 /// when that is unset, empty or relative, which the XDG base directory
 /// specification says to ignore.
 pub fn state_path(state_home: Option<&OsStr>, home: &Path) -> PathBuf {
-    xdg_dir(state_home, home, ".local/state").join(STATE_FILE)
+    state_dir(state_home, home).join(STATE_FILE)
+}
+
+/// `$XDG_STATE_HOME`, or `~/.local/state` when that is unset, empty or relative.
+pub(crate) fn state_dir(state_home: Option<&OsStr>, home: &Path) -> PathBuf {
+    xdg_dir(state_home, home, ".local/state")
 }
 
 /// `$XDG_CACHE_HOME/fermix-desktop/updates`, or under `~/.cache`.
@@ -109,9 +115,15 @@ pub fn load(path: &Path) -> Result<Remembered, String> {
         .map_err(|e| format!("{} is not the updater's state: {e}", path.display()))
 }
 
+/// Saves what the updater remembers, in one step (`replace`).
+pub fn save(path: &Path, remembered: &Remembered) -> io::Result<()> {
+    let text = serde_json::to_vec_pretty(remembered).expect("the state serializes");
+    replace(path, &text)
+}
+
 /// Writes a temporary file beside `path`, flushes it to disk, and renames it
 /// over `path`, so a reader sees the old state or the new, never a mix.
-pub fn save(path: &Path, remembered: &Remembered) -> io::Result<()> {
+pub(crate) fn replace(path: &Path, text: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .expect("the state file has a parent directory");
@@ -122,8 +134,7 @@ pub fn save(path: &Path, remembered: &Remembered) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(".{}.tmp", std::process::id()));
     let temporary = PathBuf::from(temporary);
-    let text = serde_json::to_vec_pretty(remembered).expect("the state serializes");
-    let written = write_synced(&temporary, &text).and_then(|()| fs::rename(&temporary, path));
+    let written = write_synced(&temporary, text).and_then(|()| fs::rename(&temporary, path));
     if let Err(e) = written {
         return Err(match fs::remove_file(&temporary) {
             Ok(()) => e,

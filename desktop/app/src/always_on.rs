@@ -19,6 +19,7 @@ use crate::phone::{copy_secret, withdraw};
 use crate::status::{down_view, DownPage};
 use adw::prelude::*;
 use fermix_client::always_on::model::{Act, Dialog, Model, Press, Read};
+use fermix_client::always_on::notices::Posted;
 use fermix_client::always_on::{
     self as words, destructive, sentence, Fact, Page, Screen, TokenTarget,
 };
@@ -26,10 +27,11 @@ use fermix_client::home::{
     Action, ActionId, HomeStatus, ItemStatus, Notice, OwnServer, ReadinessItem,
 };
 use fermix_client::management::{CallError, Management};
-use fermix_client::provision::{Options, Pick};
+use fermix_client::provision::{Offer, Options, Pick};
 use fermix_client::view::{daemon_problem, DAEMON_TOO_OLD};
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -71,7 +73,6 @@ struct Drawn {
     /// Whose token the field takes, while one is asked for.
     target: Option<TokenTarget>,
     options: Option<Result<Options, String>>,
-    reads_offers: bool,
     chosen: Option<Pick>,
     handout: Option<OwnServer>,
 }
@@ -142,6 +143,8 @@ struct Widgets {
 
 pub struct AlwaysOnPane {
     me: Weak<AlwaysOnPane>,
+    /// Where the raised notices' ids are kept across launches.
+    notices_file: PathBuf,
     /// The page, or the down page while Fermix on this computer was never read.
     pub root: gtk::Stack,
     page: adw::PreferencesPage,
@@ -162,8 +165,17 @@ pub struct AlwaysOnPane {
 }
 
 impl AlwaysOnPane {
-    /// `notify` raises one desktop notification.
-    pub fn new(daemon: Daemon, notify: Rc<dyn Fn(&Notice)>) -> Rc<AlwaysOnPane> {
+    /// `notify` raises one desktop notification; `notices_file` keeps which were raised, read
+    /// here once.
+    pub fn new(
+        daemon: Daemon,
+        notify: Rc<dyn Fn(&Notice)>,
+        notices_file: PathBuf,
+    ) -> Rc<AlwaysOnPane> {
+        let posted = Posted::load(&notices_file).unwrap_or_else(|e| {
+            glib::g_warning!("fermix", "Always On's raised notices were not read: {e}");
+            Posted::default()
+        });
         let page = adw::PreferencesPage::new();
         let w = widgets();
         for group in [
@@ -185,12 +197,13 @@ impl AlwaysOnPane {
         root.add_named(&down.page, Some("down"));
         let pane = Rc::new_cyclic(|me| AlwaysOnPane {
             me: me.clone(),
+            notices_file,
             root,
             page,
             down,
             daemon,
             notify,
-            model: RefCell::default(),
+            model: RefCell::new(Model::with_posted(posted)),
             w,
             drawn: RefCell::default(),
             sections: RefCell::default(),
@@ -339,15 +352,11 @@ impl AlwaysOnPane {
         match read {
             Read::Status => {
                 let answer = self.daemon.call(read_home).await;
-                if let Some(notice) = self.apply(answer) {
-                    (self.notify)(&notice);
-                }
+                let notice = self.apply(answer);
+                self.raise(notice);
             }
-            Read::Options(provider) => {
-                let answer = self
-                    .daemon
-                    .call(move |m| m.provision_options(&provider))
-                    .await;
+            Read::Options => {
+                let answer = self.daemon.call(|m| m.provision_options()).await;
                 let answer = answer.map_err(|e| {
                     glib::g_warning!("fermix", "home.provision.options was not read: {e:?}");
                     sentence(&e)
@@ -416,11 +425,23 @@ impl AlwaysOnPane {
         if took_token {
             self.w.token.entry.set_text("");
         }
-        if let Some(notice) = notice {
-            (self.notify)(&notice);
-        }
+        self.raise(notice);
         self.render();
         self.read_due();
+    }
+
+    /// Raises a notice seen for the first time, and keeps that it was.
+    fn raise(&self, notice: Option<Notice>) {
+        let Some(notice) = notice else { return };
+        (self.notify)(&notice);
+        let saved = self.model.borrow().posted().save(&self.notices_file);
+        if let Err(e) = saved {
+            glib::g_warning!(
+                "fermix",
+                "Always On's raised notices were not saved to {}: {e}",
+                self.notices_file.display()
+            );
+        }
     }
 
     /// A pasted token, or Return in the field: the model hands over its act.
@@ -487,7 +508,6 @@ impl AlwaysOnPane {
             refusal: model.refusal.clone(),
             target: model.token_target(),
             options: model.options().cloned(),
-            reads_offers: model.reads_offers(),
             chosen: model.chosen().cloned(),
             handout: model.handout.clone(),
         }
@@ -550,18 +570,22 @@ impl AlwaysOnPane {
         rows
     }
 
-    /// The choice the main action makes: the engine's recommendation, or the owner's own, with
-    /// Change; nothing while there is no provider to read the offers of.
+    /// The choice the main action makes: the engine's recommendation, or the owner's own offer
+    /// in the engine's words and its city, with Change.
     fn choice_rows(&self, drawn: &Drawn) -> Vec<gtk::Widget> {
         let options = match &drawn.options {
-            None if drawn.reads_offers => return vec![spinner_row(words::READING).upcast()],
-            None => return Vec::new(),
+            None => return vec![spinner_row(words::READING).upcast()],
             Some(Err(why)) => return vec![refused_row(why).upcast()],
             Some(Ok(options)) => options,
         };
         let picked = drawn.chosen.as_ref().and_then(|pick| options.offer(pick));
         let said: gtk::Widget = match picked {
-            Some(offer) => offer_row(options, offer).upcast(),
+            Some(offer) => {
+                let row = offer_row(offer);
+                let city = options.city(&offer.location).unwrap_or(&offer.location);
+                row.add_suffix(&gtk::Label::new(Some(city)));
+                row.upcast()
+            }
             None => note_row(&options.sentence).upcast(),
         };
         let change = adw::ButtonRow::builder().title(words::CHANGE).build();
@@ -1019,7 +1043,7 @@ fn passphrase_said(action: &Action, twice: bool) -> String {
     }
 }
 
-/// The offers, by location, cheapest first, the one selected checked; none where they could
+/// The offers grouped by city, cheapest first, the one selected checked; none where they could
 /// not be read. `chosen` hears each pick with the widget it came from.
 fn offers(
     options: Option<&Options>,
@@ -1031,11 +1055,11 @@ fn offers(
         return page;
     };
     let mut first: Option<gtk::CheckButton> = None;
-    for location in &options.locations {
+    for (city, here) in words::by_city(options) {
         let group = adw::PreferencesGroup::builder()
-            .title(glib::markup_escape_text(&location.city))
+            .title(glib::markup_escape_text(city))
             .build();
-        for offer in options.offers.iter().filter(|o| o.location == location.id) {
+        for offer in here {
             let pick = Pick {
                 size: offer.size.clone(),
                 location: offer.location.clone(),
@@ -1046,7 +1070,7 @@ fn offers(
                 .build();
             radio.set_group(first.as_ref());
             first.get_or_insert_with(|| radio.clone());
-            let row = offer_row(options, offer);
+            let row = offer_row(offer);
             row.add_prefix(&radio);
             row.set_activatable_widget(Some(&radio));
             let chosen = chosen.clone();
@@ -1062,21 +1086,12 @@ fn offers(
     page
 }
 
-/// One offer: its name, its shape and place, and what it costs a month.
-fn offer_row(options: &Options, offer: &fermix_client::provision::Offer) -> adw::ActionRow {
-    let city = options.city(&offer.location).unwrap_or(&offer.location);
-    let row = adw::ActionRow::builder()
-        .title(glib::markup_escape_text(&offer.description))
-        .subtitle(glib::markup_escape_text(&format!(
-            "{}, {city}",
-            words::shape(offer)
-        )))
-        .build();
-    row.add_suffix(&gtk::Label::new(Some(&words::monthly(
-        offer,
-        &options.currency,
-    ))));
-    row
+/// One offer as the engine words it: its label, and its price under it.
+fn offer_row(offer: &Offer) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .title(glib::markup_escape_text(&offer.label))
+        .subtitle(glib::markup_escape_text(&offer.price))
+        .build()
 }
 
 /// A dialog's page: its body, with the way out and, where there is one, its answer in the

@@ -14,7 +14,7 @@ pub mod notices;
 
 use crate::home::{Action, ActionId, Line, Need, Provider, ReadinessItem, Summary, SummaryState};
 use crate::management::CallError;
-use crate::provision::Offer;
+use crate::provision::{Offer, Options};
 use crate::view::daemon_problem;
 use crate::view::DaemonProblem;
 
@@ -233,26 +233,18 @@ pub fn console_label(provider: &str) -> String {
     format!("Open {provider}")
 }
 
-/// An amount the provider gave, in its currency, never rounded or summed here.
-pub fn money(amount: &str, currency: &str) -> String {
-    match currency {
-        "EUR" => format!("€{amount}"),
-        "USD" => format!("${amount}"),
-        _ => format!("{amount} {currency}"),
-    }
-}
-
-/// An offer's price in the list of offers.
-pub fn monthly(offer: &Offer, currency: &str) -> String {
-    format!("{} a month", money(&offer.total_monthly, currency))
-}
-
-/// An offer's shape in the list of offers.
-pub fn shape(offer: &Offer) -> String {
-    format!(
-        "{} vCPU, {} GB memory, {} GB disk",
-        offer.cores, offer.memory_gb, offer.disk_gb
-    )
+/// The offers grouped by the city of their place, in the engine's order of places and of
+/// offers; a place with none in stock is left out.
+pub fn by_city(options: &Options) -> Vec<(&str, Vec<&Offer>)> {
+    options
+        .locations
+        .iter()
+        .map(|place| {
+            let here = options.offers.iter().filter(|o| o.location == place.id);
+            (place.city.as_str(), here.collect::<Vec<_>>())
+        })
+        .filter(|(_, offers)| !offers.is_empty())
+        .collect()
 }
 
 /// Over the command and the code for a server of the owner's own.

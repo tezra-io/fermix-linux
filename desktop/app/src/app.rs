@@ -28,6 +28,7 @@ use crate::voice::VoicePage;
 use crate::voice_call::Call;
 use adw::prelude::*;
 use fermix_client::always_on;
+use fermix_client::always_on::notices::notices_file;
 use fermix_client::greeting::{about_you_name, ABOUT_YOU};
 use fermix_client::home::Notice;
 use fermix_client::management::{CallError, PROTOCOL_VERSION};
@@ -117,7 +118,9 @@ fn build_app(application: &adw::Application) -> Rc<App> {
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
     let integrations = IntegrationsPane::new(Daemon::new(), Rc::new(toast));
-    let always_on = AlwaysOnPane::new(Daemon::new(), Rc::new(notifier(application)));
+    let state_home = std::env::var_os("XDG_STATE_HOME");
+    let raised = notices_file(state_home.as_deref(), &glib::home_dir());
+    let always_on = AlwaysOnPane::new(Daemon::new(), Rc::new(notifier(application)), raised);
     let settings = SettingsPage::new(
         providers.root.upcast_ref(),
         &providers.page,
