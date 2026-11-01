@@ -3,12 +3,15 @@
 //! says, where each action goes and the calls it makes are `fermix_client::always_on`'s; this
 //! file only draws the model and runs the calls it hands over, each off the window's thread.
 //!
-//! The pane owns its daemon calls, as Integrations does. It reads `home.status` for as long as
-//! the app runs, window or none, at the pace the model sets, and raises the desktop's own
-//! notifications from what changed between two reads. The `snapshots` section, which the daemon
-//! files under this pane, is added below by `SettingsPage` and drawn by the one settings model;
-//! it shows while Details is open. The fields someone types in stay for the pane's life, so a
-//! read every few seconds never wipes a token or a passphrase being typed.
+//! The pane owns its daemon calls, as Integrations does. It reads `home.status` on no timer:
+//! when it is shown, after its own step, when the engine says the summary changed
+//! (`home_status_changed`, which the chat wire hands to `home_status_changed` here), and when a
+//! new engine answers while it shows; so while Always On is off and the pane is closed the app
+//! asks nothing. The model says which read is due; this runs them in turn and raises the
+//! desktop's own notifications from what changed between two reads. The `snapshots` section,
+//! which the daemon files under this pane, is added below by `SettingsPage` and drawn by the one
+//! settings model; it shows while Details is open. The fields someone types in stay for the
+//! pane's life, so a read never wipes a token or a passphrase being typed.
 
 use crate::daemon::Daemon;
 use crate::dialogs::{form_dialog, leave};
@@ -16,16 +19,16 @@ use crate::phone::{copy_secret, withdraw};
 use crate::status::{down_view, DownPage};
 use adw::prelude::*;
 use fermix_client::always_on::actions::{perform, Context, Outcome};
-use fermix_client::always_on::model::{Model, Press};
+use fermix_client::always_on::model::{Model, Press, Read};
 use fermix_client::always_on::notices::Notice;
 use fermix_client::always_on::{
     self as words, details, own_server_command, sentence, Fact, Page, Screen, ScreenKind,
+    TokenTarget,
 };
 use fermix_client::home::{Action, ActionId, HomeStatus, ItemStatus, ReadinessItem};
 use fermix_client::management::{CallError, Management};
-use fermix_client::provision::{Options, Pick, Token};
+use fermix_client::provision::{Options, Pick, Provider, Token};
 use fermix_client::view::{daemon_problem, DAEMON_TOO_OLD};
-use futures_channel::oneshot;
 use gtk::{gdk, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -37,6 +40,9 @@ const PASTED: usize = 16;
 const PULSE: Duration = Duration::from_millis(120);
 const DIALOG_WIDTH: i32 = 480;
 const DIALOG_HEIGHT: i32 = 560;
+/// The most reads one run of `read_due` makes: what is still due after it waits for the next
+/// trigger. A pane's own reads are at most six; the rest are notices that came meanwhile.
+const READS_AT_ONCE: usize = 32;
 
 /// Hears each size and place picked in a list of offers, with the widget it came from.
 type Chosen = Rc<dyn Fn(Pick, &gtk::Widget)>;
@@ -65,7 +71,9 @@ struct Drawn {
     working: Option<ActionId>,
     refusal: Option<String>,
     notice: Option<String>,
-    hetzner: bool,
+    provisioner: bool,
+    /// Whose token the field takes, on a screen with the field.
+    target: Option<TokenTarget>,
     options_read: bool,
     code: Option<(String, String)>,
     code_refusal: Option<String>,
@@ -108,7 +116,7 @@ struct TokenField {
     newer: adw::ActionRow,
     how: adw::ExpanderRow,
     steps: RefCell<(Vec<String>, Vec<gtk::Widget>)>,
-    /// Open Hetzner, after the steps.
+    /// Open the provider's console, after the steps.
     open: adw::ButtonRow,
     length: Cell<usize>,
 }
@@ -127,6 +135,8 @@ struct Widgets {
     /// The sentence, the bar and a note on the last read, with Learn more in its header.
     screen: Rows,
     learn: gtk::Button,
+    /// Where the engine offers more than one provider: their names, to pick one.
+    pick: Rows,
     token: TokenField,
     /// What the screen holds below the field: its links, Change, the review.
     body: Rows,
@@ -153,10 +163,8 @@ pub struct AlwaysOnPane {
     drawn: RefCell<Option<Drawn>>,
     /// The daemon's sections filed under this pane, shown while Details is open.
     sections: RefCell<Vec<adw::PreferencesGroup>>,
-    /// Answers when the last read asked has landed, so reads land in the order they were asked.
-    reading: RefCell<Option<oneshot::Receiver<()>>>,
-    /// Each wait scheduled counts up, so a timer from before does nothing when it fires.
-    generation: Cell<u64>,
+    /// The reads due are being run, one after another, so they land in order.
+    draining: Cell<bool>,
     /// The command this pane copied, taken back when the pane goes.
     copied: Rc<RefCell<Option<gdk::ContentProvider>>>,
     dialog: RefCell<Option<adw::Dialog>>,
@@ -169,6 +177,7 @@ impl AlwaysOnPane {
         let w = widgets();
         for group in [
             &w.screen.group,
+            &w.pick.group,
             &w.token.group,
             &w.body.group,
             &w.action.group,
@@ -193,8 +202,7 @@ impl AlwaysOnPane {
             w,
             drawn: RefCell::default(),
             sections: RefCell::default(),
-            reading: RefCell::default(),
-            generation: Cell::new(0),
+            draining: Cell::new(false),
             copied: Rc::default(),
             dialog: RefCell::default(),
         });
@@ -210,10 +218,23 @@ impl AlwaysOnPane {
         self.show_sections();
     }
 
-    /// Reads the summary now, and from then on at the model's pace for as long as the app runs.
-    /// The app starts it once, at launch.
-    pub fn start_follow(&self) {
-        self.spawn(|pane| async move { pane.read().await });
+    /// The engine said Always On's summary changed (companion `home_status_changed`), or the
+    /// chat was refused because this desktop's server is out of reach or no longer knows it
+    /// (`primary_unreachable`, `desktop_revoked`), where no notice can arrive: one read of it.
+    #[expect(
+        dead_code,
+        reason = "the chat wire calls it once it speaks companion protocol 6"
+    )]
+    pub fn home_status_changed(&self) {
+        self.model.borrow_mut().home_status_changed();
+        self.read_due();
+    }
+
+    /// A new engine process answers here: what the pane read of its providers goes, and it is
+    /// read again only while the pane shows.
+    pub fn engine_restarted(&self) {
+        self.model.borrow_mut().engine_restarted();
+        self.read_due();
     }
 
     fn spawn<F, Fut>(&self, f: F)
@@ -276,7 +297,7 @@ impl AlwaysOnPane {
         let me = self.me.clone();
         self.w.token.open.connect_activated(move |_| {
             if let Some(pane) = me.upgrade() {
-                pane.act(ActionId::OpenHetzner);
+                pane.open_token_console();
             }
         });
     }
@@ -292,19 +313,11 @@ impl AlwaysOnPane {
 
     // ---- Coming and going ----------------------------------------------------------------
 
-    /// The pane appeared: it reads now, reads Hetzner back first where the summary rests on
-    /// it, and what Hetzner sells on the choose screen.
+    /// The pane appeared: it reads the summary, the providers and, where the summary rests on
+    /// what the provider last said, that back first; and what the provider sells on choose.
     fn shown(&self) {
         self.model.borrow_mut().pane_shown();
-        self.spawn(|pane| async move {
-            pane.read().await;
-            if pane.model.borrow().needs_reconcile() {
-                pane.reconcile().await;
-            }
-            if pane.model.borrow().choosing() {
-                pane.read_options().await;
-            }
-        });
+        self.read_due();
     }
 
     /// The pane went: the code it showed, and its copy on the clipboard, go with it.
@@ -312,29 +325,68 @@ impl AlwaysOnPane {
         self.model.borrow_mut().pane_hidden();
         withdraw(&self.page.clipboard(), &self.copied);
         self.render();
-        self.schedule();
     }
 
     // ---- Reads -----------------------------------------------------------------------------
 
-    /// One read of `home.status`, asked once the read before it has landed; the notification
-    /// the change calls for is raised, and the next read is scheduled.
-    async fn read(&self) {
-        let (landed, turn) = oneshot::channel();
-        let before = self.reading.replace(Some(turn));
-        if let Some(before) = before {
-            // A cancelled sender is a read whose future was dropped; its turn is over all the same.
-            let _ = before.await;
+    /// Runs the reads the model says are due, one after another, until none is; a run already
+    /// going takes up what is asked meanwhile. Then the console Open console waited for opens.
+    fn read_due(&self) {
+        if self.draining.replace(true) {
+            return;
         }
-        let answer = self.daemon.call(read_home).await;
-        let told = self.apply(answer);
-        // Nobody waiting is the newest read; there is no one to hand the turn to.
-        let _ = landed.send(());
-        if let Some(notice) = told {
-            (self.notify)(&notice);
+        self.spawn(|pane| async move {
+            let mut made = 0;
+            while made < READS_AT_ONCE {
+                let next = pane.model.borrow_mut().next_read();
+                let Some(read) = next else { break };
+                pane.perform_read(read).await;
+                made += 1;
+            }
+            pane.draining.set(false);
+            if made == READS_AT_ONCE {
+                glib::g_warning!(
+                    "fermix",
+                    "Always On made {READS_AT_ONCE} reads in one run; the rest wait for the next"
+                );
+            }
+            let opening = pane.model.borrow_mut().take_opening();
+            if let Some(url) = opening {
+                pane.open(&url).await;
+            }
+        });
+    }
+
+    /// One read, and what it answered handed to the model; the notification a change of the
+    /// summary calls for is raised.
+    async fn perform_read(&self, read: Read) {
+        match read {
+            Read::Status => {
+                let answer = self.daemon.call(read_home).await;
+                if let Some(notice) = self.apply(answer) {
+                    (self.notify)(&notice);
+                }
+            }
+            Read::Providers => {
+                let answer = self.daemon.call(|m| m.provision_providers()).await;
+                let answer = logged("home.provision.providers", answer);
+                self.model.borrow_mut().providers_read(answer);
+            }
+            Read::Record => {
+                let answer = self.daemon.call(|m| m.provision_resources()).await;
+                let answer = logged("home.provision.resources", answer);
+                self.model.borrow_mut().record_read(answer);
+            }
+            Read::Options(provider) => {
+                let answer = self
+                    .daemon
+                    .call(move |m| m.provision_options(&provider))
+                    .await;
+                let answer = logged("home.provision.options", answer);
+                self.model.borrow_mut().options_read(answer);
+            }
         }
         self.render();
-        self.schedule();
     }
 
     fn apply(&self, answer: Result<HomeRead, CallError>) -> Option<Notice> {
@@ -358,36 +410,6 @@ impl AlwaysOnPane {
         }
     }
 
-    fn schedule(&self) {
-        let generation = self.generation.get() + 1;
-        self.generation.set(generation);
-        let wait = self.model.borrow().next_wait();
-        let me = self.me.clone();
-        glib::timeout_add_local_once(wait, move || {
-            let Some(pane) = me.upgrade() else { return };
-            if pane.generation.get() == generation {
-                glib::spawn_future_local(async move { pane.read().await });
-            }
-        });
-    }
-
-    /// Reads the provisioner's record back from Hetzner, then the summary that rests on it. A
-    /// refused read is logged: the summary then says what the record last held.
-    async fn reconcile(&self) {
-        let answer = self.daemon.call(|m| m.provision_resources()).await;
-        if let Err(e) = answer {
-            glib::g_warning!("fermix", "home.provision.resources was not read: {e:?}");
-        }
-        self.read().await;
-    }
-
-    async fn read_options(&self) {
-        let answer = self.daemon.call(|m| m.provision_options()).await;
-        let answer = answer.map_err(|e| sentence(&e));
-        self.model.borrow_mut().options_read(answer);
-        self.render();
-    }
-
     // ---- Actions -----------------------------------------------------------------------------
 
     /// One action the screen offers was pressed.
@@ -399,8 +421,9 @@ impl AlwaysOnPane {
 
     async fn pressed(self: Rc<Self>, press: Press) {
         match press {
-            Press::Drawn => self.step_taken().await,
-            Press::Open(url) => self.open(url).await,
+            Press::Drawn => self.render(),
+            Press::Read => self.read_due(),
+            Press::Open(url) => self.open(&url).await,
             Press::Update => self.activate("win.updates-open"),
             Press::GetCode => self.get_code().await,
             Press::Run(context) => self.run(*context).await,
@@ -416,13 +439,18 @@ impl AlwaysOnPane {
             refusal: Some(sentence(&e)),
             ..Outcome::default()
         });
-        self.model.borrow_mut().finished(outcome);
+        self.model.borrow_mut().finished(outcome, unix_now());
         self.render();
-        self.read().await;
+        self.read_due();
     }
 
+    /// Checks a pasted token with the provider the field is for; the answer names it from then
+    /// on, and the summary is read again.
     fn check_token(&self) {
         let Some(token) = Token::pasted(&self.w.token.entry.text()) else {
+            return;
+        };
+        let Some(provider) = self.token_provider() else {
             return;
         };
         if self.model.borrow().checking_token {
@@ -431,18 +459,41 @@ impl AlwaysOnPane {
         self.model.borrow_mut().checking_token = true;
         self.render();
         self.spawn(|pane| async move {
-            let answer = pane.daemon.call(move |m| m.provision_connect(&token)).await;
+            let id = provider.id;
+            let answer = pane
+                .daemon
+                .call(move |m| m.provision_connect(&id, &token))
+                .await;
             let answer = answer.map_err(|e| sentence(&e));
             let worked = answer.is_ok();
             pane.model.borrow_mut().token_checked(answer);
             if worked {
                 pane.w.token.entry.set_text("");
             }
-            pane.read().await;
-            if pane.model.borrow().choosing() {
-                pane.read_options().await;
-            }
+            pane.render();
+            pane.read_due();
         });
+    }
+
+    /// The provider whose token the field shown takes.
+    fn token_provider(&self) -> Option<Provider> {
+        match self.model.borrow().token_target_now() {
+            Some(TokenTarget::Provider(provider)) => Some(provider),
+            _ => None,
+        }
+    }
+
+    /// Open, after the steps: the console of the provider the field is for.
+    fn open_token_console(&self) {
+        let Some(provider) = self.token_provider() else {
+            return;
+        };
+        self.spawn(|pane| async move { pane.open(&provider.console_url).await });
+    }
+
+    fn pick_provider(&self, id: &str) {
+        self.model.borrow_mut().pick_provider(id);
+        self.render();
     }
 
     async fn set_passphrase(&self) {
@@ -467,7 +518,8 @@ impl AlwaysOnPane {
             self.w.passphrase.first.set_text("");
             self.w.passphrase.second.set_text("");
         }
-        self.read().await;
+        self.render();
+        self.read_due();
     }
 
     /// The code for a server of the owner's own, shown once inside the command it runs.
@@ -476,7 +528,7 @@ impl AlwaysOnPane {
         let answer = answer.map_err(|e| sentence(&e));
         self.model.borrow_mut().code_answered(answer);
         self.render();
-        self.read().await;
+        self.read_due();
     }
 
     async fn open(&self, url: &str) {
@@ -538,10 +590,11 @@ impl AlwaysOnPane {
                 .map(|s| details(s, offer.as_ref().map(|(o, c)| (o, c.as_str()))))
                 .unwrap_or_default(),
             page,
+            target: model.token_target_now(),
             working: model.working,
             refusal: model.refusal.clone(),
             notice: model.notice.clone(),
-            hetzner: model.serves_hetzner(),
+            provisioner: model.serves_provisioner(),
             options_read: model.loaded_options().is_some(),
             code,
             code_refusal: model.code_refusal.clone(),
@@ -566,6 +619,7 @@ impl AlwaysOnPane {
             Some(screen) => self.body_rows(drawn, screen),
             None => Vec::new(),
         });
+        self.w.pick.replace(self.pick_rows(drawn));
         let action = screen.as_ref().and_then(|s| s.action.clone());
         self.w
             .action
@@ -607,6 +661,30 @@ impl AlwaysOnPane {
             ScreenKind::Ready => drawn.readiness.iter().map(item_row).collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// Where the engine offers more than one provider and none is picked: their names, one of
+    /// which the token screen is then for.
+    fn pick_rows(&self, drawn: &Drawn) -> Vec<gtk::Widget> {
+        let Some(TokenTarget::Pick(providers)) =
+            drawn.target.as_ref().filter(|_| drawn.provisioner)
+        else {
+            return Vec::new();
+        };
+        let mut rows = vec![note_row(words::PROVIDER_CHOOSE).upcast::<gtk::Widget>()];
+        for provider in providers {
+            let row = adw::ButtonRow::builder()
+                .title(glib::markup_escape_text(&provider.name))
+                .build();
+            let (me, id) = (self.me.clone(), provider.id.clone());
+            row.connect_activated(move |_| {
+                if let Some(pane) = me.upgrade() {
+                    pane.pick_provider(&id);
+                }
+            });
+            rows.push(row.upcast());
+        }
+        rows
     }
 
     /// The one main action, its spinner while it waits on the daemon, and the daemon's refusal
@@ -765,24 +843,50 @@ impl AlwaysOnPane {
     }
 
     /// The token field, the passphrase fields and their words, set on every draw: they stay
-    /// for the pane's life so nothing typed in them is lost.
+    /// for the pane's life so nothing typed in them is lost. The field, its label, the check's
+    /// words, How to get one and the console link are the provider's the field is for; while
+    /// the providers are read the field waits, and a read that failed says why in its place.
     fn render_fields(&self, drawn: &Drawn) {
         let model = self.model.borrow();
-        let screen = drawn.page.clone().screen();
-        let field = screen.as_ref().is_some_and(|s| s.token_field);
         let t = &self.w.token;
-        t.group.set_visible(field);
-        t.entry.set_visible(drawn.hetzner);
-        t.newer.set_visible(!drawn.hetzner);
+        let target = drawn.target.as_ref().filter(|_| drawn.provisioner);
+        let provider = match target {
+            Some(TokenTarget::Provider(provider)) => Some(provider),
+            _ => None,
+        };
+        let unread = match target {
+            Some(TokenTarget::Unknown(why)) => Some(why.as_deref()),
+            _ => None,
+        };
+        t.group
+            .set_visible(drawn.target.is_some() && !matches!(target, Some(TokenTarget::Pick(_))));
+        t.newer.set_visible(!drawn.provisioner);
+        t.entry.set_visible(provider.is_some());
         t.entry.set_sensitive(!model.checking_token);
-        t.checking.set_visible(model.checking_token);
-        show_refusal(&t.refusal, model.token_refusal.as_deref());
+        if let Some(provider) = provider {
+            t.entry
+                .set_title(&glib::markup_escape_text(&provider.token_label));
+            t.open
+                .set_title(&glib::markup_escape_text(&words::console_label(
+                    &provider.name,
+                )));
+        }
+        let checking = match (provider, unread) {
+            (Some(provider), _) if model.checking_token => {
+                Some(words::token_checking(&provider.name))
+            }
+            (_, Some(None)) => Some(words::READING.to_owned()),
+            _ => None,
+        };
+        t.checking.set_visible(checking.is_some());
+        t.checking.set_title(&glib::markup_escape_text(
+            checking.as_deref().unwrap_or_default(),
+        ));
+        let refused = unread.flatten().or(model.token_refusal.as_deref());
+        show_refusal(&t.refusal, refused);
         // How to get one is the field's: an engine without the provisioner gets neither.
-        let steps = screen
-            .as_ref()
-            .map(|s| s.steps.as_slice())
-            .unwrap_or_default();
-        self.show_steps(if drawn.hetzner { steps } else { &[] });
+        self.show_steps(provider.map(|p| p.steps.as_slice()).unwrap_or_default());
+        let screen = drawn.page.clone().screen();
         let p = &self.w.passphrase;
         p.group
             .set_visible(screen.as_ref().is_some_and(|s| s.asks_passphrase));
@@ -832,28 +936,6 @@ impl AlwaysOnPane {
             let pick = self.model.borrow().pick();
             self.present(self.replace_page(&options, pick), Some(DIALOG_HEIGHT));
         }
-    }
-
-    /// A step the app keeps itself was taken. Replace reads what Hetzner sells before its
-    /// dialog opens.
-    async fn step_taken(&self) {
-        let wants = {
-            let model = self.model.borrow();
-            model.replacing && model.loaded_options().is_none()
-        };
-        if wants {
-            self.read_options().await;
-        }
-        let failed = match &self.model.borrow().options {
-            Some(Err(sentence)) => Some(sentence.clone()),
-            _ => None,
-        };
-        if let Some(sentence) = failed.filter(|_| self.model.borrow().replacing) {
-            let mut model = self.model.borrow_mut();
-            model.close_replace();
-            model.refusal = Some(sentence);
-        }
-        self.render();
     }
 
     fn open_change(&self) {
@@ -983,6 +1065,7 @@ fn widgets() -> Widgets {
     Widgets {
         screen: Rows::new(screen),
         learn,
+        pick: Rows::new(adw::PreferencesGroup::new()),
         token: token_field(),
         body: Rows::new(adw::PreferencesGroup::new()),
         action: Rows::new(adw::PreferencesGroup::new()),
@@ -994,21 +1077,18 @@ fn widgets() -> Widgets {
     }
 }
 
+/// The paste field and what sits with it; their words are set on each draw, from the provider
+/// the field is for.
 fn token_field() -> TokenField {
-    let entry = adw::PasswordEntryRow::builder()
-        .title(words::TOKEN_FIELD)
-        .build();
-    let checking = adw::ActionRow::builder()
-        .title(words::TOKEN_CHECKING)
-        .visible(false)
-        .build();
+    let entry = adw::PasswordEntryRow::new();
+    let checking = adw::ActionRow::builder().visible(false).build();
     checking.add_suffix(&adw::Spinner::new());
     let refusal = refused_row("");
     let newer = note_row(DAEMON_TOO_OLD);
     let how = adw::ExpanderRow::builder()
         .title(words::HOW_TO_GET_ONE)
         .build();
-    let open = adw::ButtonRow::builder().title(words::OPEN_HETZNER).build();
+    let open = adw::ButtonRow::new();
     how.add_row(&open);
     let group = adw::PreferencesGroup::builder().visible(false).build();
     for row in [
@@ -1085,7 +1165,7 @@ fn offers(options: &Options, selected: Option<&Pick>, chosen: &Chosen) -> adw::P
         for offer in options.offers.iter().filter(|o| o.location == location.id) {
             let pick = Pick {
                 size: offer.size.clone(),
-                location: offer.location,
+                location: offer.location.clone(),
             };
             let radio = gtk::CheckButton::builder()
                 .active(selected == Some(&pick))
@@ -1226,6 +1306,14 @@ fn local_time(at: &str) -> String {
             at.to_owned()
         }
     }
+}
+
+/// A read's answer as the model takes it: a failure's sentence, logged.
+fn logged<T>(method: &str, answer: Result<T, CallError>) -> Result<T, String> {
+    answer.map_err(|e| {
+        glib::g_warning!("fermix", "{method} was not read: {e:?}");
+        sentence(&e)
+    })
 }
 
 fn percent(fraction: f64) -> String {

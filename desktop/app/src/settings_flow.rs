@@ -307,15 +307,20 @@ impl App {
     /// said, and read the pane on screen again. So does a desktop whose list
     /// lacked the server's sections, once Fermix answers in full again.
     pub async fn follow_daemon_process(&self, pid: Option<String>) {
-        let same = {
+        let (same, restarted) = {
             let data = self.settings_data.borrow();
-            data.pid == pid && data.sections_missing.is_none()
+            let restarted = data.pid != pid;
+            (!restarted && data.sections_missing.is_none(), restarted)
         };
         if same {
             return;
         }
         self.forget_settings();
         self.settings_data.borrow_mut().pid = pid;
+        if restarted {
+            // Always On reads a new engine only while its pane shows.
+            self.always_on.engine_restarted();
+        }
         if let Some(pane) = self.shell.visible_pane() {
             self.open_pane(pane).await;
         }

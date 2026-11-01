@@ -11,7 +11,8 @@ use fermix_client::home::{
 use fermix_client::management::{CallError, Management};
 use fermix_client::model::{JobStatus, JobView};
 use fermix_client::provision::{
-    Holder, Location, Pick, PowerAction, ProvisionState, ReplaceState, ResourceKind, TokenState,
+    Holder, Pick, PowerAction, Provider, ProvisionState, ProvisionView, ReplaceState, ResourceKind,
+    TokenState,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,6 +26,8 @@ const REQUESTS: &str = include_str!("../contracts/management/fixtures/requests.j
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
 const CANDIDATE: &str = "cand-5e2a9c1f7b3d4086";
+/// The one provider the goldens name.
+const PROVIDER: &str = "hetzner";
 /// The other-project refusal, in the engine's words (`Home.Provision.error_sentence/1`).
 const OTHER_PROJECT: &str = "This token is for another Hetzner project than the server Fermix \
     created, so paste a token from that project.";
@@ -248,10 +251,14 @@ fn every_published_summary_word_is_one_this_app_knows() {
         let known: ProblemKind = serde_json::from_value(kind.clone()).expect("decodes");
         assert_ne!(known, ProblemKind::Unknown, "{kind}");
     }
-    for place in words("/homeSummaryDetail/properties/next_location/enum") {
-        let known: Location = serde_json::from_value(place.clone()).expect("decodes");
-        assert!(known.wire().is_some(), "{place}");
-    }
+    let place = &defs["homeSummaryDetail"]["properties"]["next_location"];
+    assert!(
+        place.get("enum").is_none(),
+        "a location is the provider's own word"
+    );
+    let detail: fermix_client::home::Detail =
+        serde_json::from_value(json!({"next_location": "invented-ash2"})).expect("decodes");
+    assert_eq!(detail.next_location.as_deref(), Some("invented-ash2"));
     let unknown: ActionId = serde_json::from_value(json!("fly_away")).expect("decodes");
     assert_eq!(
         unknown,
@@ -405,6 +412,7 @@ fn no_home_golden_goes_unread() {
         "home_candidates_list",
         "home_move_readiness",
         "home_move_start",
+        "home_provision_providers",
         "home_provision_connect",
         "home_provision_options",
         "home_provision_create",
@@ -431,14 +439,36 @@ fn no_home_golden_goes_unread() {
     assert_eq!(published.len(), read.len() + uncalled.len());
 }
 
+/// Every word a token screen draws comes from the engine's list of providers, in its order.
 #[test]
-fn a_pasted_token_goes_to_hetzner_and_answers_the_provisioners_view() {
+fn the_providers_are_asked_with_no_params_and_hold_every_word_their_token_screens_draw() {
+    exchange(
+        "home_provision_providers",
+        "home_provision_providers",
+        |m| {
+            let providers: Vec<Provider> = m.provision_providers().expect("decodes");
+            assert_eq!(providers.len(), 1);
+            let provider = &providers[0];
+            assert_eq!(provider.id, PROVIDER);
+            assert_eq!(provider.name, "Hetzner");
+            assert_eq!(provider.token_label, "Hetzner API token");
+            assert_eq!(provider.steps.len(), 4);
+            assert!(provider.steps[0].contains("two-factor"));
+            assert_eq!(provider.console_url, "https://console.hetzner.cloud/");
+            assert_eq!(provider.docs_anchor, "hetzner");
+        },
+    );
+}
+
+#[test]
+fn a_pasted_token_goes_to_its_provider_and_answers_the_provisioners_view() {
     let token =
         fermix_client::provision::Token::pasted(" invented-hetzner-token-6d1f0c9a2b7e4f3a\n")
             .expect("a token was pasted");
     assert!(!format!("{token:?}").contains("invented-hetzner"));
     exchange("home_provision_connect", "home_provision_connect", |m| {
-        let view = m.provision_connect(&token).expect("decodes");
+        let view = m.provision_connect(PROVIDER, &token).expect("decodes");
+        assert_eq!(view.provider, PROVIDER);
         assert_eq!(view.state, ProvisionState::Connected);
         assert_eq!(view.token, TokenState::Accepted);
         assert_eq!(view.other_servers, Some(false));
@@ -450,14 +480,14 @@ fn a_pasted_token_goes_to_hetzner_and_answers_the_provisioners_view() {
 #[test]
 fn the_options_name_every_offer_the_recommendation_and_more_room() {
     exchange("home_provision_options", "home_provision_options", |m| {
-        let options = m.provision_options().expect("decodes");
+        let options = m.provision_options(PROVIDER).expect("decodes");
         assert_eq!(options.currency, "EUR");
         let recommended = options.recommended.clone().expect("a recommendation");
         assert_eq!(
             recommended,
             Pick {
                 size: "cpx22".into(),
-                location: Location::Fsn1
+                location: "fsn1".into()
             }
         );
         let offer = options.offer(&recommended).expect("its offer");
@@ -467,7 +497,8 @@ fn the_options_name_every_offer_the_recommendation_and_more_room() {
             ("19.49", "0.60")
         );
         assert_eq!(offer.total_monthly, "20.09");
-        assert_eq!(options.city(Location::Hel1), Some("Helsinki"));
+        assert_eq!(options.city("hel1"), Some("Helsinki"));
+        assert_eq!(options.city("invented-ash2"), None);
         assert_eq!(options.more_room.map(|p| p.size), Some("cpx32".into()));
         assert_eq!(
             options.sentence,
@@ -477,26 +508,27 @@ fn the_options_name_every_offer_the_recommendation_and_more_room() {
 }
 
 #[test]
-fn a_create_sends_its_type_and_location_and_a_replace_says_so() {
+fn a_create_sends_its_provider_type_and_location_and_a_replace_says_so() {
     let pick = Pick {
         size: "cpx22".into(),
-        location: Location::Fsn1,
+        location: "fsn1".into(),
     };
     exchange("home_provision_create", "home_provision_create", |m| {
-        let job = m.provision_create(&pick, false).expect("a job");
+        let job = m.provision_create(PROVIDER, &pick, false).expect("a job");
         assert_eq!(job.kind, "home_provision");
         assert_eq!(job.status, JobStatus::Running);
         assert_eq!(job.budget_ms, 900_000);
     });
     let replacement = Pick {
         size: "cpx32".into(),
-        location: Location::Hel1,
+        location: "hel1".into(),
     };
     exchange(
         "home_provision_create_replace",
         "home_provision_create",
         |m| {
-            m.provision_create(&replacement, true).expect("a job");
+            m.provision_create(PROVIDER, &replacement, true)
+                .expect("a job");
         },
     );
 }
@@ -512,11 +544,12 @@ fn power_resources_and_delete_answer_as_the_contract_says() {
         "home_provision_resources",
         |m| {
             let view = m.provision_resources().expect("decodes");
+            assert_eq!(view.provider, PROVIDER);
             assert_eq!(view.state, ProvisionState::Created);
             assert_eq!(view.checked, Some(true));
-            let server = view.server.expect("the new server");
+            let server = view.server.clone().expect("the new server");
             assert_eq!(server.name, "fermix-general-b7c2");
-            assert_eq!(server.location, Location::Hel1);
+            assert_eq!(server.location, "hel1");
             assert_eq!(server.power.as_deref(), Some("running"));
             let replace = view.replace.expect("a replace waits");
             assert_eq!(replace.state, ReplaceState::Waiting);
@@ -529,6 +562,7 @@ fn power_resources_and_delete_answer_as_the_contract_says() {
             let replaced = view.resources.iter().filter(|r| r.replaced).count();
             assert_eq!(replaced, 4);
             assert_eq!(view.resources[2].kind, ResourceKind::PrimaryIp);
+            assert_eq!(view.resources[0].id.as_deref(), Some("61840117"));
         },
     );
     exchange("home_provision_delete", "home_provision_delete", |m| {
@@ -537,16 +571,34 @@ fn power_resources_and_delete_answer_as_the_contract_says() {
     });
 }
 
+/// A create the provider refused in its own words is `other`, and a sold-out place names the
+/// next one in the provider's own word for it.
+#[test]
+fn a_failure_keeps_its_reason_and_the_next_location_as_the_engine_words_them() {
+    let mut answer = result("home_provision_resources");
+    answer["state"] = json!("failed");
+    answer["replace"] = Value::Null;
+    answer["failure"] = json!({"reason": "other",
+        "sentence": "The provider said: invented refusal.", "next_location": "invented-ash2",
+        "at": "2026-11-02T08:00:09Z"});
+    let view: ProvisionView = serde_json::from_value(answer).expect("decodes");
+    let failure = view.failure.expect("why it stopped");
+    assert_eq!(failure.reason, "other");
+    assert_eq!(failure.sentence, "The provider said: invented refusal.");
+    assert_eq!(failure.next_location.as_deref(), Some("invented-ash2"));
+}
+
 /// The owner's decisions and the other-project token come back as the daemon's own sentence,
 /// which the pane shows under what was asked.
 #[test]
 fn the_owners_decisions_and_another_projects_token_are_said_in_the_daemons_words() {
     let pick = Pick {
         size: "cpx32".into(),
-        location: Location::Hel1,
+        location: "hel1".into(),
     };
     let err = refused_with("unavailable_provision_owner_decision", |m| {
-        m.provision_create(&pick, true).expect_err("refused")
+        m.provision_create(PROVIDER, &pick, true)
+            .expect_err("refused")
     });
     let CallError::Refused(refusal) = err else {
         panic!("a refusal")
@@ -554,8 +606,8 @@ fn the_owners_decisions_and_another_projects_token_are_said_in_the_daemons_words
     assert_eq!(refusal.code, "unavailable");
     assert_eq!(
         refusal.sentence,
-        "Only the owner can give Fermix a Hetzner token or create, restart or delete its \
-         server: use the Fermix app."
+        "Only the owner can give Fermix an API token or create, restart or delete its server: \
+         use the Fermix app."
     );
     let other = json!({"request_id": "x", "error": {"code": "invalid_params",
         "message": "Request parameters are invalid.",
@@ -563,7 +615,9 @@ fn the_owners_decisions_and_another_projects_token_are_said_in_the_daemons_words
     let token = fermix_client::provision::Token::pasted("invented-other-project-token-0042")
         .expect("pasted");
     let mut seen = None;
-    serve(other, |m| seen = Some(m.provision_connect(&token)));
+    serve(other, |m| {
+        seen = Some(m.provision_connect(PROVIDER, &token))
+    });
     let Some(Err(CallError::Refused(refusal))) = seen else {
         panic!("a refusal")
     };
@@ -612,9 +666,9 @@ fn an_unconfirmed_start_is_told_apart_from_a_refusal() {
     );
 }
 
-/// The two move calls walk the whole home and the three Hetzner reads make up to three calls of
-/// ten seconds: each gets the deadline the contract asks of a client, and every other call
-/// keeps the client's own.
+/// The two move calls walk the whole home and the provisioner's three reads of its provider make
+/// up to three calls of ten seconds: each gets the deadline the contract asks of a client, and
+/// every other call, the list of providers included, keeps the client's own.
 #[test]
 fn the_long_calls_get_their_own_deadlines() {
     let client = Management::new("/nowhere/daemon.sock".into(), Duration::from_secs(10));
@@ -636,7 +690,12 @@ fn the_long_calls_get_their_own_deadlines() {
             "{method}"
         );
     }
-    for method in ["home.status", "home.provision.create", "job.get"] {
+    for method in [
+        "home.status",
+        "home.provision.create",
+        "home.provision.providers",
+        "job.get",
+    ] {
         assert_eq!(
             client.deadline_for(method),
             Duration::from_secs(10),

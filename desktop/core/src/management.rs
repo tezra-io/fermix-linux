@@ -23,13 +23,13 @@ pub const PROTOCOL_VERSION: u64 = 2;
 /// "Forward deadlines"). They get at least 65 s, as the protocol asks of a client.
 const HOME_WALKS: [&str; 2] = ["home.move.readiness", "home.move.start"];
 const HOME_WALK_DEADLINE: Duration = Duration::from_secs(65);
-/// The provisioner's reads, each up to three Hetzner calls of at most 10 s.
-const HETZNER_READS: [&str; 3] = [
+/// The provisioner's reads of its provider, each up to three calls of at most 10 s.
+const PROVIDER_READS: [&str; 3] = [
     "home.provision.connect",
     "home.provision.options",
     "home.provision.resources",
 ];
-const HETZNER_READ_DEADLINE: Duration = Duration::from_secs(35);
+const PROVIDER_READ_DEADLINE: Duration = Duration::from_secs(35);
 /// The most models one `providers.models.list` page holds; the app asks for one page.
 const MODEL_PAGE: u64 = 200;
 
@@ -97,13 +97,13 @@ impl Management {
     }
 
     /// How long one exchange of `method` may take: the calls that walk the whole home and the
-    /// provisioner's Hetzner reads get their own deadlines, never shorter than this client's,
-    /// which every other call keeps.
+    /// provisioner's reads of its provider get their own deadlines, never shorter than this
+    /// client's, which every other call keeps.
     pub fn deadline_for(&self, method: &str) -> Duration {
         let own = if HOME_WALKS.contains(&method) {
             HOME_WALK_DEADLINE
-        } else if HETZNER_READS.contains(&method) {
-            HETZNER_READ_DEADLINE
+        } else if PROVIDER_READS.contains(&method) {
+            PROVIDER_READ_DEADLINE
         } else {
             return self.timeout;
         };

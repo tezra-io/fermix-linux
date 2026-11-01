@@ -207,7 +207,6 @@ fn start(app: &Rc<App>, hidden: bool) {
         first.start_updates().await;
     });
     start_idle_refresh(app);
-    app.always_on.start_follow();
     app.chat_connect();
 }
 

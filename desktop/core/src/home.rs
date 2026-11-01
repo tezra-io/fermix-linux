@@ -9,7 +9,6 @@
 //! it, which is how a desktop replaces the server.
 
 use crate::management::{CallError, Management};
-use crate::provision::Location;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -246,7 +245,8 @@ pub enum ActionId {
     RestartServer,
     StartAgain,
     CreateIn,
-    OpenHetzner,
+    /// Opens the console of the provider in use.
+    OpenConsole,
     PasteToken,
     Update,
     BackUpNow,
@@ -298,7 +298,7 @@ pub struct Connect {
     pub alternatives: Vec<Action>,
 }
 
-/// The server a summary names. Hetzner's facts are null for a server of the owner's own.
+/// The server a summary names. Its provider's facts are null for a server of the owner's own.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SummaryServer {
     pub name: Option<String>,
@@ -341,7 +341,8 @@ pub struct Detail {
     pub kind: Option<ProblemKind>,
     pub note: Option<String>,
     pub seen_at: Option<String>,
-    pub next_location: Option<Location>,
+    /// The next place in stock, in the provider's own word for it.
+    pub next_location: Option<String>,
 }
 
 /// `home.status.summary`: where Always On stands, in one sentence and at most one action.

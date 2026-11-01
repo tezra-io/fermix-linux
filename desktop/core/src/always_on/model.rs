@@ -1,33 +1,66 @@
-//! The Always On pane's state between reads: the last summary answered, what the owner chose and
-//! typed, the action on its way and what it answered, and the steps the app keeps itself. Every
-//! decision the pane makes is a method here, so the window only draws what this says and runs
-//! the calls it hands over.
+//! The Always On pane's state between reads: the last summary answered, the providers and the
+//! provisioner's record, what the owner chose and typed, the action on its way and what it
+//! answered, and the steps the app keeps itself. Every decision the pane makes is a method here,
+//! so the window only draws what this says and runs the calls it hands over.
+//!
+//! When to read is decided here too, and never by a clock: `home.status` is read when the pane is
+//! shown (the `off` line included, which the engine never says changed), after this app's own
+//! step, when the engine says the summary changed (`home_status_changed`, and a desktop's server
+//! out of reach or no longer knowing it, where no notice can arrive), and when a new engine
+//! answers while the pane shows. Each of those marks a read due; the window asks `next_read`
+//! until it answers none, so reads land in order and the notices that come while one is out are
+//! one more read, not one each. While Always On is off and the pane is closed nothing is read.
 
 use super::actions::{Context, Outcome};
-use super::notices::{notice, wait, Notice, Reading, SETTLED};
+use super::notices::{notice, Notice, Reading};
 use super::{
-    own_server_command, page, serves_hetzner, Local, Page, Screen, ScreenKind, GUIDE_URL,
-    HETZNER_CONSOLE,
+    guide_at, own_server_command, page, serves_provisioner, token_target, Local, Page, Screen,
+    ScreenKind, TokenTarget, GUIDE_URL, LINK_FAILED,
 };
 use crate::home::{
     passphrase, ActionId, Code, HomeStatus, Passphrase, ReadinessId, ReadinessItem, SummaryState,
 };
-use crate::provision::{Options, Pick, ProvisionView};
+use crate::provision::{Options, Pick, Provider, ProvisionView};
 use crate::view::DaemonProblem;
-use std::time::Duration;
 
-/// How many answered reads the app's own moving screen outlasts the engine's silence on it:
-/// about ten minutes at the brisk pace.
-pub const OWN_MOVE_READS: u32 = 200;
-const STATUS_METHOD: &str = "home.status";
+/// How long, in seconds, the app's own moving screen outlasts the engine's silence on it, judged
+/// at each read: no timer reads to end it.
+pub const OWN_MOVE: i64 = 600;
+
+/// One read the pane makes, as `next_read` hands them out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Read {
+    /// `hello`'s methods, then `home.status` where it lists it.
+    Status,
+    /// `home.provision.providers`.
+    Providers,
+    /// `home.provision.resources`: the provisioner's record, read back from the provider.
+    Record,
+    /// `home.provision.options` of the provider in use.
+    Options(String),
+}
+
+/// The reads asked for and not yet handed out.
+#[derive(Debug, Default)]
+struct Due {
+    /// `home.status`, once however many asked for it.
+    status: bool,
+    /// The pane was shown: once the status is read, the providers where unread and the record
+    /// where the summary rests on it.
+    pane: bool,
+    /// Open console waits on the record and the providers.
+    console: bool,
+}
 
 /// Where an action goes once pressed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Press {
     /// A step the app keeps itself changed the screen.
     Drawn,
+    /// What the step needs is read first: the window asks `next_read`.
+    Read,
     /// A page to open in the browser.
-    Open(&'static str),
+    Open(String),
     /// The app's own update.
     Update,
     /// The code for a server of the owner's own, `home.enroll.open`.
@@ -47,7 +80,12 @@ pub struct Model {
     /// The last read's failure, while it is the latest word.
     failure: Option<DaemonProblem>,
     pub local: Local,
-    /// What Hetzner sells, read for Create server, Change and Replace.
+    /// The providers the token screen draws, read as the pane shows, forgotten as it goes.
+    providers: Option<Result<Vec<Provider>, String>>,
+    /// The provisioner's record as connect or resources last answered it, which names the
+    /// provider in use; forgotten as the pane goes.
+    record: Option<Result<ProvisionView, String>>,
+    /// What the provider in use sells, read for Create server, Change and Replace.
     pub options: Option<Result<Options, String>>,
     /// The size and location the owner chose; the recommendation until then.
     chosen: Option<Pick>,
@@ -76,8 +114,11 @@ pub struct Model {
     /// The recovery passphrase typed for this move, held only until the move starts:
     /// `home.move.start` takes it again, and the engine never stores it.
     passphrase: Option<Passphrase>,
-    /// Reads answered since this app's own move started.
-    own_move_reads: u32,
+    /// When this app's own move started, in Unix seconds.
+    own_move_since: Option<i64>,
+    due: Due,
+    /// A console Open console waited on the reads for, which the window opens.
+    opening: Option<String>,
 }
 
 impl Model {
@@ -94,13 +135,37 @@ impl Model {
         self.last.as_ref().map(|r| &r.status)
     }
 
-    pub fn serves_hetzner(&self) -> bool {
-        serves_hetzner(&self.served)
+    pub fn serves_provisioner(&self) -> bool {
+        serves_provisioner(&self.served)
     }
 
-    /// Whether `hello` lists `home.status`, so the follow reads it.
-    pub fn serves_status(&self) -> bool {
-        self.served.iter().any(|m| m == STATUS_METHOD)
+    /// The provider the provisioner's record names, where one was answered.
+    pub fn provider_in_use(&self) -> Option<&str> {
+        match &self.record {
+            Some(Ok(view)) => Some(&view.provider),
+            _ => None,
+        }
+    }
+
+    /// Which provider's token `screen`'s field takes: the providers as read, the one picked, and
+    /// on a problem the one in use.
+    pub fn token_target(&self, screen: &Screen) -> TokenTarget {
+        let providers = match &self.providers {
+            None => return TokenTarget::Unknown(None),
+            Some(Err(why)) => return TokenTarget::Unknown(Some(why.clone())),
+            Some(Ok(providers)) => providers,
+        };
+        if let (ScreenKind::Problem(_), Some(Err(why))) = (screen.kind, &self.record) {
+            return TokenTarget::Unknown(Some(why.clone()));
+        }
+        let picked = self.local.provider.as_deref();
+        token_target(screen.kind, providers, picked, self.provider_in_use())
+    }
+
+    /// The token target of the screen shown now, where it has the field.
+    pub fn token_target_now(&self) -> Option<TokenTarget> {
+        let screen = self.page().screen().filter(|s| s.token_field)?;
+        Some(self.token_target(&screen))
     }
 
     /// The last read's failure under a screen drawn from an earlier answer.
@@ -123,7 +188,7 @@ impl Model {
             &current,
             self.local.move_started.is_some(),
         );
-        self.settle(&current.status);
+        self.settle(&current.status, at);
         self.last = Some(current);
         self.failure = None;
         told
@@ -135,8 +200,9 @@ impl Model {
     }
 
     /// Lets go of each step the app keeps once the engine's summary has moved past it. The
-    /// app's own moving screen goes when the engine says where the move is, or past its bound.
-    fn settle(&mut self, status: &HomeStatus) {
+    /// app's own moving screen goes when the engine says where the move is, or at the first read
+    /// past its bound.
+    fn settle(&mut self, status: &HomeStatus, at: i64) {
         let summary = status.summary.as_ref();
         let state = summary.map(|s| s.state);
         if state != Some(SummaryState::Off) {
@@ -154,31 +220,17 @@ impl Model {
         if self.local.move_started.is_none() {
             return;
         }
-        self.own_move_reads += 1;
-        if super::says_where_the_move_stands(state) || self.own_move_reads > OWN_MOVE_READS {
+        let past = self
+            .own_move_since
+            .is_some_and(|since| at - since > OWN_MOVE);
+        if super::says_where_the_move_stands(state) || past {
             self.local.move_started = None;
-            self.own_move_reads = 0;
+            self.own_move_since = None;
         }
     }
 
-    /// The wait before the next read. Until `hello` answers, which fails while the daemon
-    /// starts, the next read comes at the settled pace, so a launch during a create is followed
-    /// within a minute.
-    pub fn next_wait(&self) -> Duration {
-        if self.served.is_empty() {
-            return SETTLED;
-        }
-        let serves = self.serves_status();
-        wait(
-            self.status().filter(|_| serves),
-            self.failure.is_some() || !serves,
-            self.pane_visible,
-            self.local.move_started.is_some(),
-        )
-    }
-
-    /// Whether the summary rests on what Hetzner last said of the server, so opening the pane
-    /// reads it back first.
+    /// Whether the summary rests on what the provider last said of the server, so opening the
+    /// pane reads it back first.
     pub fn needs_reconcile(&self) -> bool {
         let state = self
             .status()
@@ -188,27 +240,163 @@ impl Model {
             state,
             Some(SummaryState::Problem | SummaryState::Creating | SummaryState::Ready)
         );
-        rests && self.serves_hetzner()
+        rests && self.serves_provisioner()
     }
 
-    /// Whether the choose screen shows, which reads what Hetzner sells.
+    /// Whether the choose screen shows, which reads what the provider sells.
     pub fn choosing(&self) -> bool {
         let summary = self.status().and_then(|s| s.summary.as_ref());
         summary.is_some_and(|s| s.state == SummaryState::Choose)
     }
 
+    /// The pane appeared: it reads the summary, the providers and, where the summary rests on
+    /// it, the record.
     pub fn pane_shown(&mut self) {
         self.pane_visible = true;
+        self.due.status = true;
+        self.due.pane = true;
     }
 
-    /// The pane went: the code it showed leaves memory with it.
+    /// The pane went: the code it showed and the provider picked on it leave memory with it,
+    /// and what it read of the provider is read again as it shows again.
     pub fn pane_hidden(&mut self) {
         self.pane_visible = false;
         self.handout = None;
+        self.local.provider = None;
+        self.providers = None;
+        self.record = None;
+        self.options = None;
+        self.opening = None;
+        self.due.pane = false;
+        self.due.console = false;
     }
 
+    /// The engine said the summary changed, or a desktop's server cannot be reached or no
+    /// longer knows it: one read of it.
+    pub fn home_status_changed(&mut self) {
+        self.due.status = true;
+    }
+
+    /// A new engine answers here (a restart, this app's own move, Fermix started again). Its
+    /// providers and record may differ, so they go; it is read now only while the pane shows.
+    pub fn engine_restarted(&mut self) {
+        self.providers = None;
+        self.record = None;
+        if self.pane_visible {
+            self.due.status = true;
+            self.due.pane = true;
+        }
+    }
+
+    /// The next read due, if any, in the order the pane needs them: the summary first, then
+    /// what the screen shown rests on. Each one is handed out once; what a later trigger asks
+    /// for is due again.
+    pub fn next_read(&mut self) -> Option<Read> {
+        if std::mem::take(&mut self.due.status) {
+            return Some(Read::Status);
+        }
+        if !self.pane_visible {
+            return None;
+        }
+        if self.due.pane {
+            if self.serves_provisioner() && self.providers.is_none() {
+                return Some(Read::Providers);
+            }
+            self.due.pane = false;
+            if self.needs_reconcile() {
+                self.due.status = true;
+                return Some(Read::Record);
+            }
+        }
+        self.screen_read()
+    }
+
+    /// What the screen shown waits on: the record where a new token or Open console takes the
+    /// provider in use, or the offers are read; the providers for Open console; and what the
+    /// provider in use sells on choose and for Replace. A failed read ends what waited on it.
+    fn screen_read(&mut self) -> Option<Read> {
+        if !self.serves_provisioner() {
+            return None;
+        }
+        let offers = self.wants_options();
+        let wants_record = offers || self.local.pasting_token || self.due.console;
+        if wants_record && self.record.is_none() {
+            return Some(Read::Record);
+        }
+        if self.due.console {
+            if self.providers.is_none() {
+                return Some(Read::Providers);
+            }
+            self.due.console = false;
+            self.console_read();
+        }
+        if !offers {
+            return None;
+        }
+        match &self.record {
+            Some(Ok(view)) => Some(Read::Options(view.provider.clone())),
+            Some(Err(why)) => {
+                let why = why.clone();
+                self.options_read(Err(why));
+                None
+            }
+            None => unreachable!("the record is read before the offers"),
+        }
+    }
+
+    fn wants_options(&self) -> bool {
+        (self.choosing() || self.replacing) && self.options.is_none()
+    }
+
+    pub fn providers_read(&mut self, answer: Result<Vec<Provider>, String>) {
+        self.providers = Some(answer);
+    }
+
+    pub fn record_read(&mut self, answer: Result<ProvisionView, String>) {
+        self.record = Some(answer);
+    }
+
+    /// What the provider sells, or why not; Replace's dialog does not open on a failed read,
+    /// which is said under the action.
     pub fn options_read(&mut self, answer: Result<Options, String>) {
+        if let (Err(why), true) = (&answer, self.replacing) {
+            self.replacing = false;
+            self.refusal = Some(why.clone());
+        }
         self.options = Some(answer);
+    }
+
+    /// The console of the provider in use, which the record names and the providers give the
+    /// address of; None while either is unread.
+    fn console(&self) -> Option<Result<String, String>> {
+        let in_use = match self.record.as_ref()? {
+            Ok(view) => view.provider.as_str(),
+            Err(why) => return Some(Err(why.clone())),
+        };
+        let providers = match self.providers.as_ref()? {
+            Ok(providers) => providers,
+            Err(why) => return Some(Err(why.clone())),
+        };
+        let console = providers.iter().find(|p| p.id == in_use);
+        Some(
+            console
+                .map(|p| p.console_url.clone())
+                .ok_or_else(|| LINK_FAILED.to_owned()),
+        )
+    }
+
+    /// Open console's reads are in: the console to open, or why not.
+    fn console_read(&mut self) {
+        match self.console() {
+            Some(Ok(url)) => self.opening = Some(url),
+            Some(Err(why)) => self.refusal = Some(why),
+            None => unreachable!("the console is judged once both are read"),
+        }
+    }
+
+    /// The console Open console waited on the reads for, once.
+    pub fn take_opening(&mut self) -> Option<String> {
+        self.opening.take()
     }
 
     // ---- The choice ------------------------------------------------------------------
@@ -268,16 +456,64 @@ impl Model {
         self.notice = None;
         match id {
             ActionId::SetUp => self.local.setting_up = true,
-            ActionId::PasteToken => self.local.pasting_token = true,
-            ActionId::ReplaceServer => self.replacing = true,
-            ActionId::LearnMore => return Press::Open(GUIDE_URL),
-            ActionId::OpenHetzner => return Press::Open(HETZNER_CONSOLE),
+            ActionId::PasteToken => return self.paste_token(),
+            ActionId::ReplaceServer => return self.open_replace(),
+            ActionId::LearnMore => return Press::Open(self.guide()),
+            ActionId::OpenConsole => return self.open_console(),
             ActionId::Update => return Press::Update,
             ActionId::OwnServer => return self.get_code(),
             ActionId::Unknown => return Press::Ignored,
             daemon => return Press::Run(Box::new(self.run(daemon, None))),
         }
         Press::Drawn
+    }
+
+    /// Paste a new token opens the field in place, for the provider in use, whose record is read
+    /// where none was.
+    fn paste_token(&mut self) -> Press {
+        self.local.pasting_token = true;
+        match self.record {
+            Some(_) => Press::Drawn,
+            None => Press::Read,
+        }
+    }
+
+    /// Replace's dialog opens once what the provider sells is read.
+    fn open_replace(&mut self) -> Press {
+        self.replacing = true;
+        match self.loaded_options() {
+            Some(_) => Press::Drawn,
+            None => Press::Read,
+        }
+    }
+
+    /// The docs page, at the provider's own section on its token screen.
+    fn guide(&self) -> String {
+        match self.token_target_now() {
+            Some(TokenTarget::Provider(provider)) => guide_at(&provider.docs_anchor),
+            _ => GUIDE_URL.to_owned(),
+        }
+    }
+
+    /// Opens the console of the provider in use, once the record and the providers are read.
+    fn open_console(&mut self) -> Press {
+        match self.console() {
+            Some(Ok(url)) => Press::Open(url),
+            Some(Err(why)) => {
+                self.refusal = Some(why);
+                Press::Drawn
+            }
+            None => {
+                self.due.console = true;
+                Press::Read
+            }
+        }
+    }
+
+    /// The provider whose token screen shows, where the engine offers more than one.
+    pub fn pick_provider(&mut self, id: &str) {
+        assert!(!id.is_empty(), "a provider is picked by its id");
+        self.local.provider = Some(id.to_owned());
     }
 
     fn get_code(&mut self) -> Press {
@@ -294,6 +530,7 @@ impl Model {
         self.working = Some(action);
         Context {
             action,
+            provider: self.provider_in_use().map(str::to_owned),
             status: self.status().cloned(),
             options: self.loaded_options().cloned(),
             chosen: chosen.or_else(|| self.chosen.clone()),
@@ -310,13 +547,17 @@ impl Model {
         self.readiness(&screen).into_iter().map(|i| i.id).collect()
     }
 
-    /// An action ended: what it answered.
-    pub fn finished(&mut self, outcome: Outcome) {
+    /// An action ended at `at` (Unix seconds): what it answered, and the read of what it changed.
+    pub fn finished(&mut self, outcome: Outcome, at: i64) {
         self.working = None;
+        self.due.status = true;
         self.refusal = outcome.refusal;
         self.notice = outcome.notice;
         if let Some(options) = outcome.options {
             self.options = Some(options);
+        }
+        if let Some(view) = outcome.record {
+            self.record = Some(Ok(view));
         }
         if let Some(reviewed) = outcome.reviewed {
             self.reviewed = reviewed;
@@ -327,7 +568,7 @@ impl Model {
         }
         if let Some(started) = outcome.move_started {
             self.local.move_started = Some(started);
-            self.own_move_reads = 0;
+            self.own_move_since = Some(at);
         }
     }
 
@@ -367,6 +608,7 @@ impl Model {
     /// it again.
     pub fn passphrase_set(&mut self, typed: Passphrase, answer: Result<(), String>) {
         self.setting_passphrase = false;
+        self.due.status = true;
         match answer {
             Ok(()) => {
                 self.passphrase_refusal = None;
@@ -394,14 +636,17 @@ impl Model {
         self.passphrase_refusal = None;
     }
 
-    /// `home.provision.connect` answered: the token works, or the daemon's refusal goes under
-    /// the field.
+    /// `home.provision.connect` answered: the token works, and its answer is the record that
+    /// names the provider from then on; or the daemon's refusal goes under the field.
     pub fn token_checked(&mut self, answer: Result<ProvisionView, String>) {
         self.checking_token = false;
+        self.due.status = true;
         match answer {
-            Ok(_) => {
+            Ok(view) => {
                 self.token_refusal = None;
                 self.local.pasting_token = false;
+                self.record = Some(Ok(view));
+                self.options = None;
             }
             Err(refused) => self.token_refusal = Some(refused),
         }
@@ -411,6 +656,7 @@ impl Model {
     /// shell line can carry is a broken answer, said as one.
     pub fn code_answered(&mut self, answer: Result<Code, String>) {
         self.getting_code = false;
+        self.due.status = true;
         match answer {
             Ok(code) if own_server_command(&code).is_some() => {
                 self.code_refusal = None;

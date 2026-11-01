@@ -1,14 +1,16 @@
 //! The Always On pane's rules (M75 lean v1 §7): one screen per summary state and problem kind
 //! in the engine's words, the few steps the app keeps itself, where each action goes and the
-//! calls it makes in order, the notifications raised from what changed between two reads, and
-//! how often the summary is read. Everything is fed from the engine's own goldens.
+//! calls it makes in order, the notifications raised from what changed between two reads, when
+//! the summary is read (never on a timer), and the token screens drawn from the providers the
+//! engine lists. Everything is fed from the engine's own goldens.
 
 use fermix_client::always_on::actions::{perform, Context, HomeDaemon, Outcome, JOB_OVERDUE};
-use fermix_client::always_on::model::{Model, Press};
-use fermix_client::always_on::notices::{notice, wait, NoticeKind, Reading};
+use fermix_client::always_on::model::{Model, Press, Read, OWN_MOVE};
+use fermix_client::always_on::notices::{notice, NoticeKind, Reading};
 use fermix_client::always_on::{
-    choice_sentence, details, money, own_server_command, page, price, shape, Fact, Local, Page,
-    ScreenKind, GUIDE_URL, HETZNER_CONSOLE,
+    choice_sentence, console_label, details, guide_at, money, own_server_command, page, price,
+    shape, token_checking, token_target, Fact, Local, Page, ScreenKind, TokenTarget, GUIDE_URL,
+    LINK_FAILED, PROVIDER_CHOOSE,
 };
 use fermix_client::home::{
     passphrase, Action, ActionId, Code, HomeStatus, MoveFrom, MoveStarted, ProblemKind, Readiness,
@@ -16,7 +18,7 @@ use fermix_client::home::{
 };
 use fermix_client::management::{CallError, Refusal};
 use fermix_client::model::{JobList, JobView};
-use fermix_client::provision::{Location, Options, Pick, PowerAction, ProvisionView, METHODS};
+use fermix_client::provision::{Options, Pick, PowerAction, Provider, ProvisionView, METHODS};
 use fermix_client::view::DaemonProblem;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -26,6 +28,8 @@ use std::time::Duration;
 
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const CANDIDATE: &str = "cand-5e2a9c1f7b3d4086";
+/// The one provider the goldens name.
+const PROVIDER: &str = "hetzner";
 /// 2031-05-04T12:00:00Z, the goldens' "now".
 const NOW: i64 = 1_935_662_400;
 const DAY: i64 = 86_400;
@@ -77,7 +81,7 @@ fn served() -> Vec<String> {
         .collect()
 }
 
-fn without_hetzner() -> Vec<String> {
+fn without_provisioner() -> Vec<String> {
     served()
         .into_iter()
         .filter(|m| !METHODS.contains(&m.as_str()))
@@ -104,6 +108,53 @@ fn model_on(status: HomeStatus) -> Model {
 
 fn ids(actions: &[Action]) -> Vec<ActionId> {
     actions.iter().map(|a| a.id).collect()
+}
+
+/// The providers the engine lists, as the golden has them.
+fn providers() -> Vec<Provider> {
+    serde_json::from_value(result("home_provision_providers")["providers"].clone())
+        .expect("the providers decode")
+}
+
+/// A second provider, invented: nothing in the app may name it.
+fn nimbus() -> Provider {
+    Provider {
+        id: "nimbus".into(),
+        name: "Nimbus".into(),
+        token_label: "Nimbus access key".into(),
+        steps: vec!["Make a Nimbus account for Fermix alone.".into()],
+        console_url: "https://console.nimbus.invalid/".into(),
+        docs_anchor: "nimbus".into(),
+    }
+}
+
+/// The provisioner's record, naming `provider` as the one in use.
+fn record(provider: &str) -> ProvisionView {
+    golden("home_provision_resources", |r| {
+        r["provider"] = json!(provider)
+    })
+}
+
+/// Answers every read the model asks for, in turn, as the window does: `home.status` with
+/// `status` and what `hello` lists, the rest from the goldens. Answers what was asked.
+fn read_all(model: &mut Model, status: &HomeStatus) -> Vec<Read> {
+    let mut asked = Vec::new();
+    for _ in 0..16 {
+        let Some(read) = model.next_read() else {
+            return asked;
+        };
+        match &read {
+            Read::Status => {
+                model.served(served());
+                model.answered(status.clone(), NOW);
+            }
+            Read::Providers => model.providers_read(Ok(providers())),
+            Read::Record => model.record_read(Ok(record(PROVIDER))),
+            Read::Options(_) => model.options_read(Ok(golden("home_provision_options", |_| {}))),
+        }
+        asked.push(read);
+    }
+    panic!("the reads never end: {asked:?}");
 }
 
 // ---- The screens ----------------------------------------------------------------------------
@@ -137,14 +188,16 @@ fn an_engine_without_the_summary_or_the_status_is_told_to_update() {
 }
 
 #[test]
-fn a_screen_that_needs_hetzner_waits_for_every_provision_method() {
+fn a_screen_that_needs_the_provisioner_waits_for_every_provision_method() {
+    assert_eq!(METHODS.len(), 7);
+    assert!(METHODS.contains(&"home.provision.providers"));
     let creating = status("home_status_creating");
     let choose = summarised(json!({"state": "choose",
         "sentence": "Your token works.", "action": action("create_server", "Create server"),
         "detail": {"billing": "Hetzner bills by the hour until the server is deleted."}}));
     for needs in [&creating, &choose] {
         assert_eq!(
-            page(Some(needs), None, &Local::default(), &without_hetzner()),
+            page(Some(needs), None, &Local::default(), &without_provisioner()),
             Page::NeedsUpdate
         );
         assert!(matches!(
@@ -154,9 +207,25 @@ fn a_screen_that_needs_hetzner_waits_for_every_provision_method() {
     }
     let on = status("home_status_on");
     assert!(matches!(
-        page(Some(&on), None, &Local::default(), &without_hetzner()),
+        page(Some(&on), None, &Local::default(), &without_provisioner()),
         Page::Screen(_)
     ));
+    let before_providers: Vec<String> = served()
+        .into_iter()
+        .filter(|m| m != "home.provision.providers")
+        .collect();
+    let limited = problem(
+        "account_limit",
+        action("open_console", "Open the console"),
+        json!([]),
+    );
+    for needs in [&creating, &limited] {
+        assert_eq!(
+            page(Some(needs), None, &Local::default(), &before_providers),
+            Page::NeedsUpdate,
+            "an engine without the providers is too old for these screens"
+        );
+    }
 }
 
 #[test]
@@ -184,13 +253,12 @@ fn off_says_its_lines_and_set_up_opens_the_token_screen_in_offs_own_words() {
         token.sentence,
         "Paste a Hetzner API token to let Fermix create your server."
     );
-    assert_eq!(token.steps.len(), 2);
     assert_eq!(ids(&token.alternatives), [ActionId::OwnServer]);
     assert!(token.token_field && token.action.is_none());
 }
 
 #[test]
-fn connect_is_the_token_screen_with_its_steps_and_the_own_server_link() {
+fn connect_is_the_token_screen_with_the_own_server_link() {
     let connect = summarised(json!({"state": "connect",
         "sentence": "Paste a Hetzner API token to let Fermix create your server.",
         "action": null,
@@ -199,7 +267,6 @@ fn connect_is_the_token_screen_with_its_steps_and_the_own_server_link() {
     let shown = screen_of(&connect, &Local::default());
     assert_eq!(shown.kind, ScreenKind::Token);
     assert!(shown.token_field);
-    assert_eq!(shown.steps, ["Turn on two-factor sign-in."]);
     assert_eq!(ids(&shown.alternatives), [ActionId::OwnServer]);
 }
 
@@ -293,18 +360,18 @@ fn get_a_code_is_hidden_while_a_created_server_stands() {
         action("start_again", "Start again"),
         json!([
             action("own_server", "Use my own Linux server"),
-            action("open_hetzner", "Open Hetzner"),
+            action("open_console", "Open the console"),
             action("delete_server", "Delete your server")
         ]),
     );
     let shown = screen_of(&stands, &Local::default());
     assert_eq!(
         ids(&shown.alternatives),
-        [ActionId::OpenHetzner, ActionId::DeleteServer]
+        [ActionId::OpenConsole, ActionId::DeleteServer]
     );
     let nothing_stands = problem(
         "account_limit",
-        action("open_hetzner", "Open Hetzner"),
+        action("open_console", "Open the console"),
         json!([action("own_server", "Use my own Linux server")]),
     );
     let shown = screen_of(&nothing_stands, &Local::default());
@@ -318,12 +385,44 @@ fn paste_a_new_token_opens_the_field_in_place_of_the_action() {
         action("paste_token", "Paste a new token"),
         json!([]),
     );
-    let mut model = model_on(refused);
-    assert_eq!(model.press(ActionId::PasteToken), Press::Drawn);
+    let mut model = model_on(refused.clone());
+    model.pane_shown();
+    assert_eq!(
+        model.press(ActionId::PasteToken),
+        Press::Read,
+        "the provider in use is read first"
+    );
     let Page::Screen(shown) = model.page() else {
         panic!("a screen")
     };
     assert!(shown.token_field && shown.action.is_none());
+    assert_eq!(model.token_target(&shown), TokenTarget::Unknown(None));
+    assert_eq!(
+        read_all(&mut model, &refused),
+        [Read::Status, Read::Providers, Read::Record, Read::Status]
+    );
+    assert_eq!(
+        model.token_target(&shown),
+        TokenTarget::Provider(providers()[0].clone()),
+        "the new token is for the provider in use"
+    );
+    let mut opened_on = model_on(status("home_status_on"));
+    opened_on.pane_shown();
+    read_all(&mut opened_on, &status("home_status_on"));
+    opened_on.home_status_changed();
+    assert_eq!(opened_on.next_read(), Some(Read::Status));
+    opened_on.answered(refused.clone(), NOW + 1);
+    assert_eq!(
+        opened_on.next_read(),
+        None,
+        "a notice reads the summary, not the provider"
+    );
+    assert_eq!(opened_on.press(ActionId::PasteToken), Press::Read);
+    assert_eq!(
+        opened_on.next_read(),
+        Some(Read::Record),
+        "the token's provider is the one in use"
+    );
     model.token_checked(Err("Hetzner does not accept this token.".into()));
     assert_eq!(
         model.token_refusal.as_deref(),
@@ -341,7 +440,13 @@ fn paste_a_new_token_opens_the_field_in_place_of_the_action() {
 #[test]
 fn the_apps_own_move_shows_moving_until_the_engine_says_where_it_stands() {
     let mut model = model_on(status("home_status_ready"));
-    model.local.move_started = Some("Fermix restarts and moves this home.".into());
+    model.finished(
+        Outcome {
+            move_started: Some("Fermix restarts and moves this home.".into()),
+            ..Outcome::default()
+        },
+        NOW,
+    );
     model.unanswered(DaemonProblem::NotRunning);
     let Page::Screen(moving) = model.page() else {
         panic!("a screen")
@@ -357,12 +462,30 @@ fn the_apps_own_move_shows_moving_until_the_engine_says_where_it_stands() {
     model.answered(status("home_status_on"), NOW + 6);
     assert!(model.local.move_started.is_none());
     assert_eq!(model.page().screen().map(|s| s.kind), Some(ScreenKind::On));
+    assert_eq!(OWN_MOVE, 600, "ten minutes");
     let mut stuck = model_on(status("home_status_ready"));
-    stuck.local.move_started = Some("Moving.".into());
-    for read in 0..=200 {
-        stuck.answered(status("home_status_ready"), NOW + read);
+    stuck.finished(
+        Outcome {
+            move_started: Some("Moving.".into()),
+            ..Outcome::default()
+        },
+        NOW,
+    );
+    let ready = status("home_status_ready");
+    for read in 0..=OWN_MOVE {
+        stuck.answered(ready.clone(), NOW + read);
     }
-    assert!(stuck.local.move_started.is_none(), "bounded at 200 reads");
+    assert!(
+        stuck.local.move_started.is_some(),
+        "however many reads came within ten minutes"
+    );
+    stuck.answered(status("home_status_ready"), NOW + OWN_MOVE + 1);
+    assert!(
+        stuck.local.move_started.is_none(),
+        "judged at the first read past ten minutes"
+    );
+    assert_eq!(stuck.next_read(), Some(Read::Status), "the move's own read");
+    assert_eq!(stuck.next_read(), None, "and nothing waits on a clock");
 }
 
 #[test]
@@ -400,12 +523,15 @@ fn each_step_the_app_keeps_goes_once_the_engine_moved_past_it() {
     model.answered(status("home_status_creating"), NOW + 2);
     assert!(!model.local.setting_up);
     let mut model = model_on(status("home_status_ready"));
-    model.finished(Outcome {
-        reviewed: Some(vec![golden::<Readiness>("home_move_readiness", |_| {})
-            .items[5]
-            .clone()]),
-        ..Outcome::default()
-    });
+    model.finished(
+        Outcome {
+            reviewed: Some(vec![golden::<Readiness>("home_move_readiness", |_| {})
+                .items[5]
+                .clone()]),
+            ..Outcome::default()
+        },
+        NOW,
+    );
     assert_eq!(model.reviewed.len(), 1);
     model.answered(status("home_status_on"), NOW + 1);
     assert!(model.reviewed.is_empty(), "a review belongs to ready");
@@ -428,7 +554,7 @@ fn the_choose_screen_says_the_owners_choice_once_it_differs() {
     assert_eq!(model.pick(), options.recommended);
     let roomy = Pick {
         size: "cpx32".into(),
-        location: Location::Hel1,
+        location: "hel1".into(),
     };
     model.choose(roomy.clone());
     assert_eq!(model.pick(), Some(roomy));
@@ -549,9 +675,7 @@ fn details_hold_what_an_expert_might_want_and_nothing_else() {
             "detail": {"billing": "Hetzner bills by the hour until the server is deleted."}})),
         &Local::default(),
     );
-    let offer = options
-        .offer(&cpx("cpx22", Location::Fsn1))
-        .expect("an offer");
+    let offer = options.offer(&cpx("cpx22", "fsn1")).expect("an offer");
     assert_eq!(
         details(&choose, Some((offer, &options.currency))),
         [
@@ -572,10 +696,10 @@ fn details_hold_what_an_expert_might_want_and_nothing_else() {
 fn every_action_the_engine_offers_goes_somewhere() {
     let routes = [
         (ActionId::SetUp, Press::Drawn),
-        (ActionId::PasteToken, Press::Drawn),
-        (ActionId::ReplaceServer, Press::Drawn),
-        (ActionId::LearnMore, Press::Open(GUIDE_URL)),
-        (ActionId::OpenHetzner, Press::Open(HETZNER_CONSOLE)),
+        (ActionId::PasteToken, Press::Read),
+        (ActionId::ReplaceServer, Press::Read),
+        (ActionId::LearnMore, Press::Open(GUIDE_URL.to_owned())),
+        (ActionId::OpenConsole, Press::Read),
         (ActionId::Update, Press::Update),
         (ActionId::OwnServer, Press::GetCode),
     ];
@@ -617,8 +741,8 @@ fn every_action_the_engine_offers_goes_somewhere() {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Call {
-    Options,
-    Create(Pick, bool),
+    Options(String),
+    Create(String, Pick, bool),
     Power(PowerAction),
     Resources,
     Delete,
@@ -687,14 +811,23 @@ impl Fake {
 }
 
 impl HomeDaemon for Fake {
-    fn provision_options(&self) -> Result<Options, CallError> {
+    fn provision_options(&self, provider: &str) -> Result<Options, CallError> {
         let options = self.options.clone().expect("options are answered");
-        self.note(Call::Options, "options", options)
+        self.note(Call::Options(provider.into()), "options", options)
     }
 
-    fn provision_create(&self, pick: &Pick, replace: bool) -> Result<JobView, CallError> {
+    fn provision_create(
+        &self,
+        provider: &str,
+        pick: &Pick,
+        replace: bool,
+    ) -> Result<JobView, CallError> {
         let running = golden("home_provision_create", |_| {});
-        self.note(Call::Create(pick.clone(), replace), "create", running)
+        self.note(
+            Call::Create(provider.into(), pick.clone(), replace),
+            "create",
+            running,
+        )
     }
 
     fn provision_power(&self, action: PowerAction) -> Result<JobView, CallError> {
@@ -766,6 +899,7 @@ impl HomeDaemon for Fake {
 fn context(action: ActionId, status: HomeStatus) -> Context {
     Context {
         action,
+        provider: Some(PROVIDER.into()),
         status: Some(status),
         options: None,
         chosen: None,
@@ -778,11 +912,21 @@ fn typed() -> fermix_client::home::Passphrase {
     passphrase("invented-harbor-juniper", "invented-harbor-juniper").expect("agree")
 }
 
-fn cpx(size: &str, location: Location) -> Pick {
+fn cpx(size: &str, location: &str) -> Pick {
     Pick {
         size: size.into(),
-        location,
+        location: location.into(),
     }
+}
+
+/// A create at the provider in use.
+fn made(size: &str, location: &str, replace: bool) -> Call {
+    Call::Create(PROVIDER.into(), cpx(size, location), replace)
+}
+
+/// What the provider in use sells, read.
+fn offers() -> Call {
+    Call::Options(PROVIDER.into())
 }
 
 const JOB: &str = "job:Hz3Fx07a";
@@ -793,28 +937,19 @@ fn create_server_reads_the_options_then_creates_the_recommendation_or_the_choice
     let fake = Fake::new();
     let creating = context(ActionId::CreateServer, status("home_status_creating"));
     let outcome = perform(&fake, &creating);
-    assert_eq!(
-        fake.calls(),
-        [
-            Call::Options,
-            Call::Create(cpx("cpx22", Location::Fsn1), false)
-        ]
-    );
+    assert_eq!(fake.calls(), [offers(), made("cpx22", "fsn1", false)]);
     assert!(
         matches!(outcome.options, Some(Ok(_))),
         "the options it read are kept"
     );
     let fake = Fake::new();
     let chosen = Context {
-        chosen: Some(cpx("cpx32", Location::Hel1)),
+        chosen: Some(cpx("cpx32", "hel1")),
         options: fake.options.clone(),
         ..creating
     };
     perform(&fake, &chosen);
-    assert_eq!(
-        fake.calls(),
-        [Call::Create(cpx("cpx32", Location::Hel1), false)]
-    );
+    assert_eq!(fake.calls(), [made("cpx32", "hel1", false)]);
 }
 
 #[test]
@@ -828,7 +963,7 @@ fn create_server_with_nothing_in_stock_says_so_and_creates_nothing() {
         &fake,
         &context(ActionId::CreateServer, status("home_status_creating")),
     );
-    assert_eq!(fake.calls(), [Call::Options]);
+    assert_eq!(fake.calls(), [offers()]);
     assert_eq!(
         outcome.refusal.as_deref(),
         Some("Hetzner has no server of this kind in stock right now.")
@@ -1011,7 +1146,7 @@ fn start_again_deletes_then_creates_the_same_size_in_the_same_place() {
             Call::Resources,
             Call::Delete,
             Call::JobGet(DELETE_JOB.into()),
-            Call::Create(cpx("cpx32", Location::Hel1), false),
+            made("cpx32", "hel1", false),
         ]
     );
     let fake = Fake::new();
@@ -1021,7 +1156,7 @@ fn start_again_deletes_then_creates_the_same_size_in_the_same_place() {
     );
     assert_eq!(
         fake.calls().last(),
-        Some(&Call::Create(cpx("cpx32", Location::Hel1), true)),
+        Some(&made("cpx32", "hel1", true)),
         "on a linked desktop the new server replaces the old"
     );
     let fake = Fake::new();
@@ -1057,13 +1192,7 @@ fn create_in_creates_the_chosen_size_where_hetzner_has_room() {
         "detail": {"kind": "no_capacity", "next_location": "nbg1", "alternatives": []}}));
     let fake = Fake::new();
     perform(&fake, &context(ActionId::CreateIn, no_room));
-    assert_eq!(
-        fake.calls(),
-        [
-            Call::Options,
-            Call::Create(cpx("cpx22", Location::Nbg1), false)
-        ]
-    );
+    assert_eq!(fake.calls(), [offers(), made("cpx22", "nbg1", false)]);
 }
 
 #[test]
@@ -1085,17 +1214,14 @@ fn delete_back_up_and_replace_make_their_one_call() {
     assert_eq!(fake.calls(), [Call::SnapshotsRun]);
     let fake = Fake::new();
     let mut replace = context(ActionId::ReplaceServer, status("home_status_on"));
-    replace.chosen = Some(cpx("cpx32", Location::Hel1));
+    replace.chosen = Some(cpx("cpx32", "hel1"));
     perform(&fake, &replace);
-    assert_eq!(
-        fake.calls(),
-        [Call::Create(cpx("cpx32", Location::Hel1), true)]
-    );
+    assert_eq!(fake.calls(), [made("cpx32", "hel1", true)]);
 }
 
 #[test]
 fn a_refusal_or_a_failed_job_is_said_in_the_daemons_words() {
-    let owner = "Only the owner can give Fermix a Hetzner token or create, restart or delete its \
+    let owner = "Only the owner can give Fermix an API token or create, restart or delete its \
                  server: use the Fermix app.";
     let fake = Fake::new().refusing("create", refusal("unavailable", owner));
     let outcome = perform(
@@ -1162,11 +1288,14 @@ fn the_passphrase_is_typed_twice_held_for_the_move_and_never_kept_after() {
         panic!("Move now runs")
     };
     assert!(moving.passphrase.is_some(), "the move takes it again");
-    model.finished(Outcome {
-        move_started: Some("Moving.".into()),
-        passphrase_spent: true,
-        ..Outcome::default()
-    });
+    model.finished(
+        Outcome {
+            move_started: Some("Moving.".into()),
+            passphrase_spent: true,
+            ..Outcome::default()
+        },
+        NOW,
+    );
     let Press::Run(again) = model.press(ActionId::TryAgain) else {
         panic!("Try again runs")
     };
@@ -1180,10 +1309,13 @@ fn move_now_without_a_held_passphrase_asks_for_it_and_then_moves() {
         panic!("runs")
     };
     assert!(first.passphrase.is_none());
-    model.finished(Outcome {
-        asks_passphrase: true,
-        ..Outcome::default()
-    });
+    model.finished(
+        Outcome {
+            asks_passphrase: true,
+            ..Outcome::default()
+        },
+        NOW,
+    );
     assert!(model.asks_move_passphrase && model.working.is_none());
     let moving = model
         .move_with_passphrase("invented-harbor-juniper", "invented-harbor-juniper")
@@ -1195,14 +1327,24 @@ fn move_now_without_a_held_passphrase_asks_for_it_and_then_moves() {
 #[test]
 fn replace_creates_from_the_sheets_choice() {
     let mut model = model_on(status("home_status_on"));
-    assert_eq!(model.press(ActionId::ReplaceServer), Press::Drawn);
+    assert_eq!(
+        model.press(ActionId::ReplaceServer),
+        Press::Read,
+        "its dialog waits for what the provider sells"
+    );
     assert!(model.replacing);
-    let replace = model
-        .replace_with(cpx("cpx32", Location::Hel1))
-        .expect("runs");
+    let replace = model.replace_with(cpx("cpx32", "hel1")).expect("runs");
     assert_eq!(replace.action, ActionId::ReplaceServer);
-    assert_eq!(replace.chosen, Some(cpx("cpx32", Location::Hel1)));
+    assert_eq!(replace.chosen, Some(cpx("cpx32", "hel1")));
     assert!(!model.replacing);
+    let mut unread = model_on(status("home_status_on"));
+    unread.press(ActionId::ReplaceServer);
+    unread.options_read(Err("The provider could not be read.".into()));
+    assert!(!unread.replacing, "no dialog without what it offers");
+    assert_eq!(
+        unread.refusal.as_deref(),
+        Some("The provider could not be read.")
+    );
 }
 
 // ---- The notifications ----------------------------------------------------------------------
@@ -1334,47 +1476,419 @@ fn each_kind_of_notice_replaces_only_its_own() {
     assert!(ids.iter().all(|id| id.starts_with("always-on-")));
 }
 
-// ---- How often the summary is read ----------------------------------------------------------
+// ---- When the summary is read ---------------------------------------------------------------
 
-#[test]
-fn the_summary_is_read_briskly_while_something_moves_and_rarely_when_nothing_is_set_up() {
-    let secs = Duration::from_secs;
-    let creating = status("home_status_creating");
-    let on = status("home_status_on");
-    let off = summarised(json!({"state": "off", "sentence": "Keep Fermix running.",
-        "action": action("set_up", "Set up"), "detail": {}}));
-    assert_eq!(wait(Some(&creating), false, true, false), secs(3));
-    assert_eq!(wait(Some(&creating), false, false, false), secs(15));
-    assert_eq!(wait(Some(&on), false, true, false), secs(10));
-    assert_eq!(wait(Some(&on), false, false, false), secs(60));
-    assert_eq!(wait(Some(&off), false, false, false), secs(300));
-    assert_eq!(wait(Some(&on), true, false, false), secs(300));
-    assert_eq!(wait(None, true, false, true), secs(3), "the app's own move");
-    let mut model = Model::default();
-    assert_eq!(model.next_wait(), secs(60), "until hello lists the methods");
-    model.served(served());
-    model.answered(on, NOW);
-    assert_eq!(model.next_wait(), secs(60));
-    model.pane_shown();
-    assert_eq!(model.next_wait(), secs(10));
+fn off() -> HomeStatus {
+    summarised(
+        json!({"state": "off", "sentence": "Keep Fermix running when this computer sleeps.",
+        "action": action("set_up", "Set up"), "detail": {}}),
+    )
 }
 
+/// Nothing is read at launch or by a new engine with the pane closed; each word from the engine
+/// that the summary changed is one read, however many came while it was due, and an answer asks
+/// for nothing more.
 #[test]
-fn opening_the_pane_reads_hetzner_where_the_summary_rests_on_it() {
-    let mut model = model_on(status("home_status_problem"));
-    assert!(model.needs_reconcile());
-    let mut on = model_on(status("home_status_on"));
-    assert!(!on.needs_reconcile());
-    on.served(without_hetzner());
-    let mut creating = model_on(status("home_status_creating"));
-    assert!(creating.needs_reconcile());
-    creating.served(without_hetzner());
-    assert!(
-        !creating.needs_reconcile(),
-        "not where the engine lacks the provisioner"
+fn nothing_is_read_until_told_and_each_notice_is_one_read() {
+    let mut model = Model::default();
+    assert_eq!(model.next_read(), None, "a launch reads nothing");
+    model.engine_restarted();
+    assert_eq!(
+        model.next_read(),
+        None,
+        "nor a new engine while the pane is closed"
     );
+    model.home_status_changed();
+    model.home_status_changed();
+    assert_eq!(model.next_read(), Some(Read::Status));
+    assert_eq!(model.next_read(), None, "one read for the notices due");
+    model.home_status_changed();
+    model.served(served());
+    model.answered(status("home_status_ready"), NOW);
+    assert_eq!(
+        model.next_read(),
+        Some(Read::Status),
+        "a notice while a read was out reads once more"
+    );
+    model.answered(status("home_status_ready"), NOW + 7 * DAY);
+    assert_eq!(model.next_read(), None, "time passing asks for nothing");
+    assert!(
+        !model.pane_visible,
+        "with the pane closed only the summary is read"
+    );
+}
+
+/// While Always On is off the engine never says it changed: the pane reads its line, and the
+/// providers its Set up draws, as it shows, and nothing after it, however long it stays open.
+#[test]
+fn while_always_on_is_off_the_pane_reads_its_line_once_and_nothing_after() {
+    let mut model = Model::default();
     model.pane_shown();
-    assert!(model.pane_visible);
+    assert_eq!(
+        read_all(&mut model, &off()),
+        [Read::Status, Read::Providers]
+    );
+    model.answered(off(), NOW + DAY);
+    assert_eq!(model.next_read(), None);
+    model.pane_hidden();
+    assert_eq!(model.next_read(), None);
+    model.pane_shown();
+    assert_eq!(
+        read_all(&mut model, &off()),
+        [Read::Status, Read::Providers],
+        "shown again, it reads its line and the providers again"
+    );
+    let mut older = Model::default();
+    older.pane_shown();
+    assert_eq!(older.next_read(), Some(Read::Status));
+    older.served(without_provisioner());
+    older.answered(off(), NOW);
+    assert_eq!(
+        older.next_read(),
+        None,
+        "an engine without the provisioner is asked for no providers"
+    );
+}
+
+/// Opening the pane on a summary that rests on what the provider last said of the server reads
+/// that back first, then the summary again; not where the engine lacks the provisioner.
+#[test]
+fn opening_the_pane_reads_the_provider_back_where_the_summary_rests_on_it() {
+    for (name, reads) in [
+        (
+            "home_status_problem",
+            vec![Read::Status, Read::Providers, Read::Record, Read::Status],
+        ),
+        (
+            "home_status_creating",
+            vec![Read::Status, Read::Providers, Read::Record, Read::Status],
+        ),
+        ("home_status_on", vec![Read::Status, Read::Providers]),
+    ] {
+        let mut model = Model::default();
+        model.pane_shown();
+        assert_eq!(read_all(&mut model, &status(name)), reads, "{name}");
+        assert!(model.pane_visible);
+    }
+    let mut older = Model::default();
+    older.pane_shown();
+    assert_eq!(older.next_read(), Some(Read::Status));
+    older.served(without_provisioner());
+    older.answered(status("home_status_creating"), NOW);
+    assert_eq!(older.next_read(), None);
+}
+
+/// The choose screen reads what the provider in use sells: the record names it, read once where
+/// no answer named it yet, and the token's own answer names it after a paste.
+#[test]
+fn the_choose_screen_reads_what_the_provider_in_use_sells() {
+    let choose = summarised(json!({"state": "choose", "sentence": "Your token works.",
+        "action": action("create_server", "Create server"), "detail": {}}));
+    let mut model = Model::default();
+    model.pane_shown();
+    assert_eq!(
+        read_all(&mut model, &choose),
+        [
+            Read::Status,
+            Read::Providers,
+            Read::Record,
+            Read::Options(PROVIDER.into())
+        ]
+    );
+    assert!(model.loaded_options().is_some());
+    let mut pasted = model_on(off());
+    pasted.pane_shown();
+    read_all(&mut pasted, &off());
+    pasted.token_checked(Ok(golden::<ProvisionView>("home_provision_connect", |v| {
+        v["provider"] = json!("nimbus")
+    })));
+    assert_eq!(pasted.provider_in_use(), Some("nimbus"));
+    assert_eq!(
+        read_all(&mut pasted, &choose),
+        [Read::Status, Read::Options("nimbus".into())],
+        "the token's answer names the provider: no record is read"
+    );
+    let mut refused = Model::default();
+    refused.pane_shown();
+    assert_eq!(refused.next_read(), Some(Read::Status));
+    refused.served(served());
+    refused.answered(choose.clone(), NOW);
+    assert_eq!(refused.next_read(), Some(Read::Providers));
+    refused.providers_read(Ok(providers()));
+    assert_eq!(refused.next_read(), Some(Read::Record));
+    refused.record_read(Err("Fermix could not read the provider.".into()));
+    assert_eq!(refused.next_read(), None, "a refused record ends the reads");
+    assert!(
+        matches!(&refused.options, Some(Err(why)) if why == "Fermix could not read the provider.")
+    );
+}
+
+/// Every step of the app's own is followed by one read of the summary, the pane open or not.
+#[test]
+fn the_apps_own_step_reads_the_summary_once() {
+    let mut model = model_on(status("home_status_ready"));
+    model.finished(Outcome::default(), NOW);
+    assert_eq!(model.next_read(), Some(Read::Status));
+    assert_eq!(model.next_read(), None);
+    model.token_checked(Err("The provider does not accept this token.".into()));
+    assert_eq!(model.next_read(), Some(Read::Status));
+    model.passphrase_set(typed(), Err("Too short.".into()));
+    assert_eq!(model.next_read(), Some(Read::Status));
+    model.code_answered(Err("Not now.".into()));
+    assert_eq!(model.next_read(), Some(Read::Status));
+    assert_eq!(model.next_read(), None);
+}
+
+/// A new engine (a restart, the app's own move, Fermix started from the pane) may serve other
+/// providers, so what the pane read of them goes; it is read again only while the pane shows.
+#[test]
+fn a_new_engine_is_read_again_only_while_the_pane_shows() {
+    let mut model = Model::default();
+    model.pane_shown();
+    read_all(&mut model, &status("home_status_on"));
+    model.engine_restarted();
+    assert_eq!(
+        read_all(&mut model, &status("home_status_on")),
+        [Read::Status, Read::Providers]
+    );
+    model.pane_hidden();
+    model.engine_restarted();
+    assert_eq!(model.next_read(), None);
+}
+
+// ---- The providers ---------------------------------------------------------------------------
+
+/// The token screen is the provider's, in the engine's words: the only one, the one picked where
+/// there are more, and on a problem the one in use.
+#[test]
+fn the_token_screen_is_drawn_from_the_providers_the_engine_lists() {
+    let only = providers();
+    let token = ScreenKind::Token;
+    assert_eq!(
+        token_target(token, &only, None, None),
+        TokenTarget::Provider(only[0].clone())
+    );
+    let two = vec![only[0].clone(), nimbus()];
+    assert_eq!(
+        token_target(token, &two, None, None),
+        TokenTarget::Pick(two.clone())
+    );
+    assert_eq!(
+        token_target(token, &two, Some("nimbus"), None),
+        TokenTarget::Provider(nimbus())
+    );
+    assert_eq!(
+        token_target(token, &two, Some("invented-gone"), None),
+        TokenTarget::Pick(two.clone())
+    );
+    let refused = ScreenKind::Problem(ProblemKind::TokenRefused);
+    assert_eq!(
+        token_target(refused, &two, Some(PROVIDER), Some("nimbus")),
+        TokenTarget::Provider(nimbus()),
+        "a new token is for the provider in use"
+    );
+    assert_eq!(
+        token_target(refused, &two, None, None),
+        TokenTarget::Unknown(None)
+    );
+    assert_eq!(
+        token_target(token, &[], None, None),
+        TokenTarget::Unknown(None)
+    );
+    assert_eq!(token_checking("Nimbus"), "Checking the token with Nimbus…");
+    assert_eq!(console_label("Nimbus"), "Open Nimbus");
+    assert_eq!(PROVIDER_CHOOSE, "Choose where Fermix creates your server.");
+    assert_eq!(
+        guide_at("nimbus"),
+        "https://fermix.ai/docs/always-on/#nimbus"
+    );
+}
+
+/// The pane's own token screen: the providers it read, the one picked, and Learn more to that
+/// provider's part of the docs page.
+#[test]
+fn set_up_draws_the_providers_token_screen_and_learn_more_goes_to_its_section() {
+    let mut model = Model::default();
+    model.pane_shown();
+    read_all(&mut model, &off());
+    assert_eq!(
+        model.press(ActionId::LearnMore),
+        Press::Open(GUIDE_URL.into())
+    );
+    model.press(ActionId::SetUp);
+    let token = model.page().screen().expect("the token screen");
+    assert_eq!(
+        model.token_target(&token),
+        TokenTarget::Provider(providers()[0].clone())
+    );
+    assert_eq!(
+        model.press(ActionId::LearnMore),
+        Press::Open("https://fermix.ai/docs/always-on/#hetzner".into())
+    );
+    model.providers_read(Ok(vec![providers()[0].clone(), nimbus()]));
+    assert_eq!(
+        model.token_target(&token),
+        TokenTarget::Pick(vec![providers()[0].clone(), nimbus()])
+    );
+    assert_eq!(
+        model.press(ActionId::LearnMore),
+        Press::Open(GUIDE_URL.into())
+    );
+    model.pick_provider("nimbus");
+    assert_eq!(model.token_target(&token), TokenTarget::Provider(nimbus()));
+    assert_eq!(
+        model.press(ActionId::LearnMore),
+        Press::Open("https://fermix.ai/docs/always-on/#nimbus".into())
+    );
+    model.pane_hidden();
+    assert_eq!(model.local.provider, None, "the pick goes with the pane");
+    model.providers_read(Err("Fermix could not list the providers.".into()));
+    assert_eq!(
+        model.token_target(&token),
+        TokenTarget::Unknown(Some("Fermix could not list the providers.".into()))
+    );
+}
+
+/// Open console opens the console of the provider in use, reading the record and the providers
+/// first where they are not read.
+#[test]
+fn open_console_opens_the_console_of_the_provider_in_use() {
+    let limited = problem(
+        "account_limit",
+        action("open_console", "Open the console"),
+        json!([action("own_server", "Use my own Linux server")]),
+    );
+    let mut model = model_on(limited.clone());
+    model.pane_shown();
+    assert_eq!(model.press(ActionId::OpenConsole), Press::Read);
+    assert_eq!(
+        read_all(&mut model, &limited),
+        [Read::Status, Read::Providers, Read::Record, Read::Status]
+    );
+    assert_eq!(
+        model.take_opening().as_deref(),
+        Some("https://console.hetzner.cloud/")
+    );
+    assert_eq!(model.take_opening(), None, "opened once");
+    assert_eq!(
+        model.press(ActionId::OpenConsole),
+        Press::Open("https://console.hetzner.cloud/".into()),
+        "both read: at once"
+    );
+    model.providers_read(Ok(vec![providers()[0].clone(), nimbus()]));
+    model.record_read(Ok(record("nimbus")));
+    assert_eq!(
+        model.press(ActionId::OpenConsole),
+        Press::Open("https://console.nimbus.invalid/".into())
+    );
+    model.record_read(Ok(record("invented-unlisted")));
+    assert_eq!(model.press(ActionId::OpenConsole), Press::Drawn);
+    assert_eq!(model.refusal.as_deref(), Some(LINK_FAILED));
+}
+
+/// Options and create name the provider in use; where the pane has no record of it yet, the
+/// action reads it once and hands it back.
+#[test]
+fn an_action_names_the_provider_in_use_and_reads_it_once_where_none_is_known() {
+    let fake = Fake::new();
+    let mut elsewhere = context(ActionId::CreateServer, status("home_status_creating"));
+    elsewhere.provider = Some("nimbus".into());
+    perform(&fake, &elsewhere);
+    assert_eq!(
+        fake.calls(),
+        [
+            Call::Options("nimbus".into()),
+            Call::Create("nimbus".into(), cpx("cpx22", "fsn1"), false)
+        ]
+    );
+    let fake = Fake::new();
+    let mut unknown = context(ActionId::CreateServer, status("home_status_creating"));
+    unknown.provider = None;
+    let outcome = perform(&fake, &unknown);
+    assert_eq!(
+        fake.calls(),
+        [Call::Resources, offers(), made("cpx22", "fsn1", false)]
+    );
+    assert_eq!(
+        outcome.record.map(|r| r.provider).as_deref(),
+        Some(PROVIDER),
+        "the record read is kept"
+    );
+    let mut model = model_on(status("home_status_creating"));
+    let Press::Run(pressed) = model.press(ActionId::CreateServer) else {
+        panic!("runs")
+    };
+    assert_eq!(pressed.provider, None, "no record read yet");
+    model.finished(
+        Outcome {
+            record: Some(record("nimbus")),
+            ..Outcome::default()
+        },
+        NOW,
+    );
+    let Press::Run(next) = model.press(ActionId::CreateServer) else {
+        panic!("runs")
+    };
+    assert_eq!(next.provider.as_deref(), Some("nimbus"));
+}
+
+// ---- What the pane's source holds -------------------------------------------------------------
+
+const PANE_SOURCES: [(&str, &str); 8] = [
+    ("core/src/always_on.rs", include_str!("../src/always_on.rs")),
+    (
+        "core/src/always_on/actions.rs",
+        include_str!("../src/always_on/actions.rs"),
+    ),
+    (
+        "core/src/always_on/model.rs",
+        include_str!("../src/always_on/model.rs"),
+    ),
+    (
+        "core/src/always_on/notices.rs",
+        include_str!("../src/always_on/notices.rs"),
+    ),
+    ("core/src/provision.rs", include_str!("../src/provision.rs")),
+    ("core/src/home.rs", include_str!("../src/home.rs")),
+    (
+        "core/src/management.rs",
+        include_str!("../src/management.rs"),
+    ),
+    (
+        "app/src/always_on.rs",
+        include_str!("../../app/src/always_on.rs"),
+    ),
+];
+
+/// The provider is the engine's data: no word, name or comment of the app's own names one.
+#[test]
+fn no_provider_is_named_in_the_apps_own_words() {
+    for (path, source) in PANE_SOURCES {
+        assert!(
+            !source.to_lowercase().contains("hetzner"),
+            "{path} names a provider"
+        );
+    }
+}
+
+/// The pane reads on no timer: the window's only timer is the bar that claims no percentage,
+/// and the app starts no follow at launch.
+#[test]
+fn the_pane_reads_on_no_timer() {
+    let (_, pane) = PANE_SOURCES[7];
+    let timers: Vec<&str> = pane
+        .lines()
+        .filter(|line| line.contains("timeout_add") || line.contains("timeout_future"))
+        .collect();
+    assert_eq!(
+        timers,
+        ["    glib::timeout_add_local(PULSE, move || match weak.upgrade() {"],
+        "only the bar's pulse"
+    );
+    let app = include_str!("../../app/src/app.rs");
+    assert!(!app.contains("start_follow"));
+    let (_, notices) = PANE_SOURCES[3];
+    assert!(!notices.contains("Duration"), "no wait between reads");
 }
 
 #[test]

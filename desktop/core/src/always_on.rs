@@ -1,13 +1,16 @@
 //! The Always On pane (M75 lean v1 §7), worked out from what the engine said and the few things
 //! the app keeps itself. `home.status.summary` is the one source: every screen maps to its
 //! `state`, every sentence and action label is the engine's, and Details holds its `detail`.
-//! The app keeps only what nothing in the engine records: Set up, which opens the token screen;
+//! The cloud provider is the engine's data too: `home.provision.providers` names each one and
+//! every word its token screen draws, and the provisioner's record names the one in use, so
+//! nothing here names a provider. The app keeps only what nothing in the engine records: Set up,
+//! which opens the token screen; the provider picked there where the engine offers more than one;
 //! Paste a new token, which opens the field in place; and the restart after its own Move now,
 //! while the engine is away. The words here are the app's own labels, the same as the Mac's.
 //!
 //! `actions` says where each action goes and the calls it makes, `notices` the notifications a
-//! change between two reads raises and how often the summary is read, and `model` holds the
-//! pane's state between reads.
+//! change between two reads raises, and `model` holds the pane's state between reads and says
+//! when to read: never on a timer.
 
 pub mod actions;
 pub mod model;
@@ -18,25 +21,22 @@ use crate::home::{
     Summary, SummaryState,
 };
 use crate::management::CallError;
-use crate::provision::{Offer, Options, METHODS};
+use crate::provision::{Offer, Options, Provider, METHODS};
 use crate::view::{daemon_problem, DaemonProblem};
 
 /// The settings pane, and the pane the daemon files the `snapshots` section under.
 pub const PANE: &str = "always_on";
 /// The Always On docs page Learn more opens.
 pub const GUIDE_URL: &str = "https://fermix.ai/docs/always-on/";
-/// Hetzner's console, where the token is made.
-pub const HETZNER_CONSOLE: &str = "https://console.hetzner.cloud/";
 const STATUS_METHOD: &str = "home.status";
 
 pub const NOTICE_TITLE: &str = "Always On";
 pub const LEARN_MORE: &str = "Learn more";
 pub const LINK_FAILED: &str = "The browser could not open the page.";
 pub const DETAILS: &str = "Details";
-pub const TOKEN_FIELD: &str = "Hetzner API token";
-pub const TOKEN_CHECKING: &str = "Checking the token with Hetzner…";
+/// Over the providers' names, where the engine offers more than one.
+pub const PROVIDER_CHOOSE: &str = "Choose where Fermix creates your server.";
 pub const HOW_TO_GET_ONE: &str = "How to get one";
-pub const OPEN_HETZNER: &str = "Open Hetzner";
 pub const CHANGE: &str = "Change";
 pub const CHANGE_TITLE: &str = "Size and location";
 pub const PASSPHRASE_TITLE: &str = "Recovery passphrase";
@@ -68,8 +68,8 @@ pub const READING: &str = "Reading from Fermix…";
 pub const NEEDS_FERMIX: &str = "Always On is read from Fermix on this computer. Start it to see \
     where Fermix runs.";
 
-/// The actions that call the Hetzner provisioner.
-const HETZNER_ACTIONS: [ActionId; 9] = [
+/// The actions that call the provisioner.
+const PROVISIONER_ACTIONS: [ActionId; 10] = [
     ActionId::CreateServer,
     ActionId::Cancel,
     ActionId::TurnOn,
@@ -79,6 +79,7 @@ const HETZNER_ACTIONS: [ActionId; 9] = [
     ActionId::PasteToken,
     ActionId::DeleteServer,
     ActionId::ReplaceServer,
+    ActionId::OpenConsole,
 ];
 
 /// The steps the app keeps itself.
@@ -86,6 +87,8 @@ const HETZNER_ACTIONS: [ActionId; 9] = [
 pub struct Local {
     /// Set up was pressed on `off`: the token screen shows until a token or a code exists.
     pub setting_up: bool,
+    /// The provider picked on the token screen, by its id, while the pane shows.
+    pub provider: Option<String>,
     /// Paste a new token was pressed on a problem that offers it.
     pub pasting_token: bool,
     /// The engine's sentence for the move this app started, while the engine restarts to carry
@@ -123,12 +126,11 @@ pub struct Screen {
     pub sentence: String,
     /// The one main action, or none when all is well.
     pub action: Option<Action>,
-    /// The token screen's "How to get one" steps.
-    pub steps: Vec<String>,
     /// The other actions: Details' on a problem and on `on`, the own-server link on the token
     /// screen.
     pub alternatives: Vec<Action>,
-    /// The paste field shows (the token screen, or Paste a new token).
+    /// The paste field shows (the token screen, or Paste a new token); whose token it takes, and
+    /// the words around it, are its provider's (`token_target`).
     pub token_field: bool,
     /// The bar that claims no percentage shows (creating and moving).
     pub shows_progress: bool,
@@ -184,7 +186,7 @@ pub fn page(
         return Page::NeedsUpdate;
     };
     let screen = Screen::of(summary, status, local);
-    if screen.needs_hetzner() && !serves_hetzner(served) {
+    if screen.needs_provisioner() && !serves_provisioner(served) {
         return Page::NeedsUpdate;
     }
     Page::Screen(Box::new(screen))
@@ -217,9 +219,46 @@ pub fn says_where_the_move_stands(state: Option<SummaryState>) -> bool {
     )
 }
 
-/// Whether `hello` lists every `home.provision.*` method, which the Hetzner path needs.
-pub fn serves_hetzner(served: &[String]) -> bool {
+/// Whether `hello` lists every `home.provision.*` method, which the provisioner's screens need.
+pub fn serves_provisioner(served: &[String]) -> bool {
     METHODS.iter().all(|m| served.iter().any(|s| s == m))
+}
+
+/// Which provider's token a token field takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenTarget {
+    /// The providers, or the one in use, are not read yet: the sentence of the read that
+    /// failed, or none while it is out.
+    Unknown(Option<String>),
+    /// The engine offers more than one and none is picked: the owner picks first, from every one
+    /// given, in the engine's order.
+    Pick(Vec<Provider>),
+    Provider(Provider),
+}
+
+/// Which provider's token a screen of `kind` takes: on a problem that asks for a new token, the
+/// one in use (`in_use`, the provisioner's record's); else the one the owner `picked`, or the
+/// only one the engine offers.
+pub fn token_target(
+    kind: ScreenKind,
+    providers: &[Provider],
+    picked: Option<&str>,
+    in_use: Option<&str>,
+) -> TokenTarget {
+    let named = |id: Option<&str>| providers.iter().find(|p| Some(p.id.as_str()) == id);
+    if matches!(kind, ScreenKind::Problem(_)) {
+        return named(in_use).map_or(TokenTarget::Unknown(None), |p| {
+            TokenTarget::Provider(p.clone())
+        });
+    }
+    if let Some(chosen) = named(picked) {
+        return TokenTarget::Provider(chosen.clone());
+    }
+    match providers {
+        [] => TokenTarget::Unknown(None),
+        [only] => TokenTarget::Provider(only.clone()),
+        many => TokenTarget::Pick(many.to_vec()),
+    }
 }
 
 impl Screen {
@@ -237,7 +276,6 @@ impl Screen {
         let connect = summary.detail.connect.as_ref();
         Screen {
             sentence: connect.map_or_else(|| summary.sentence.clone(), |c| c.sentence.clone()),
-            steps: connect.map(|c| c.steps.clone()).unwrap_or_default(),
             alternatives: offered_all(connect.map(|c| c.alternatives.as_slice())),
             ..Screen::token(summary)
         }
@@ -248,7 +286,6 @@ impl Screen {
             kind: ScreenKind::Token,
             sentence: summary.sentence.clone(),
             action: None,
-            steps: summary.detail.steps.clone().unwrap_or_default(),
             alternatives: offered_all(summary.detail.alternatives.as_deref()),
             token_field: true,
             shows_progress: false,
@@ -264,7 +301,6 @@ impl Screen {
             kind: ScreenKind::Problem(summary.detail.kind.unwrap_or(ProblemKind::Unknown)),
             sentence: summary.sentence.clone(),
             action: offered(summary.action.as_ref()).filter(|_| !pasting),
-            steps: Vec::new(),
             alternatives: offered_all(summary.detail.alternatives.as_deref()),
             token_field: pasting,
             shows_progress: false,
@@ -281,7 +317,6 @@ impl Screen {
             kind,
             sentence: summary.sentence.clone(),
             action: offered(summary.action.as_ref()),
-            steps: Vec::new(),
             alternatives: offered_all(summary.detail.actions.as_deref()),
             token_field: false,
             shows_progress: matches!(kind, ScreenKind::Creating | ScreenKind::Moving),
@@ -296,7 +331,6 @@ impl Screen {
             kind: ScreenKind::Moving,
             sentence: sentence.to_owned(),
             action: None,
-            steps: Vec::new(),
             alternatives: Vec::new(),
             token_field: false,
             shows_progress: true,
@@ -315,10 +349,11 @@ impl Screen {
             .collect()
     }
 
-    /// Whether this screen calls the Hetzner provisioner.
-    pub fn needs_hetzner(&self) -> bool {
+    /// Whether this screen calls the provisioner.
+    pub fn needs_provisioner(&self) -> bool {
         let action = self.action.as_ref().map(|a| a.id);
-        self.kind == ScreenKind::Choose || action.is_some_and(|id| HETZNER_ACTIONS.contains(&id))
+        self.kind == ScreenKind::Choose
+            || action.is_some_and(|id| PROVISIONER_ACTIONS.contains(&id))
     }
 
     /// Whether the screen has Details at all.
@@ -393,7 +428,7 @@ pub enum Fact {
 }
 
 /// What Details holds (§7): on `choose` the server's shape and the price with its IPv4 address
-/// and VAT, and how Hetzner bills; on `ready` the server's facts and until when it waits; on
+/// and VAT, and how the provider bills; on `ready` the server's facts and until when it waits; on
 /// `on` the server, each backup, the space this computer's copies take, the server's disk, what
 /// lives on the server, and the other actions; on a problem what Fermix last saw and when, and
 /// the other actions. `offer` is the size and place Create server makes, in `currency`.
@@ -424,8 +459,8 @@ pub fn details(screen: &Screen, offer: Option<(&Offer, &str)>) -> Vec<Fact> {
     facts
 }
 
-/// The server's facts as Hetzner reports them, each only where the engine gave it, and until
-/// when a ready one waits.
+/// The server's facts as its provider reports them, each only where the engine gave it, and
+/// until when a ready one waits.
 fn server_facts(detail: &Detail) -> Vec<Fact> {
     let mut facts = Vec::new();
     if let Some(server) = &detail.server {
@@ -489,7 +524,7 @@ pub fn sentence(error: &CallError) -> String {
 
 // ---- The words around the engine's values ---------------------------------------------------
 
-/// An amount Hetzner gave, in its currency, never rounded or summed here.
+/// An amount the provider gave, in its currency, never rounded or summed here.
 pub fn money(amount: &str, currency: &str) -> String {
     match currency {
         "EUR" => format!("€{amount}"),
@@ -500,12 +535,25 @@ pub fn money(amount: &str, currency: &str) -> String {
 
 /// The owner's own choice, in the words the recommendation is said in.
 pub fn choice_sentence(offer: &Offer, options: &Options) -> String {
-    let city = options
-        .city(offer.location)
-        .or(offer.location.wire())
-        .unwrap_or_default();
+    let city = options.city(&offer.location).unwrap_or(&offer.location);
     let total = money(&offer.total_monthly, &options.currency);
     format!("{} in {city}, {total} a month.", offer.description)
+}
+
+/// What the field says while the engine checks a pasted token with the provider.
+pub fn token_checking(provider: &str) -> String {
+    format!("Checking the token with {provider}…")
+}
+
+/// The link to a provider's console, after its steps.
+pub fn console_label(provider: &str) -> String {
+    format!("Open {provider}")
+}
+
+/// A provider's section of the Always On docs page, by the anchor the engine names.
+pub fn guide_at(anchor: &str) -> String {
+    assert!(!anchor.is_empty(), "a section of the guide is named");
+    format!("{GUIDE_URL}#{anchor}")
 }
 
 pub fn monthly(offer: &Offer, currency: &str) -> String {

@@ -2,7 +2,11 @@
 //! the order each call is made. An action runs as one blocking piece off the window's thread, as
 //! every call does: `perform` makes its calls, follows a job it started to its end within the
 //! job's budget, and answers what the pane shows next. Every write is followed by the pane's
-//! read of the summary, which says where things stand; nothing here guesses it.
+//! read of the summary, which says where things stand; nothing here guesses it. A job this app
+//! started is read with `job.get` to its end: the engine says when the summary changed, which a
+//! job's steps do, but never that the job ended or why it failed, which Cancel, Start again and
+//! the power actions wait for before their next call. Options and create name the provider in
+//! use, which the provisioner's record names.
 
 use super::{move_target, sentence};
 use crate::home::{
@@ -24,8 +28,13 @@ const PROVISION_JOB: &str = "home_provision";
 
 /// The daemon calls the actions make, and the wait between two polls of a job.
 pub trait HomeDaemon {
-    fn provision_options(&self) -> Result<Options, CallError>;
-    fn provision_create(&self, pick: &Pick, replace: bool) -> Result<JobView, CallError>;
+    fn provision_options(&self, provider: &str) -> Result<Options, CallError>;
+    fn provision_create(
+        &self,
+        provider: &str,
+        pick: &Pick,
+        replace: bool,
+    ) -> Result<JobView, CallError>;
     fn provision_power(&self, action: PowerAction) -> Result<JobView, CallError>;
     fn provision_resources(&self) -> Result<ProvisionView, CallError>;
     fn provision_delete(&self) -> Result<JobView, CallError>;
@@ -44,12 +53,17 @@ pub trait HomeDaemon {
 }
 
 impl HomeDaemon for Management {
-    fn provision_options(&self) -> Result<Options, CallError> {
-        Management::provision_options(self)
+    fn provision_options(&self, provider: &str) -> Result<Options, CallError> {
+        Management::provision_options(self, provider)
     }
 
-    fn provision_create(&self, pick: &Pick, replace: bool) -> Result<JobView, CallError> {
-        Management::provision_create(self, pick, replace)
+    fn provision_create(
+        &self,
+        provider: &str,
+        pick: &Pick,
+        replace: bool,
+    ) -> Result<JobView, CallError> {
+        Management::provision_create(self, provider, pick, replace)
     }
 
     fn provision_power(&self, action: PowerAction) -> Result<JobView, CallError> {
@@ -98,12 +112,14 @@ impl HomeDaemon for Management {
     }
 }
 
-/// What one action needs from the pane: the summary it was pressed on, the options read for
-/// Create server, Change and Replace, the owner's choice, the passphrase held for the move, and
-/// the warnings the screen showed.
+/// What one action needs from the pane: the summary it was pressed on, the provider in use where
+/// the pane knows it, the options read for Create server, Change and Replace, the owner's choice,
+/// the passphrase held for the move, and the warnings the screen showed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Context {
     pub action: ActionId,
+    /// The provider the provisioner's record names; read once where the pane has no record.
+    pub provider: Option<String>,
     pub status: Option<HomeStatus>,
     pub options: Option<Options>,
     pub chosen: Option<Pick>,
@@ -118,8 +134,10 @@ pub struct Outcome {
     pub refusal: Option<String>,
     /// A word that is no failure: a move's start whose answer was lost.
     pub notice: Option<String>,
-    /// What Hetzner sells, where the action read it.
+    /// What the provider sells, where the action read it.
     pub options: Option<Result<Options, String>>,
+    /// The provisioner's record, where the action read it for the provider in use.
+    pub record: Option<ProvisionView>,
     /// The review's warnings and blocks, where the move stopped at one the screen did not show.
     pub reviewed: Option<Vec<ReadinessItem>>,
     /// The move this app started, in the engine's sentence.
@@ -147,7 +165,7 @@ pub fn perform(daemon: &impl HomeDaemon, context: &Context) -> Outcome {
             .home_snapshots_run()
             .map(|_| ())
             .map_err(|e| sentence(&e)),
-        ActionId::ReplaceServer => replace(daemon, context),
+        ActionId::ReplaceServer => replace(daemon, context, &mut out),
         other => panic!("{other:?} does not run on the daemon"),
     };
     if let Err(refused) = done {
@@ -158,26 +176,28 @@ pub fn perform(daemon: &impl HomeDaemon, context: &Context) -> Outcome {
 
 /// Creates the server: the owner's choice, else the recommendation.
 fn create_server(daemon: &impl HomeDaemon, context: &Context, out: &mut Outcome) -> Step {
-    let options = known_options(daemon, context, out)?;
+    let provider = in_use(daemon, context, out)?;
+    let options = known_options(daemon, context, &provider, out)?;
     let pick = context
         .chosen
         .clone()
         .or_else(|| options.recommended.clone())
         .ok_or_else(|| options.sentence.clone())?;
-    create(daemon, &pick, false)
+    create(daemon, &provider, &pick, false)
 }
 
-/// Creates the size asked for where Hetzner has room next. A create Hetzner had no room for
-/// left no server to name it, so it is the owner's choice, else the recommendation.
+/// Creates the size asked for where the provider has room next. A create it had no room for left
+/// no server to name it, so it is the owner's choice, else the recommendation.
 fn create_in(daemon: &impl HomeDaemon, context: &Context, out: &mut Outcome) -> Step {
-    let Some(location) = summary_of(context).and_then(|s| s.detail.next_location) else {
+    let Some(location) = summary_of(context).and_then(|s| s.detail.next_location.clone()) else {
         return Ok(());
     };
+    let provider = in_use(daemon, context, out)?;
     let size = match &context.chosen {
         Some(chosen) => chosen.size.clone(),
-        None => recommendation(daemon, context, out)?.size,
+        None => recommendation(daemon, context, &provider, out)?.size,
     };
-    on_its_desktop(daemon, context, &Pick { size, location })
+    on_its_desktop(daemon, context, &provider, &Pick { size, location })
 }
 
 /// Deletes the server, then creates one of the same size in the same place, as the record
@@ -185,68 +205,94 @@ fn create_in(daemon: &impl HomeDaemon, context: &Context, out: &mut Outcome) -> 
 /// choice, else the recommendation, is made again.
 fn start_again(daemon: &impl HomeDaemon, context: &Context, out: &mut Outcome) -> Step {
     let view = daemon.provision_resources().map_err(|e| sentence(&e))?;
-    let made = view.server.map(|s| Pick {
+    let provider = view.provider.clone();
+    let made = view.server.clone().map(|s| Pick {
         size: s.size,
         location: s.location,
     });
+    out.record = Some(view);
     if !delete(daemon)? {
         return Ok(());
     }
     let again = match made.or_else(|| context.chosen.clone()) {
         Some(pick) => pick,
-        None => recommendation(daemon, context, out)?,
+        None => recommendation(daemon, context, &provider, out)?,
     };
-    on_its_desktop(daemon, context, &again)
+    on_its_desktop(daemon, context, &provider, &again)
 }
 
 /// The recommendation, or the sentence that says nothing is in stock.
 fn recommendation(
     daemon: &impl HomeDaemon,
     context: &Context,
+    provider: &str,
     out: &mut Outcome,
 ) -> Result<Pick, String> {
-    let options = known_options(daemon, context, out)?;
+    let options = known_options(daemon, context, provider, out)?;
     options.recommended.ok_or(options.sentence)
 }
 
 /// On the desktop whose home lives on the server, a server it creates is always the
 /// replacement of that one.
-fn on_its_desktop(daemon: &impl HomeDaemon, context: &Context, pick: &Pick) -> Step {
+fn on_its_desktop(
+    daemon: &impl HomeDaemon,
+    context: &Context,
+    provider: &str,
+    pick: &Pick,
+) -> Step {
     let desktop = context
         .status
         .as_ref()
         .is_some_and(|s| s.role == Role::Device);
-    create(daemon, pick, desktop)
+    create(daemon, provider, pick, desktop)
 }
 
 /// Creates the server that replaces the one the home lives on, from Replace's choice; the move
 /// to it is the same Move now.
-fn replace(daemon: &impl HomeDaemon, context: &Context) -> Step {
+fn replace(daemon: &impl HomeDaemon, context: &Context, out: &mut Outcome) -> Step {
     let pick = context
         .chosen
         .as_ref()
         .expect("Replace creates the size and place its sheet chose");
-    create(daemon, pick, true)
+    let provider = in_use(daemon, context, out)?;
+    create(daemon, &provider, pick, true)
 }
 
 /// Starts the create as a job the summary follows from here.
-fn create(daemon: &impl HomeDaemon, pick: &Pick, replace: bool) -> Step {
+fn create(daemon: &impl HomeDaemon, provider: &str, pick: &Pick, replace: bool) -> Step {
     daemon
-        .provision_create(pick, replace)
+        .provision_create(provider, pick, replace)
         .map(|_| ())
         .map_err(|e| sentence(&e))
 }
 
-/// What Hetzner sells: as the pane read it, else read now and kept.
+/// The provider in use: as the pane's record names it, else read once from the record, which is
+/// handed back.
+fn in_use(
+    daemon: &impl HomeDaemon,
+    context: &Context,
+    out: &mut Outcome,
+) -> Result<String, String> {
+    if let Some(provider) = &context.provider {
+        return Ok(provider.clone());
+    }
+    let view = daemon.provision_resources().map_err(|e| sentence(&e))?;
+    let provider = view.provider.clone();
+    out.record = Some(view);
+    Ok(provider)
+}
+
+/// What the provider sells: as the pane read it, else read now and kept.
 fn known_options(
     daemon: &impl HomeDaemon,
     context: &Context,
+    provider: &str,
     out: &mut Outcome,
 ) -> Result<Options, String> {
     if let Some(options) = &context.options {
         return Ok(options.clone());
     }
-    let read = daemon.provision_options().map_err(|e| sentence(&e));
+    let read = daemon.provision_options(provider).map_err(|e| sentence(&e));
     out.options = Some(read.clone());
     read
 }
@@ -273,8 +319,8 @@ fn delete(daemon: &impl HomeDaemon) -> Result<bool, String> {
     follow(daemon, job)
 }
 
-/// Turns the server on or resets it, as a job followed to its end, then reads Hetzner back so
-/// the summary says what it found, whether the job ended well or not.
+/// Turns the server on or resets it, as a job followed to its end, then reads the provider back
+/// so the summary says what it found, whether the job ended well or not.
 fn power(daemon: &impl HomeDaemon, action: PowerAction) -> Step {
     let powered = daemon
         .provision_power(action)

@@ -2,32 +2,16 @@
 //! is done, the server has not answered for 10 minutes, a waiting server must be set up again,
 //! and the last backup is 7 days old. Each is raised from a change the app saw between two reads
 //! of `home.status`, never from a state it read once, so each is raised at most once per
-//! occurrence: a launch reads its first summary and raises nothing for it. The body is the
-//! engine's own sentence for the state it changed to.
-//!
-//! And how long the app waits before it reads `home.status` again: briskly while something moves
-//! by itself and the pane shows it, slowly while all is set and nothing can change but the
-//! server's health, and rarely where Always On is not set up.
+//! occurrence: the first summary read raises nothing for it. The body is the engine's own
+//! sentence for the state it changed to. The reads come when the engine says the summary changed
+//! (`home_status_changed`), so a change is seen as it happens; the engine says so once as well
+//! when the last backup turns a week old, the read the week-old notification is raised at.
 
 use crate::home::{HomeStatus, ProblemKind, SummaryState};
 use crate::phone::unix_seconds;
-use std::time::Duration;
 
 /// How old the newest backup is before the computer says so, as the server tells the phones.
 pub const BACKUP_AGE: i64 = 7 * 86_400;
-
-/// While the pane shows a server being created or a move, and while the engine restarts for
-/// this app's own move.
-pub const WATCHING: Duration = Duration::from_secs(3);
-/// While the pane is open on anything else.
-pub const OPEN: Duration = Duration::from_secs(10);
-/// While a server is created or a move runs with the pane closed.
-pub const MOVING: Duration = Duration::from_secs(15);
-/// While Always On is set up: a server that stops answering, one that waits too long, an old
-/// backup.
-pub const SETTLED: Duration = Duration::from_secs(60);
-/// After a read that failed, or while Always On is not set up.
-pub const IDLE: Duration = Duration::from_secs(300);
 
 /// Which notification a change raised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,34 +112,4 @@ fn backup_since(status: &HomeStatus) -> Option<i64> {
     let seen = status.summary.as_ref()?.detail.seen_at.as_deref();
     let moved = status.moved.as_ref().map(|m| m.moved_at.as_str());
     unix_seconds(seen.or(moved)?)
-}
-
-/// The wait before the next read, as the last read leaves it.
-pub fn wait(
-    status: Option<&HomeStatus>,
-    failed: bool,
-    pane_visible: bool,
-    own_move: bool,
-) -> Duration {
-    if own_move {
-        return WATCHING;
-    }
-    let state = status.and_then(|s| s.summary.as_ref()).map(|s| s.state);
-    let moves = matches!(state, Some(SummaryState::Creating | SummaryState::Moving));
-    match (moves, pane_visible, failed) {
-        (true, true, _) => WATCHING,
-        (true, false, _) => MOVING,
-        (false, true, _) => OPEN,
-        (false, false, true) => IDLE,
-        (false, false, false) => settled_or_idle(state),
-    }
-}
-
-fn settled_or_idle(state: Option<SummaryState>) -> Duration {
-    match state {
-        Some(
-            SummaryState::Ready | SummaryState::On | SummaryState::Problem | SummaryState::Undone,
-        ) => SETTLED,
-        _ => IDLE,
-    }
 }
