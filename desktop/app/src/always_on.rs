@@ -822,10 +822,19 @@ impl AlwaysOnPane {
             let model = self.model.borrow();
             (model.loaded_options().cloned(), model.pick())
         };
-        let me = self.me.clone();
+        // The row is what is sent, so the answer waits for one where none is recommended.
+        let answer = gtk::Button::builder()
+            .label(&action.label)
+            .css_classes(["suggested-action"])
+            .sensitive(pick.is_some())
+            .build();
+        let (me, ready) = (self.me.clone(), answer.downgrade());
         let chosen: Chosen = Rc::new(move |pick, _| {
             if let Some(pane) = me.upgrade() {
                 pane.model.borrow_mut().choose(pick);
+            }
+            if let Some(answer) = ready.upgrade() {
+                answer.set_sensitive(true);
             }
         });
         let body = offers(options.as_ref(), pick.as_ref(), &chosen);
@@ -835,14 +844,13 @@ impl AlwaysOnPane {
                 .build();
             body.insert(&lead, 0);
         }
-        let answer = gtk::Button::builder()
-            .label(&action.label)
-            .css_classes(["suggested-action"])
-            .build();
         let me = self.me.clone();
         answer.connect_clicked(move |button| {
             let Some(pane) = me.upgrade() else { return };
             let press = pane.model.borrow_mut().choice_answered();
+            if !matches!(press, Press::Run(_)) {
+                return;
+            }
             leave(button);
             pane.spawn(|pane| async move { pane.pressed(press).await });
         });

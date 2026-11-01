@@ -164,8 +164,12 @@ pub struct SettingsPage {
     views: RefCell<Vec<Rc<SectionView>>>,
     /// Views inside open dialogs; each dialog removes its own when it closes.
     pub dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>,
-    /// Pane slugs the search leaves visible.
+    /// Pane slugs the sidebar lists: the search's, without Always On where it is not served.
     visible: Rc<RefCell<Vec<&'static str>>>,
+    /// Pane slugs the search leaves.
+    matched: RefCell<Vec<&'static str>>,
+    /// The engine lists `home.act`, so Always On is listed; not until a `hello` says so.
+    always_on_served: Cell<bool>,
     down: DownPage,
     /// Fermix is down, so panes that need it show the down page instead.
     down_shown: Rc<Cell<bool>>,
@@ -218,7 +222,8 @@ impl SettingsPage {
         let down_shown = Rc::new(Cell::new(false));
         let (shown, stack) = (down_shown.clone(), root.clone());
         panes.connect_visible_child_name_notify(move |panes| show_root(&stack, panes, shown.get()));
-        let visible = Rc::new(RefCell::new(PANES.iter().map(|p| p.slug).collect()));
+        let every: Vec<&'static str> = PANES.iter().map(|p| p.slug).collect();
+        let visible = Rc::new(RefCell::new(always_on::listed(every.clone(), false)));
         let (sidebar, list, search) = sidebar(&visible);
         SettingsPage {
             root,
@@ -237,6 +242,8 @@ impl SettingsPage {
             views: RefCell::default(),
             dialog_views: Rc::default(),
             visible,
+            matched: RefCell::new(every),
+            always_on_served: Cell::new(false),
             down,
             down_shown,
         }
@@ -252,6 +259,7 @@ impl SettingsPage {
         self.down.reset();
         self.down_shown.set(false);
         show_root(&self.root, &self.panes, false);
+        self.serve_always_on(snapshot.always_on);
         if let Some(sections) = &data.sections {
             self.ensure_views(sections, data.sections_missing.is_some());
         }
@@ -379,7 +387,20 @@ impl SettingsPage {
 
     /// Shows only the panes in `slugs`, and each group heading that still has one.
     pub fn filter(&self, slugs: Vec<&'static str>) {
-        *self.visible.borrow_mut() = slugs;
+        *self.matched.borrow_mut() = slugs;
+        self.list_panes();
+    }
+
+    /// Lists Always On only where the engine serves it.
+    fn serve_always_on(&self, served: bool) {
+        if self.always_on_served.replace(served) != served {
+            self.list_panes();
+        }
+    }
+
+    fn list_panes(&self) {
+        let matched = self.matched.borrow().clone();
+        *self.visible.borrow_mut() = always_on::listed(matched, self.always_on_served.get());
         self.list.invalidate_filter();
     }
 

@@ -262,7 +262,7 @@ fn each_step_is_one_home_act_with_the_key_and_the_input_its_needs_asked_for() {
         m.home_act(
             act_id(&params),
             params["key"].as_str().expect("a key"),
-            &Input::choice(Some(pick)),
+            &Input::choice(pick),
         )
         .expect("decodes");
     });
@@ -288,7 +288,7 @@ fn each_step_is_one_home_act_with_the_key_and_the_input_its_needs_asked_for() {
 }
 
 #[test]
-fn a_provider_is_named_only_where_the_engine_lists_several_and_a_choice_sends_both_halves() {
+fn a_provider_is_named_only_where_the_engine_lists_several_and_a_choice_sends_its_row() {
     let token = Token::pasted("invented-nimbus-key-0001").expect("pasted");
     let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
         m.home_act(
@@ -304,13 +304,22 @@ fn a_provider_is_named_only_where_the_engine_lists_several_and_a_choice_sends_bo
             "input": {"token": "invented-nimbus-key-0001", "provider": "nimbus"}})
     );
     let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
-        m.home_act(ActionId::CreateServer, "k-create", &Input::choice(None))
-            .expect("decodes");
+        let recommended = Pick {
+            size: "cpx22".into(),
+            location: "fsn1".into(),
+        };
+        m.home_act(
+            ActionId::CreateServer,
+            "k-create",
+            &Input::choice(recommended),
+        )
+        .expect("decodes");
     });
     assert_eq!(
         sent["params"],
-        json!({"action": "create_server", "key": "k-create"}),
-        "the recommendation sends neither half"
+        json!({"action": "create_server", "key": "k-create",
+            "input": {"type": "cpx22", "location": "fsn1"}}),
+        "the recommendation is sent as the row it is"
     );
 }
 
@@ -423,6 +432,14 @@ fn the_refusals_of_a_step_are_said_in_the_daemons_words() {
     assert_eq!(
         refused_sentence(away),
         "The server fermix-vm is unreachable. Fermix keeps your message until it is back."
+    );
+    let release = refused_with("unavailable_always_on_unreleased", |m| {
+        m.home_act(ActionId::CreateServer, "k-create", &Input::none())
+            .expect_err("refused")
+    });
+    assert_eq!(
+        refused_sentence(release),
+        "Always On is not in this release of Fermix yet."
     );
     let rail = named(ERRORS, "unavailable_rail_only");
     assert_eq!(

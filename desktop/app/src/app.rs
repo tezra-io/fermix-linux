@@ -400,6 +400,7 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
         architecture: hello.engine.architecture,
         distribution: hello.engine.distribution_identity,
         protocol: PROTOCOL_VERSION.min(hello.protocol.maximum_version),
+        always_on: always_on::served(&hello.capabilities.methods),
         overview: overview
             .inspect_err(|e| glib::g_warning!("fermix", "overview.get failed: {e:?}"))
             .ok(),

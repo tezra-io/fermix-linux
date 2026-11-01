@@ -24,6 +24,8 @@ pub struct Snapshot {
     pub distribution: Option<String>,
     /// The management protocol version this app and the daemon speak.
     pub protocol: u64,
+    /// `hello` lists `home.act`: the engine serves Always On, which a release build does not yet.
+    pub always_on: bool,
     /// `overview.get`, when the daemon answered it.
     pub overview: Option<Overview>,
 }

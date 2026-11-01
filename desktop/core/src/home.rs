@@ -257,7 +257,7 @@ pub fn passphrase(first: &str, second: &str) -> Result<Passphrase, Option<&'stat
 }
 
 /// What one act carries, as the action's `needs` asked: a token (naming its provider where the
-/// engine lists several), a recovery passphrase, or a size and place (none: the recommendation).
+/// engine lists several), a recovery passphrase, or the size and place the owner was shown.
 /// No print of it spells the token or the passphrase.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Input {
@@ -292,10 +292,15 @@ impl Input {
         }
     }
 
-    /// The owner's size and place, or none for the recommendation.
-    pub fn choice(pick: Option<Pick>) -> Input {
+    /// The row the owner chose, the recommended one by default: the engine makes no choice
+    /// itself, so what it creates is what was shown.
+    pub fn choice(pick: Pick) -> Input {
+        assert!(
+            !pick.size.is_empty() && !pick.location.is_empty(),
+            "a choice is a size and a place"
+        );
         Input {
-            choice: pick,
+            choice: Some(pick),
             ..Input::default()
         }
     }

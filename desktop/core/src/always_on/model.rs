@@ -375,22 +375,35 @@ impl Model {
         Press::Drawn
     }
 
-    /// The main action's choice is drawn on the screen, so its press goes to the confirm; any
-    /// other opens its dialog once the offers are read, a failed read read again.
+    /// The main action's choice is drawn on the screen, so its press sends the row selected
+    /// there, after the confirm; any other opens its dialog once the offers are read.
     fn ask_choice(&mut self, action: &Action) -> Press {
         let main = self.last.as_ref().and_then(|s| s.action.as_ref());
-        if main == Some(action) {
-            return self.confirm_or_run(action, Input::choice(self.chosen.clone()));
+        if main != Some(action) {
+            self.asking = Some(Asking::Choice(action.clone()));
+            return self.offers_read_first().unwrap_or(Press::Drawn);
         }
-        self.asking = Some(Asking::Choice(action.clone()));
+        match self.pick() {
+            Some(pick) => self.confirm_or_run(action, Input::choice(pick)),
+            None => self.offers_read_first().unwrap_or_else(|| self.no_row()),
+        }
+    }
+
+    /// The offers are read before a choice is sent, a failed read read again; none once they
+    /// are read.
+    fn offers_read_first(&mut self) -> Option<Press> {
         if matches!(self.options, Some(Err(_))) {
             self.options = None;
         }
-        if self.loaded_options().is_some() {
-            Press::Drawn
-        } else {
-            Press::Read
-        }
+        self.loaded_options().is_none().then_some(Press::Read)
+    }
+
+    /// The offers hold no row to send (the engine recommends none, and none was picked): its
+    /// sentence says why.
+    fn no_row(&mut self) -> Press {
+        let options = self.loaded_options().expect("the offers were read");
+        self.refusal = Some(options.sentence.clone());
+        Press::Drawn
     }
 
     fn confirm_or_run(&mut self, action: &Action, input: Input) -> Press {
@@ -452,15 +465,16 @@ impl Model {
         self.chosen = Some(pick);
     }
 
-    /// The choice dialog was answered: it showed the confirm, so this is its act.
+    /// The choice dialog was answered: it showed the confirm, so this is its act, with the row
+    /// selected in it; none while no row is.
     pub fn choice_answered(&mut self) -> Press {
         let Some(Asking::Choice(action)) = self.asking.clone() else {
             return Press::Ignored;
         };
-        if self.working.is_some() {
+        let (None, Some(pick)) = (self.working, self.pick()) else {
             return Press::Ignored;
-        }
-        self.run(&action, Input::choice(self.chosen.clone()))
+        };
+        self.run(&action, Input::choice(pick))
     }
 
     /// The passphrase dialog was answered: `again` is the second entry, where none is set. It

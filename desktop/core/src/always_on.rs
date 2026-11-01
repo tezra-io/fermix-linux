@@ -22,6 +22,8 @@ use crate::view::DaemonProblem;
 pub const PANE: &str = "always_on";
 /// What the pane cannot be without: the summary and the one step method.
 pub const NEEDED: [&str; 2] = ["home.status", "home.act"];
+/// The method whose listing in `hello` says the engine serves Always On.
+const STEP: &str = "home.act";
 
 pub const NOTICE_TITLE: &str = "Always On";
 /// The desktop notification's id: a newer notice replaces the one before it.
@@ -158,6 +160,20 @@ fn details(summary: &Summary) -> Vec<Fact> {
         .map(Fact::Sentence)
         .chain(lines)
         .chain(detail.data.clone().map(Fact::Sentence))
+        .collect()
+}
+
+/// Whether the engine serves Always On: `hello` lists `home.act`. A release build lists none of
+/// its methods (and an engine from before Always On none either), so no Always On shows there.
+pub fn served(methods: &[String]) -> bool {
+    methods.iter().any(|m| m == STEP)
+}
+
+/// The settings panes to list: `panes`, without Always On where the engine does not serve it.
+pub fn listed(panes: Vec<&'static str>, served: bool) -> Vec<&'static str> {
+    panes
+        .into_iter()
+        .filter(|pane| served || *pane != PANE)
         .collect()
 }
 

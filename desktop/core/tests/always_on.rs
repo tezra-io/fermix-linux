@@ -8,8 +8,8 @@
 use fermix_client::always_on::model::{Act, Dialog, Model, Press, Read};
 use fermix_client::always_on::notices::{notices_file, Posted, POSTED};
 use fermix_client::always_on::{
-    by_city, destructive, offered, screen, token_target, Fact, Page, TokenTarget, LINK_FAILED,
-    NEEDED, RESTARTING,
+    by_city, destructive, listed, offered, screen, served as served_by, token_target, Fact, Page,
+    TokenTarget, LINK_FAILED, NEEDED, RESTARTING,
 };
 use fermix_client::home::{
     Acted, Action, ActionId, HomeStatus, Input, Line, Notice, Passphrase, Provider, Summary,
@@ -69,6 +69,14 @@ fn served() -> Vec<String> {
 
 fn options() -> Options {
     decoded(result("home_provision_options"))
+}
+
+/// The row the engine recommends: the golden's.
+fn recommended() -> Pick {
+    Pick {
+        size: "cpx22".into(),
+        location: "fsn1".into(),
+    }
 }
 
 fn record(id: &str, label: &str, needs: Value, confirm: Value, key: &str) -> Value {
@@ -276,6 +284,11 @@ fn ready_lists_the_reviews_items_and_on_and_off_offer_their_other_actions() {
     assert_eq!(
         items,
         ["iMessage, voice calls and meetings stop after the move: neither this Mac nor fermix-general-a3f9 runs them."]
+    );
+    assert_eq!(
+        ids(&ready.others),
+        [ActionId::DeleteServer],
+        "a server waiting for its move can be deleted"
     );
     let on = screen(&summary("home_status_on"));
     assert!(on.action.is_none(), "all is well: no main action");
@@ -486,6 +499,83 @@ fn the_offers_are_the_engines_label_and_price_grouped_by_city() {
     );
 }
 
+/// A choice is sent as the row it is: before the offers are read a press only reads them, and
+/// where the engine recommends none the owner picks one first, told why in the engine's words.
+#[test]
+fn a_choice_waits_for_the_offers_and_sends_the_row_the_owner_was_shown() {
+    let mut model = model_on(choose());
+    let create = screen_of(&model).action.expect("Create server");
+    assert_eq!(model.press(&create), Press::Read, "the offers first");
+    assert_eq!(model.dialog(), None);
+    assert_eq!(model.working, None);
+    assert_eq!(model.next_read(), Some(Read::Options));
+    let mut none_in_stock = options();
+    none_in_stock.recommended = None;
+    none_in_stock.sentence =
+        "Hetzner has no server type with 4 GB in stock in Falkenstein right now.".into();
+    model.options_read(Ok(none_in_stock));
+    assert_eq!(model.press(&create), Press::Drawn);
+    assert_eq!(model.dialog(), None, "nothing to send yet");
+    assert_eq!(
+        model.refusal.as_deref(),
+        Some("Hetzner has no server type with 4 GB in stock in Falkenstein right now.")
+    );
+    let helsinki = Pick {
+        size: "cpx22".into(),
+        location: "hel1".into(),
+    };
+    model.choose(helsinki.clone());
+    model.press(&create);
+    assert_eq!(
+        model.confirmed(),
+        act(ActionId::CreateServer, &create.key, Input::choice(helsinki))
+    );
+}
+
+/// Start again needs a choice where the server it creates again kept no size and place: the
+/// same choice as a create, then the row.
+#[test]
+fn start_again_that_needs_a_choice_draws_it_and_sends_the_row() {
+    let stopped = json!({"action": record("start_again", "Start again", json!(["choice"]),
+            json!("Delete what Fermix created and start again? Hetzner bills the new server by the hour until it is deleted."),
+            "k-start-again"),
+        "detail": {"alternatives": [], "kind": "create_failed", "note": null,
+            "seen_at": "2031-05-04T11:30:00Z"},
+        "key": "k-summary", "notice": null, "outcome": "failed",
+        "sentence": "Fermix stopped before your server was created, so start again.",
+        "state": "problem"});
+    let mut model = model_on(stopped);
+    assert!(screen_of(&model).choice);
+    assert_eq!(model.next_read(), Some(Read::Options));
+    model.options_read(Ok(options()));
+    let again = screen_of(&model).action.expect("Start again");
+    model.press(&again);
+    assert_eq!(model.dialog(), Some(Dialog::Confirm(again.clone())));
+    assert_eq!(
+        model.confirmed(),
+        act(
+            ActionId::StartAgain,
+            "k-start-again",
+            Input::choice(recommended())
+        )
+    );
+}
+
+/// The engine serves Always On where `hello` lists `home.act`: a release build lists none of its
+/// methods, and the pane is not listed there.
+#[test]
+fn always_on_is_listed_only_where_the_engine_serves_home_act() {
+    assert!(served_by(&served()));
+    let release: Vec<String> = served()
+        .into_iter()
+        .filter(|m| !["home.status", "home.act", "home.provision.options"].contains(&m.as_str()))
+        .collect();
+    assert!(!served_by(&release));
+    let panes = vec!["providers", "always_on", "secrets"];
+    assert_eq!(listed(panes.clone(), true), panes);
+    assert_eq!(listed(panes, false), ["providers", "secrets"]);
+}
+
 #[test]
 fn a_press_with_nothing_to_ask_acts_at_once_with_the_key_it_was_drawn_with() {
     let mut model = model_on(result("home_status_on")["summary"].clone());
@@ -612,7 +702,7 @@ fn with_several_providers_the_owner_picks_one_and_the_token_names_it() {
 }
 
 #[test]
-fn create_server_takes_the_recommendation_unless_the_owner_changed_it() {
+fn create_server_sends_the_recommended_row_unless_the_owner_changed_it() {
     let mut model = model_on(choose());
     model.next_read();
     model.options_read(Ok(options()));
@@ -624,8 +714,9 @@ fn create_server_takes_the_recommendation_unless_the_owner_changed_it() {
         act(
             ActionId::CreateServer,
             "F09RF8MofBF6hdXN7NWtuA",
-            Input::choice(None)
-        )
+            Input::choice(recommended())
+        ),
+        "the row the owner was shown, never left to the engine"
     );
     model.acted(Err(refusal(
         "unavailable",
@@ -647,7 +738,7 @@ fn create_server_takes_the_recommendation_unless_the_owner_changed_it() {
         act(
             ActionId::CreateServer,
             "F09RF8MofBF6hdXN7NWtuA",
-            Input::choice(Some(roomier))
+            Input::choice(roomier)
         )
     );
 }
@@ -666,7 +757,7 @@ fn replace_asks_its_choice_in_a_dialog_that_shows_its_confirm() {
         act(
             ActionId::ReplaceServer,
             "ysD6fueqfNRZpiywBU6HPA",
-            Input::choice(None)
+            Input::choice(recommended())
         ),
         "accepting the dialog accepts its confirm: no second question"
     );
@@ -686,7 +777,7 @@ fn replace_asks_its_choice_in_a_dialog_that_shows_its_confirm() {
         act(
             ActionId::ReplaceServer,
             "ysD6fueqfNRZpiywBU6HPA",
-            Input::choice(Some(elsewhere))
+            Input::choice(elsewhere)
         )
     );
     model.acted(Ok(acted(
