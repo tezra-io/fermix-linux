@@ -172,6 +172,21 @@ fn every_status_golden_decodes_its_summary_with_each_action_one_record() {
     let on = decoded::<HomeStatus>("home_status_on").summary;
     assert_eq!(on.detail.actions[1].needs, [Need::Choice]);
     assert_eq!(on.detail.lines.len(), 8);
+    let move_back = &on.detail.actions[2];
+    assert_eq!(move_back.id, ActionId::MoveBack);
+    assert_eq!(move_back.label, "Move back to this Mac");
+    assert!(
+        move_back.needs.is_empty() && move_back.confirm.is_none(),
+        "one press, asked nothing"
+    );
+    let problem = decoded::<HomeStatus>("home_status_problem").summary;
+    let restore = &problem.detail.alternatives[0];
+    assert_eq!(restore.id, ActionId::RestoreHere);
+    assert_eq!(restore.needs, [Need::RecoveryPassphrase]);
+    assert!(restore
+        .confirm
+        .as_deref()
+        .is_some_and(|c| c.contains("Fermix deletes it before it restores here")));
 }
 
 /// Every state, action id and need the contract publishes decodes as one this app knows, so a
@@ -320,6 +335,34 @@ fn a_provider_is_named_only_where_the_engine_lists_several_and_a_choice_sends_it
         json!({"action": "create_server", "key": "k-create",
             "input": {"type": "cpx22", "location": "fsn1"}}),
         "the recommendation is sent as the row it is"
+    );
+}
+
+/// Moving back is one `home.act` with nothing in it, and a restore here carries the passphrase
+/// the copy it restores was written for, each with the key its action was drawn with.
+#[test]
+fn moving_back_and_restoring_here_are_each_one_home_act() {
+    let on = decoded::<HomeStatus>("home_status_on").summary;
+    let move_back = on.detail.actions[2].clone();
+    let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
+        m.home_act(move_back.id, &move_back.key, &Input::none())
+            .expect("decodes");
+    });
+    assert_eq!(
+        sent["params"],
+        json!({"action": "move_back", "key": "A8TBcMzBwNuJLnGg2E5uAw"})
+    );
+    let problem = decoded::<HomeStatus>("home_status_problem").summary;
+    let restore = problem.detail.alternatives[0].clone();
+    let typed = Passphrase::typed("invented-harbor-juniper-lantern").expect("typed");
+    let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
+        m.home_act(restore.id, &restore.key, &Input::passphrase(typed))
+            .expect("decodes");
+    });
+    assert_eq!(
+        sent["params"],
+        json!({"action": "restore_here", "key": "diwE8WEZ-oMI5gK-apOlFQ",
+            "input": {"recovery_passphrase": "invented-harbor-juniper-lantern"}})
     );
 }
 

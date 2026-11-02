@@ -294,7 +294,11 @@ fn ready_lists_the_reviews_items_and_on_and_off_offer_their_other_actions() {
     assert!(on.action.is_none(), "all is well: no main action");
     assert_eq!(
         ids(&on.others),
-        [ActionId::BackUpNow, ActionId::ReplaceServer]
+        [
+            ActionId::BackUpNow,
+            ActionId::ReplaceServer,
+            ActionId::MoveBack
+        ]
     );
     let off = screen(&decoded(off()));
     assert_eq!(ids(&off.others), [ActionId::OwnServer]);
@@ -355,7 +359,11 @@ fn an_action_this_app_cannot_ask_for_draws_nothing() {
     assert!(shown.action.is_none());
     assert_eq!(
         ids(&shown.others),
-        [ActionId::BackUpNow, ActionId::ReplaceServer]
+        [
+            ActionId::BackUpNow,
+            ActionId::ReplaceServer,
+            ActionId::MoveBack
+        ]
     );
 }
 
@@ -620,6 +628,7 @@ fn deleting_steps_never_take_return_for_yes() {
         ActionId::DeleteServer,
         ActionId::Cancel,
         ActionId::StartAgain,
+        ActionId::RestoreHere,
     ] {
         assert!(destructive(id), "{id:?}");
     }
@@ -629,6 +638,8 @@ fn deleting_steps_never_take_return_for_yes() {
         ActionId::MoveNow,
         ActionId::ReplaceServer,
         ActionId::CreateIn,
+        ActionId::MoveBack,
+        ActionId::TryAgain,
     ] {
         assert!(!destructive(id), "{id:?}");
     }
@@ -1011,6 +1022,299 @@ fn learn_more_and_open_console_open_their_page_and_update_is_the_apps_own() {
     assert_eq!(model.press(&update), Press::Update);
 }
 
+// ---- Moving back --------------------------------------------------------------------------------
+
+/// The move back's screens on a Linux computer, as the engine words them (its `Copy`).
+const RETURN_CANCEL_KEY: &str = "k-return-cancel";
+const RETURN_MOVE_KEY: &str = "k-return-move";
+const DELETE_BACK_KEY: &str = "k-delete-back";
+
+fn return_cancel() -> Value {
+    record(
+        "cancel",
+        "Cancel",
+        json!([]),
+        Value::Null,
+        RETURN_CANCEL_KEY,
+    )
+}
+
+fn learn_more() -> Value {
+    json!({"confirm": null, "id": "learn_more", "key": "k-learn", "label": "Learn more",
+        "needs": [], "url": "https://fermix.ai/docs/always-on/#hetzner"})
+}
+
+fn connecting() -> Value {
+    json!({"action": return_cancel(), "detail": {}, "key": "k-connecting", "notice": null,
+        "sentence": "Connecting this computer to your server…", "state": "creating"})
+}
+
+fn return_ready() -> Value {
+    json!({"action": record("move_now", "Move now", json!(["recovery_passphrase"]),
+            json!("Move Fermix back to this computer now? Coding agents ask for your approval again. Messages sent to Telegram while it moves wait until it is done. Your server stays until you delete it."),
+            RETURN_MOVE_KEY),
+        "detail": {"alternatives": [return_cancel()], "readiness": [],
+            "lines": [{"label": "Server", "value": "fermix-general-a3f9"},
+                {"label": "Waits until", "value": "Monday, May 5, 2031 at 1:00 PM CEST"}]},
+        "key": "k-return-ready", "notice": null,
+        "sentence": "This computer is ready to take Fermix back.", "state": "ready"})
+}
+
+fn return_moving(progress: &str) -> Value {
+    json!({"action": null, "detail": {"progress": progress}, "key": format!("k-{progress}"),
+        "notice": null, "state": "moving",
+        "sentence": "Moving Fermix back to this computer. Messages wait until it is done."})
+}
+
+fn server_retired() -> Value {
+    json!({"action": record("delete_server", "Delete your server", json!([]),
+            json!("Delete your server? Fermix no longer runs on it, and everything still on it is gone for good."),
+            DELETE_BACK_KEY),
+        "detail": {"alternatives": [learn_more()], "kind": "server_retired",
+            "lines": [{"label": "Server", "value": "fermix-general-a3f9"}],
+            "note": null, "seen_at": null},
+        "key": "k-back", "notice": null, "outcome": "failed", "state": "problem",
+        "sentence": "Fermix is back on this computer. Your server still runs and costs money until you delete it."})
+}
+
+fn return_failed() -> Value {
+    json!({"action": record("move_back", "Move back to this computer", json!([]), Value::Null,
+            "k-return-again"),
+        "detail": {"alternatives": [learn_more()], "kind": "return_failed", "note": null,
+            "seen_at": null},
+        "key": "k-return-failed", "notice": null, "outcome": "failed", "state": "problem",
+        "sentence": "This computer could not get ready to take Fermix back. Move back to try again."})
+}
+
+fn return_stopped() -> Value {
+    json!({"action": return_cancel(), "detail": {"kind": "return_failed", "note": null,
+            "seen_at": null},
+        "key": "k-return-stopped", "notice": null, "outcome": "failed", "state": "problem",
+        "sentence": "Moving back stopped part-way, so cancel it and move back again."})
+}
+
+fn return_undone() -> Value {
+    json!({"action": record("try_again", "Try again", json!(["recovery_passphrase"]),
+            json!("Move Fermix back to this computer now? Coding agents ask for your approval again. Messages sent to Telegram while it moves wait until it is done. Your server stays until you delete it."),
+            "k-return-try"),
+        "detail": {"alternatives": [return_cancel()]},
+        "key": "k-return-undone", "notice": null, "state": "undone",
+        "sentence": "The move back was undone. Fermix still runs on your server."})
+}
+
+/// `on` offers Move back beside its other actions; its press is one act that asks nothing,
+/// and the screen it answers is the engine's: connecting, with Cancel.
+#[test]
+fn move_back_is_one_press_asked_nothing_and_its_connecting_screen_offers_cancel() {
+    let mut model = model_on(result("home_status_on")["summary"].clone());
+    let move_back = screen_of(&model).others[2].clone();
+    assert_eq!(move_back.id, ActionId::MoveBack);
+    assert_eq!(
+        model.press(&move_back),
+        act(ActionId::MoveBack, "A8TBcMzBwNuJLnGg2E5uAw", Input::none()),
+        "nothing moves at this press, so the engine asks nothing first"
+    );
+    assert_eq!(model.dialog(), None);
+    model.acted(Ok(acted(connecting(), Value::Null)));
+    let shown = screen_of(&model);
+    assert_eq!(shown.state, SummaryState::Creating);
+    assert_eq!(shown.sentence, "Connecting this computer to your server…");
+    assert!(shown.shows_progress);
+    let cancel = shown.action.expect("Cancel");
+    assert_eq!(
+        model.press(&cancel),
+        act(ActionId::Cancel, RETURN_CANCEL_KEY, Input::none())
+    );
+}
+
+/// Move now on a move back asks the passphrase once and sends it; this computer does not
+/// restart at the press, so the engine's moving screen is drawn, never the app's restart line.
+/// When it restarts as the primary, the last screen stays with the sentence until the new
+/// engine answers, as for any restart, and then it is drawn as it says.
+#[test]
+fn a_move_back_moves_with_the_passphrase_and_its_restart_is_read_as_any_other() {
+    let mut model = model_on(return_ready());
+    let ready = screen_of(&model);
+    assert_eq!(
+        ready.sentence,
+        "This computer is ready to take Fermix back."
+    );
+    assert_eq!(ids(&ready.others), [ActionId::Cancel]);
+    let move_now = ready.action.expect("Move now");
+    model.press(&move_now);
+    assert_eq!(
+        model.dialog(),
+        Some(Dialog::Passphrase {
+            action: move_now.clone(),
+            twice: false
+        })
+    );
+    assert_eq!(
+        model.passphrase_entered("invented-harbor-juniper-lantern", None),
+        act(
+            ActionId::MoveNow,
+            RETURN_MOVE_KEY,
+            Input::passphrase(typed("invented-harbor-juniper-lantern"))
+        )
+    );
+    model.acted(Ok(acted(
+        return_moving("Receiving your Fermix from the server…"),
+        json!({"move_id": "mv-back-7c1d"}),
+    )));
+    let moving = screen_of(&model);
+    assert_ne!(moving.sentence, RESTARTING);
+    assert_eq!(
+        moving.sentence,
+        "Moving Fermix back to this computer. Messages wait until it is done."
+    );
+    assert_eq!(
+        moving.progress.as_deref(),
+        Some("Receiving your Fermix from the server…")
+    );
+    assert!(moving.shows_progress && moving.action.is_none());
+    assert_eq!(model.next_read(), Some(Read::Status));
+    model.answered(answering(return_moving(
+        "Putting Fermix in place on this computer…",
+    )));
+    model.unanswered(DaemonProblem::NotRunning);
+    let kept = screen_of(&model);
+    assert_eq!(
+        kept.progress.as_deref(),
+        Some("Putting Fermix in place on this computer…")
+    );
+    assert_eq!(model.read_note().as_deref(), Some("Fermix is not running."));
+    assert_eq!(model.next_read(), None, "read on no timer");
+    model.engine_restarted();
+    assert_eq!(model.next_read(), Some(Read::Status));
+    model.answered(answering(server_retired()));
+    let back = screen_of(&model);
+    assert_eq!(back.state, SummaryState::Problem);
+    assert_eq!(
+        back.sentence,
+        "Fermix is back on this computer. Your server still runs and costs money until you delete it."
+    );
+    assert_eq!(model.read_note(), None);
+    assert_eq!(ids(&back.others), [ActionId::LearnMore]);
+    let delete = back.action.expect("Delete your server");
+    model.press(&delete);
+    assert_eq!(model.dialog(), Some(Dialog::Confirm(delete.clone())));
+    assert_eq!(
+        model.confirmed(),
+        act(ActionId::DeleteServer, DELETE_BACK_KEY, Input::none())
+    );
+}
+
+/// Restore here deletes the server before it restores: it asks the passphrase once under its
+/// confirm and sends it with the key it was drawn with, beside the copy's date and when the
+/// server was last seen; a passphrase that opens no copy is said under the action.
+#[test]
+fn restore_here_asks_the_passphrase_once_under_its_confirm_and_sends_it() {
+    let mut model = model_on(result("home_status_problem")["summary"].clone());
+    let shown = screen_of(&model);
+    assert_eq!(ids(&shown.others), [ActionId::RestoreHere]);
+    for label in ["Backup on this Mac", "Last seen"] {
+        assert!(
+            shown
+                .details
+                .iter()
+                .any(|f| matches!(f, Fact::Line(l) if l.label == label)),
+            "{label}"
+        );
+    }
+    let restore = shown.others[0].clone();
+    model.press(&restore);
+    assert_eq!(
+        model.dialog(),
+        Some(Dialog::Passphrase {
+            action: restore.clone(),
+            twice: false
+        })
+    );
+    assert_eq!(
+        model.passphrase_entered("invented-harbor-juniper-lantern", None),
+        act(
+            ActionId::RestoreHere,
+            "diwE8WEZ-oMI5gK-apOlFQ",
+            Input::passphrase(typed("invented-harbor-juniper-lantern"))
+        ),
+        "the dialog shows the confirm, so its answer accepts it"
+    );
+    let wrong = "That is not the recovery passphrase you set.";
+    model.acted(Err(refusal("invalid_params", wrong)));
+    assert_eq!(model.refusal.as_deref(), Some(wrong));
+    model.press(&restore);
+    model.passphrase_entered("invented-harbor-juniper-meadow", None);
+    let deleting = json!({"action": null, "detail": {}, "key": "k-restore", "notice": null,
+        "state": "creating",
+        "sentence": "Deleting your server, then restoring Fermix on this Mac from its backup…"});
+    model.acted(Ok(acted(deleting, Value::Null)));
+    let shown = screen_of(&model);
+    assert_eq!(shown.state, SummaryState::Creating);
+    assert!(shown.shows_progress && shown.action.is_none());
+    assert_eq!(model.refusal, None);
+}
+
+/// A move back that stopped, failed or was undone offers what the engine offers there.
+#[test]
+fn a_move_back_that_stopped_offers_what_the_engine_offers() {
+    let mut failed = model_on(return_failed());
+    let shown = screen_of(&failed);
+    assert_eq!(shown.state, SummaryState::Problem);
+    assert_eq!(ids(&shown.others), [ActionId::LearnMore]);
+    let move_back = shown.action.expect("Move back");
+    assert_eq!(
+        failed.press(&move_back),
+        act(ActionId::MoveBack, "k-return-again", Input::none())
+    );
+    let stopped = screen(&decoded(return_stopped()));
+    assert_eq!(
+        stopped.sentence,
+        "Moving back stopped part-way, so cancel it and move back again."
+    );
+    assert_eq!(stopped.action.map(|a| a.id), Some(ActionId::Cancel));
+    let mut undone = model_on(return_undone());
+    let shown = screen_of(&undone);
+    assert_eq!(ids(&shown.others), [ActionId::Cancel]);
+    let try_again = shown.action.expect("Try again");
+    undone.press(&try_again);
+    assert_eq!(
+        undone.dialog(),
+        Some(Dialog::Passphrase {
+            action: try_again,
+            twice: false
+        })
+    );
+}
+
+/// The app keys nothing on a problem's kind: every kind the engine publishes, the move back's
+/// two among them, draws its sentence and its actions as offered.
+#[test]
+fn every_problem_kind_draws_its_sentence_and_its_actions() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../contracts/management/protocol.schema.json"))
+            .expect("the schema is JSON");
+    let kinds = schema["$defs"]["homeSummaryDetail"]["properties"]["kind"]["enum"]
+        .as_array()
+        .expect("the kinds")
+        .clone();
+    for new in ["server_retired", "return_failed"] {
+        assert!(kinds.contains(&json!(new)), "{new}");
+    }
+    for kind in kinds {
+        let mut problem = server_retired();
+        problem["detail"]["kind"] = kind.clone();
+        let shown = screen(&decoded(problem));
+        assert_eq!(shown.state, SummaryState::Problem, "{kind}");
+        assert!(shown.sentence.starts_with("Fermix is back"), "{kind}");
+        assert_eq!(
+            shown.action.map(|a| a.id),
+            Some(ActionId::DeleteServer),
+            "{kind}"
+        );
+        assert_eq!(ids(&shown.others), [ActionId::LearnMore], "{kind}");
+    }
+}
+
 // ---- The notifications --------------------------------------------------------------------------
 
 #[test]
@@ -1057,6 +1361,34 @@ fn a_notice_is_raised_once_for_each_id_and_the_last_sixteen_are_kept() {
         posted.fresh(&notice("ready:cand-0".into())),
         "the oldest of sixteen is let go: an id can come back after an outage clears"
     );
+}
+
+/// Fermix back on this computer from a server of the owner's own is one notice like the others:
+/// raised once, by its id.
+#[test]
+fn fermix_back_from_a_server_of_the_owners_own_is_raised_once() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../contracts/management/protocol.schema.json"))
+            .expect("the schema is JSON");
+    let pattern = schema["$defs"]["homeSummary"]["properties"]["notice"]["oneOf"][0]["properties"]
+        ["id"]["pattern"]
+        .as_str()
+        .expect("the notice ids' pattern");
+    assert!(pattern.contains("|back)"), "{pattern}");
+    let mut back = off();
+    back["notice"] = json!({"id": "back:3",
+        "sentence": "Fermix is back on this computer. Your own server still runs its retired copy: turn it off or delete it."});
+    let mut model = Model::default();
+    model.pane_shown();
+    model.next_read();
+    model.served(served());
+    let raised = model.answered(answering(back.clone())).expect("raised");
+    assert_eq!(raised.id, "back:3");
+    assert!(raised
+        .sentence
+        .starts_with("Fermix is back on this computer."));
+    assert_eq!(model.answered(answering(back)), None, "raised once");
+    assert_eq!(screen_of(&model).state, SummaryState::Off);
 }
 
 /// The ids raised outlive the app, bounded at sixteen, so a standing notice is not raised again

@@ -198,11 +198,12 @@ pub fn says_where_the_move_stands(state: SummaryState) -> bool {
     )
 }
 
-/// A step whose confirm deletes something: Return never takes it for yes.
+/// A step whose confirm deletes something (Restore here deletes the server before it restores):
+/// Return never takes it for yes, and its answer is drawn as one that deletes.
 pub fn destructive(id: ActionId) -> bool {
     matches!(
         id,
-        ActionId::DeleteServer | ActionId::Cancel | ActionId::StartAgain
+        ActionId::DeleteServer | ActionId::Cancel | ActionId::StartAgain | ActionId::RestoreHere
     )
 }
 

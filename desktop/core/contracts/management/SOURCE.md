@@ -12,35 +12,27 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `e1b7cbbb4808b174282fc9f357b077606cdc8b3e` (2026-11-01, branch `dev`), whose last change
-  to `priv/management` is `6f829dba` ("fix(home): a move undone with the server Fermix created still
-  held offers Delete your server too, through the one cleanup, once the undo is over"). Since
-  v0.17.0 (`b9dce743`), all within version 2: the `home.*` methods (the home's status with its
-  Always On `summary`, `disk` and `version`, recovery snapshots, enrollment, candidates, the move,
+- Commit: `6a7472361a437820fa520fcc476002e0fd1f17b0` (2026-11-02, branch `dev`), whose last
+  change to `priv/management` is `352ae545` ("fix(home): a move back never leaves a screen with
+  nothing to press or a server it cannot restore"). Since v0.17.0 (`b9dce743`), all within
+  version 2: the `home.*` methods (the home's status with its Always On `summary`, `disk`,
+  `version` and `update_ceiling`, recovery snapshots, enrollment, candidates, the move,
   `home.provision.options` and `home.act`), the `snapshots` section under pane `always_on`,
   `settings.sections.primary_missing`, a paired device's `kind`, the codes `primary_unreachable`,
   `device_class_method`, `unconfirmed` and `changed`, the plugin status `reinstall_failed`, the job
   kind `home_provision`, a cue watcher's `follow_up` with `always_allowed`, and
-  `cues.watchers.always_allow.revoke`. Since the previous pin (`bcae16b9`): every Always On step is
-  one `home.act {action, key, input}` the engine runs, answered `{summary, result}` or `changed`
-  with its sentence alone; every summary action is one record (`id`, `label`, `needs`, `confirm`,
-  `url`, `key`), `set_up` gone for `paste_token`; the summary's `key`, `notice`, `detail.providers`,
-  `detail.lines` and `detail.progress`, with `detail.connect` and `detail.steps` gone; the problem
-  `power_failed`; `home.status {after, wait_ms}`; `home.move.readiness`, `home.move.start`,
-  `home.enroll.open`, `home.enroll.withdraw` and `home.snapshots.run` rail-only (refused on this
-  socket by name); `home.provision.providers`, `connect`, `create`, `power`, `resources` and
-  `delete` gone; the move checks the recovery passphrase against the one set, or sets it; the
-  review's `service` item; `setup.session.create` an owner decision; the owner-only sentences naming
-  the Fermix app, the setup page and the owner's own terminal; `job.cancel` answering once the run
-  stopped; the Cues screen's decision model (`cues_decision_provider`); `home.provision.options`
-  taking no params, answering for the provider in use (`provider {id, name}`), each offer with the
-  engine's `label` and `price`; `create_server` and `replace_server` requiring `input.type` and
-  `input.location`, the row the owner chose, and `start_again` needing `choice` where no size and
-  place are kept; the summary's `outcome`; Delete your server beside a waiting server (`ready`, its
-  blocked review, `undone`), Replace the server again after a replace that stopped, Start again
-  after an account limit or no stock, and `token_replaced`; `nothing_in_stock` gone; and a release
-  build serving no Always On (`hello` lists none of its methods, each refused `unavailable`
-  {`capability`: `always_on`}).
+  `cues.watchers.always_allow.revoke`. Every Always On step is one `home.act {action, key,
+  input}` the engine runs, answered `{summary, result}` or `changed` with its sentence alone; every
+  summary action is one record (`id`, `label`, `needs`, `confirm`, `url`, `key`). Since the
+  previous pin (`e1b7cbbb`): Move back, the home's way back from its server to the computer it
+  left (the actions `move_back`, needing nothing, and `restore_here`, needing the
+  `recovery_passphrase` the copy it restores was written for and asked first; the problems
+  `server_retired` and `return_failed`; the notice `back:<epoch>`; `on`'s third action; the
+  `Backup on this Mac` and `Last seen` lines beside a restore; Move now's confirm during a move
+  back; `home.enroll.withdraw {kind}`); `home.status`'s `update_ceiling`, the version a server's
+  nightly update installs; `computer_use.permissions.get`'s optional `platform`, and on Linux
+  `display_server` and the doctor's `rows`, with a compatibility golden of a daemon from before
+  them; and the rule that a field a later protocol-2 engine adds to a v2 method is optional too.
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

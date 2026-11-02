@@ -881,9 +881,14 @@ impl AlwaysOnPane {
         }
         let page = adw::PreferencesPage::new();
         page.add(&group);
+        let style = if destructive(action.id) {
+            "destructive-action"
+        } else {
+            "suggested-action"
+        };
         let answer = gtk::Button::builder()
             .label(&action.label)
-            .css_classes(["suggested-action"])
+            .css_classes([style])
             .build();
         let me = self.me.clone();
         let (first, second, refusal) = (first.downgrade(), second.downgrade(), refusal.downgrade());

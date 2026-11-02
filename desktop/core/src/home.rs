@@ -64,6 +64,10 @@ pub enum ActionId {
     CheckAgain,
     OwnServer,
     DeleteServer,
+    /// On a computer the home moved from: the server gives the home back to it.
+    MoveBack,
+    /// Where the server Fermix created is gone: deleted first, then this computer's copy restored.
+    RestoreHere,
     /// An action a newer engine offers that this app has no button for.
     #[serde(other)]
     Unknown,

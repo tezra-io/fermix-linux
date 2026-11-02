@@ -1,10 +1,10 @@
 //! The desktop notifications of Always On (Always On setup §3.1): the engine names each
 //! occurrence it raises (`summary.notice`: the server ready, the move done, the server out of
-//! reach, a server to set up again, the newest backup a week old) by an id that stays while it
-//! stands. The app raises a notice whose id it has not raised yet, and keeps the last sixteen ids
-//! it raised: an id can come back after an outage clears, and the set stays bounded. The ids are
-//! kept in a small file under `$XDG_STATE_HOME`, so a notice that still stands is not raised again
-//! at every launch.
+//! reach, a server to set up again, the newest backup a week old, Fermix back on this computer
+//! from a server of the owner's own) by an id that stays while it stands. The app raises a notice
+//! whose id it has not raised yet, and keeps the last sixteen ids it raised: an id can come back
+//! after an outage clears, and the set stays bounded. The ids are kept in a small file under
+//! `$XDG_STATE_HOME`, so a notice that still stands is not raised again at every launch.
 
 use crate::home::Notice;
 use crate::update::store::{replace, state_dir};
