@@ -1,13 +1,16 @@
-//! A mandate's proposal in the conversation (M60 cues §5.3): a task under a mandate in approve
-//! mode wants to run one call, and runs it only if the owner confirms. Fermix's lines (the
-//! summary, the task, the watcher, the expiry and the daemon's sentences) are drawn as Fermix's;
-//! the call's arguments, the item that led to it and what the tool answered only by
-//! `outside_text`.
+//! A proposal in the conversation (M60 cues §5.3): a task under a mandate in approve mode wants
+//! to run one call, or a watcher wants to run its follow-up (PROTOCOL.md "Version 5"), and it
+//! runs only if the owner says so. Fermix's lines (the summary, the task, the watcher, the
+//! expiry, the daemon's sentences, and a follow-up's instructions, tools and where it reports)
+//! are drawn as Fermix's; the call's arguments, the filter's reason, the item that led to it and
+//! what the tool answered only by `outside_text`.
 //!
-//! Deny and Confirm look alike and neither is the default widget, so Enter on the card does
-//! nothing; each decides by its own click, holding the card's id (§6 rule 3). A press disables
-//! both, and a confirm says it is running; the daemon's resolution replaces the buttons. A screen
-//! reader hears the expiry as a card that asks appears, and again a minute before it.
+//! The buttons (a call's Deny and Confirm, a follow-up's Skip and Run, with Always allow where
+//! its card offers it) look alike and none is the default widget, so Enter on the card does
+//! nothing; each decides by its own click, holding the card's id and its word (§6 rule 3). A
+//! press disables every button, and an answer that runs says it is running; the daemon's
+//! resolution replaces the buttons. A screen reader hears the expiry as a card that asks
+//! appears, and again a minute before it.
 //!
 //! The proposals the daemon sent that this app could not read stand as one card of words alone,
 //! in the same box, saying where they can be answered (`chat_wire::unshown`).
@@ -16,10 +19,9 @@ use super::outside_text;
 use super::{clock, decide_on_click, Decider, Decision};
 use adw::prelude::*;
 use fermix_client::chat_wire::proposals::{
-    arrival, facts, item_header, joined_facts, last_minute_in, Card, Footer, CALL, CONFIRM, DENY,
-    EXPIRED, LAST_MINUTE, RESULT, RUNNING, TITLE,
+    arrival, facts, item_header, joined_facts, last_minute_in, Card, CardAsk, Footer, CALL,
+    EXPIRED, LAST_MINUTE, REASON, RESULT, RUNNING, TITLE,
 };
-use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::unshown;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
@@ -41,19 +43,7 @@ impl ProposalCard {
     pub fn new(card: &Card, decider: &Decider) -> ProposalCard {
         let (widget, inner) = shell(TITLE);
         inner.append(&lead(card));
-        if let Some(call) = &card.call {
-            inner.append(&outside_text::block(CALL, None, call, true));
-        }
-        if let Some(item) = &card.item {
-            let header = item_header(item, clock);
-            let facts = joined_facts(item);
-            inner.append(&outside_text::block(
-                &header,
-                facts.as_deref(),
-                &item.text,
-                false,
-            ));
-        }
+        asked(card, &inner);
         let footer = footer(card, decider);
         inner.append(&footer);
         let asks = card.footer == Footer::Ask;
@@ -153,6 +143,42 @@ fn let_go_of_focus(footer: &gtk::Box) {
     }
 }
 
+/// What the card asks, under its lead: a follow-up in Fermix's and the owner's words, or the
+/// call's arguments; then the filter's reason and the item, outside text.
+fn asked(card: &Card, inner: &gtk::Box) {
+    match &card.ask {
+        CardAsk::Call { call } => inner.append(&outside_text::block(CALL, None, call, true)),
+        CardAsk::FollowUp {
+            instructions,
+            facts,
+        } => inner.append(&follow_up(instructions, facts)),
+    }
+    if let Some(reason) = &card.reason {
+        inner.append(&outside_text::block(REASON, None, reason, false));
+    }
+    if let Some(item) = &card.item {
+        let header = item_header(item, clock);
+        let facts = joined_facts(item);
+        inner.append(&outside_text::block(
+            &header,
+            facts.as_deref(),
+            &item.text,
+            false,
+        ));
+    }
+}
+
+/// A follow-up's lines: what it will do, then where it reports and its tools.
+fn follow_up(instructions: &str, facts: &str) -> gtk::Box {
+    let lines = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .build();
+    lines.append(&line(instructions, &[]));
+    lines.append(&line(facts, &["caption", "dimmed"]));
+    lines
+}
+
 /// The title, the summary, and the task, the watcher and the expiry under them: Fermix's lines.
 fn lead(card: &Card) -> gtk::Box {
     let lead = gtk::Box::builder()
@@ -208,8 +234,8 @@ fn footer(card: &Card, decider: &Decider) -> gtk::Box {
     footer
 }
 
-/// Deny and Confirm, alike, at the card's end. `answered` is `None` while the card asks, else
-/// whether the answer was a confirm: both buttons then wait, and a confirm says it is running.
+/// The card's answers, alike, at its end. `answered` is `None` while the card asks, else whether
+/// the answer runs: every button then waits, and one that runs says it is running.
 fn buttons(card: &Card, decider: &Decider, answered: Option<bool>) -> gtk::Box {
     let row = gtk::Box::builder()
         .spacing(6)
@@ -222,15 +248,15 @@ fn buttons(card: &Card, decider: &Decider, answered: Option<bool>) -> gtk::Box {
             .build();
         row.append(&running);
     }
-    for (label, word) in [(DENY, Word::Deny), (CONFIRM, Word::Confirm)] {
+    for (label, word) in &card.answers {
         let button = gtk::Button::builder()
-            .label(label)
+            .label(*label)
             .sensitive(answered.is_none())
             .receives_default(false)
             .build();
         let decision = Decision::Proposal {
             id: card.id.clone(),
-            decision: word,
+            decision: *word,
         };
         decide_on_click(&button, decider, decision);
         row.append(&button);

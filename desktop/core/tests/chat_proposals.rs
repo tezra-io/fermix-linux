@@ -1,17 +1,18 @@
-//! A mandate's proposals in Chat (M60 cues §5, §6, §9 "Chat" and "Outside text"): the card on
-//! the wire, held by id in the timeline, answered once through the outbox by its id and the word
-//! alone, expired on this computer's clock, dropped and held again at a handshake, resolved by
-//! the daemon, placed among the messages by when it was made, and its outside text kept plain.
+//! A mandate's proposals and a watcher's follow-ups in Chat (M60 cues §5, §6, §9 "Chat" and
+//! "Outside text"; PROTOCOL.md "Version 5"): the card on the wire, held by id in the timeline,
+//! answered once through the outbox by its id and the word alone, expired on this computer's
+//! clock, dropped and held again at a handshake, resolved by the daemon, placed among the
+//! messages by when it was made, and its outside text kept plain.
 
 use fermix_client::chat::{view, Entry, Key};
 use fermix_client::chat_wire::proposals::{
-    self, card, facts, item_header, outside, Footer, Item, OUTSIDE_LINES, STRINGS,
+    self, card, facts, item_header, outside, CardAsk, Footer, Item, ALWAYS_ALLOW, CONFIRM, DENY,
+    OUTSIDE_LINES, REASON, RUN, SKIP, STRINGS,
 };
 use fermix_client::chat_wire::protocol::{
     read_line, Ask, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
 };
-use fermix_client::chat_wire::timeline::{self, Chat, HeldProposal, Standing};
-use fermix_client::chat_wire::unshown::{self, Asks};
+use fermix_client::chat_wire::timeline::{self, Chat, Standing};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
@@ -204,61 +205,129 @@ fn a_card_that_is_both_a_call_and_a_follow_up_is_unreadable_by_its_id() {
     );
 }
 
-/// This build draws no follow-up's card yet: it waits behind the placeholder, by its id, until
-/// it resolves, and is never held as a card that could take a call's answer.
+/// A follow-up's card is held like a call's, by its id: it is drawn, it takes an answer, and its
+/// resolution ends it. No placeholder stands for it.
 #[test]
-fn a_follow_up_waits_behind_the_placeholder_and_is_never_held_as_a_card() {
+fn a_follow_up_is_held_as_its_card_and_resolved_by_its_id() {
     let mut chat = holding(vec![follow_up_json("cft_1")]);
-    assert!(chat.proposals.is_empty());
-    assert!(unshown::waiting(&chat.unshown, Asks::Proposal));
-    assert_eq!(view(&chat).keys, [Key::Unshown]);
+    assert_eq!(ids(&chat), ["cft_1"]);
+    assert!(chat.unshown.is_empty(), "no placeholder stands for it");
+    assert_eq!(drawn_cards(&chat), [("cft_1".to_owned(), Footer::Ask)]);
     let sent = answer(&mut chat, "cft_1", Decision::Confirm, "linux-1");
-    assert!(sent.is_empty(), "nothing answers a card that is not held");
-    let gone = resolved(
-        "cft_1",
-        "confirmed",
-        "Confirmed; the follow-up is starting.",
-        None,
+    assert_eq!(
+        sent,
+        [ClientEvent::proposal_answer(
+            "linux-1",
+            "cft_1",
+            Decision::Confirm
+        )]
     );
-    timeline::receive(&mut chat, gone, NOON);
-    assert!(!unshown::waiting(&chat.unshown, Asks::Proposal));
-    assert!(view(&chat).keys.is_empty());
+    let starting = "Confirmed; the follow-up is starting.";
+    timeline::receive(
+        &mut chat,
+        resolved("cft_1", "confirmed", starting, None),
+        NOON,
+    );
+    assert_eq!(
+        drawn_cards(&chat),
+        [(
+            "cft_1".to_owned(),
+            Footer::Resolved {
+                sentence: starting.into(),
+                result: None
+            }
+        )]
+    );
 }
 
-/// A call's arguments are part of what it asks, so its card always has them; a follow-up asks no
-/// call, so a card made of one has none rather than an empty one.
+/// A call's arguments are part of what it asks, so its card always has them. A follow-up asks no
+/// call: its card says what it will do, where it reports and its tools, in Fermix's and the
+/// owner's words, and has no arguments rather than empty ones.
 #[test]
-fn a_calls_card_carries_its_arguments_and_a_follow_ups_card_none() {
-    let chat = holding(vec![card_json("p1")]);
+fn a_calls_card_carries_its_arguments_and_a_follow_ups_its_instructions() {
+    let chat = holding(vec![card_json("p1"), follow_up_json("cft_1")]);
     let held = &chat.proposals[0];
     let Ask::Call { args_text, .. } = &held.proposal.ask else {
         panic!("a call: {:?}", held.proposal.ask);
     };
     assert_eq!(args_text, ARGS);
-    assert_eq!(card(held).call.as_deref(), Some(ARGS));
-    let line = json!({"type": "proposal", "profile_id": "main",
-        "proposal": follow_up_json("cft_1")});
-    let ServerEvent::Proposal { proposal } = read_line(line.to_string().as_bytes()).unwrap() else {
-        panic!("a follow-up reads");
-    };
-    let follow_up = HeldProposal {
-        proposal: *proposal,
-        standing: Standing::Open,
-        created: None,
-        expires: None,
-    };
-    assert_eq!(card(&follow_up).call, None);
+    assert_eq!(card(held).ask, CardAsk::Call { call: ARGS.into() });
+    assert_eq!(
+        card(&chat.proposals[1]).ask,
+        CardAsk::FollowUp {
+            instructions: "It will: Review the last day's commits.".into(),
+            facts: "Reports to companion · Tools: codex".into(),
+        }
+    );
 }
 
 #[test]
-fn a_call_with_its_arguments_one_by_one_and_a_reason_draws_as_before() {
-    let mut fuller = card_json("p1");
-    fuller["outside"]["args"] = json!([{"name": "repo", "value": "ops"},
+fn a_follow_up_with_no_tools_says_only_where_it_reports() {
+    let mut bare = follow_up_json("cft_1");
+    bare["follow_up"]["tools"] = json!([]);
+    let chat = holding(vec![bare]);
+    let CardAsk::FollowUp { facts, .. } = card(&chat.proposals[0]).ask else {
+        panic!("a follow-up");
+    };
+    assert_eq!(facts, "Reports to companion");
+}
+
+/// The filter's reason is outside text on either kind of card; a call's arguments one by one
+/// change nothing drawn, since the card shows them whole.
+#[test]
+fn the_filters_reason_shows_on_either_card_and_the_arguments_one_by_one_change_nothing() {
+    let mut listed = card_json("p1");
+    listed["outside"]["args"] = json!([{"name": "repo", "value": "ops"},
         {"name": "title", "value": "Phoenix 2.0"}]);
-    fuller["outside"]["reason"] = json!("A Phoenix release.");
-    let plain = holding(vec![card_json("p1")]);
-    let full = holding(vec![fuller]);
-    assert_eq!(card(&full.proposals[0]), card(&plain.proposals[0]));
+    let reasoned = with(
+        card_json("p1"),
+        "outside",
+        json!({"args_text": ARGS, "reason": "A Phoenix release.",
+            "cue": {"type": "release", "text": "Phoenix 2.0 is out."}}),
+    );
+    let plain = card(&holding(vec![card_json("p1")]).proposals[0]);
+    assert_eq!(plain.reason, None);
+    assert_eq!(card(&holding(vec![listed]).proposals[0]), plain);
+    let with_reason = card(&holding(vec![reasoned]).proposals[0]);
+    assert_eq!(with_reason.reason.as_deref(), Some("A Phoenix release."));
+    let follow_up = card(&holding(vec![follow_up_json("cft_1")]).proposals[0]);
+    assert_eq!(
+        follow_up.reason.as_deref(),
+        Some("The post says usage limits reset.")
+    );
+}
+
+/// The buttons, left to right: a call's Deny and Confirm; a follow-up's Skip and Run, with Always
+/// allow before them only where its card offers it. The answer that runs is last.
+#[test]
+fn a_follow_up_answers_always_allow_skip_and_run_and_a_call_deny_and_confirm() {
+    let mut once = follow_up_json("cft_2");
+    once["follow_up"]["offers_always_allow"] = json!(false);
+    let mut unsaid = follow_up_json("cft_3");
+    unsaid["follow_up"]
+        .as_object_mut()
+        .unwrap()
+        .remove("offers_always_allow");
+    let chat = holding(vec![card_json("p1"), follow_up_json("cft_1"), once, unsaid]);
+    let answers: Vec<_> = chat
+        .proposals
+        .iter()
+        .map(|held| card(held).answers)
+        .collect();
+    let skip_run = vec![(SKIP, Decision::Deny), (RUN, Decision::Confirm)];
+    assert_eq!(
+        answers,
+        [
+            vec![(DENY, Decision::Deny), (CONFIRM, Decision::Confirm)],
+            vec![
+                (ALWAYS_ALLOW, Decision::AlwaysAllow),
+                (SKIP, Decision::Deny),
+                (RUN, Decision::Confirm)
+            ],
+            skip_run.clone(),
+            skip_run,
+        ]
+    );
 }
 
 #[test]
@@ -319,13 +388,60 @@ fn one_answer_goes_on_the_wire_and_both_buttons_wait() {
 }
 
 #[test]
-fn a_deny_waits_without_saying_it_runs() {
-    let mut chat = holding(vec![card_json("p1")]);
+fn a_deny_or_a_skip_waits_without_saying_it_runs() {
+    let mut chat = holding(vec![card_json("p1"), follow_up_json("cft_1")]);
     answer(&mut chat, "p1", Decision::Deny, "linux-1");
+    answer(&mut chat, "cft_1", Decision::Deny, "linux-2");
     assert_eq!(
         drawn_cards(&chat),
-        [("p1".to_owned(), Footer::Answered { running: false })]
+        [
+            ("p1".to_owned(), Footer::Answered { running: false }),
+            ("cft_1".to_owned(), Footer::Answered { running: false })
+        ]
     );
+}
+
+/// Always allow runs the follow-up as Run does, so the card says it is running, and every button
+/// waits; it goes on the wire as the id and the word alone.
+#[test]
+fn always_allow_goes_on_the_wire_runs_and_every_button_waits() {
+    let mut chat = holding(vec![follow_up_json("cft_1")]);
+    let sent = answer(&mut chat, "cft_1", Decision::AlwaysAllow, "linux-1");
+    assert_eq!(
+        sent,
+        [ClientEvent::proposal_answer(
+            "linux-1",
+            "cft_1",
+            Decision::AlwaysAllow
+        )]
+    );
+    let line: Value = serde_json::from_str(&sent[0].line().unwrap()).unwrap();
+    assert_eq!(line["decision"], "always_allow");
+    assert_eq!(
+        drawn_cards(&chat),
+        [("cft_1".to_owned(), Footer::Answered { running: true })]
+    );
+    for decision in [Decision::Confirm, Decision::Deny, Decision::AlwaysAllow] {
+        assert!(answer(&mut chat, "cft_1", decision, "linux-2").is_empty());
+    }
+    assert_eq!(chat.pending.len(), 1, "a card is never answered twice");
+}
+
+/// A card takes Always allow only where it offers it (PROTOCOL.md "Version 5"): a call's card
+/// would refuse it, and a follow-up that does not offer it never said it may. Nothing is sent,
+/// and the card still asks.
+#[test]
+fn always_allow_on_a_card_that_does_not_offer_it_sends_nothing() {
+    let mut once = follow_up_json("cft_1");
+    once["follow_up"]["offers_always_allow"] = json!(false);
+    let mut chat = holding(vec![card_json("p1"), once]);
+    for id in ["p1", "cft_1"] {
+        let sent = answer(&mut chat, id, Decision::AlwaysAllow, "linux-1");
+        assert!(sent.is_empty(), "{id} takes no Always allow");
+        assert_eq!(standing(&chat, id), Standing::Open);
+    }
+    assert!(chat.pending.is_empty());
+    assert!(chat.proposals.iter().all(|held| held.asks()));
 }
 
 #[test]
@@ -678,7 +794,7 @@ fn the_card_says_its_task_watcher_expiry_and_the_items_source() {
     assert_eq!(item_header(item, clock), "From eng-blogs, received 13:59");
     assert_eq!(item.facts, ["Type: release"], "a missing field is left out");
     assert_eq!(item.text, "Phoenix 2.0 is out.");
-    assert_eq!(shown.call.as_deref(), Some(ARGS));
+    assert_eq!(shown.ask, CardAsk::Call { call: ARGS.into() });
 }
 
 #[test]
@@ -788,7 +904,8 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
     let reads = [
         "args_text",
         "result_text",
-        "card.call",
+        "CardAsk::Call",
+        "card.reason",
         "item.text",
         "Footer::Resolved",
     ];
@@ -848,6 +965,9 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
 
 #[test]
 fn every_card_sentence_is_in_sentence_case_with_no_mac_and_no_wire_token() {
+    for word in [REASON, SKIP, RUN, ALWAYS_ALLOW] {
+        assert!(STRINGS.contains(&word), "{word} is checked");
+    }
     for text in STRINGS {
         let first = text.chars().next().expect("not empty");
         assert!(first.is_uppercase(), "{text}");

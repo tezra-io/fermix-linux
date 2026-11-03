@@ -44,8 +44,9 @@ enum Parts {
     Reply(Reply),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
-    /// A proposal's card, whose footer follows the card's state.
-    Proposal(ProposalCard),
+    /// A proposal's card, whose footer follows the card's state. Boxed, since it holds the whole
+    /// card it draws.
+    Proposal(Box<ProposalCard>),
 }
 
 struct Reply {
@@ -79,7 +80,7 @@ impl Drawn {
     pub fn new(entry: &Entry, readers: &Readers, decider: &Decider) -> Drawn {
         if let Entry::Proposal(card) = entry {
             let card = ProposalCard::new(card, decider);
-            return Drawn::own_row(entry, &card.widget.clone(), Parts::Proposal(card));
+            return Drawn::own_row(entry, &card.widget.clone(), Parts::Proposal(Box::new(card)));
         }
         if let Entry::Unshown = entry {
             return Drawn::own_row(entry, &unshown_card(), Parts::Fixed);

@@ -10,8 +10,8 @@
 //! cannot read costs only itself: what it names still settles, ends or asks (`unreadable`).
 
 use crate::chat_wire::protocol::{
-    Approval, Ask, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution,
-    Row, ServerError, ServerEvent, ToolPhase, Unreadable,
+    Approval, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution, Row,
+    ServerError, ServerEvent, ToolPhase, Unreadable,
 };
 use crate::chat_wire::unshown::{self, Asks, Unshown};
 use crate::phone::unix_seconds;
@@ -118,7 +118,7 @@ pub struct HeldApproval {
 pub enum Standing {
     /// Nothing sent.
     Open,
-    /// An answer is on its way or accepted: both buttons wait for the daemon.
+    /// An answer is on its way or accepted: every button waits for the daemon.
     Answered(Decision),
     /// Past its expiry on this computer's clock with no answer sent.
     Expired,
@@ -144,7 +144,7 @@ pub struct HeldProposal {
 
 impl HeldProposal {
     /// Whether the card asks the owner now: the daemon says it waits, nothing was sent, and it
-    /// has not expired here. Only such a card draws Deny and Confirm and takes an answer.
+    /// has not expired here. Only such a card draws its buttons and takes an answer.
     pub fn asks(&self) -> bool {
         self.proposal.state == ProposalState::Waiting && self.standing == Standing::Open
     }
@@ -373,19 +373,17 @@ pub fn expire_approvals(chat: &mut Chat, now: i64) {
 }
 
 /// Answers a proposal with the owner's word, by its id alone, through the outbox. Only a card
-/// that asks takes an answer, and once one is queued both buttons wait, so a card is never
-/// answered twice.
+/// that asks takes an answer, and only a word it offers (`Ask::takes`). Once one is queued every
+/// button waits, so a card is never answered twice.
 pub fn answer_proposal(
     chat: &mut Chat,
     proposal_id: &str,
     decision: Decision,
     client_msg_id: String,
 ) -> Vec<ClientEvent> {
-    let Some(index) = chat
-        .proposals
-        .iter()
-        .position(|held| held.proposal.proposal_id == proposal_id && held.asks())
-    else {
+    let Some(index) = chat.proposals.iter().position(|held| {
+        held.proposal.proposal_id == proposal_id && held.asks() && held.proposal.ask.takes(decision)
+    }) else {
         return Vec::new();
     };
     let event = ClientEvent::proposal_answer(&client_msg_id, proposal_id, decision);
@@ -742,21 +740,12 @@ fn hold_approval(chat: &mut Chat, approval: Approval, now: i64) {
     }
 }
 
-/// A card the daemon sent, by its id: one sent again replaces the card and keeps where its
-/// answer stands, except that one sent again after the daemon refused its answer stands anew: the
-/// daemon's word wins. A new one stands where the outbox says, so a card dropped at a handshake
-/// whose answer still waits to be sent comes back answered. One past its expiry arrives expired.
-/// A watcher's follow-up has no card in this build: it waits behind the placeholder of the cards
-/// this app cannot show, by its id, until it resolves.
+/// A card the daemon sent, a call's or a follow-up's, by its id: one sent again replaces the
+/// card and keeps where its answer stands, except that one sent again after the daemon refused
+/// its answer stands anew: the daemon's word wins. A new one stands where the outbox says, so a
+/// card dropped at a handshake whose answer still waits to be sent comes back answered. One past
+/// its expiry arrives expired.
 fn hold_proposal(chat: &mut Chat, proposal: Proposal, now: i64) {
-    if let Ask::FollowUp(_) = proposal.ask {
-        unshown::keep(
-            &mut chat.unshown,
-            Asks::Proposal,
-            Some(proposal.proposal_id),
-        );
-        return;
-    }
     let created = unix_seconds(&proposal.created_at);
     let expires = unix_seconds(&proposal.expires_at);
     let id = proposal.proposal_id.clone();

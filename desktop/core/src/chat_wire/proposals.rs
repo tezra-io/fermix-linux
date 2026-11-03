@@ -1,24 +1,33 @@
-//! A proposal's card as the Chat page draws it (M60 cues §5.3), and the outside text in it
-//! (§5.5): every sentence the card shows, and how outside text is prepared, which is plain. The
-//! words are the macOS app's (`Localizable.strings` `proposal.*` and `outside.*`).
+//! A proposal's card as the Chat page draws it (M60 cues §5.3), a mandate's call or a watcher's
+//! follow-up (PROTOCOL.md "Version 5"), and the outside text in it (§5.5): every sentence the
+//! card shows, and how outside text is prepared, which is plain. The words are the macOS app's
+//! (`Localizable.strings` `proposal.*` and `outside.*`).
 //!
-//! Fermix's lines (the summary, the task, the watcher, the expiry, the daemon's sentences) are
-//! Fermix's. What a model or a stranger wrote (the call's arguments, the item that led to it,
-//! what the tool answered) is outside text: the page draws it only as such, never as Markdown,
-//! never as a link, and never in a tray line, toast, title or notification.
+//! Fermix's lines (the summary, the task, the watcher, the expiry, the daemon's sentences, and a
+//! follow-up's instructions, tools and where it reports, which are the owner's own words) are
+//! Fermix's. What a model or a stranger wrote (the call's arguments, the filter's reason, the
+//! item that led to it, what the tool answered) is outside text: the page draws it only as such,
+//! never as Markdown, never as a link, and never in a tray line, toast, title or notification.
 
-use crate::chat_wire::protocol::{Ask, Cue, Decision};
+use crate::chat_wire::protocol::{Ask, Cue, Decision, FollowUp};
 use crate::chat_wire::timeline::{HeldProposal, Standing};
 use crate::phone::unix_seconds;
 
 pub const TITLE: &str = "A task wants to act";
 pub const DENY: &str = "Deny";
 pub const CONFIRM: &str = "Confirm";
+/// A follow-up's answers: Skip runs nothing, Run starts it once, and Always allow starts it and
+/// lets its later items run with no card.
+pub const SKIP: &str = "Skip";
+pub const RUN: &str = "Run";
+pub const ALWAYS_ALLOW: &str = "Always allow";
 pub const RUNNING: &str = "Running…";
 pub const EXPIRED: &str = "This proposal expired; nothing ran.";
 pub const LAST_MINUTE: &str = "One minute left to decide on the task";
 /// The header over the recorded call's arguments.
 pub const CALL: &str = "Written from outside text";
+/// The header over the filter's one sentence on why it passed the item.
+pub const REASON: &str = "Why the filter passed it";
 /// The header over an item whose record names no source or no time.
 pub const ITEM_UNSOURCED: &str = "The item it acted on";
 /// The header over what the tool or the validator answered.
@@ -26,14 +35,18 @@ pub const RESULT: &str = "What the tool answered";
 pub const SHOW_ALL: &str = "Show all";
 
 /// Every fixed sentence above, for the copy test.
-pub const STRINGS: [&str; 10] = [
+pub const STRINGS: [&str; 14] = [
     TITLE,
     DENY,
     CONFIRM,
+    SKIP,
+    RUN,
+    ALWAYS_ALLOW,
     RUNNING,
     EXPIRED,
     LAST_MINUTE,
     CALL,
+    REASON,
     ITEM_UNSOURCED,
     RESULT,
     SHOW_ALL,
@@ -47,9 +60,9 @@ pub const WRAP_COLUMNS: usize = 80;
 /// What stands under a card's outside text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Footer {
-    /// Deny and Confirm, alike, both enabled.
+    /// The card's answers, alike, all enabled.
     Ask,
-    /// The answer is on its way: both buttons wait, and a confirm says it is running.
+    /// The answer is on its way: every button waits, and an answer that runs says so.
     Answered { running: bool },
     /// A card the daemon does not say waits: its own line for where it stands, and no button.
     Status(String),
@@ -85,10 +98,23 @@ pub struct Card {
     pub watcher: Option<String>,
     /// RFC 3339, as the daemon wrote it.
     pub expires_at: String,
-    /// The recorded call's arguments, outside text. A follow-up asks no call, so has none.
-    pub call: Option<String>,
+    pub ask: CardAsk,
+    /// The filter's reason for passing the item, outside text.
+    pub reason: Option<String>,
     pub item: Option<Item>,
+    /// The buttons, left to right: each one's word, and the decision it sends.
+    pub answers: Vec<(&'static str, Decision)>,
     pub footer: Footer,
+}
+
+/// What a card asks the owner to let run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardAsk {
+    /// A mandate's recorded call: its arguments, outside text.
+    Call { call: String },
+    /// A watcher's follow-up, in Fermix's and the owner's words: "It will: …", then where it
+    /// reports and its tools.
+    FollowUp { instructions: String, facts: String },
 }
 
 /// A held proposal as its card.
@@ -101,18 +127,56 @@ pub fn card(held: &HeldProposal) -> Card {
         task: task.name.clone().unwrap_or_else(|| task.job_id.clone()),
         watcher: proposal.watcher.clone(),
         expires_at: proposal.expires_at.clone(),
-        call: match &proposal.ask {
-            Ask::Call { args_text, .. } => Some(args_text.clone()),
-            Ask::FollowUp(_) => None,
-        },
+        ask: card_ask(&proposal.ask),
+        reason: proposal.outside.reason.clone(),
         item: proposal.outside.cue.as_ref().map(|cue| Item {
             source: proposal.source_ref.clone(),
             received_at: proposal.received_at.clone(),
             facts: item_facts(cue),
             text: cue.text.clone().unwrap_or_default(),
         }),
+        answers: answers(&proposal.ask),
         footer: footer(held),
     }
+}
+
+fn card_ask(ask: &Ask) -> CardAsk {
+    match ask {
+        Ask::Call { args_text, .. } => CardAsk::Call {
+            call: args_text.clone(),
+        },
+        Ask::FollowUp(follow_up) => CardAsk::FollowUp {
+            instructions: format!("It will: {}", follow_up.instructions),
+            facts: follow_up_facts(follow_up),
+        },
+    }
+}
+
+/// Where a follow-up reports, and its tools where it has any.
+fn follow_up_facts(follow_up: &FollowUp) -> String {
+    let reports = format!("Reports to {}", follow_up.reports_to);
+    if follow_up.tools.is_empty() {
+        return reports;
+    }
+    format!("{reports} · Tools: {}", follow_up.tools.join(", "))
+}
+
+/// A card's answers, left to right: a call's Deny and Confirm, and a follow-up's Skip and Run,
+/// with Always allow before them where its card offers it (`Ask::takes`). The answer that runs
+/// is last.
+fn answers(ask: &Ask) -> Vec<(&'static str, Decision)> {
+    let words = match ask {
+        Ask::Call { .. } => vec![(DENY, Decision::Deny), (CONFIRM, Decision::Confirm)],
+        Ask::FollowUp(_) => vec![
+            (ALWAYS_ALLOW, Decision::AlwaysAllow),
+            (SKIP, Decision::Deny),
+            (RUN, Decision::Confirm),
+        ],
+    };
+    words
+        .into_iter()
+        .filter(|(_, decision)| ask.takes(*decision))
+        .collect()
 }
 
 fn footer(held: &HeldProposal) -> Footer {
@@ -120,7 +184,7 @@ fn footer(held: &HeldProposal) -> Footer {
         Standing::Open if held.asks() => Footer::Ask,
         Standing::Open => Footer::Status(held.proposal.status_sentence.clone()),
         Standing::Answered(decision) => Footer::Answered {
-            running: *decision == Decision::Confirm,
+            running: *decision != Decision::Deny,
         },
         Standing::Expired => Footer::Expired,
         Standing::Resolved {

@@ -949,6 +949,19 @@ pub enum Ask {
     FollowUp(FollowUp),
 }
 
+impl Ask {
+    /// Whether a card asking this takes `decision`. Confirm and deny answer every card;
+    /// `always_allow` only a follow-up whose card offers it, since a call's card refuses it and
+    /// a daemon that does not offer it may not take it (PROTOCOL.md "Version 5").
+    pub fn takes(&self, decision: Decision) -> bool {
+        match (self, decision) {
+            (_, Decision::Confirm | Decision::Deny) => true,
+            (Ask::FollowUp(follow_up), Decision::AlwaysAllow) => follow_up.offers_always_allow,
+            (Ask::Call { .. }, Decision::AlwaysAllow) => false,
+        }
+    }
+}
+
 /// A follow-up as its card names it: the owner's own words for it, and the tools it may use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FollowUp {

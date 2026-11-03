@@ -2,12 +2,16 @@
 //! golden line in it decodes (server) or round-trips (client) through the app's own types. A drift
 //! in the engine fails here rather than in the chat.
 
+use fermix_client::chat_wire::proposals::{card, Footer, ALWAYS_ALLOW, RUN, SKIP};
 use fermix_client::chat_wire::protocol::{
     read_line, Ask, Attachments, Block, ClientEvent, Cursor, Decision, Direction, Grant, Inbox,
     ListOp, ProposalState, Reply, ServerEvent, TaskRef, ToolPhase, MAX_LINE_BYTES,
     PROTOCOL_VERSION,
 };
+use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::phone::unix_seconds;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -476,6 +480,37 @@ fn the_golden_follow_up_card_reads_as_a_follow_up() {
     assert_eq!(follow_up.name, "Codex review");
     assert!(!follow_up.tools.is_empty());
     assert!(proposal.outside.args.is_empty());
+}
+
+/// The golden follow-up as the page walks it: its card offers Always allow, Skip and Run and
+/// shows the filter's reason, Always allow sends the golden answer, and the golden resolution
+/// ends the card in Fermix's sentence.
+#[test]
+fn the_golden_follow_up_is_answered_always_allow_and_ends_in_its_resolution() {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    let made = unix_seconds("2026-10-30T12:00:00Z").expect("a time");
+    timeline::receive(&mut chat, server(42), made);
+    let shown = card(&chat.proposals[0]);
+    let words: Vec<&str> = shown.answers.iter().map(|(word, _)| *word).collect();
+    assert_eq!(words, [ALWAYS_ALLOW, SKIP, RUN]);
+    assert_eq!(
+        shown.reason.as_deref(),
+        Some("The post says usage limits reset.")
+    );
+    let sent =
+        timeline::answer_proposal(&mut chat, &shown.id, Decision::AlwaysAllow, "mac-12".into());
+    let golden: Value = serde_json::from_str(CLIENT.lines().nth(36).unwrap()).unwrap();
+    let written: Value = serde_json::from_str(&sent[0].line().unwrap()).unwrap();
+    assert_eq!(written, golden);
+    timeline::receive(&mut chat, server(48), made + 5);
+    assert_eq!(
+        card(&chat.proposals[0]).footer,
+        Footer::Resolved {
+            sentence: "Confirmed; the follow-up is starting.".into(),
+            result: None
+        }
+    );
 }
 
 #[test]
