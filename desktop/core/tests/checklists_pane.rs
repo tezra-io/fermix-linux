@@ -1,11 +1,11 @@
 //! The Lists pane as values (M85 lists §3.2, §3.3, §3.4, §3.8; §8 "The pane's open state"):
 //! whether it is shown, wide and narrow, the owner's last open or close kept in `lists.json`, what
 //! it draws from the lists as the library holds them, from the index to a tick under Done and an
-//! add in the selected item's section, and each list's own folds.
+//! add in the selected item's section, each list's own folds, and what a screen reader is told.
 
 use fermix_client::chat_wire::protocol::{read_line, ClientEvent, ListOp, ServerEvent};
 use fermix_client::checklists::draft::{is_local, Place};
-use fermix_client::checklists::library::Library;
+use fermix_client::checklists::library::{Library, MAX_WAITING};
 use fermix_client::checklists::pane::{
     self, drawing, lists_path, Folds, NotLoaded, PaneBody, PaneDrawing, PaneList, PaneOpen,
 };
@@ -496,5 +496,137 @@ fn each_list_keeps_its_own_folded_sections_and_done() {
         ids(&packing),
         [PASSPORT, &heading, SOCKS, "done", SHIRT],
         "Done still open"
+    );
+}
+
+/// A refused edit's sentence stays on its list until the list's next edit, and the pane tells it
+/// only where it first shows it: as it comes over Add an item of the list the pane showed, on
+/// screen. Turned to a list with an older sentence on it, first drawn, or off screen, the pane
+/// says nothing of it (§5.3, §6.3).
+#[test]
+fn the_pane_tells_a_refusal_only_as_it_comes_to_the_list_it_shows() {
+    let mut lists = indexed();
+    for (id, list) in [(PACKING, packing(1, None)), (ERRANDS, errands())] {
+        lists.draw(id, false);
+        receive(&mut lists, list);
+    }
+    let folds = Folds::default();
+    let none = BTreeSet::new();
+    let packing_before = drawing(&lists, Some(PACKING), &folds, &none);
+    let errands_before = drawing(&lists, Some(ERRANDS), &folds, &none);
+    let check = ListOp::Check {
+        row_id: SOCKS.into(),
+    };
+    lists.edit(PACKING, check, "linux-t1".into());
+    let sentence = "That row is not in this list any more; pull the list again.";
+    let refused = json!({"type": "error", "reason": "request_failed", "message": sentence,
+        "client_msg_id": "linux-t1"});
+    receive(&mut lists, refused);
+    let refused = drawing(&lists, Some(PACKING), &folds, &none);
+    assert_eq!(
+        pane::news(Some(&packing_before), &refused, true),
+        [sentence]
+    );
+    for (was, why) in [
+        (Some(&refused), "told already"),
+        (Some(&errands_before), "turned to Packing"),
+        (None, "first drawn"),
+    ] {
+        assert!(pane::news(was, &refused, true).is_empty(), "{why}");
+    }
+    assert!(
+        pane::news(Some(&packing_before), &refused, false).is_empty(),
+        "off screen"
+    );
+    let (removed, removed_refused) = refused_once_removed(sentence);
+    assert!(
+        pane::news(Some(&removed), &removed_refused, true).is_empty(),
+        "removed, with no Add an item to show it over"
+    );
+}
+
+/// Packing drawn removed while a tick of Socks waits, then drawn again with the tick refused in
+/// `sentence`.
+fn refused_once_removed(sentence: &str) -> (PaneDrawing, PaneDrawing) {
+    let mut lists = indexed();
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    let check = ListOp::Check {
+        row_id: SOCKS.into(),
+    };
+    lists.edit(PACKING, check, "linux-t3".into());
+    receive(&mut lists, packing(2, Some("2026-11-03T09:00:00Z")));
+    let (folds, none) = (Folds::default(), BTreeSet::new());
+    let removed = drawing(&lists, Some(PACKING), &folds, &none);
+    let refused = json!({"type": "error", "reason": "request_failed", "message": sentence,
+        "client_msg_id": "linux-t3"});
+    receive(&mut lists, refused);
+    let refused = drawing(&lists, Some(PACKING), &folds, &none);
+    let PaneDrawing::List(list) = &refused else {
+        panic!("Packing is drawn");
+    };
+    assert_eq!(list.body, PaneBody::Removed);
+    assert_eq!(list.refusal.as_deref(), Some(sentence));
+    (removed, refused)
+}
+
+/// A sentence on the list the pane shows, replaced by another with no draw between, is told: an
+/// engine's refusal, then an edit refused for the 64 edits already waiting (§3.8, §6.3).
+#[test]
+fn a_sentence_the_pane_shows_replaced_by_another_is_told() {
+    let mut lists = indexed();
+    for (id, list) in [(PACKING, packing(1, None)), (ERRANDS, errands())] {
+        lists.draw(id, false);
+        receive(&mut lists, list);
+    }
+    let (folds, none) = (Folds::default(), BTreeSet::new());
+    let check = ListOp::Check {
+        row_id: SOCKS.into(),
+    };
+    lists.edit(PACKING, check.clone(), "linux-t1".into());
+    let sentence = "That row is not in this list any more; pull the list again.";
+    let refused = json!({"type": "error", "reason": "request_failed", "message": sentence,
+        "client_msg_id": "linux-t1"});
+    receive(&mut lists, refused);
+    let refused = drawing(&lists, Some(PACKING), &folds, &none);
+    for n in 0..MAX_WAITING {
+        let note = ListOp::Edit {
+            row_id: STAMPS.into(),
+            text: None,
+            note: Some(format!("note {n}")),
+        };
+        lists.edit(ERRANDS, note, format!("linux-e{n}"));
+    }
+    lists.edit(PACKING, check, "linux-t2".into());
+    let too_many = drawing(&lists, Some(PACKING), &folds, &none);
+    assert_eq!(
+        pane::news(Some(&refused), &too_many, true),
+        [words::TOO_MANY]
+    );
+}
+
+/// "This list was removed." is told once, when the list the pane shows turns removed or the pane
+/// turns to a removed list, on screen (§3.8, §6.3).
+#[test]
+fn the_pane_tells_a_removed_list_once_as_it_shows_it() {
+    let mut lists = indexed();
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    let folds = Folds::default();
+    let none = BTreeSet::new();
+    let drawn = drawing(&lists, Some(PACKING), &folds, &none);
+    let errands = drawing(&lists, Some(ERRANDS), &folds, &none);
+    receive(&mut lists, packing(2, Some("2026-11-03T09:00:00Z")));
+    let removed = drawing(&lists, Some(PACKING), &folds, &none);
+    for was in [&drawn, &errands] {
+        assert_eq!(pane::news(Some(was), &removed, true), [words::LIST_REMOVED]);
+    }
+    assert!(
+        pane::news(Some(&removed), &removed, true).is_empty(),
+        "told already"
+    );
+    assert!(
+        pane::news(Some(&drawn), &removed, false).is_empty(),
+        "off screen"
     );
 }

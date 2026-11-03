@@ -15,7 +15,9 @@ use fermix_client::checklists::card::Settling;
 use fermix_client::checklists::draft::Place;
 use fermix_client::checklists::index::Folders;
 use fermix_client::checklists::library::Library;
-use fermix_client::checklists::pane::{drawing, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen};
+use fermix_client::checklists::pane::{
+    drawing, news, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen,
+};
 use fermix_client::checklists::panel::{add_place, splice, Line, Splice};
 use fermix_client::checklists::words::{
     self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NO_LISTS, RECENTLY_REMOVED,
@@ -462,7 +464,10 @@ impl ListsPane {
         self.body.set_visible_child_name(page);
         let lines = matches!(list.body, PaneBody::Lines(_));
         self.foot.draw(lines, list.refusal.as_deref());
-        self.announce_news(was, now);
+        for said in news(was, now, self.column.is_mapped()) {
+            self.column
+                .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
+        }
     }
 
     /// Turns the list's rows from `old` into `new` with one splice, or all of them for another
@@ -542,18 +547,6 @@ impl ListsPane {
         let boxed = item.downcast::<BoxedAnyObject>().ok()?;
         let line = boxed.borrow::<PaneLine>().line.clone();
         Some(line)
-    }
-
-    /// A refusal's sentence, and "This list was removed.", are spoken when they appear: focus is
-    /// elsewhere.
-    fn announce_news(&self, was: Option<&PaneDrawing>, now: &PaneDrawing) {
-        let old = was.map_or([None, None], news);
-        for (said, before) in news(now).into_iter().zip(old) {
-            if let Some(said) = said.filter(|said| before != Some(*said)) {
-                self.column
-                    .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
-            }
-        }
     }
 
     /// Asks the session, at the next idle, to pull the list the pane shows while it is shown: it
@@ -965,15 +958,6 @@ fn lines_of(drawing: &PaneDrawing) -> Option<(&str, &[Line])> {
         PaneBody::Lines(lines) => Some((list.list_id.as_str(), lines.as_slice())),
         PaneBody::Waiting | PaneBody::Removed => None,
     }
-}
-
-/// What a drawing says that a screen reader is told: an edit's refusal, and a removed list.
-fn news(drawing: &PaneDrawing) -> [Option<&str>; 2] {
-    let PaneDrawing::List(list) = drawing else {
-        return [None, None];
-    };
-    let removed = matches!(list.body, PaneBody::Removed).then_some(LIST_REMOVED);
-    [list.refusal.as_deref(), removed]
 }
 
 /// The row holding the focus in `list`, by its place.

@@ -819,6 +819,7 @@ impl OnScreen {
         scroller.connect_unmap(move |_| {
             if let Some(on_screen) = told.upgrade() {
                 on_screen.told.take();
+                on_screen.seen.replace(RowsSeen::default());
             }
         });
         on_screen

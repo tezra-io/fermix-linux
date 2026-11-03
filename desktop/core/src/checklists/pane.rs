@@ -1,7 +1,8 @@
 //! The Lists pane (M85 lists §3), as values: whether it is open, wide or narrow, and the owner's
 //! last open or close kept in `lists.json` (§3.2, L4); and what it draws now: the list asked for
 //! while the index holds it, its head and lines, each list's own folds, or the state before the
-//! index answers or with no list (§3.3, §3.4, §3.8).
+//! index answers or with no list (§3.3, §3.4, §3.8); and what a screen reader is told as it is
+//! drawn again (§6.3).
 //!
 //! The picker counts each list from the index, as a folded card does. The head under it counts
 //! the list as drawn, its edits waiting included, once it is held. While an edit waits for the
@@ -265,6 +266,33 @@ pub fn drawing(
             .and_then(|state| state.refusal())
             .map(str::to_owned),
     }))
+}
+
+/// What a screen reader is told as the pane is drawn again (§3.8, §5.3, §6.3), since focus is
+/// elsewhere, while the pane is on screen. A refused edit's sentence stays on its list until the
+/// list's next edit, and the pane tells it only when it first shows it: when it comes over Add an
+/// item of the list the pane already showed. Turned to a list with a sentence on it, the pane
+/// says nothing of that older refusal. "This list was removed." is told when the list it shows
+/// turns removed, or it turns to a removed list.
+pub fn news<'a>(was: Option<&PaneDrawing>, now: &'a PaneDrawing, on_screen: bool) -> Vec<&'a str> {
+    let PaneDrawing::List(list) = now else {
+        return Vec::new();
+    };
+    if !on_screen {
+        return Vec::new();
+    }
+    let same = match was {
+        Some(PaneDrawing::List(old)) if old.list_id == list.list_id => Some(old),
+        _ => None,
+    };
+    let refused = same.and_then(|old| {
+        list.refusal
+            .as_deref()
+            .filter(|_| old.refusal != list.refusal && matches!(list.body, PaneBody::Lines(_)))
+    });
+    let was_removed = same.is_some_and(|old| old.body == PaneBody::Removed);
+    let removed = (list.body == PaneBody::Removed && !was_removed).then_some(words::LIST_REMOVED);
+    refused.into_iter().chain(removed).collect()
 }
 
 fn count(n: u64) -> usize {

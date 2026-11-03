@@ -1,8 +1,8 @@
 //! The rows both lists surfaces draw (M85 lists §4.1): an item, as a reply's card and the Lists
-//! pane draw it, with its settle after a tick, and a row that acts on a single click or Return in
-//! a list that activates its rows on a double-click. Markup off before any text, and no list edit
-//! is an exported action: a tick is the check button's own closure, which hands it to the session
-//! through `Lister`.
+//! pane draw it, with its settle after a tick, and a row or button row that acts on a single
+//! click or Return in a list that activates its rows on a double-click. Markup off before any
+//! text, and no list edit is an exported action: a tick is the check button's own closure, which
+//! hands it to the session through `Lister`.
 
 use super::lists::{act, ListAct, Lister};
 use adw::prelude::*;
@@ -144,11 +144,25 @@ pub fn on_click_or_key(row: &adw::ActionRow, acted: impl Fn(bool) + 'static) {
     let acted = Rc::new(acted);
     let by_key = acted.clone();
     row.connect_activated(move |_| by_key(true));
+    acts_on_press(row.upcast_ref(), move || acted(false));
+}
+
+/// A button row that acts on a single click, Return or Space, as `on_click_or_key`'s row does: a
+/// one-list card's "N more" and "Show less" (M85 lists §2.6).
+pub fn button_on_click_or_key(row: &adw::ButtonRow, acted: impl Fn() + 'static) {
+    let acted = Rc::new(acted);
+    let by_key = acted.clone();
+    row.connect_activated(move |_| by_key());
+    acts_on_press(row.upcast_ref(), move || acted());
+}
+
+/// `row`'s own click gesture takes every press, so its list never sees one, and acts on the first.
+fn acts_on_press(row: &gtk::Widget, acted: impl Fn() + 'static) {
     let click = gtk::GestureClick::new();
     click.connect_pressed(move |click, presses, _, _| {
         click.set_state(gtk::EventSequenceState::Claimed);
         if presses == 1 {
-            acted(false);
+            acted();
         }
     });
     row.add_controller(click);

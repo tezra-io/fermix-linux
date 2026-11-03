@@ -9,7 +9,7 @@
 use adw::prelude::*;
 use fermix_client::chat::ListsCard;
 use fermix_client::chat_wire::protocol::{ListOp, ListRow};
-use fermix_client::checklists::card::{drawing, Drawing, Head, ListGroup, Settling, Stands};
+use fermix_client::checklists::card::{drawing, news, Drawing, Head, ListGroup, Settling, Stands};
 use fermix_client::checklists::cards::OneList;
 use fermix_client::checklists::library::Library;
 use fermix_client::checklists::words::{self, ADD_ITEM, LIST_REMOVED, OPEN_LIST, SHOW_LESS};
@@ -17,7 +17,7 @@ use gtk::glib;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
-use super::list_rows::{self, on_click_or_key, on_press, LIST_MARK};
+use super::list_rows::{self, button_on_click_or_key, on_click_or_key, on_press, LIST_MARK};
 use super::places::{CARDS_MIN_WIDTH, CARDS_WIDTH};
 
 /// A card's Open list button, and the pane's Hide lists.
@@ -107,8 +107,8 @@ impl ListsView {
     }
 
     /// Draws the card as `library` holds its lists, rebuilding its rows only when what it draws
-    /// changed. `on_screen`: the card was on screen at the page's last look, so a list's removal
-    /// is spoken.
+    /// changed, and speaks what core's `news` says is new on it. `on_screen`: the card was on
+    /// screen at the page's last look; off screen, it speaks nothing.
     pub fn show(&mut self, library: &Library, on_screen: bool) {
         let drawn = self.card.as_ref().and_then(|card| {
             let settling = self.settling.borrow().rows();
@@ -121,7 +121,10 @@ impl ListsView {
         clear(&self.column);
         if let Some(drawing) = &drawn {
             self.draw(drawing);
-            announce_news(&self.column, self.drawn.as_ref(), drawing, on_screen);
+            for said in news(self.drawn.as_ref(), drawing, on_screen) {
+                self.column
+                    .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
+            }
         }
         refocus(&self.column, focused, &self.add);
         self.widget.set_visible(drawn.is_some());
@@ -204,8 +207,8 @@ impl ListsView {
         self.column.append(&list);
     }
 
-    /// "N more", or "Show less" on a grown card; none when every open item shows on a card that
-    /// never grew.
+    /// "N more", or "Show less" on a grown card, either acting on a single click; none when every
+    /// open item shows on a card that never grew.
     fn more_row(&self, rows: &OneList) -> Option<adw::ButtonRow> {
         let title = match (rows.more, rows.fewer) {
             (0, false) => return None,
@@ -216,7 +219,7 @@ impl ListsView {
         button.set_use_markup(false);
         button.set_title(&title);
         let (grown, lister) = (self.grown.clone(), self.lister.clone());
-        button.connect_activated(move |_| {
+        button_on_click_or_key(&button, move || {
             grown.set(!grown.get());
             act(&lister, ListAct::Redraw);
         });
@@ -408,40 +411,6 @@ fn sentence_row(sentence: &str) -> gtk::ListBoxRow {
     row
 }
 
-/// A refusal's sentence is spoken when it appears, and so is "This list was removed." on a card
-/// of one list that was on screen: focus is elsewhere. A card far up the chat says nothing when
-/// its list goes.
-fn announce_news(column: &gtk::Box, was: Option<&Drawing>, now: &Drawing, on_screen: bool) {
-    let before = was.map(refusals).unwrap_or_default();
-    let mut news: Vec<&str> = refusals(now)
-        .into_iter()
-        .filter(|said| !before.contains(said))
-        .collect();
-    let removed = removed_of(now).filter(|_| on_screen);
-    news.extend(removed.filter(|said| was.and_then(removed_of) != Some(*said)));
-    for said in news {
-        column.announce(said, gtk::AccessibleAnnouncementPriority::Medium);
-    }
-}
-
-/// The sentences of the refused edits the card shows: its one list's, or each group's.
-fn refusals(drawing: &Drawing) -> Vec<&str> {
-    match drawing {
-        Drawing::One { refusal, .. } => refusal.as_deref().into_iter().collect(),
-        Drawing::Several { groups, .. } => {
-            groups.iter().filter_map(|g| g.refusal.as_deref()).collect()
-        }
-        Drawing::Folded(_) => Vec::new(),
-    }
-}
-
-fn removed_of(drawing: &Drawing) -> Option<&str> {
-    match drawing {
-        Drawing::One { head, .. } if head.stands == Stands::Removed => Some(LIST_REMOVED),
-        Drawing::One { .. } | Drawing::Several { .. } | Drawing::Folded(_) => None,
-    }
-}
-
 /// Removes every widget of the card, the add field among them, which a draw puts back.
 fn clear(column: &gtk::Box) {
     while let Some(child) = column.first_child() {
@@ -503,7 +472,7 @@ fn refocus(column: &gtk::Box, focused: Option<Focused>, add: &adw::EntryRow) {
 #[cfg(test)]
 mod tests {
     /// The ways app.rs, main.rs and voice_flow.rs register a window or app action, each followed
-    /// by the action's name.
+    /// by the action's name. voice_flow.rs's `app_action(app,"` is read through `on(app,"`.
     const REGISTERS: [&str; 5] = [
         "on(app,\"",
         "on_plain(app,\"",
@@ -546,7 +515,15 @@ mod tests {
             squeezed(include_str!("../voice_flow.rs")),
         ];
         let names: Vec<&str> = registers.iter().flat_map(|s| registered(s)).collect();
-        for read in ["page", "restart", "run-in-background", "quit", "voice-mute"] {
+        let reads = [
+            "page",
+            "restart",
+            "run-in-background",
+            "quit",
+            "voice-mute",
+            "voice-call",
+        ];
+        for read in reads {
             assert!(names.contains(&read), "the scan reads {read}");
         }
         let lists: Vec<&&str> = names.iter().filter(|name| name.contains("list")).collect();

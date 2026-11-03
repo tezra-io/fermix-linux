@@ -2,14 +2,15 @@
 //! pull, then draws its rows; a removed list says so and is never pulled; a refused edit's
 //! sentence shows under the rows; a card of several lists draws a head per group, a removed
 //! list's head alone, and a refused edit's sentence under its list's rows; a ticked row keeps its
-//! place until its last settle ends; a folded card counts from the index; and only a live card
-//! pulls when it comes on screen.
+//! place until its last settle ends; a folded card counts from the index; only a live card
+//! pulls when it comes on screen; and what a screen reader is told as a card is drawn again.
 
 use fermix_client::chat::ListsCard;
 use fermix_client::chat_wire::protocol::{ClientEvent, List, ListEntry, ListOp, ListRow};
-use fermix_client::checklists::card::{drawing, Drawing, Head, ListGroup, Settling, Stands};
+use fermix_client::checklists::card::{drawing, news, Drawing, Head, ListGroup, Settling, Stands};
 use fermix_client::checklists::cards::OneList;
 use fermix_client::checklists::library::Library;
+use fermix_client::checklists::words::LIST_REMOVED;
 use fermix_client::checklists::{ListRef, ITEM};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -382,5 +383,117 @@ fn only_a_live_card_pulls_and_only_the_lists_it_draws() {
         sent.len(),
         3,
         "each list the live card draws is pulled once"
+    );
+}
+
+const COUNTED: Stands = Stands::Counted { open: 2, done: 0 };
+
+/// A card of one list, `A`, standing as `stands`, with `refusal` under its rows.
+fn one(stands: Stands, refusal: Option<&str>) -> Drawing {
+    Drawing::One {
+        head: head(A, "Groceries", stands),
+        rows: no_rows(),
+        refusal: refusal.map(str::to_owned),
+    }
+}
+
+/// A card of several lists, each with its refused edit's sentence, if any.
+fn several(lists: &[(&str, Option<&str>)]) -> Drawing {
+    let groups = lists.iter().map(|(list_id, refusal)| ListGroup {
+        head: head(list_id, list_id, COUNTED),
+        rows: Vec::new(),
+        refusal: refusal.map(str::to_owned),
+    });
+    Drawing::Several {
+        groups: groups.collect(),
+        more_lists: 0,
+    }
+}
+
+/// A refused edit's sentence is told as it comes under a list the card drew: a second list
+/// refused in the words a first one shows is told too, and a card drawn again with the sentences
+/// it had tells nothing. A card off screen tells nothing (§6.3).
+#[test]
+fn a_refusal_is_told_as_it_comes_under_a_list_even_in_words_another_list_shows() {
+    let busy = "This list is being changed on another device; try again in a moment.";
+    let gone = "That row is not in this list any more; pull the list again.";
+    let refused = one(COUNTED, Some(gone));
+    assert_eq!(news(Some(&one(COUNTED, None)), &refused, true), [gone]);
+    assert!(
+        news(Some(&one(COUNTED, None)), &refused, false).is_empty(),
+        "off screen"
+    );
+    assert!(
+        news(Some(&refused), &refused, true).is_empty(),
+        "under it already"
+    );
+    let first = several(&[(A, Some(busy)), (B, None)]);
+    let both = several(&[(A, Some(busy)), (B, Some(busy))]);
+    assert_eq!(news(Some(&first), &both, true), [busy], "B's, in A's words");
+    assert!(news(Some(&both), &both, true).is_empty());
+    let other = several(&[(A, Some(gone)), (B, Some(busy))]);
+    assert_eq!(news(Some(&both), &other, true), [gone], "new words under A");
+}
+
+/// A refused edit's sentence stays on its list until the list's next edit, on whichever card
+/// draws the list live, and a card tells it only where it first shows it: a newer card drawn with
+/// the list, or a card turning live, says nothing of the older refusal (§5.3).
+#[test]
+fn a_card_first_showing_a_list_says_nothing_of_its_older_refusal() {
+    let gone = "That row is not in this list any more; pull the list again.";
+    let mut library = library(&[entry(A, 2, 0)]);
+    library.draw(A, false);
+    library.received_list(list(A, 2, 0), &BTreeMap::new());
+    let card = [list_ref(A, &[])];
+    let older = draw(&card, true, &library);
+    let check = ListOp::Check {
+        row_id: "ci_open000000".into(),
+    };
+    library.edit(A, check, "linux-1".into());
+    library.refused("linux-1", gone.into());
+    let refused = draw(&card, true, &library);
+    assert_eq!(
+        news(Some(&older), &refused, true),
+        [gone],
+        "the card it was made on"
+    );
+    let Drawing::One { refusal, .. } = &refused else {
+        panic!("one list");
+    };
+    assert_eq!(
+        refusal.as_deref(),
+        Some(gone),
+        "the list's, on any card drawing it"
+    );
+    assert!(news(None, &refused, true).is_empty(), "a newer card");
+    let folded = draw(&card, false, &library);
+    assert!(
+        news(Some(&folded), &refused, true).is_empty(),
+        "a card turning live"
+    );
+}
+
+/// "This list was removed." is told once, when a card of one list that was on screen at the
+/// chat's last look turns removed. A card off screen, first drawn, or turning live on a removed
+/// list, whose folded part already said so, says nothing (§6.3).
+#[test]
+fn this_list_was_removed_is_told_once_by_a_card_of_one_list_on_screen() {
+    let removed = one(Stands::Removed, None);
+    for before in [one(COUNTED, None), one(Stands::Waiting, None)] {
+        assert_eq!(news(Some(&before), &removed, true), [LIST_REMOVED]);
+        assert!(
+            news(Some(&before), &removed, false).is_empty(),
+            "off screen"
+        );
+    }
+    assert!(
+        news(Some(&removed), &removed, true).is_empty(),
+        "told already"
+    );
+    assert!(news(None, &removed, true).is_empty(), "first drawn");
+    let folded = Drawing::Folded(vec![head(A, "Groceries", Stands::Removed)]);
+    assert!(
+        news(Some(&folded), &removed, true).is_empty(),
+        "turned live"
     );
 }

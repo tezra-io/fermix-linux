@@ -1,10 +1,11 @@
 //! One reply's lists card as it stands now (M85 lists §2.2 to §2.5), as a value: from the lists
 //! its block names, whether it is live, the lists as the library holds them, and the card's own
 //! state (grown past four, and the rows ticked a moment ago that keep their place while they
-//! settle).
+//! settle); and what a screen reader is told as it is drawn again (§6.3).
 
 use super::cards::{self, OneList};
 use super::library::Library;
+use super::words;
 use super::ListRef;
 use crate::chat_wire::protocol::ListRow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -177,6 +178,68 @@ fn folded(list: &ListRef, library: &Library) -> Head {
         list_id: list.list_id.clone(),
         title: entry.map_or_else(|| list.title.clone(), |entry| entry.title.clone()),
         stands,
+    }
+}
+
+/// What a screen reader is told as a card is drawn again (§5.3, §6.3), since focus is elsewhere,
+/// while the card was on screen at the chat's last look. A refused edit's sentence stays on its
+/// list until the list's next edit, and the card tells it only when it first shows it: when it
+/// comes under a list the live card already drew without it. A card first drawn, or one turning
+/// live, says nothing of a sentence its list already had, so a newer card never tells an older
+/// refusal. "This list was removed." is told when a card that drew its one list live turns
+/// removed, not by one turning live on a removed list, whose folded part already said so. A card
+/// far up the chat says nothing. `was` is what the card drew before, if it drew.
+pub fn news<'a>(was: Option<&Drawing>, now: &'a Drawing, on_screen: bool) -> Vec<&'a str> {
+    let Some(was) = was.filter(|_| on_screen) else {
+        return Vec::new();
+    };
+    let before = refusals(was);
+    let drew = live_lists(was);
+    let mut news: Vec<&str> = refusals(now)
+        .into_iter()
+        .filter(|(list_id, _)| drew.contains(list_id))
+        .filter(|refused| !before.contains(refused))
+        .map(|(_, sentence)| sentence)
+        .collect();
+    let drew_live = matches!(was, Drawing::One { .. }) && removed(was).is_none();
+    news.extend(removed(now).filter(|_| drew_live));
+    news
+}
+
+/// The lists a live card draws, each with its rows and sentence: a folded card draws neither.
+fn live_lists(drawing: &Drawing) -> Vec<&str> {
+    match drawing {
+        Drawing::One { head, .. } => vec![head.list_id.as_str()],
+        Drawing::Several { groups, .. } => groups
+            .iter()
+            .map(|group| group.head.list_id.as_str())
+            .collect(),
+        Drawing::Folded(_) => Vec::new(),
+    }
+}
+
+/// Each refused edit's sentence the card shows, with the list it is under: its one list's, or
+/// each group's.
+fn refusals(drawing: &Drawing) -> Vec<(&str, &str)> {
+    match drawing {
+        Drawing::One { head, refusal, .. } => refusal
+            .as_deref()
+            .map(|sentence| (head.list_id.as_str(), sentence))
+            .into_iter()
+            .collect(),
+        Drawing::Several { groups, .. } => groups
+            .iter()
+            .filter_map(|g| Some((g.head.list_id.as_str(), g.refusal.as_deref()?)))
+            .collect(),
+        Drawing::Folded(_) => Vec::new(),
+    }
+}
+
+/// "This list was removed." on a card of one list whose list was removed.
+fn removed(drawing: &Drawing) -> Option<&'static str> {
+    match drawing {
+        Drawing::One { head, .. } if head.stands == Stands::Removed => Some(words::LIST_REMOVED),
+        Drawing::One { .. } | Drawing::Several { .. } | Drawing::Folded(_) => None,
     }
 }
 
