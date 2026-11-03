@@ -7,7 +7,7 @@
 //! what the tool answered) is outside text: the page draws it only as such, never as Markdown,
 //! never as a link, and never in a tray line, toast, title or notification.
 
-use crate::chat_wire::protocol::{Cue, Decision};
+use crate::chat_wire::protocol::{Ask, Cue, Decision};
 use crate::chat_wire::timeline::{HeldProposal, Standing};
 use crate::phone::unix_seconds;
 
@@ -85,8 +85,8 @@ pub struct Card {
     pub watcher: Option<String>,
     /// RFC 3339, as the daemon wrote it.
     pub expires_at: String,
-    /// The recorded call's arguments, outside text.
-    pub call: String,
+    /// The recorded call's arguments, outside text. A follow-up asks no call, so has none.
+    pub call: Option<String>,
     pub item: Option<Item>,
     pub footer: Footer,
 }
@@ -101,8 +101,10 @@ pub fn card(held: &HeldProposal) -> Card {
         task: task.name.clone().unwrap_or_else(|| task.job_id.clone()),
         watcher: proposal.watcher.clone(),
         expires_at: proposal.expires_at.clone(),
-        // Held cards are calls, whose arguments always decode (`Proposal`'s `try_from`).
-        call: proposal.outside.args_text.clone().unwrap_or_default(),
+        call: match &proposal.ask {
+            Ask::Call { args_text, .. } => Some(args_text.clone()),
+            Ask::FollowUp(_) => None,
+        },
         item: proposal.outside.cue.as_ref().map(|cue| Item {
             source: proposal.source_ref.clone(),
             received_at: proposal.received_at.clone(),

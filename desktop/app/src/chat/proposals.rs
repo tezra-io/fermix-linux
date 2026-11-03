@@ -41,7 +41,9 @@ impl ProposalCard {
     pub fn new(card: &Card, decider: &Decider) -> ProposalCard {
         let (widget, inner) = shell(TITLE);
         inner.append(&lead(card));
-        inner.append(&outside_text::block(CALL, None, &card.call, true));
+        if let Some(call) = &card.call {
+            inner.append(&outside_text::block(CALL, None, call, true));
+        }
         if let Some(item) = &card.item {
             let header = item_header(item, clock);
             let facts = joined_facts(item);

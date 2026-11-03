@@ -1,10 +1,11 @@
 //! The chat connection's life: the handshake's four outcomes (PROTOCOL.md "Handshake state
 //! machine", macOS `CompanionSession`), the bounded backoff, and what the page says.
 
-use fermix_client::chat_wire::protocol::{read_line, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, Attachments, ServerEvent};
 use fermix_client::chat_wire::session::{
     closes, delay, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
 };
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
@@ -272,4 +273,36 @@ fn a_connect_that_lands_after_its_attempt_ended_is_refused() {
     assert_eq!(session.phase(), &Phase::Waiting);
     session.start();
     assert!(session.connected());
+}
+
+/// What a hello offers that this build does not use yet costs only itself: a command that does
+/// not fit is skipped and counted, commands that are no list are all skipped, an attachments
+/// offer that does not fit offers nothing, and the hello connects.
+#[test]
+fn a_hello_whose_offers_do_not_fit_still_connects() {
+    let golden: Value = serde_json::from_str(SERVER.lines().next().unwrap()).unwrap();
+    let offered = golden["commands"].as_array().expect("commands").len();
+    let mut hello = golden.clone();
+    let commands = hello["commands"].as_array_mut().unwrap();
+    commands.push(json!({"name": "broken"}));
+    hello["attachments"] = json!({"dir": 5});
+    let event = line(&hello.to_string());
+    let ServerEvent::ServerHello {
+        commands,
+        attachments,
+        ..
+    } = &event
+    else {
+        panic!("a hello: {event:?}");
+    };
+    assert_eq!((commands.offered.len(), commands.skipped), (offered, 1));
+    assert_eq!(*attachments, Attachments::Unreadable);
+    assert_eq!(handshake(&event), Handshake::Ok);
+    hello["commands"] = json!("none");
+    let event = line(&hello.to_string());
+    let ServerEvent::ServerHello { commands, .. } = &event else {
+        panic!("a hello: {event:?}");
+    };
+    assert_eq!((commands.offered.len(), commands.skipped), (0, 1));
+    assert_eq!(handshake(&event), Handshake::Ok);
 }

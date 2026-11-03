@@ -1,7 +1,7 @@
 //! The count of what reads each phone-side file, and the `media_fetch` and `media_release` it asks
 //! for (macOS `MediaGrants`): a file is held only while something reads it.
 
-use fermix_client::chat_wire::grants::{verify, Answer, Grants, Outcome};
+use fermix_client::chat_wire::grants::{verify, Answer, Grants, Outcome, REFUSED};
 use fermix_client::chat_wire::protocol::{read_line, ClientEvent, Grant, ServerEvent};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -178,8 +178,8 @@ fn a_missing_file_answers_every_reader_and_every_later_one() {
     assert_eq!(grants.count(NOTE), 0);
 }
 
-/// A daemon that could not make the file says why, with the ref; an error without a ref is a
-/// turn's, not a file's.
+/// A daemon that could not make the file fails its reads in this app's words, never the daemon's,
+/// which may carry anything; an error without a ref is a turn's, not a file's.
 #[test]
 fn a_failed_copy_answers_its_readers_and_other_errors_are_not_media() {
     let mut grants = online();
@@ -187,10 +187,7 @@ fn a_failed_copy_answers_its_readers_and_other_errors_are_not_media() {
     let failed = event(json!({"type": "error", "reason": "request_failed",
         "message": "{:media_copy_failed, :enospc}", "ref": LAMP}));
     let answered = grants.answered(&failed).expect("an answer");
-    assert_eq!(
-        answered.outcome,
-        Outcome::Failed("{:media_copy_failed, :enospc}".into())
-    );
+    assert_eq!(answered.outcome, Outcome::Failed(REFUSED.into()));
     assert_eq!(answered.tickets, [ticket]);
     let turn = event(json!({"type": "error", "reason": "request_failed", "message": "x"}));
     assert_eq!(grants.answered(&turn), None);
@@ -301,7 +298,11 @@ fn a_grant_is_a_file_named_by_its_ref_in_the_media_directory() {
         }),
     ];
     for (why, change) in refused {
-        assert!(broken(change).is_err(), "{why}");
+        let said = broken(change).expect_err(why);
+        assert!(
+            !said.contains('/') && !said.contains(&NOTE[..8]) && !said.contains(&LAMP[..8]),
+            "{why}: a refusal names none of the grant's own text: {said}"
+        );
     }
     let mut grants = online();
     grants.hold(NOTE);

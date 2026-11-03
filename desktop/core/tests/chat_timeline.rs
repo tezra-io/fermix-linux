@@ -41,6 +41,27 @@ fn live(seq: u64, text: &str) -> ServerEvent {
     )
 }
 
+/// A reply carries the time its row stores (PROTOCOL.md, `text_done`), so it is placed by when it
+/// was written, not by when it arrived here.
+#[test]
+fn a_reply_carries_the_time_its_row_stores() {
+    let mut chat = holding(12);
+    let done = event(
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 13,
+        "text": "You have one meeting, at 10.", "ts": "2026-09-25T09:00:04Z"}),
+    );
+    receive(&mut chat, done);
+    let held = chat.rows.last().expect("the reply is held");
+    assert_eq!(held.row.server_seq, 13);
+    assert_eq!(held.row.ts.as_deref(), Some("2026-09-25T09:00:04Z"));
+    let older = event(
+        json!({"type": "text_done", "turn_id": "t2", "server_seq": 14,
+        "text": "An older daemon sends no time."}),
+    );
+    receive(&mut chat, older);
+    assert_eq!(chat.rows.last().expect("held").row.ts, None);
+}
+
 fn receive(chat: &mut Chat, event: ServerEvent) -> Vec<ClientEvent> {
     timeline::receive(chat, event, 0)
 }

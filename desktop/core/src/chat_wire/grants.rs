@@ -14,6 +14,9 @@ use std::path::{Component, Path, PathBuf};
 
 /// Why a read failed whose answer the daemon sent and this build could not read.
 pub const UNREADABLE: &str = "the daemon's answer could not be read";
+/// Why a read failed that the daemon refused (`request_failed`). Its own words stay out: they
+/// may carry anything, and a failure goes to the log.
+pub const REFUSED: &str = "the daemon refused the file (request_failed)";
 
 /// What asking for a ref's file came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,11 +142,7 @@ impl Grants {
             ServerEvent::MediaPath(grant) => (grant.r#ref.clone(), self.granted(grant)),
             ServerEvent::MediaMissing { r#ref } => (r#ref.clone(), Outcome::Missing),
             ServerEvent::Error(error) if error.reason == "request_failed" => {
-                let why = error
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| error.reason.clone());
-                (error.r#ref.clone()?, Outcome::Failed(why))
+                (error.r#ref.clone()?, Outcome::Failed(REFUSED.into()))
             }
             ServerEvent::Unreadable(unread) => {
                 (unread.r#ref.clone()?, Outcome::Failed(UNREADABLE.into()))
@@ -232,9 +231,9 @@ fn released(goes: bool, r#ref: &str) -> Vec<ClientEvent> {
 /// The grant's file, where it is one: a ref whose digest the grant says it is, at an absolute
 /// path straight inside `media_dir`, named by the ref. The daemon is another process: a grant
 /// that is anything else is refused, never followed.
-pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, String> {
+pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, &'static str> {
     if grant.sha256 != grant.r#ref || !is_media_ref(&grant.r#ref) {
-        return Err(format!("{} is not the ref's digest", grant.sha256));
+        return Err("its digest is not its ref");
     }
     let path = Path::new(&grant.path);
     let plain = grant
@@ -247,13 +246,13 @@ pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, String> {
         .skip(1)
         .all(|part| matches!(part, Component::Normal(_)));
     if !path.is_absolute() || !plain || !normal {
-        return Err(format!("{} is not a plain absolute path", grant.path));
+        return Err("its path is not a plain absolute one");
     }
     if path.parent() != Some(media_dir) {
-        return Err(format!("{} is not in {}", grant.path, media_dir.display()));
+        return Err("its file is not in the media directory");
     }
     if path.file_stem().and_then(|stem| stem.to_str()) != Some(grant.r#ref.as_str()) {
-        return Err(format!("{} is not named by its ref", grant.path));
+        return Err("its file is not named by its ref");
     }
     Ok(path.to_path_buf())
 }

@@ -7,7 +7,9 @@ use crate::chat::Decision;
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use adw::prelude::*;
-use fermix_client::chat_wire::protocol::{ClientEvent, Decision as Word, Row, ServerEvent};
+use fermix_client::chat_wire::protocol::{
+    loggable_id, Attachments, ClientEvent, Decision as Word, Row, ServerError, ServerEvent,
+};
 use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use gtk::glib;
@@ -46,6 +48,31 @@ fn log_skipped<'a>(messages: usize, rows: impl Iterator<Item = &'a Row>) {
     for row in rows.filter(|row| row.skipped > 0) {
         let (seq, skipped) = (row.server_seq, row.skipped);
         glib::g_debug!("fermix", "row {seq} dropped {skipped} unreadable parts");
+    }
+}
+
+/// Logs what of a hello's offers did not fit, by count: the hello still connects.
+fn log_offers(hello: &ServerEvent) {
+    let ServerEvent::ServerHello {
+        commands,
+        attachments,
+        ..
+    } = hello
+    else {
+        return;
+    };
+    if commands.skipped > 0 {
+        let skipped = commands.skipped;
+        glib::g_warning!(
+            "fermix",
+            "the hello offered {skipped} commands that could not be read"
+        );
+    }
+    if *attachments == Attachments::Unreadable {
+        glib::g_warning!(
+            "fermix",
+            "the hello's offer of attachments could not be read"
+        );
     }
 }
 
@@ -128,13 +155,16 @@ impl App {
             };
             let outcome = self.wire.borrow_mut().session.hello(&event);
             match outcome {
-                Handshake::Ok => return Ok(()),
+                Handshake::Ok => {
+                    log_offers(&event);
+                    return Ok(());
+                }
                 Handshake::Refused(sentence) => {
                     glib::g_warning!("fermix", "chat refused: {sentence}");
                     return Err(Lost::Broken(sentence));
                 }
                 Handshake::Lost(reason) => return Err(Lost::Broken(reason)),
-                Handshake::Ignore => glib::g_debug!("fermix", "before hello: {event:?}"),
+                Handshake::Ignore => glib::g_debug!("fermix", "before hello: {}", event.kind()),
             }
         }
         Err(Lost::Broken(
@@ -179,7 +209,23 @@ impl App {
         if self.media.answered(&event) {
             return;
         }
-        match &event {
+        self.log_event(&event);
+        let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
+        if timeline::history_unreadable(&self.wire.borrow().chat) {
+            return self.chat_lost(Lost::History);
+        }
+        self.chat_send(events);
+        self.chat_seen();
+        self.keep_approval_clock();
+        self.keep_proposal_clock();
+        self.render();
+        self.serve_reveal();
+    }
+
+    /// Logs what an event says of the wire, never the daemon's text: what did not decode, what
+    /// was refused, and what this build shows nothing of.
+    fn log_event(&self, event: &ServerEvent) {
+        match event {
             ServerEvent::Unknown(kind) => glib::g_warning!("fermix", "chat event {kind} unread"),
             ServerEvent::Unreadable(unread) => {
                 log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind)
@@ -195,10 +241,21 @@ impl App {
             ServerEvent::Error(error) if closes(&error.reason) => {
                 glib::g_warning!("fermix", "the chat was refused: {}", error.reason)
             }
+            ServerEvent::Error(ServerError {
+                attach_id: Some(id),
+                ..
+            }) => {
+                let id = loggable_id(id);
+                glib::g_warning!("fermix", "an error came for file {id}, never handed over")
+            }
             // Always On stays behind its flag, so this app shows none of it.
             ServerEvent::HomeStatusChanged => glib::g_debug!("fermix", "Always On changed"),
             ServerEvent::Reasoning { turn_id, .. } => {
-                glib::g_debug!("fermix", "turn {turn_id} reasoned; not shown yet")
+                glib::g_debug!(
+                    "fermix",
+                    "turn {} reasoned; not shown yet",
+                    loggable_id(turn_id)
+                )
             }
             ServerEvent::Checklists { .. } | ServerEvent::Checklist { .. } => {
                 glib::g_warning!("fermix", "a list came that this app never asked for")
@@ -211,16 +268,6 @@ impl App {
             }
             _ => {}
         }
-        let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
-        if timeline::history_unreadable(&self.wire.borrow().chat) {
-            return self.chat_lost(Lost::History);
-        }
-        self.chat_send(events);
-        self.chat_seen();
-        self.keep_approval_clock();
-        self.keep_proposal_clock();
-        self.render();
-        self.serve_reveal();
     }
 
     /// The connection ended: the timeline forgets what it asked, and the session waits out

@@ -8,9 +8,9 @@ use fermix_client::chat_wire::proposals::{
     self, card, facts, item_header, outside, Footer, Item, OUTSIDE_LINES, STRINGS,
 };
 use fermix_client::chat_wire::protocol::{
-    read_line, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
+    read_line, Ask, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
 };
-use fermix_client::chat_wire::timeline::{self, Chat, Standing};
+use fermix_client::chat_wire::timeline::{self, Chat, HeldProposal, Standing};
 use fermix_client::chat_wire::unshown::{self, Asks};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -203,6 +203,31 @@ fn a_follow_up_waits_behind_the_placeholder_and_is_never_held_as_a_card() {
     timeline::receive(&mut chat, gone, NOON);
     assert!(!unshown::waiting(&chat.unshown, Asks::Proposal));
     assert!(view(&chat).keys.is_empty());
+}
+
+/// A call's arguments are part of what it asks, so its card always has them; a follow-up asks no
+/// call, so a card made of one has none rather than an empty one.
+#[test]
+fn a_calls_card_carries_its_arguments_and_a_follow_ups_card_none() {
+    let chat = holding(vec![card_json("p1")]);
+    let held = &chat.proposals[0];
+    let Ask::Call { args_text, .. } = &held.proposal.ask else {
+        panic!("a call: {:?}", held.proposal.ask);
+    };
+    assert_eq!(args_text, ARGS);
+    assert_eq!(card(held).call.as_deref(), Some(ARGS));
+    let line = json!({"type": "proposal", "profile_id": "main",
+        "proposal": follow_up_json("cft_1")});
+    let ServerEvent::Proposal { proposal } = read_line(line.to_string().as_bytes()).unwrap() else {
+        panic!("a follow-up reads");
+    };
+    let follow_up = HeldProposal {
+        proposal: *proposal,
+        standing: Standing::Open,
+        created: None,
+        expires: None,
+    };
+    assert_eq!(card(&follow_up).call, None);
 }
 
 #[test]
@@ -633,7 +658,7 @@ fn the_card_says_its_task_watcher_expiry_and_the_items_source() {
     assert_eq!(item_header(item, clock), "From eng-blogs, received 13:59");
     assert_eq!(item.facts, ["Type: release"], "a missing field is left out");
     assert_eq!(item.text, "Phoenix 2.0 is out.");
-    assert_eq!(shown.call, ARGS);
+    assert_eq!(shown.call.as_deref(), Some(ARGS));
 }
 
 #[test]
@@ -771,8 +796,9 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
     );
 
     // The positive control: the scan reads both readers, the card holds the reads the scan looks
-    // for everywhere else, each of which names a field core really has, and the widget the card
-    // hands the text to holds the plain calls whose markup forms the scan looks for in it.
+    // for everywhere else, each of which names a field core really has (of a struct, or of an
+    // enum's variant), and the widget the card hands the text to holds the plain calls whose
+    // markup forms the scan looks for in it.
     let source = |wanted: &str| {
         let held = sources.iter().find(|(name, _)| name == wanted);
         held.map(|(_, source)| source.as_str())
@@ -790,7 +816,7 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
             .next()
             .expect("a token names its field");
         assert!(
-            card.contains(token) || protocol.contains(&format!("pub {field}:")),
+            card.contains(token) || protocol.contains(&format!(" {field}: ")),
             "{token} is read nowhere and is no field of the wire"
         );
     }

@@ -680,6 +680,7 @@ fn text_done(chat: &mut Chat, reply: Reply, now: i64) -> Vec<ClientEvent> {
         turn_id,
         server_seq,
         text,
+        ts,
         blocks,
         skipped,
     } = reply;
@@ -688,7 +689,7 @@ fn text_done(chat: &mut Chat, reply: Reply, now: i64) -> Vec<ClientEvent> {
         server_seq,
         role: "assistant".into(),
         text,
-        ts: None,
+        ts,
         client_msg_id: None,
         in_reply_to: ours.and_then(|turn| turn.in_reply_to),
         kind: None,

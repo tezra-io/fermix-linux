@@ -3,8 +3,9 @@
 //! in the engine fails here rather than in the chat.
 
 use fermix_client::chat_wire::protocol::{
-    read_line, Ask, Block, ClientEvent, Cursor, Decision, Direction, Grant, Inbox, ListOp,
-    ProposalState, Reply, ServerEvent, TaskRef, ToolPhase, MAX_LINE_BYTES, PROTOCOL_VERSION,
+    read_line, Ask, Attachments, Block, ClientEvent, Cursor, Decision, Direction, Grant, Inbox,
+    ListOp, ProposalState, Reply, ServerEvent, TaskRef, ToolPhase, MAX_LINE_BYTES,
+    PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -119,6 +120,21 @@ fn every_golden_server_line_decodes_into_a_known_event() {
             !matches!(event, ServerEvent::Unknown(_) | ServerEvent::Unreadable(_)),
             "golden line decoded as unknown or unreadable: {line}"
         );
+        let golden: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(Some(event.kind()), golden["type"].as_str(), "{line}");
+        assert_eq!(parts_skipped(&event), 0, "golden line lost a part: {line}");
+    }
+}
+
+/// The parts a row, a reply or a page dropped in decoding: none of a golden line's may be.
+fn parts_skipped(event: &ServerEvent) -> usize {
+    match event {
+        ServerEvent::Row(row) => row.skipped,
+        ServerEvent::TextDone(reply) => reply.skipped,
+        ServerEvent::HistoryPage(page) => {
+            page.skipped + page.messages.iter().map(|row| row.skipped).sum::<usize>()
+        }
+        _ => 0,
     }
 }
 
@@ -263,15 +279,16 @@ fn the_golden_server_events_carry_their_fields() {
     };
     assert_eq!((min_version, max_version), (6, 7));
     assert_eq!((primary_epoch, role.as_deref()), (Some(2), Some("primary")));
-    assert_eq!(commands[0].name, "new");
-    assert_eq!(commands[0].aliases, ["clear"]);
-    assert_eq!(attachments, None);
+    assert_eq!(commands.offered[0].name, "new");
+    assert_eq!(commands.offered[0].aliases, ["clear"]);
+    assert_eq!(commands.skipped, 0);
+    assert_eq!(attachments, Attachments::Absent);
     let ServerEvent::ServerHello { attachments, .. } = server(1) else {
         panic!("line 1 is a hello");
     };
     assert_eq!(
         attachments,
-        Some(Inbox {
+        Attachments::Offered(Inbox {
             dir: "/Users/me/.fermix/companion/inbox".into(),
             max_bytes: 20_971_520
         })
@@ -407,22 +424,22 @@ fn the_golden_proposals_carry_their_record_and_their_outside_text() {
     };
     assert_eq!(full.proposal_id, "cpr_4f1c2a9b7e3d5a60c8b1f2e3");
     assert_eq!(full.state, ProposalState::Waiting);
+    let Ask::Call {
+        mandate,
+        tool,
+        args_text,
+    } = &full.ask
+    else {
+        panic!("line 40 asks for a call");
+    };
     assert_eq!(
-        full.ask,
-        Ask::Call {
-            mandate: "release-issues".into(),
-            tool: "github_create_issue".into()
-        }
+        (mandate.as_str(), tool.as_str()),
+        ("release-issues", "github_create_issue")
     );
+    assert!(args_text.contains("\"title\": \"Phoenix 2.0\""));
     assert_eq!(full.task.name.as_deref(), Some("release issues"));
     assert_eq!(full.watcher.as_deref(), Some("release-watch"));
     assert_eq!(full.source_ref.as_deref(), Some("eng-blogs"));
-    let args = full
-        .outside
-        .args_text
-        .as_deref()
-        .expect("a call's arguments");
-    assert!(args.contains("\"title\": \"Phoenix 2.0\""));
     assert_eq!(full.outside.args[3].name, "title");
     assert!(full.outside.reason.is_some());
     let cue = full.outside.cue.expect("the first card keeps its cue");
@@ -452,7 +469,6 @@ fn the_golden_follow_up_card_reads_as_a_follow_up() {
     assert!(follow_up.offers_always_allow);
     assert_eq!(follow_up.name, "Codex review");
     assert!(!follow_up.tools.is_empty());
-    assert_eq!(proposal.outside.args_text, None);
     assert!(proposal.outside.args.is_empty());
 }
 

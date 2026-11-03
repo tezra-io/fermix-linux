@@ -5,7 +5,7 @@
 
 use crate::chat_link::Link;
 use fermix_client::chat_wire::grants::{Answer, Answered, Grants, Outcome, Ticket};
-use fermix_client::chat_wire::protocol::{ClientEvent, ServerEvent};
+use fermix_client::chat_wire::protocol::{loggable_id, ClientEvent, ServerEvent};
 use futures_channel::oneshot;
 use gtk::glib;
 use std::cell::RefCell;
@@ -145,8 +145,9 @@ impl Drop for Hold {
     }
 }
 
+/// The ref and this app's words for what came of it, never the daemon's text.
 fn log_answer(answered: &Answered) {
-    let r#ref = &answered.r#ref;
+    let r#ref = loggable_id(&answered.r#ref);
     if !answered.asked {
         glib::g_warning!("fermix", "the daemon answered for {ref}, never asked for");
     }

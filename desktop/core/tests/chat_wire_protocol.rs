@@ -2,8 +2,8 @@
 //! refuses, and the framing caps.
 
 use fermix_client::chat_wire::protocol::{
-    is_media_ref, line_buffer, read_line, Block, ClientEvent, DecodeError, ServerEvent, Unreadable,
-    MAX_FRAME_BYTES, MAX_LINE_BYTES,
+    is_media_ref, line_buffer, loggable_id, read_line, Block, ClientEvent, DecodeError,
+    ServerEvent, Unreadable, MAX_FRAME_BYTES, MAX_ID_BYTES, MAX_LINE_BYTES,
 };
 use fermix_client::realtime::protocol::LineBuffer;
 use serde_json::{json, Value};
@@ -280,4 +280,28 @@ fn a_nul_in_a_fence_reaches_the_code_block_replaced() {
         number: "#aa5500".into(),
     };
     assert!(!highlight::markup(text, language.as_deref(), &inks).contains('\0'));
+}
+
+/// An event's type for a log line is the contract's word for it, never the daemon's text: a type
+/// this build does not know is "unknown", and one whose fields did not fit keeps its known type.
+#[test]
+fn an_events_type_for_the_log_is_the_contracts_word() {
+    let unknown = read_line(br#"{"type":"a password: hunter2"}"#).unwrap();
+    assert_eq!(unknown.kind(), "unknown");
+    let unreadable = read_line(br#"{"type":"accepted","client_msg_id":5}"#).unwrap();
+    assert!(matches!(unreadable, ServerEvent::Unreadable(_)));
+    assert_eq!(unreadable.kind(), "accepted");
+    let done = decode(json!({"type": "turn_done", "turn_id": "t1"}));
+    assert_eq!(done.kind(), "turn_done");
+}
+
+/// An id the daemon names goes into a log line only when it is short and plain: anything else is
+/// said without its text.
+#[test]
+fn only_a_short_plain_id_is_logged_as_it_is() {
+    assert_eq!(loggable_id("mac-att-9d04e2"), "mac-att-9d04e2");
+    let long = "a".repeat(MAX_ID_BYTES + 1);
+    for odd in [long.as_str(), "two words", "line\nbreak", "", "caf\u{e9}"] {
+        assert_ne!(loggable_id(odd), odd, "{odd:?}");
+    }
 }

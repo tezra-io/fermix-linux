@@ -13,7 +13,7 @@
 use crate::realtime::protocol::LineBuffer;
 pub use crate::realtime::protocol::{DecodeError, Direction};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -355,15 +355,17 @@ impl ClientEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     /// `primary_epoch` and `role` are decoded and not acted on (PROTOCOL.md "Primary epoch"): the
-    /// app has no home that moved. `commands` and `attachments` are offered later.
+    /// app has no home that moved. `commands` and `attachments` are offered later; what of them
+    /// does not fit costs only itself, never the handshake.
     ServerHello {
         min_version: u64,
         max_version: u64,
         primary_epoch: Option<u64>,
         role: Option<String>,
         #[serde(default)]
-        commands: Vec<CommandDescriptor>,
-        attachments: Option<Inbox>,
+        commands: Commands,
+        #[serde(default)]
+        attachments: Attachments,
     },
     Accepted {
         client_msg_id: String,
@@ -455,6 +457,62 @@ pub enum ServerEvent {
     Unreadable(Unreadable),
 }
 
+impl ServerEvent {
+    /// The event's type as the contract names it, for a log line: never the daemon's own text. A
+    /// type this build does not know is "unknown".
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ServerEvent::ServerHello { .. } => "server_hello",
+            ServerEvent::Accepted { .. } => "accepted",
+            ServerEvent::TurnStarted { .. } => "turn_started",
+            ServerEvent::TextDelta { .. } => "text_delta",
+            ServerEvent::ToolEvent { .. } => "tool_event",
+            ServerEvent::Reasoning { .. } => "reasoning",
+            ServerEvent::TextDone(_) => "text_done",
+            ServerEvent::TurnError { .. } => "turn_error",
+            ServerEvent::TurnDone { .. } => "turn_done",
+            ServerEvent::Row(_) => "row",
+            ServerEvent::RowUpdated { .. } => "row_updated",
+            ServerEvent::Approval(_) => "approval",
+            ServerEvent::ApprovalResolved { .. } => "approval_resolved",
+            ServerEvent::ReadState { .. } => "read_state",
+            ServerEvent::HistoryPage(_) => "history_page",
+            ServerEvent::SearchResults { .. } => "search_results",
+            ServerEvent::MediaPath(_) => "media_path",
+            ServerEvent::MediaMissing { .. } => "media_missing",
+            ServerEvent::Proposal { .. } => "proposal",
+            ServerEvent::ProposalResolved(_) => "proposal_resolved",
+            ServerEvent::Error(_) => "error",
+            ServerEvent::HomeStatusChanged => "home_status_changed",
+            ServerEvent::Checklists { .. } => "checklists",
+            ServerEvent::Checklist { .. } => "checklist",
+            ServerEvent::AttachStatus { .. } => "attach_status",
+            ServerEvent::Unreadable(unread) => known(&unread.kind),
+            ServerEvent::Unknown(_) => "unknown",
+        }
+    }
+}
+
+/// `kind` as one of the contract's types, or "unknown".
+fn known(kind: &str) -> &'static str {
+    KNOWN_TYPES
+        .into_iter()
+        .find(|known| *known == kind)
+        .unwrap_or("unknown")
+}
+
+/// `id` as a log line may carry it: as it is when it is at most `MAX_ID_BYTES` of printable ASCII
+/// with no space, and otherwise a phrase that holds none of its text.
+pub fn loggable_id(id: &str) -> &str {
+    let plain =
+        !id.is_empty() && id.len() <= MAX_ID_BYTES && id.bytes().all(|b| b.is_ascii_graphic());
+    if plain {
+        id
+    } else {
+        "an id that is not logged"
+    }
+}
+
 /// An event this build could not read: its type and the ids it still names, each where its one
 /// field reads as a string no longer than `MAX_ID_BYTES`. Never its content: serde's reason can
 /// quote it.
@@ -471,6 +529,47 @@ pub struct Unreadable {
     /// The file a `media_path` or an `error` answers. A `media_missing` whose ref reads is read
     /// whole: it has no other field.
     pub r#ref: Option<String>,
+}
+
+/// The slash commands a hello offers, each that decodes, and how many did not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Commands {
+    pub offered: Vec<CommandDescriptor>,
+    /// Commands that did not fit, or all of them when they are no list.
+    pub skipped: usize,
+}
+
+impl<'de> Deserialize<'de> for Commands {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Value::Array(values) = Value::deserialize(deserializer)? else {
+            return Ok(Commands {
+                offered: Vec::new(),
+                skipped: 1,
+            });
+        };
+        let (offered, skipped) = lenient(values);
+        Ok(Commands { offered, skipped })
+    }
+}
+
+/// What a hello says of the inbox for the owner's files: nothing, the inbox, or an offer this
+/// build cannot read, which offers nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Attachments {
+    #[default]
+    Absent,
+    Offered(Inbox),
+    Unreadable,
+}
+
+impl<'de> Deserialize<'de> for Attachments {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        if value.is_null() {
+            return Ok(Attachments::Absent);
+        }
+        Ok(serde_json::from_value(value).map_or(Attachments::Unreadable, Attachments::Offered))
+    }
 }
 
 /// A slash command the engine takes, as `server_hello` names it.
@@ -555,6 +654,9 @@ pub struct Reply {
     pub turn_id: String,
     pub server_seq: u64,
     pub text: String,
+    /// The time its row stores, as the row and its history message give it; an older daemon
+    /// sends none.
+    pub ts: Option<String>,
     pub blocks: Vec<Block>,
     /// Blocks and places that did not decode or are of a type this build does not draw.
     pub skipped: usize,
@@ -565,6 +667,7 @@ struct RawReply {
     turn_id: String,
     server_seq: u64,
     text: String,
+    ts: Option<String>,
     #[serde(default)]
     blocks: Vec<Value>,
 }
@@ -576,6 +679,7 @@ impl From<RawReply> for Reply {
             turn_id: raw.turn_id,
             server_seq: raw.server_seq,
             text: raw.text,
+            ts: raw.ts,
             blocks,
             skipped,
         }
@@ -825,9 +929,13 @@ pub struct Proposal {
 /// What a proposal asks the owner to let run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ask {
-    /// A mandate's recorded call, run exactly as recorded once confirmed. Its arguments are
-    /// `outside.args_text`, always present on such a card.
-    Call { mandate: String, tool: String },
+    /// A mandate's recorded call, run exactly as recorded once confirmed. `args_text` is its
+    /// arguments as pretty JSON, outside text.
+    Call {
+        mandate: String,
+        tool: String,
+        args_text: String,
+    },
     /// A watcher's follow-up, a task Fermix starts once confirmed (PROTOCOL.md "Version 5").
     FollowUp(FollowUp),
 }
@@ -864,7 +972,16 @@ struct RawProposal {
     result_status: Option<String>,
     status_sentence: String,
     summary: String,
-    outside: Outside,
+    outside: RawOutside,
+}
+
+#[derive(Deserialize)]
+struct RawOutside {
+    args_text: Option<String>,
+    #[serde(default)]
+    args: Vec<Arg>,
+    reason: Option<String>,
+    cue: Option<Cue>,
 }
 
 impl TryFrom<RawProposal> for Proposal {
@@ -873,10 +990,19 @@ impl TryFrom<RawProposal> for Proposal {
     /// The schema's `oneOf`: a call with `mandate`, `tool` and `outside.args_text`, or a
     /// `follow_up`, never both.
     fn try_from(raw: RawProposal) -> Result<Self, Self::Error> {
-        let has_args = raw.outside.args_text.is_some();
-        let ask = match (raw.mandate, raw.tool, raw.follow_up) {
-            (Some(mandate), Some(tool), None) if has_args => Ask::Call { mandate, tool },
-            (None, None, Some(follow_up)) => Ask::FollowUp(follow_up),
+        let RawOutside {
+            args_text,
+            args,
+            reason,
+            cue,
+        } = raw.outside;
+        let ask = match (raw.mandate, raw.tool, args_text, raw.follow_up) {
+            (Some(mandate), Some(tool), Some(args_text), None) => Ask::Call {
+                mandate,
+                tool,
+                args_text,
+            },
+            (None, None, _, Some(follow_up)) => Ask::FollowUp(follow_up),
             _ => return Err("neither a mandate's call nor a follow-up".into()),
         };
         Ok(Proposal {
@@ -894,7 +1020,7 @@ impl TryFrom<RawProposal> for Proposal {
             result_status: raw.result_status,
             status_sentence: raw.status_sentence,
             summary: raw.summary,
-            outside: raw.outside,
+            outside: Outside { args, reason, cue },
         })
     }
 }
@@ -906,13 +1032,11 @@ pub struct ProposalTask {
     pub name: Option<String>,
 }
 
-/// Outside text, kept apart by structure: a call's arguments as pretty JSON (`args_text`) and one
-/// by one (`args`), the filter's reason for passing the item, and the cue's snapshot, absent when
-/// Fermix no longer keeps it. A follow-up's card carries no arguments.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Outside text, kept apart by structure: a call's arguments one by one (`args`; as pretty JSON
+/// they are its `Ask::Call`'s), the filter's reason for passing the item, and the cue's snapshot,
+/// absent when Fermix no longer keeps it. A follow-up's card carries no arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outside {
-    pub args_text: Option<String>,
-    #[serde(default)]
     pub args: Vec<Arg>,
     pub reason: Option<String>,
     pub cue: Option<Cue>,
