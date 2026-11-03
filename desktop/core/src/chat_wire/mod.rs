@@ -2,6 +2,7 @@
 //! session that runs it. Named apart from `companion`, which is the pet.
 
 pub mod grants;
+pub mod proposals;
 pub mod protocol;
 pub mod session;
 pub mod timeline;

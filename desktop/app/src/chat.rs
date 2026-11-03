@@ -10,9 +10,11 @@ mod approvals;
 mod blocks;
 mod entries;
 mod levels;
+mod outside_text;
 mod picture;
 mod places;
 mod playback;
+mod proposals;
 mod strip;
 mod table_scroller;
 mod voice_chip;
@@ -27,7 +29,9 @@ use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
 use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
+use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
+use fermix_client::chat_wire::timeline::Chat;
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
@@ -41,6 +45,10 @@ use voice_note::Player;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
+/// The room above a proposal's card brought into view.
+const REVEAL_ROOM: f64 = 24.0;
+/// How many frames a reveal waits for its card's layout before it leaves it to the next render.
+const REVEAL_FRAMES: u32 = 120;
 /// What Chat cannot do without Fermix, on the down page.
 const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.";
 
@@ -50,7 +58,15 @@ const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.
 /// send the answer (M60 cues §6 rule 3, §12).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Approval { id: String, approve: bool },
+    Approval {
+        id: String,
+        approve: bool,
+    },
+    /// A proposal's answer: its id and the word, nothing else (§6 rule 2).
+    Proposal {
+        id: String,
+        decision: Word,
+    },
 }
 
 /// Where the cards' buttons send their decisions: the controller, handed over once it exists.
@@ -103,6 +119,8 @@ pub struct ChatPage {
     approvals: approvals::Cards,
     /// Where the cards' buttons decide.
     decider: Decider,
+    /// The reveal on its way to its card, if any.
+    revealing: Rc<RefCell<Option<Revealing>>>,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
     first_seq: Cell<Option<u64>>,
     /// What the rows' strips read their files with.
@@ -167,6 +185,7 @@ impl ChatPage {
             banner,
             approvals,
             decider,
+            revealing: Rc::default(),
             first_seq: Cell::default(),
             readers: Readers {
                 media: media.clone(),
@@ -327,7 +346,7 @@ impl ChatPage {
         for ((key, entry), seq) in placed {
             let drawn = match kept.remove(key) {
                 Some(drawn) => self.redrawn(drawn, entry),
-                None => Drawn::new(entry, &self.readers),
+                None => Drawn::new(entry, &self.readers, &self.decider),
             };
             place(&self.list, &drawn.row, previous.as_ref());
             previous = Some(drawn.row.clone().upcast());
@@ -366,7 +385,42 @@ impl ChatPage {
             return drawn;
         }
         self.list.remove(&drawn.row);
-        Drawn::new(entry, &self.readers)
+        Drawn::new(entry, &self.readers, &self.decider)
+    }
+
+    /// Serves a reveal the timeline holds once its card is drawn: the card is scrolled into view
+    /// once a layout has placed it, and only then is its id handed to `served`, which takes the
+    /// request back so a later return to Chat does not scroll again. A card not drawn yet keeps
+    /// the request for the render that draws it; one already on its way is left to finish.
+    pub fn serve_reveal(&self, chat: &Chat, served: impl Fn(&str) + 'static) {
+        let Some(id) = chat.reveal.clone() else {
+            return;
+        };
+        let key = Key::Proposal(id.clone());
+        let row = self
+            .shown
+            .borrow()
+            .iter()
+            .find(|placed| placed.key == key)
+            .map(|placed| placed.drawn.row.clone());
+        let Some(row) = row else {
+            return;
+        };
+        let pending = self.revealing.take();
+        if let Some(pending) = pending {
+            if pending.id == id && pending.row.upgrade().as_ref() == Some(&row) {
+                self.revealing.replace(Some(pending));
+                return;
+            }
+            pending.tick.remove();
+        }
+        let scroller = &self.follow.scroller;
+        let tick = reveal_when_laid_out(id.clone(), &row, scroller, &self.revealing, served);
+        self.revealing.replace(Some(Revealing {
+            id,
+            row: row.downgrade(),
+            tick,
+        }));
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -391,6 +445,75 @@ impl ChatPage {
         });
         self.clock.replace(Some(source));
     }
+}
+
+/// A reveal on its way: the card's id and row, and the frame callback that scrolls to it.
+struct Revealing {
+    id: String,
+    row: glib::WeakRef<gtk::Box>,
+    tick: gtk::TickCallbackId,
+}
+
+/// Scrolls `row`, the card of the reveal `id`, into view once layouts have placed it, then hands
+/// `id` to `served`. A frame's callbacks run before its layout, so a place is trusted only when
+/// two frames running read the same one: the first read can predate the render that drew or
+/// moved the card. After REVEAL_FRAMES it gives up, and the timeline keeps the request for the
+/// next render.
+fn reveal_when_laid_out(
+    id: String,
+    row: &gtk::Box,
+    scroller: &gtk::ScrolledWindow,
+    revealing: &Rc<RefCell<Option<Revealing>>>,
+    served: impl Fn(&str) + 'static,
+) -> gtk::TickCallbackId {
+    let (scroller, revealing) = (scroller.clone(), revealing.clone());
+    let (frames, last) = (Cell::new(0_u32), Cell::new(None));
+    row.add_tick_callback(move |row, _| {
+        frames.set(frames.get() + 1);
+        let top = laid_out(row, &scroller);
+        let before = last.replace(top);
+        if let Some(top) = top.filter(|_| before == top) {
+            scroll_into_view(&scroller, top);
+            revealing.take();
+            served(&id);
+            return glib::ControlFlow::Break;
+        }
+        if frames.get() < REVEAL_FRAMES {
+            return glib::ControlFlow::Continue;
+        }
+        glib::g_warning!(
+            "fermix",
+            "a proposal's card was not laid out in {REVEAL_FRAMES} frames; the next render tries again"
+        );
+        revealing.take();
+        glib::ControlFlow::Break
+    })
+}
+
+/// Where `row`'s top stands in what `scroller` scrolls, the viewport's child, whose place is the
+/// adjustment's value whatever the view shows now; `None` until a layout gave the row a size, as
+/// an unallocated row reads as a zero rectangle at the top.
+fn laid_out(row: &gtk::Box, scroller: &gtk::ScrolledWindow) -> Option<f32> {
+    if !row.is_mapped() {
+        return None;
+    }
+    let viewport = scroller.child().and_downcast::<gtk::Viewport>();
+    let Some(content) = viewport.and_then(|viewport| viewport.child()) else {
+        glib::g_warning!("fermix", "the conversation scrolls no viewport's child");
+        return None;
+    };
+    let bounds = row.compute_bounds(&content)?;
+    (bounds.height() > 0.0).then_some(bounds.y())
+}
+
+/// Scrolls `scroller` so the row whose top stands at `top` in its content stands at the top of
+/// the view, a little room above it. Moving the view leaves the reader's place, so new rows no
+/// longer pull it down.
+fn scroll_into_view(scroller: &gtk::ScrolledWindow, top: f32) {
+    let adjustment = scroller.vadjustment();
+    let target = f64::from(top) - REVEAL_ROOM;
+    let bottom = adjustment.upper() - adjustment.page_size();
+    adjustment.set_value(target.clamp(adjustment.lower(), bottom.max(adjustment.lower())));
 }
 
 /// The running turn: when its question was asked, and whether Stop was pressed.

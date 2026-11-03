@@ -35,7 +35,7 @@ fn a_hello_whose_window_holds_this_version_connects() {
 
 #[test]
 fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
-    let newer = line(r#"{"type":"server_hello","min_version":4,"max_version":5}"#);
+    let newer = line(r#"{"type":"server_hello","min_version":5,"max_version":6}"#);
     let older = line(r#"{"type":"server_hello","min_version":1,"max_version":2}"#);
     let Handshake::Refused(app) = handshake(&newer) else {
         panic!("refused");
@@ -47,10 +47,25 @@ fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
     assert!(fermix.contains("Update the engine"), "{fermix}");
 }
 
+/// M60 cues §5.1: version 4 carries the proposals, and there is no fallback to 3.
+#[test]
+fn this_build_speaks_4_on_the_3_to_4_window_and_a_window_ending_at_3_is_refused() {
+    let current = line(r#"{"type":"server_hello","min_version":3,"max_version":4}"#);
+    assert_eq!(handshake(&current), Handshake::Ok);
+    let v0_16 = line(r#"{"type":"server_hello","min_version":2,"max_version":3}"#);
+    let Handshake::Refused(sentence) = handshake(&v0_16) else {
+        panic!("a daemon whose window ends at 3 is refused");
+    };
+    assert_eq!(
+        sentence,
+        "The Fermix engine is older than this app. Update the engine to chat."
+    );
+}
+
 #[test]
 fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
     let mut session = handshaking();
-    let Handshake::Refused(sentence) = session.hello(&server(35)) else {
+    let Handshake::Refused(sentence) = session.hello(&server(42)) else {
         panic!("client_too_new refuses");
     };
     assert!(sentence.contains("Update the engine"), "{sentence}");
@@ -67,7 +82,7 @@ fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
 
 #[test]
 fn other_errors_before_hello_are_lost_and_retried() {
-    for index in [34, 39] {
+    for index in [41, 46] {
         let mut session = handshaking();
         assert!(
             matches!(session.hello(&server(index)), Handshake::Lost(_)),

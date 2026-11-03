@@ -10,24 +10,18 @@ These four files are the engine's companion chat contract, copied byte for byte:
 | `fixtures/server_events.jsonl` | `apps/fermix_core/priv/companion/fixtures/server_events.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `95ee575b4de961bcc43f138038e06b8c379f4ba8`, the released engine v0.16.0, the tree they
-  were copied from. As of v0.16.0, the last commit to touch `priv/companion` is
-  `83464183af6e998b28f0796f3e418238a1f704f3` (2026-10-18, "fix(voice): a picture or file Fermix
-  sends reaches the Mac chat, from a GPT-Live or Grok call too"), which changed only the prose: a
-  picture or file a call sends is an ordinary media row.
-- Protocol version: 3, daemon window 2..3: phone-side media (`media_fetch`, `media_path`,
-  `media_missing`, `media_release`) and `row_updated`.
-- Engine v0.17.0 (`b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`), which fermix-desktop 0.4.0 carries,
-  serves versions 3..4. Version 4 adds a mandate's proposals (`proposal`, `proposal_resolved`,
-  `proposal_answer`), sent only to version 4 connections, so this app, on version 3, is never sent
-  one and cannot answer one in its chat: the owner's Telegram, Signal, WhatsApp or iMessage chat
-  still can. An engine whose window starts at 4 would refuse this app with its Update the app
-  sentence.
+- Commit: `b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`, the engine v0.17.0. The last commit to touch
+  `priv/companion` is `e0be70a6a0d5c79a46e7f69a4c19fd2fe24df96b` (2026-10-23, "feat(cues): cues
+  and watchers, managed from the app, with proposals answered in its chat (M60)").
+- Protocol version: 4, daemon window 3..4. Version 4 adds a mandate's proposals: the card
+  (`proposal`), its end (`proposal_resolved`) and the owner's answer (`proposal_answer`), sent and
+  taken only on version 4 connections the daemon places as the owner's. A version 2 client is
+  refused.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format. The digests match the
-  macOS app 0.6.0's pin (`Sources/FermixAppCore/Resources/Contracts/CHECKSUMS.txt`, `companion/`
+  macOS app 0.7.0's pin (`Sources/FermixAppCore/Resources/Contracts/CHECKSUMS.txt`, `companion/`
   rows).
 
-Never edit these files by hand. To take a new engine contract, copy the four files again, rewrite
-`CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json fixtures/*.jsonl`, update the
-commit above, and run `cargo test --test companion_contract`: the golden fixtures then say whether
-the app still decodes what the daemon sends.
+Never edit these files by hand. To take a new engine contract, copy the four files again from a
+committed engine, rewrite `CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json
+fixtures/*.jsonl`, update the commit above, and run `cargo test --test companion_contract`: the
+golden fixtures then say whether the app still decodes what the daemon sends.

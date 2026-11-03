@@ -1,5 +1,5 @@
 //! The chat wire's events and framing: one JSON object per `\n`-terminated line over
-//! `companion.sock`, protocol 3 (the vendored `contracts/companion/PROTOCOL.md`). Pure: it turns
+//! `companion.sock`, protocol 4 (the vendored `contracts/companion/PROTOCOL.md`). Pure: it turns
 //! lines into typed events and back, and does no I/O.
 //!
 //! Decoding is strict where a frame cannot mean anything (not JSON, not an object, no `type`, or a
@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 
-/// The version this app speaks. Engine v0.17.0's daemon serves 3..4.
-pub const PROTOCOL_VERSION: u64 = 3;
+/// The version this app speaks: 4, a mandate's proposals (M60 cues §5.1). Engine v0.17.0's daemon
+/// serves 3..4. There is no fallback to 3: a daemon whose window ends at 3 is refused.
+pub const PROTOCOL_VERSION: u64 = 4;
 /// The one profile the wire serves.
 pub const PROFILE: &str = "main";
 /// The daemon's inbound line cap (`x-max-line-bytes`). Every line this client writes, newline
@@ -29,7 +30,7 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_UNSCANNED_BYTES: usize = 32 * 1024 * 1024;
 
 /// The server event types this build decodes; any other `type` is `ServerEvent::Unknown`.
-const KNOWN_TYPES: [&str; 18] = [
+const KNOWN_TYPES: [&str; 20] = [
     "server_hello",
     "accepted",
     "turn_started",
@@ -47,6 +48,8 @@ const KNOWN_TYPES: [&str; 18] = [
     "search_results",
     "media_path",
     "media_missing",
+    "proposal",
+    "proposal_resolved",
     "error",
 ];
 
@@ -125,6 +128,22 @@ pub enum ClientEvent {
         profile_id: String,
         r#ref: String,
     },
+    /// The owner's answer to a proposal: its id and the word, never arguments (M60 cues §6
+    /// rule 2).
+    ProposalAnswer {
+        client_msg_id: String,
+        profile_id: String,
+        proposal_id: String,
+        decision: Decision,
+    },
+}
+
+/// The owner's answer to a proposal, the contract's two words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    Confirm,
+    Deny,
 }
 
 /// A line that would reach the daemon's cap, which answers `line_too_large` and closes.
@@ -191,6 +210,19 @@ impl ClientEvent {
         ClientEvent::MediaRelease {
             profile_id: PROFILE.to_owned(),
             r#ref: media_ref.to_owned(),
+        }
+    }
+
+    pub fn proposal_answer(
+        client_msg_id: &str,
+        proposal_id: &str,
+        decision: Decision,
+    ) -> ClientEvent {
+        ClientEvent::ProposalAnswer {
+            client_msg_id: client_msg_id.to_owned(),
+            profile_id: PROFILE.to_owned(),
+            proposal_id: proposal_id.to_owned(),
+            decision,
         }
     }
 
@@ -262,6 +294,13 @@ pub enum ServerEvent {
     MediaMissing {
         r#ref: String,
     },
+    /// A proposal waiting for the owner: sent when it is stored, and again after `server_hello`
+    /// for each still waiting.
+    Proposal {
+        proposal: Box<Proposal>,
+    },
+    /// A proposal left `waiting`, whichever surface decided it.
+    ProposalResolved(Resolution),
     Error(ServerError),
     /// A type published after this build, by name. Log it; it is never fatal.
     #[serde(skip)]
@@ -505,6 +544,95 @@ impl fmt::Debug for Approval {
             .field("ttl_s", &self.ttl_s)
             .finish_non_exhaustive()
     }
+}
+
+/// Where a proposal stands, in the daemon's word. A word this build does not know is kept and
+/// draws no button.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub enum ProposalState {
+    Waiting,
+    Confirmed,
+    Denied,
+    Expired,
+    Refused,
+    Unknown(String),
+}
+
+impl From<String> for ProposalState {
+    fn from(word: String) -> ProposalState {
+        match word.as_str() {
+            "waiting" => ProposalState::Waiting,
+            "confirmed" => ProposalState::Confirmed,
+            "denied" => ProposalState::Denied,
+            "expired" => ProposalState::Expired,
+            "refused" => ProposalState::Refused,
+            _ => ProposalState::Unknown(word),
+        }
+    }
+}
+
+/// A proposal's card: Fermix's record and `summary`, which carry no outside text, and
+/// `outside`, everything a model or a stranger wrote. A field that does not apply is absent on
+/// this wire and null on management; both decode as `None`. Times are RFC 3339 UTC, kept as
+/// they came.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Proposal {
+    pub proposal_id: String,
+    pub state: ProposalState,
+    pub mandate: String,
+    pub tool: String,
+    pub task: ProposalTask,
+    pub watcher: Option<String>,
+    pub source_ref: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+    pub received_at: Option<String>,
+    pub decided_at: Option<String>,
+    /// The daemon's word for the surface that decided it.
+    pub decided_from: Option<String>,
+    /// The daemon's word for how a confirmed call ended.
+    pub result_status: Option<String>,
+    pub status_sentence: String,
+    pub summary: String,
+    pub outside: Outside,
+}
+
+/// The task whose cue run raised a proposal. One with no name is named by its job.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProposalTask {
+    pub job_id: String,
+    pub name: Option<String>,
+}
+
+/// Outside text, kept apart by structure: the recorded call's arguments as pretty JSON, and the
+/// cue's snapshot, absent when Fermix no longer keeps it. A card without `args_text` does not
+/// decode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Outside {
+    pub args_text: String,
+    pub cue: Option<Cue>,
+}
+
+/// The item a proposal acted on. Every field is outside text, `occurred_at` too: it is the
+/// producer's claim.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Cue {
+    pub r#type: Option<String>,
+    pub subject: Option<String>,
+    pub text: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+/// A proposal's end. `sentence` is Fermix's; `result_text` is outside text, what the tool or the
+/// validator answered.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Resolution {
+    pub proposal_id: String,
+    pub state: ProposalState,
+    pub result_status: Option<String>,
+    pub sentence: String,
+    pub result_text: Option<String>,
 }
 
 /// A history read's answer, oldest first. `skipped` counts messages that did not decode.

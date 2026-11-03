@@ -2,14 +2,17 @@
 //! with a voice note's chip in its bubble over the words (its tile in the
 //! lane once it cannot play), the cards of the places a reply links under it
 //! and what a row shows under its words
-//! (pictures, files, link cards), the tools it ran, and failures. A streamed
-//! entry grows in place, so a chunk never redraws what is already on screen.
+//! (pictures, files, link cards), the tools it ran, a mandate's proposals,
+//! and failures. A streamed entry grows in place, so a chunk never redraws
+//! what is already on screen.
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
 use super::places::Places;
+use super::proposals::ProposalCard;
 use super::strip::{Readers, StripView};
 use super::voice_chip::Chip;
+use super::Decider;
 use adw::prelude::*;
 use fermix_client::chat::Entry;
 use fermix_client::markdown::{Block, Draft};
@@ -40,6 +43,8 @@ enum Parts {
     Reply(Reply),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
+    /// A proposal's card, whose footer follows the card's state.
+    Proposal(ProposalCard),
 }
 
 struct Reply {
@@ -69,7 +74,11 @@ struct Message {
 }
 
 impl Drawn {
-    pub fn new(entry: &Entry, readers: &Readers) -> Drawn {
+    /// `decider` takes what a proposal's buttons decide.
+    pub fn new(entry: &Entry, readers: &Readers, decider: &Decider) -> Drawn {
+        if let Entry::Proposal(card) = entry {
+            return Drawn::proposal(entry, ProposalCard::new(card, decider));
+        }
         let (side, body, source, parts) = draw_body(entry, readers);
         let (row, time) = row(side, &body, source);
         let line = row.first_child();
@@ -91,6 +100,26 @@ impl Drawn {
             row,
             time,
             parts,
+        }
+    }
+
+    /// A proposal's card on a row of its own, apart from the messages around it, as wide as the
+    /// conversation; it answers none of them.
+    fn proposal(entry: &Entry, card: ProposalCard) -> Drawn {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_top(18)
+            .margin_bottom(12)
+            .css_classes(["chat-row"])
+            .build();
+        row.append(&card.widget);
+        let time = gtk::Label::builder().visible(false).build();
+        row.append(&time);
+        Drawn {
+            entry: entry.clone(),
+            row,
+            time,
+            parts: Parts::Proposal(card),
         }
     }
 
@@ -126,6 +155,11 @@ impl Drawn {
                     return false;
                 }
             }
+            (Parts::Proposal(card), Entry::Proposal(new)) => {
+                if !card.grow(new) {
+                    return false;
+                }
+            }
             _ => return false,
         }
         if let Some(line) = self.row.first_child() {
@@ -156,7 +190,7 @@ impl Drawn {
         let (strip, voice) = match &self.parts {
             Parts::Message(message) => (&message.strip, &message.voice),
             Parts::Reply(reply) => (&reply.strip, &reply.voice),
-            Parts::Fixed | Parts::Tools(_) => return,
+            Parts::Fixed | Parts::Tools(_) | Parts::Proposal(_) => return,
         };
         strip.borrow().on_screen();
         if let Some(chip) = voice {
@@ -174,7 +208,7 @@ impl Parts {
                 reply.places.widget.clone().upcast(),
                 reply.strip.borrow().widget.clone().upcast(),
             ],
-            Parts::Fixed | Parts::Tools(_) => Vec::new(),
+            Parts::Fixed | Parts::Tools(_) | Parts::Proposal(_) => Vec::new(),
         }
     }
 
@@ -189,7 +223,7 @@ impl Parts {
                 .voice
                 .as_ref()
                 .map(|chip| (chip, &reply.strip, &reply.source)),
-            Parts::Fixed | Parts::Tools(_) => None,
+            Parts::Fixed | Parts::Tools(_) | Parts::Proposal(_) => None,
         }
     }
 
@@ -222,7 +256,7 @@ fn blank(entry: &Entry, note_plays: bool) -> bool {
         Entry::User { text, .. } | Entry::Assistant { text, .. } => {
             text.trim().is_empty() && !note_plays
         }
-        Entry::Sending(_) | Entry::Tools(_) | Entry::Failure(_) => false,
+        Entry::Sending(_) | Entry::Tools(_) | Entry::Proposal(_) | Entry::Failure(_) => false,
     }
 }
 
@@ -260,6 +294,7 @@ fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Sou
             (Side::Fermix, group.widget(), None, Parts::Tools(group))
         }
         Entry::Failure(text) => (Side::Fermix, failure(text), None, Parts::Fixed),
+        Entry::Proposal(_) => unreachable!("a proposal is drawn on a row of its own"),
     }
 }
 

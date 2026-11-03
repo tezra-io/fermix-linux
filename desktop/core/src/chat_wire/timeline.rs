@@ -6,10 +6,13 @@
 //! `server_seq` behind a cursor, a live row is shown only when it is the next seq, a gap is
 //! closed by a read from the cursor, and at most one read is out at a time. Requests wait in the
 //! outbox until the daemon accepts them, and the outbox is sent again after every handshake.
+//! A mandate's proposals are held by id until they resolve (M60 cues §5.2).
 
 use crate::chat_wire::protocol::{
-    Approval, ClientEvent, Cursor, Page, Reply, Row, ServerError, ServerEvent, ToolPhase,
+    Approval, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution, Row,
+    ServerError, ServerEvent, ToolPhase,
 };
+use crate::phone::unix_seconds;
 use std::collections::BTreeSet;
 
 /// Rows a history read asks for.
@@ -30,11 +33,15 @@ const TOO_LONG: &str = "The message is too long to send";
 /// No macOS string: its outbox has no cap.
 const OUTBOX_FULL: &str = "Too many messages are waiting to send";
 
-/// One held row. A reply held from its turn's `text_done` names the turn, and has no time.
+/// One held row. A reply held from its turn's `text_done` names the turn, and has no time of the
+/// daemon's: it carries when it arrived instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldRow {
     pub row: Row,
     pub turn_id: Option<String>,
+    /// When a streamed reply arrived, on the caller's clock: it places the reply among proposal
+    /// cards until a page brings its row's time.
+    pub arrived: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +84,16 @@ pub struct Outgoing {
     pub text: String,
     /// The card an approval's route answers.
     pub approval_id: Option<String>,
+    /// The proposal this answers.
+    pub proposal_id: Option<String>,
+}
+
+impl Outgoing {
+    /// Whether this is the person's question, drawn as a bubble while it sends. A card's answer
+    /// never is.
+    pub fn is_question(&self) -> bool {
+        self.approval_id.is_none() && self.proposal_id.is_none()
+    }
 }
 
 /// An approval card and the second (on the caller's clock) its own ttl runs out.
@@ -84,6 +101,43 @@ pub struct Outgoing {
 pub struct HeldApproval {
     pub approval: Approval,
     pub expires_at: i64,
+}
+
+/// Where the owner's answer to a proposal stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    /// Nothing sent.
+    Open,
+    /// An answer is on its way or accepted: both buttons wait for the daemon.
+    Answered(Decision),
+    /// Past its expiry on this computer's clock with no answer sent.
+    Expired,
+    /// The daemon's last word, `proposal_resolved`'s: the card is a record from then on.
+    Resolved {
+        sentence: String,
+        result_text: Option<String>,
+    },
+    /// The daemon refused this app's answer, in its sentence. A refusal can leave the proposal
+    /// waiting, so the card the daemon sends again takes this one's place.
+    Refused { sentence: String },
+}
+
+/// A proposal's card as the chat holds it, with its two times read once. A time that cannot be
+/// read is `None`: such a card never expires on this clock, and is placed last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldProposal {
+    pub proposal: Proposal,
+    pub standing: Standing,
+    pub created: Option<i64>,
+    pub expires: Option<i64>,
+}
+
+impl HeldProposal {
+    /// Whether the card asks the owner now: the daemon says it waits, nothing was sent, and it
+    /// has not expired here. Only such a card draws Deny and Confirm and takes an answer.
+    pub fn asks(&self) -> bool {
+        self.proposal.state == ProposalState::Waiting && self.standing == Standing::Open
+    }
 }
 
 /// The one history read out.
@@ -110,6 +164,10 @@ pub struct Chat {
     /// Oldest first.
     pub pending: Vec<Outgoing>,
     pub approvals: Vec<HeldApproval>,
+    /// The proposal cards, each once, by id, in the order they came.
+    pub proposals: Vec<HeldProposal>,
+    /// A request to bring a proposal's card into view, by id, until the page serves it.
+    pub reveal: Option<String>,
     /// The latest failure, in a sentence, until the next send.
     pub last_error: Option<String>,
     connected: bool,
@@ -121,10 +179,18 @@ pub struct Chat {
 }
 
 /// A handshake completed: the catch-up read first, then every request not yet accepted, in
-/// order. Held rows on screen are read again, since notices sent while away are lost.
+/// order. Held rows on screen are read again, since notices sent while away are lost. Every
+/// proposal card is dropped but those the daemon resolved or refused: the daemon sends again
+/// each one still waiting, and a refused one sent again asks again.
 pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent> {
     chat.connected = true;
     chat.approvals.clear();
+    chat.proposals.retain(|held| {
+        matches!(
+            held.standing,
+            Standing::Resolved { .. } | Standing::Refused { .. }
+        )
+    });
     let cursor = if chat.rows.is_empty() {
         Cursor::BeforeSeq(NEWEST)
     } else {
@@ -160,33 +226,34 @@ pub fn send(chat: &mut Chat, text: &str, client_msg_id: String) -> Vec<ClientEve
     }
     chat.last_error = None;
     let event = ClientEvent::msg(&client_msg_id, text);
-    enqueue(chat, client_msg_id, event, text.to_owned(), None)
+    enqueue(
+        chat,
+        Outgoing {
+            client_msg_id,
+            event,
+            text: text.to_owned(),
+            approval_id: None,
+            proposal_id: None,
+        },
+    )
+    .unwrap_or_default()
 }
 
-fn enqueue(
-    chat: &mut Chat,
-    client_msg_id: String,
-    event: ClientEvent,
-    text: String,
-    approval_id: Option<String>,
-) -> Vec<ClientEvent> {
-    // The outbox sends what it holds after every handshake: a line past the daemon's cap
-    // would be refused and resent forever.
-    if event.line().is_err() {
+/// Puts `out` in the outbox, and returns it to send now when connected. `None` when its line
+/// would pass the daemon's cap: the outbox sends what it holds after every handshake, and such
+/// a line would be refused and resent forever.
+fn enqueue(chat: &mut Chat, out: Outgoing) -> Option<Vec<ClientEvent>> {
+    if out.event.line().is_err() {
         chat.last_error = Some(TOO_LONG.into());
-        return Vec::new();
+        return None;
     }
-    chat.pending.push(Outgoing {
-        client_msg_id,
-        event: event.clone(),
-        text,
-        approval_id,
-    });
-    if chat.connected {
+    let event = out.event.clone();
+    chat.pending.push(out);
+    Some(if chat.connected {
         vec![event]
     } else {
         Vec::new()
-    }
+    })
 }
 
 /// Whether the running turn can be stopped: only a turn this connection started names the
@@ -257,16 +324,81 @@ pub fn answer(
     let event = ClientEvent::command(&client_msg_id, &name, args.as_deref());
     enqueue(
         chat,
-        client_msg_id,
-        event,
-        String::new(),
-        Some(approval_id.to_owned()),
+        Outgoing {
+            client_msg_id,
+            event,
+            text: String::new(),
+            approval_id: Some(approval_id.to_owned()),
+            proposal_id: None,
+        },
     )
+    .unwrap_or_default()
 }
 
 /// Drops the cards whose own ttl ran out: a restarted daemon forgets them unresolved.
 pub fn expire_approvals(chat: &mut Chat, now: i64) {
     chat.approvals.retain(|held| held.expires_at > now);
+}
+
+/// Answers a proposal with the owner's word, by its id alone, through the outbox. Only a card
+/// that asks takes an answer, and once one is queued both buttons wait, so a card is never
+/// answered twice.
+pub fn answer_proposal(
+    chat: &mut Chat,
+    proposal_id: &str,
+    decision: Decision,
+    client_msg_id: String,
+) -> Vec<ClientEvent> {
+    let Some(index) = chat
+        .proposals
+        .iter()
+        .position(|held| held.proposal.proposal_id == proposal_id && held.asks())
+    else {
+        return Vec::new();
+    };
+    let event = ClientEvent::proposal_answer(&client_msg_id, proposal_id, decision);
+    let out = Outgoing {
+        client_msg_id,
+        event,
+        text: String::new(),
+        approval_id: None,
+        proposal_id: Some(proposal_id.to_owned()),
+    };
+    let Some(sent) = enqueue(chat, out) else {
+        return Vec::new();
+    };
+    chat.proposals[index].standing = Standing::Answered(decision);
+    sent
+}
+
+/// Takes the buttons from every card that asks and whose expiry this clock has reached. The
+/// card says nothing ran until the daemon's resolution replaces that.
+pub fn expire_proposals(chat: &mut Chat, now: i64) {
+    for held in &mut chat.proposals {
+        if held.asks() && held.expires.is_some_and(|expires| expires <= now) {
+            held.standing = Standing::Expired;
+        }
+    }
+}
+
+/// The soonest expiry of the cards that ask, which the page's one timer waits for.
+pub fn next_expiry(chat: &Chat) -> Option<i64> {
+    chat.proposals
+        .iter()
+        .filter(|held| held.asks())
+        .filter_map(|held| held.expires)
+        .min()
+}
+
+/// Asks the page to bring a proposal's card into view. A later request replaces an earlier one.
+pub fn reveal(chat: &mut Chat, proposal_id: &str) {
+    chat.reveal = Some(proposal_id.to_owned());
+}
+
+/// The page brought `proposal_id`'s card into view: the request is taken back, so a later
+/// return to Chat does not scroll again.
+pub fn revealed(chat: &mut Chat, proposal_id: &str) {
+    chat.reveal.take_if(|asked| asked == proposal_id);
 }
 
 /// The reader reached the top: the page before the oldest held row, now or after the read out.
@@ -333,20 +465,29 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
             phase,
             ..
         } => tool_event(held_turn(chat, &turn_id, now), tool, &phase, now),
-        ServerEvent::TextDone(reply) => return text_done(chat, reply),
+        ServerEvent::TextDone(reply) => return text_done(chat, reply, now),
         ServerEvent::TurnError {
             turn_id,
             code,
             message,
         } => turn_failed(chat, &turn_id, &code, &message),
         ServerEvent::TurnDone { turn_id } => end_turn(chat, &turn_id),
-        ServerEvent::Row(row) => return apply_live(chat, HeldRow { row, turn_id: None }),
+        ServerEvent::Row(row) => {
+            let held = HeldRow {
+                row,
+                turn_id: None,
+                arrived: None,
+            };
+            return apply_live(chat, held);
+        }
         ServerEvent::RowUpdated { server_seq } => return updated(chat, server_seq),
         ServerEvent::Approval(approval) => hold_approval(chat, approval, now),
         ServerEvent::ApprovalResolved { approval_id, .. } => {
             chat.approvals
                 .retain(|held| held.approval.approval_id != approval_id);
         }
+        ServerEvent::Proposal { proposal } => hold_proposal(chat, *proposal, now),
+        ServerEvent::ProposalResolved(resolution) => resolve(chat, resolution),
         ServerEvent::ReadState { read_up_to_seq } => chat.read_up_to = read_up_to_seq,
         ServerEvent::HistoryPage(page) => return merge(chat, page),
         ServerEvent::Error(error) => refused(chat, &error),
@@ -411,7 +552,7 @@ fn tool_event(turn: &mut Turn, tool: String, phase: &ToolPhase, now: i64) {
 }
 
 /// A reply at its row. It ends its own turn only; a turn may send more than one.
-fn text_done(chat: &mut Chat, reply: Reply) -> Vec<ClientEvent> {
+fn text_done(chat: &mut Chat, reply: Reply, now: i64) -> Vec<ClientEvent> {
     let Reply {
         turn_id,
         server_seq,
@@ -439,6 +580,7 @@ fn text_done(chat: &mut Chat, reply: Reply) -> Vec<ClientEvent> {
         HeldRow {
             row,
             turn_id: Some(turn_id),
+            arrived: Some(now),
         },
     )
 }
@@ -473,16 +615,94 @@ fn hold_approval(chat: &mut Chat, approval: Approval, now: i64) {
     }
 }
 
+/// A card the daemon sent, by its id: one sent again replaces the card and keeps where its
+/// answer stands, except that one sent again after the daemon refused its answer stands anew: the
+/// daemon's word wins. A new one stands where the outbox says, so a card dropped at a handshake
+/// whose answer still waits to be sent comes back answered. One past its expiry arrives expired.
+fn hold_proposal(chat: &mut Chat, proposal: Proposal, now: i64) {
+    let created = unix_seconds(&proposal.created_at);
+    let expires = unix_seconds(&proposal.expires_at);
+    let id = proposal.proposal_id.clone();
+    let anew = answer_waiting(chat, &id).map_or(Standing::Open, Standing::Answered);
+    match chat
+        .proposals
+        .iter_mut()
+        .find(|held| held.proposal.proposal_id == id)
+    {
+        Some(held) => {
+            held.proposal = proposal;
+            held.created = created;
+            held.expires = expires;
+            if matches!(held.standing, Standing::Refused { .. }) {
+                held.standing = anew;
+            }
+        }
+        None => chat.proposals.push(HeldProposal {
+            proposal,
+            standing: anew,
+            created,
+            expires,
+        }),
+    }
+    expire_proposals(chat, now);
+}
+
+/// The answer to `proposal_id` still in the outbox, if any.
+fn answer_waiting(chat: &Chat, proposal_id: &str) -> Option<Decision> {
+    chat.pending.iter().find_map(|out| match &out.event {
+        ClientEvent::ProposalAnswer {
+            proposal_id: answered,
+            decision,
+            ..
+        } if answered == proposal_id => Some(*decision),
+        _ => None,
+    })
+}
+
+/// The daemon's last word on a card it holds. One for a card not held changes nothing.
+fn resolve(chat: &mut Chat, resolution: Resolution) {
+    let held = chat
+        .proposals
+        .iter_mut()
+        .find(|held| held.proposal.proposal_id == resolution.proposal_id);
+    if let Some(held) = held {
+        held.standing = Standing::Resolved {
+            sentence: resolution.sentence,
+            result_text: resolution.result_text,
+        };
+    }
+}
+
 /// A refusal the connection survives, in the daemon's word. One naming a request ends that
-/// request's delivery. A media failure (`ref`) is the grants', not the timeline's.
+/// request's delivery; one naming a proposal's answer refuses that card, in the daemon's sentence,
+/// until the daemon sends the card again, and is not the chat's failure. A media failure (`ref`)
+/// is the grants', not the timeline's.
 fn refused(chat: &mut Chat, error: &ServerError) {
     if error.r#ref.is_some() {
         return;
     }
+    let reported = format!("The daemon reported: {}", error.reason);
+    let answered = error.client_msg_id.as_deref().and_then(|id| {
+        chat.pending
+            .iter()
+            .find(|out| out.client_msg_id == id)
+            .and_then(|out| out.proposal_id.clone())
+    });
     if let Some(id) = &error.client_msg_id {
         settle(chat, id);
     }
-    chat.last_error = Some(format!("The daemon reported: {}", error.reason));
+    let Some(proposal_id) = answered else {
+        chat.last_error = Some(reported);
+        return;
+    };
+    let sentence = error.message.clone().unwrap_or(reported);
+    let held = chat
+        .proposals
+        .iter_mut()
+        .find(|held| held.proposal.proposal_id == proposal_id);
+    if let Some(held) = held {
+        held.standing = Standing::Refused { sentence };
+    }
 }
 
 /// A notice that a held row changed: it is read again. A row not held is read as it stands
@@ -552,7 +772,14 @@ fn put_rows(chat: &mut Chat, rows: Vec<Row>) {
             .binary_search_by_key(&seq, |held| held.row.server_seq)
         {
             Ok(index) => chat.rows[index].row = row,
-            Err(index) => chat.rows.insert(index, HeldRow { row, turn_id: None }),
+            Err(index) => {
+                let held = HeldRow {
+                    row,
+                    turn_id: None,
+                    arrived: None,
+                };
+                chat.rows.insert(index, held);
+            }
         }
     }
 }

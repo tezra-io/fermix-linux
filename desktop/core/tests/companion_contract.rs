@@ -3,8 +3,8 @@
 //! in the engine fails here rather than in the chat.
 
 use fermix_client::chat_wire::protocol::{
-    decode_line, Block, ClientEvent, Cursor, Direction, Grant, Reply, ServerEvent, TaskRef,
-    ToolPhase, MAX_LINE_BYTES, PROTOCOL_VERSION,
+    decode_line, Block, ClientEvent, Cursor, Decision, Direction, Grant, ProposalState, Reply,
+    ServerEvent, TaskRef, ToolPhase, MAX_LINE_BYTES, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -155,6 +155,16 @@ fn the_golden_client_lines_are_the_app_constructors() {
     let fetch = "9879f6d3c9efefe8c4f4aabe9d3269762264be52794e96f62ab8ffa53b7fadec";
     same(ClientEvent::media_fetch(fetch), 10);
     same(ClientEvent::media_release(fetch), 11);
+    let proposal = "cpr_4f1c2a9b7e3d5a60c8b1f2e3";
+    same(
+        ClientEvent::proposal_answer("mac-10", proposal, Decision::Confirm),
+        12,
+    );
+    let other = "cpr_9a0b1c2d3e4f5a6b7c8d9e0f";
+    same(
+        ClientEvent::proposal_answer("mac-11", other, Decision::Deny),
+        13,
+    );
 }
 
 #[test]
@@ -187,8 +197,8 @@ fn the_golden_server_events_carry_their_fields() {
     assert_eq!(
         server(0),
         ServerEvent::ServerHello {
-            min_version: 2,
-            max_version: 3
+            min_version: 3,
+            max_version: 4
         }
     );
     let ServerEvent::ToolEvent { phase, detail, .. } = server(7) else {
@@ -273,13 +283,68 @@ fn the_media_answers_and_the_errors_decode() {
     };
     assert!(path.ends_with(".ogg"));
     assert_eq!(sha256.len(), 64);
-    let ServerEvent::Error(refusal) = server(35) else {
-        panic!("line 35 is a version refusal");
+    let ServerEvent::Error(refusal) = server(42) else {
+        panic!("line 42 is a version refusal");
     };
     assert_eq!(refusal.direction, Some(Direction::ClientTooNew));
-    assert_eq!(refusal.max_version, Some(3));
-    let ServerEvent::Error(media) = server(40) else {
-        panic!("line 40 is a media failure");
+    assert_eq!(refusal.max_version, Some(4));
+    let ServerEvent::Error(media) = server(47) else {
+        panic!("line 47 is a media failure");
     };
     assert!(media.r#ref.is_some());
+}
+
+#[test]
+fn the_golden_proposals_carry_their_record_and_their_outside_text() {
+    let ServerEvent::Proposal { proposal: full } = server(34) else {
+        panic!("line 34 is a proposal");
+    };
+    assert_eq!(full.proposal_id, "cpr_4f1c2a9b7e3d5a60c8b1f2e3");
+    assert_eq!(full.state, ProposalState::Waiting);
+    assert_eq!(full.task.name.as_deref(), Some("release issues"));
+    assert_eq!(full.watcher.as_deref(), Some("release-watch"));
+    assert_eq!(full.source_ref.as_deref(), Some("eng-blogs"));
+    assert!(full
+        .outside
+        .args_text
+        .contains("\"title\": \"Phoenix 2.0\""));
+    let cue = full.outside.cue.expect("the first card keeps its cue");
+    assert_eq!(cue.r#type.as_deref(), Some("release"));
+    assert_eq!(cue.occurred_at.as_deref(), Some("2026-10-10T11:58:30Z"));
+    let ServerEvent::Proposal { proposal: bare } = server(35) else {
+        panic!("line 35 is a proposal");
+    };
+    assert_eq!(bare.task.name, None);
+    assert_eq!(
+        (bare.watcher, bare.source_ref, bare.received_at),
+        (None, None, None)
+    );
+    assert_eq!(bare.outside.cue, None);
+}
+
+#[test]
+fn the_golden_resolutions_and_refused_answers_decode() {
+    let ServerEvent::ProposalResolved(confirmed) = server(37) else {
+        panic!("line 37 is a resolution");
+    };
+    assert_eq!(confirmed.state, ProposalState::Confirmed);
+    assert_eq!(confirmed.result_status.as_deref(), Some("ok"));
+    assert_eq!(confirmed.result_text.as_deref(), Some("{\"number\":42}"));
+    let states: Vec<ProposalState> = (38..=40)
+        .map(|index| match server(index) {
+            ServerEvent::ProposalResolved(resolution) => resolution.state,
+            other => panic!("line {index} is a resolution: {other:?}"),
+        })
+        .collect();
+    let ended = [
+        ProposalState::Denied,
+        ProposalState::Refused,
+        ProposalState::Expired,
+    ];
+    assert_eq!(states, ended);
+    let ServerEvent::Error(refused) = server(48) else {
+        panic!("line 48 is a refused answer");
+    };
+    assert_eq!(refused.reason, "request_failed");
+    assert_eq!(refused.client_msg_id.as_deref(), Some("mac-10"));
 }

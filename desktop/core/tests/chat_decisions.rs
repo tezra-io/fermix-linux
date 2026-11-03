@@ -23,7 +23,7 @@ const REGISTRATIONS: [&str; 6] = [
 /// Words that make an action a decision.
 const DECIDING: [&str; 5] = ["approve", "deny", "confirm", "decide", "answer"];
 /// The cards whose buttons decide.
-const CARDS: [&str; 1] = ["chat/approvals.rs"];
+const CARDS: [&str; 2] = ["chat/approvals.rs", "chat/proposals.rs"];
 
 /// Every `.rs` file under `dir`, recursively, at most `depth` levels down.
 fn sources(dir: &Path, depth: usize) -> Vec<PathBuf> {

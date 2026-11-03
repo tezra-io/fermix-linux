@@ -1,11 +1,14 @@
 //! The Chat page's entries, read off the timeline the chat wire keeps (`chat_wire::timeline`):
-//! the held rows, the questions still sending, the turn answering now with its tools, and why
-//! the last request failed. Nothing here is decided: it only says how the held facts read.
+//! the held rows, the proposal cards placed among them by when each was made, the questions
+//! still sending, the turn answering now with its tools, and why the last request failed.
+//! Nothing here is decided: it only says how the held facts read.
 
 use crate::activity::ToolKind;
+use crate::chat_wire::proposals;
 use crate::chat_wire::protocol::Row;
-use crate::chat_wire::timeline::{self, Chat, ToolState};
+use crate::chat_wire::timeline::{self, Chat, HeldProposal, HeldRow, ToolState};
 use crate::media::{strip, words, Strip};
+use crate::phone::unix_seconds;
 use crate::places::{cards, Card};
 use std::collections::HashMap;
 
@@ -24,6 +27,8 @@ pub enum Entry {
     },
     /// The running turn's tools, drawn as one group.
     Tools(Vec<ToolRun>),
+    /// A mandate's proposal, drawn apart from the messages: it answers none of them.
+    Proposal(proposals::Card),
     /// Why the last request did not get its reply.
     Failure(String),
 }
@@ -73,6 +78,8 @@ pub enum Key {
     Sending(String),
     /// The running turn's tools, by the turn.
     Tools(String),
+    /// A proposal's card, by its id.
+    Proposal(String),
     Failure,
 }
 
@@ -108,7 +115,14 @@ pub fn view(chat: &Chat) -> View {
     // A turn's replies are numbered in the order their rows are held; its draft takes the next
     // number, which its row will have.
     let mut replies: HashMap<&str, usize> = HashMap::new();
+    let mut placed = placed_cards(&chat.proposals).into_iter().peekable();
     for held in &chat.rows {
+        if let Some(at) = row_time(held) {
+            while let Some(card) = placed.next_if(|card| card.created.is_some_and(|made| made < at))
+            {
+                push_card(&mut view, card);
+            }
+        }
         let reply = held.turn_id.as_deref().map(|turn| {
             let count = replies.entry(turn).or_default();
             *count += 1;
@@ -116,15 +130,15 @@ pub fn view(chat: &Chat) -> View {
         });
         push_row(&mut view, &held.row, reply);
     }
+    placed.for_each(|card| push_card(&mut view, card));
     let held_ids: Vec<&str> = chat
         .rows
         .iter()
         .filter_map(|held| held.row.client_msg_id.as_deref())
         .collect();
     for out in &chat.pending {
-        // An approval's route is a command, not a question: it draws no bubble.
-        let question = out.approval_id.is_none();
-        if question && !held_ids.contains(&out.client_msg_id.as_str()) {
+        // A card's answer is not a question: it draws no bubble.
+        if out.is_question() && !held_ids.contains(&out.client_msg_id.as_str()) {
             let key = Key::Sending(out.client_msg_id.clone());
             view.push(Entry::Sending(out.text.clone()), key, None, None);
         }
@@ -138,6 +152,30 @@ pub fn view(chat: &Chat) -> View {
         view.push(Entry::Failure(error.clone()), Key::Failure, None, None);
     }
     view
+}
+
+/// The proposal cards in the order they stand in the conversation: by when each was made, a card
+/// whose time cannot be read last, in the order the cards came.
+fn placed_cards(proposals: &[HeldProposal]) -> Vec<&HeldProposal> {
+    let mut placed: Vec<&HeldProposal> = proposals.iter().collect();
+    placed.sort_by_key(|held| (held.created.is_none(), held.created));
+    placed
+}
+
+/// When a held row was written: the daemon's time, or when a streamed reply arrived here.
+fn row_time(held: &HeldRow) -> Option<i64> {
+    held.row
+        .ts
+        .as_deref()
+        .and_then(unix_seconds)
+        .or(held.arrived)
+}
+
+/// A proposal's card, with no time of its own under it: its facts say when it waits until.
+fn push_card(view: &mut View, held: &HeldProposal) {
+    let card = proposals::card(held);
+    let key = Key::Proposal(card.id.clone());
+    view.push(Entry::Proposal(card), key, None, None);
 }
 
 /// A held row: its words and what it shows under them, as one entry, or none where it has

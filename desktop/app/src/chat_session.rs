@@ -6,11 +6,12 @@ use crate::app::App;
 use crate::chat::Decision;
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
-use fermix_client::chat_wire::protocol::{ClientEvent, Row, ServerEvent};
+use fermix_client::chat_wire::protocol::{ClientEvent, Decision as Word, Row, ServerEvent};
 use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use gtk::glib;
 use std::rc::Rc;
+use std::time::Duration;
 
 /// Events read while waiting for `server_hello` before the attempt is given up.
 const HANDSHAKE_READ_CAP: usize = 16;
@@ -25,6 +26,9 @@ pub struct ChatWire {
     /// The backoff's timer while it waits; an attempt started sooner removes it.
     backoff: Option<glib::SourceId>,
     expiry: Option<glib::SourceId>,
+    /// The one timer for the proposals' expiry, and the second it waits for: moved only when
+    /// the soonest expiry of the cards that ask moves.
+    proposal_clock: Option<(i64, glib::SourceId)>,
 }
 
 /// Wall-clock seconds since the epoch.
@@ -132,6 +136,7 @@ impl App {
         };
         self.chat_send(events);
         self.media.connected(link.clone());
+        self.keep_proposal_clock();
         self.render();
         let app = self.clone();
         glib::spawn_future_local(async move { app.read_loop(link, generation).await });
@@ -176,7 +181,9 @@ impl App {
         self.chat_send(events);
         self.chat_seen();
         self.keep_approval_clock();
+        self.keep_proposal_clock();
         self.render();
+        self.serve_reveal();
     }
 
     /// The connection ended: the timeline forgets what it asked, and the session waits out
@@ -259,7 +266,31 @@ impl App {
     fn chat_decide(self: &Rc<Self>, decision: Decision) {
         match decision {
             Decision::Approval { id, approve } => self.answer_approval(&id, approve),
+            Decision::Proposal { id, decision } => self.answer_proposal(&id, decision),
         }
+    }
+
+    /// Sends the owner's word on a proposal, once, through the outbox: the card's id and the word.
+    fn answer_proposal(self: &Rc<Self>, proposal_id: &str, decision: Word) {
+        let events = {
+            let chat = &mut self.wire.borrow_mut().chat;
+            timeline::answer_proposal(chat, proposal_id, decision, message_id())
+        };
+        self.chat_send(events);
+        self.keep_proposal_clock();
+        self.render();
+    }
+
+    /// The page scrolls to a revealed card once it is laid out, and only then is the request
+    /// taken back.
+    fn serve_reveal(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        let served = move |id: &str| {
+            if let Some(app) = app.upgrade() {
+                timeline::revealed(&mut app.wire.borrow_mut().chat, id);
+            }
+        };
+        self.chat.serve_reveal(&self.wire.borrow().chat, served);
     }
 
     fn answer_approval(&self, approval_id: &str, approve: bool) {
@@ -291,6 +322,40 @@ impl App {
         }
         let events = timeline::newest_seen(&mut self.wire.borrow_mut().chat);
         self.chat_send(events);
+    }
+
+    /// Keeps the one proposal timer on the soonest expiry of the cards that ask: left alone while
+    /// that does not move, moved when it does, gone when no card asks. On firing it expires what
+    /// it reached and waits for the next.
+    fn keep_proposal_clock(self: &Rc<Self>) {
+        let mut wire = self.wire.borrow_mut();
+        let next = timeline::next_expiry(&wire.chat);
+        if next == wire.proposal_clock.as_ref().map(|(at, _)| *at) {
+            return;
+        }
+        if let Some((_, source)) = wire.proposal_clock.take() {
+            source.remove();
+        }
+        let Some(at) = next else {
+            return;
+        };
+        // Microseconds to the expiry's second, so the timer never fires before it.
+        let wait = u64::try_from(at.saturating_mul(1_000_000) - glib::real_time()).unwrap_or(0);
+        let app = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(Duration::from_micros(wait), move || {
+            let Some(app) = app.upgrade() else {
+                return;
+            };
+            {
+                let mut wire = app.wire.borrow_mut();
+                // Fired: there is no timer left to remove.
+                wire.proposal_clock = None;
+                timeline::expire_proposals(&mut wire.chat, now());
+            }
+            app.keep_proposal_clock();
+            app.render();
+        });
+        wire.proposal_clock = Some((at, source));
     }
 
     /// While cards wait, a second's clock drops each whose own ttl ran out.
