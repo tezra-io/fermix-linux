@@ -12,7 +12,7 @@ use fermix_client::chat_wire::protocol::{
     ServerEvent,
 };
 use fermix_client::chat_wire::session::{
-    closes, logged, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
+    closes, logged, page_read, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
 };
 use fermix_client::chat_wire::timeline::{self, Chat};
 use fermix_client::phone::unix_seconds;
@@ -82,7 +82,7 @@ fn log_reply(reply: &Reply) {
 
 /// Whether a daemon's time is absent or one this app can read: one the timeline places by
 /// (`unix_seconds`) and the page writes (`chat::local`). Any other is drawn as none, or as the
-/// daemon wrote it on a card, and logged here once, as it arrives.
+/// daemon wrote it on a card; the callers here log it once, as it arrives.
 pub fn time_reads(ts: Option<&str>) -> bool {
     ts.is_none_or(|ts| unix_seconds(ts).is_some() && crate::chat::local(ts).is_some())
 }
@@ -282,12 +282,12 @@ impl App {
             return;
         }
         self.log_event(&event);
-        let page_read = matches!(event, ServerEvent::HistoryPage(_));
+        let read = page_read(&event);
         let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
         if timeline::history_unreadable(&self.wire.borrow().chat) {
             return self.chat_lost(Lost::History);
         }
-        if page_read {
+        if read {
             self.wire.borrow_mut().session.history_read();
         }
         self.chat_send(events);

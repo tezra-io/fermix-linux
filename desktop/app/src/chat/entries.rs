@@ -397,10 +397,18 @@ pub(super) fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
     toast(widget, "Copied");
 }
 
+/// Shows `text` in the window's toast. A toast that cannot show is logged without its text,
+/// which can name a row's file.
 pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if let Err(e) = widget.activate_action("win.toast", Some(&text.to_variant())) {
-        glib::g_warning!("fermix", "could not show the toast {text:?}: {e}");
+        glib::g_warning!("fermix", "could not show a toast: {e}");
     }
+}
+
+/// A GLib error as a log line names it: its domain and code, never its message, which can quote
+/// a file's path or a link's address.
+pub(super) fn error_code(e: &glib::Error) -> String {
+    format!("{} {}", e.domain().as_str(), e.code())
 }
 
 fn user_bubble(text: &str) -> gtk::Label {

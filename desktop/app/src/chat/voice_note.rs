@@ -12,6 +12,7 @@ use super::voice_chip::Chip;
 use crate::audio::Endpoints;
 use crate::media_grants::{Hold, Media};
 use fermix_client::chat_wire::grants::Outcome;
+use fermix_client::chat_wire::protocol::loggable_id;
 use fermix_client::player::{self, Pressed, Shown, TICK_MS};
 use gtk::glib;
 use std::cell::RefCell;
@@ -135,7 +136,8 @@ impl Player {
                 return self.refresh();
             }
             Outcome::Failed(why) => {
-                glib::g_warning!("fermix", "voice note {ref} did not play: {why}");
+                let logged = loggable_id(r#ref);
+                glib::g_warning!("fermix", "voice note {logged} did not play: {why}");
                 self.state.borrow_mut().let_go(r#ref);
                 toast(&chip.widget, NOT_READY);
                 return self.refresh();
@@ -160,7 +162,8 @@ impl Player {
                 });
             }
             Err(why) => {
-                glib::g_warning!("fermix", "voice note {} did not start: {why}", chip.r#ref());
+                let r#ref = loggable_id(chip.r#ref());
+                glib::g_warning!("fermix", "voice note {ref} did not start: {why}");
                 self.state.borrow_mut().let_go(chip.r#ref());
                 chip.fall_back(&why);
             }

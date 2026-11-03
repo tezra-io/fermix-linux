@@ -11,7 +11,7 @@ use fermix_client::chat_wire::protocol::{
     line_buffer, read_line, ClientEvent, Cursor, Decision, DecodeError, ServerEvent, Unreadable,
     MAX_FRAME_BYTES,
 };
-use fermix_client::chat_wire::session::{handshake, Handshake, Phase, Session};
+use fermix_client::chat_wire::session::{handshake, page_read, Handshake, Phase, Session};
 use fermix_client::chat_wire::timeline::{
     self, Chat, Standing, MAX_UNREAD_PAGES, NEWEST, PAGE_LIMIT, REFUSED_UNREAD, SETTLED_UNREAD,
     TURN_UNREAD,
@@ -587,6 +587,30 @@ fn a_history_unreadable_page_after_page_ends_the_connection() {
     assert!(
         timeline::history_unreadable(&chat),
         "still unreadable: given up at once"
+    );
+}
+
+/// The history given up, the next connection's first page that reads is a page read, and it
+/// leaves the history readable: the app ends the kept backoff only after it checks the history
+/// was not given up, so a page must never leave it given up.
+#[test]
+fn a_page_that_reads_on_the_next_connection_leaves_the_history_readable() {
+    let mut chat = connected();
+    for _ in 0..=MAX_UNREAD_PAGES {
+        receive(&mut chat, bad_page());
+    }
+    assert!(timeline::history_unreadable(&chat));
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+
+    let page = read(empty_page());
+    assert!(page_read(&page));
+    timeline::receive(&mut chat, page, 0);
+    assert!(!timeline::history_unreadable(&chat));
+    receive(&mut chat, bad_page());
+    assert!(
+        !timeline::history_unreadable(&chat),
+        "counted again from the page that read"
     );
 }
 

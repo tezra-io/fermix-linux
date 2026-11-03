@@ -11,7 +11,7 @@ use super::strip::{Readers, NOT_AVAILABLE};
 use super::voice_note::Player;
 use crate::media_grants::Media;
 use fermix_client::chat_wire::grants::Outcome;
-use fermix_client::chat_wire::protocol::MediaRef;
+use fermix_client::chat_wire::protocol::{loggable_id, MediaRef};
 use fermix_client::player::{written, Key, Shown};
 use fermix_client::waveform::{self, Levels, Unheard};
 use futures_channel::oneshot;
@@ -189,7 +189,8 @@ impl Chip {
                 self.fall_back(&unheard.to_string());
             }
             Read::Heard(Err(unheard)) => {
-                glib::g_debug!("fermix", "voice note {} rests: {unheard}", self.note.r#ref);
+                let r#ref = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "voice note {ref} rests: {unheard}");
                 self.settled.set(true);
             }
             Read::Gone => {
@@ -197,7 +198,8 @@ impl Chip {
                 self.gone();
             }
             Read::Failed(why) => {
-                glib::g_debug!("fermix", "no levels for {} yet: {why}", self.note.r#ref);
+                let r#ref = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "no levels for {ref} yet: {why}");
             }
         }
     }
@@ -312,16 +314,13 @@ impl Chip {
         if !self.plays.replace(false) {
             return;
         }
-        glib::g_debug!(
-            "fermix",
-            "voice note {} is a file tile: {why}",
-            self.note.r#ref
-        );
+        let r#ref = loggable_id(&self.note.r#ref);
+        glib::g_debug!("fermix", "voice note {ref} is a file tile: {why}");
         self.widget.set_visible(false);
         let hook = self.unplayable.take();
         match hook {
             Some(hook) => hook(),
-            None => glib::g_critical!("fermix", "voice note {} has no row", self.note.r#ref),
+            None => glib::g_critical!("fermix", "voice note {ref} has no row"),
         }
     }
 

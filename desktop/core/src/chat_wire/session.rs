@@ -45,6 +45,10 @@ const CLOSING_REASONS: [&str; 20] = [
 const UPDATE_APP: &str =
     "This app is older than the Fermix engine it talks to. Update the app to chat.";
 const UPDATE_FERMIX: &str = "The Fermix engine is older than this app. Update the engine to chat.";
+/// What the page says for a version refusal in a direction this build does not know. No macOS
+/// string: the macOS app shows the daemon's word.
+pub const UPDATE_BOTH: &str =
+    "Fermix refused this app's version without saying which is older. Update the app and the engine to chat.";
 /// What the page says for `Shown::NoChat`.
 pub const NO_CHAT: &str = "The Fermix engine on this computer has no chat yet";
 /// What the page says while it tries again after any other loss.
@@ -110,20 +114,28 @@ fn window(min: u64, max: u64) -> Handshake {
     Handshake::Ok
 }
 
-/// The sentence for a version refusal. A direction this build does not know names both sides.
+/// The sentence for a version refusal, in this app's words. A direction this build does not know
+/// says to update both sides, and never shows the daemon's word.
 pub fn refusal(direction: &Direction) -> String {
     match direction {
         Direction::ClientTooOld => UPDATE_APP.into(),
         Direction::ClientTooNew => UPDATE_FERMIX.into(),
-        Direction::Other(word) => {
-            format!("The daemon reported: {word}")
-        }
+        Direction::Other(_) => UPDATE_BOTH.into(),
     }
 }
 
-/// A handshake event as the log names it: its type, and an `error`'s reason and direction as code
-/// words (`loggable_id`). Never the daemon's sentence, nor a word outside the contract's alphabet.
+/// A handshake event as the log names it: its type, a `server_hello`'s version window, and an
+/// `error`'s reason and direction as code words (`loggable_id`). Never the daemon's sentence, nor
+/// a word outside the contract's alphabet.
 pub fn logged(event: &ServerEvent) -> String {
+    if let ServerEvent::ServerHello {
+        min_version,
+        max_version,
+        ..
+    } = event
+    {
+        return format!("server_hello, versions {min_version} to {max_version}");
+    }
     let ServerEvent::Error(ServerError {
         reason, direction, ..
     }) = event
@@ -145,7 +157,7 @@ pub enum Lost {
     /// No `companion.sock` file: an engine that predates chat.
     NoSocket,
     /// The history could not be read, page after page (`timeline::history_unreadable`). Its
-    /// backoff goes on past the next handshake, whose connection gives up the same way while the
+    /// backoff goes on past every later handshake, whatever other loss comes between, while the
     /// history stays unreadable, until a page reads (`Session::history_read`).
     History,
     /// Anything else; the detail is for the log.
@@ -177,6 +189,14 @@ pub enum Shown {
     Refused(String),
 }
 
+/// Whether `event` is a page of the history that read: the one event after which a backoff kept
+/// for an unreadable history ends (`Session::history_read`). A page that could not be read is no
+/// read. A page that reads never leaves the history given up (`timeline::history_unreadable`):
+/// it counts the unreadable pages from zero.
+pub fn page_read(event: &ServerEvent) -> bool {
+    matches!(event, ServerEvent::HistoryPage(_))
+}
+
 /// The connection's phase and its run of failures.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Session {
@@ -184,6 +204,9 @@ pub struct Session {
     failures: u32,
     /// Why the last attempt failed, kept while later attempts run.
     last_lost: Option<Lost>,
+    /// A connection gave up on its history and no page has read since: the backoff is kept past
+    /// every handshake, whatever other loss comes between, until `history_read`.
+    history_owed: bool,
 }
 
 impl Session {
@@ -214,14 +237,14 @@ impl Session {
         true
     }
 
-    /// An event read during the handshake. `Ok` connects and resets the backoff, unless the last
-    /// connection gave up on its history (`history_read` resets it then); `Refused` ends the
-    /// attempts. The caller ends a `Lost` connection with `lost`.
+    /// An event read during the handshake. `Ok` connects and resets the backoff, unless a
+    /// connection gave up on its history and no page has read since (`history_read` resets it
+    /// then); `Refused` ends the attempts. The caller ends a `Lost` connection with `lost`.
     pub fn hello(&mut self, event: &ServerEvent) -> Handshake {
         let outcome = handshake(event);
         match &outcome {
             Handshake::Ok => {
-                if self.last_lost != Some(Lost::History) {
+                if !self.history_owed {
                     self.failures = 0;
                 }
                 self.phase = Phase::Connected;
@@ -240,6 +263,7 @@ impl Session {
     pub fn history_read(&mut self) {
         if self.phase == Phase::Connected {
             self.failures = 0;
+            self.history_owed = false;
         }
     }
 
@@ -256,6 +280,7 @@ impl Session {
         }
         let wait = delay(self.failures);
         self.failures = self.failures.saturating_add(1);
+        self.history_owed |= why == Lost::History;
         self.last_lost = Some(why);
         self.phase = Phase::Waiting;
         Some(wait)

@@ -3,10 +3,11 @@
 //! (`media::Admission`), made into textures on the main loop; and the viewer a picture tile opens,
 //! with Copy and Save As.
 
-use super::entries::toast;
+use super::entries::{error_code, toast};
 use crate::media_grants::Media;
 use adw::prelude::*;
 use fermix_client::chat_wire::grants::Outcome;
+use fermix_client::chat_wire::protocol::loggable_id;
 use fermix_client::media::{Admission, Fit};
 use fermix_client::picture::{Decoded, Refused};
 use futures_channel::oneshot;
@@ -260,15 +261,16 @@ async fn copy_picture(anchor: &gtk::Button, file: &FileRef, decoder: &Rc<Decoder
         Outcome::Failed(why) => Err(why),
     };
     drop(hold);
+    let r#ref = loggable_id(&file.r#ref);
     match whole {
         Ok(texture) => {
             let (width, height) = (texture.width(), texture.height());
-            glib::g_debug!("fermix", "copied {} whole, {width}x{height}", file.name);
+            glib::g_debug!("fermix", "copied {ref} whole, {width}x{height}");
             anchor.clipboard().set_texture(&texture);
             toast(anchor, "Copied");
         }
         Err(why) => {
-            glib::g_warning!("fermix", "copying {} failed: {why}", file.name);
+            glib::g_warning!("fermix", "copying {ref} failed: {why}");
             toast(anchor, "The picture was not copied.");
         }
     }
@@ -314,7 +316,8 @@ async fn save_picture(anchor: &gtk::Button, file: &FileRef) {
     match copied {
         Ok(()) => toast(anchor, "Picture saved"),
         Err(why) => {
-            glib::g_warning!("fermix", "saving {} failed: {why}", file.name);
+            let r#ref = loggable_id(&file.r#ref);
+            glib::g_warning!("fermix", "saving {ref} failed: {why}");
             toast(anchor, "The picture was not saved.");
         }
     }
@@ -327,7 +330,7 @@ async fn copy(path: &Path, target: &gio::File) -> Result<(), String> {
         gio::FileCopyFlags::OVERWRITE,
         glib::Priority::DEFAULT,
     );
-    copied.await.map_err(|e| e.message().to_owned())
+    copied.await.map_err(|e| error_code(&e))
 }
 
 #[cfg(test)]

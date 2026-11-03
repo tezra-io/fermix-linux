@@ -3,8 +3,8 @@
 
 use fermix_client::chat_wire::protocol::{read_line, Attachments, ServerEvent};
 use fermix_client::chat_wire::session::{
-    closes, delay, handshake, logged, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
-    HISTORY_UNREAD, RECONNECTING,
+    closes, delay, handshake, logged, page_read, Handshake, Lost, Phase, Session, Shown,
+    HANDSHAKE_TIMEOUT, HISTORY_UNREAD, RECONNECTING, UPDATE_BOTH,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -144,10 +144,9 @@ fn a_handshake_resets_the_backoff() {
     );
 }
 
-/// A connection given up because its history could not be read keeps its backoff past the next
-/// handshake, so a history that stays unreadable is tried less and less often, at most every 30 s;
-/// the first loss of another kind after it waits that backoff once, and the next handshake resets
-/// it.
+/// A connection given up because its history could not be read keeps its backoff past every later
+/// handshake, so a history that stays unreadable is tried less and less often, at most every 30 s.
+/// A loss of another kind keeps it too: only a page that reads ends it (`history_read`).
 #[test]
 fn a_history_given_up_keeps_its_backoff_past_the_handshake() {
     let mut session = handshaking();
@@ -175,7 +174,8 @@ fn a_history_given_up_keeps_its_backoff_past_the_handshake() {
     session.hello(&server(0));
     assert_eq!(
         session.lost(Lost::Broken("eof".into())),
-        Some(Duration::from_secs(1))
+        Some(Duration::from_secs(30)),
+        "no page has read, so a plain loss keeps the backoff too"
     );
 }
 
@@ -238,6 +238,72 @@ fn a_page_read_after_a_history_given_up_ends_its_backoff() {
     );
 }
 
+/// A refusal whose direction this build does not know says to update both sides, in this app's
+/// own words: the daemon's word is not shown.
+#[test]
+fn a_refusal_in_a_direction_this_build_does_not_know_says_to_update_both_with_no_daemon_word() {
+    let odd = line(
+        r#"{"type":"error","reason":"unsupported_protocol_version","direction":"sideways now","message":"secret"}"#,
+    );
+    let Handshake::Refused(sentence) = handshake(&odd) else {
+        panic!("a direction refuses");
+    };
+    assert_eq!(sentence, UPDATE_BOTH);
+    let mut session = handshaking();
+    session.hello(&odd);
+    let Shown::Refused(shown) = session.shown() else {
+        panic!("the page shows the refusal");
+    };
+    for word in ["sideways", "secret", "daemon"] {
+        assert!(!shown.contains(word), "{shown}");
+    }
+}
+
+/// A backoff kept for a history that could not be read lasts until a page reads, through any
+/// other loss on the way: a daemon that also drops connections never resets it.
+#[test]
+fn a_backoff_kept_for_the_history_survives_another_loss_before_a_page_reads() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    assert_eq!(session.lost(Lost::History), Some(Duration::from_secs(1)));
+    let reconnect = |session: &mut Session| {
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+    };
+    reconnect(&mut session);
+    let eof = || Lost::Broken("eof".into());
+    assert_eq!(session.lost(eof()), Some(Duration::from_secs(2)));
+    reconnect(&mut session);
+    assert_eq!(
+        session.lost(eof()),
+        Some(Duration::from_secs(4)),
+        "no page read yet, so the backoff is still kept"
+    );
+    reconnect(&mut session);
+    session.history_read();
+    assert_eq!(session.lost(eof()), Some(Duration::from_secs(1)));
+    reconnect(&mut session);
+    assert_eq!(
+        session.lost(eof()),
+        Some(Duration::from_secs(1)),
+        "a plain loss resets at the next hello again"
+    );
+}
+
+/// Only a history page that reads ends a kept backoff: an unreadable page, a row or a hello is
+/// no page read.
+#[test]
+fn only_a_history_page_that_reads_is_a_page_read() {
+    assert!(page_read(&server(30)));
+    let unread = read_line(br#"{"type":"history_page","profile_id":"main","messages":7}"#)
+        .expect("a framed line");
+    assert!(matches!(unread, ServerEvent::Unreadable(_)));
+    assert!(!page_read(&unread));
+    assert!(!page_read(&server(3)), "a row is no page");
+    assert!(!page_read(&server(0)));
+}
+
 /// The log names a handshake event by its type, and an error by its reason and direction as code
 /// words (`loggable_id`): never the daemon's sentence, nor a word outside the contract's
 /// alphabet. A lost handshake carries the same into the log.
@@ -257,7 +323,13 @@ fn a_handshake_event_is_logged_by_its_codes_alone() {
     for word in ["hunter2", "forged", "sideways", "secret", "\n"] {
         assert!(!text.contains(word), "{text}");
     }
-    assert_eq!(logged(&server(0)), "server_hello");
+    assert_eq!(logged(&server(0)), "server_hello, versions 6 to 7");
+    let newer = line(r#"{"type":"server_hello","min_version":8,"max_version":9}"#);
+    assert_eq!(
+        logged(&newer),
+        "server_hello, versions 8 to 9",
+        "a version refusal's log says which side is older"
+    );
     let lost = line(r#"{"type":"error","reason":"a password: hunter2","message":"secret"}"#);
     let Handshake::Lost(detail) = handshake(&lost) else {
         panic!("an error with no direction loses the handshake");

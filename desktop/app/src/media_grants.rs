@@ -108,6 +108,7 @@ impl Media {
         };
         for sender in senders {
             if sender.send(outcome.clone()).is_err() {
+                let r#ref = loggable_id(&r#ref);
                 glib::g_debug!("fermix", "a read of {ref} ended before its answer");
             }
         }
@@ -152,7 +153,7 @@ fn log_answer(answered: &Answered) {
         glib::g_warning!("fermix", "the daemon answered for {ref}, never asked for");
     }
     match &answered.outcome {
-        Outcome::Granted(path) => glib::g_debug!("fermix", "{ref} is at {}", path.display()),
+        Outcome::Granted(_) => glib::g_debug!("fermix", "{ref} is granted"),
         Outcome::Missing => glib::g_debug!("fermix", "{ref} is not on this computer"),
         Outcome::Failed(why) => glib::g_warning!("fermix", "{ref} cannot be read: {why}"),
     }
@@ -222,5 +223,82 @@ mod tests {
                 "the answer is still the grants'"
             );
         });
+    }
+
+    /// The files whose log lines speak of the chat's media and files.
+    const LOGGING: [(&str, &str); 6] = [
+        ("media_grants.rs", include_str!("media_grants.rs")),
+        ("chat/entries.rs", include_str!("chat/entries.rs")),
+        ("chat/picture.rs", include_str!("chat/picture.rs")),
+        ("chat/strip.rs", include_str!("chat/strip.rs")),
+        ("chat/voice_chip.rs", include_str!("chat/voice_chip.rs")),
+        ("chat/voice_note.rs", include_str!("chat/voice_note.rs")),
+    ];
+
+    /// What a log call of these files never formats: a row's file name, a path, a link's
+    /// address, a toast's text, a GLib error's message, or a ref read straight from a row or a
+    /// chip, unbounded by `loggable_id`.
+    const UNLOGGED: [&str; 7] = [
+        ".name",
+        ".display()",
+        "{opens}",
+        "{text",
+        ".message()",
+        ".r#ref",
+        "r#ref()",
+    ];
+
+    /// Each log call in `source`, from its macro's name to its closing parenthesis.
+    fn log_calls(source: &str) -> Vec<&str> {
+        let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let macros = [
+            "g_warning!(",
+            "g_debug!(",
+            "g_critical!(",
+            "g_message!(",
+            "g_info!(",
+        ];
+        macros
+            .iter()
+            .flat_map(|name| shipped.match_indices(name))
+            .map(|(start, _)| {
+                let rest = &shipped[start..];
+                &rest[..call_end(rest)]
+            })
+            .collect()
+    }
+
+    /// Where the macro call opening `rest` closes: its parenthesis matched, so a call that is a
+    /// match arm's value, ending in `),`, ends there too.
+    fn call_end(rest: &str) -> usize {
+        let mut depth = 0i32;
+        rest.char_indices()
+            .find(|&(_, c)| {
+                depth += i32::from(c == '(') - i32::from(c == ')');
+                c == ')' && depth == 0
+            })
+            .map_or(rest.len(), |(at, _)| at)
+    }
+
+    fn unlogged(call: &str) -> Option<&'static str> {
+        UNLOGGED.into_iter().find(|text| call.contains(text))
+    }
+
+    /// The log carries no daemon text from the chat's files: a log call names a file by its
+    /// bounded ref, and an error by its code. The checker catches a planted line, and the scan
+    /// reads files that log.
+    #[test]
+    fn no_media_log_line_names_a_file_a_path_an_address_or_an_unbounded_ref() {
+        let planted = "glib::g_warning!(\"fermix\", \"copying {} failed\", file.name);";
+        assert_eq!(log_calls(planted).len(), 1);
+        assert_eq!(unlogged(log_calls(planted)[0]), Some(".name"));
+        let mut calls = 0;
+        for (file, source) in LOGGING {
+            for call in log_calls(source) {
+                calls += 1;
+                assert_eq!(unlogged(call), None, "{file}: {call}");
+            }
+        }
+        assert!(calls >= 20, "the scan reads the files' log lines ({calls})");
     }
 }
