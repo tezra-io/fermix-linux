@@ -2,14 +2,15 @@
 //! with a voice note's chip in its bubble over the words (its tile in the
 //! lane once it cannot play), the cards of the places a reply links under it
 //! and what a row shows under its words
-//! (pictures, files, link cards), the tools it ran, a mandate's proposals,
-//! and failures. A streamed entry grows in place, so a chunk never redraws
-//! what is already on screen.
+//! (pictures, files, link cards), the tools it ran, a mandate's proposals
+//! and the placeholder of those that could not be read, and failures. A
+//! streamed entry grows in place, so a chunk never redraws what is already on
+//! screen.
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
 use super::places::Places;
-use super::proposals::ProposalCard;
+use super::proposals::{unshown_card, ProposalCard};
 use super::strip::{Readers, StripView};
 use super::voice_chip::Chip;
 use super::Decider;
@@ -77,7 +78,11 @@ impl Drawn {
     /// `decider` takes what a proposal's buttons decide.
     pub fn new(entry: &Entry, readers: &Readers, decider: &Decider) -> Drawn {
         if let Entry::Proposal(card) = entry {
-            return Drawn::proposal(entry, ProposalCard::new(card, decider));
+            let card = ProposalCard::new(card, decider);
+            return Drawn::own_row(entry, &card.widget.clone(), Parts::Proposal(card));
+        }
+        if let Entry::Unshown = entry {
+            return Drawn::own_row(entry, &unshown_card(), Parts::Fixed);
         }
         let (side, body, source, parts) = draw_body(entry, readers);
         let (row, time) = row(side, &body, source);
@@ -103,23 +108,23 @@ impl Drawn {
         }
     }
 
-    /// A proposal's card on a row of its own, apart from the messages around it, as wide as the
+    /// A card on a row of its own, apart from the messages around it, as wide as the
     /// conversation; it answers none of them.
-    fn proposal(entry: &Entry, card: ProposalCard) -> Drawn {
+    fn own_row(entry: &Entry, card: &gtk::Box, parts: Parts) -> Drawn {
         let row = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .margin_top(18)
             .margin_bottom(12)
             .css_classes(["chat-row"])
             .build();
-        row.append(&card.widget);
+        row.append(card);
         let time = gtk::Label::builder().visible(false).build();
         row.append(&time);
         Drawn {
             entry: entry.clone(),
             row,
             time,
-            parts: Parts::Proposal(card),
+            parts,
         }
     }
 
@@ -256,7 +261,11 @@ fn blank(entry: &Entry, note_plays: bool) -> bool {
         Entry::User { text, .. } | Entry::Assistant { text, .. } => {
             text.trim().is_empty() && !note_plays
         }
-        Entry::Sending(_) | Entry::Tools(_) | Entry::Proposal(_) | Entry::Failure(_) => false,
+        Entry::Sending(_)
+        | Entry::Tools(_)
+        | Entry::Proposal(_)
+        | Entry::Unshown
+        | Entry::Failure(_) => false,
     }
 }
 
@@ -294,7 +303,9 @@ fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Sou
             (Side::Fermix, group.widget(), None, Parts::Tools(group))
         }
         Entry::Failure(text) => (Side::Fermix, failure(text), None, Parts::Fixed),
-        Entry::Proposal(_) => unreachable!("a proposal is drawn on a row of its own"),
+        Entry::Proposal(_) | Entry::Unshown => {
+            unreachable!("a card is drawn on a row of its own")
+        }
     }
 }
 

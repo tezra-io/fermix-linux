@@ -165,6 +165,12 @@ impl App {
         }
         match &event {
             ServerEvent::Unknown(kind) => glib::g_warning!("fermix", "chat event {kind} unread"),
+            // The type alone: what the event held is the daemon's, and may be the owner's.
+            ServerEvent::Unreadable(unread) => glib::g_warning!(
+                "fermix",
+                "chat event {} could not be read and was dropped",
+                unread.kind
+            ),
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
             ServerEvent::Row(row) => log_skipped(0, std::iter::once(row)),
             ServerEvent::TextDone(reply) if reply.skipped > 0 => glib::g_debug!(

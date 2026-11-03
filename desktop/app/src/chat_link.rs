@@ -4,7 +4,7 @@
 //! loop, and sends through it.
 
 use fermix_client::chat_wire::protocol::{
-    decode_line, line_buffer, ClientEvent, LineTooLong, ServerEvent,
+    line_buffer, read_line, ClientEvent, LineTooLong, ServerEvent,
 };
 use fermix_client::realtime::protocol::LineBuffer;
 use gtk::gio::{self, prelude::*};
@@ -24,7 +24,8 @@ const READ_CHUNK: usize = 16 * 1024;
 pub enum LinkError {
     /// No socket file: an engine without chat.
     NotFound,
-    /// The connection broke or the daemon sent what cannot be read; the detail is for the log.
+    /// The connection broke or the daemon sent a line that is no event; the detail is for the
+    /// log.
     Broken(String),
 }
 
@@ -101,11 +102,12 @@ impl Link {
 
     /// The next event; `None` once the daemon has closed the connection. Each pass reads one
     /// chunk, and the line buffer refuses a line past its cap, so a read cannot grow without
-    /// bound.
+    /// bound. A known event whose fields do not fit comes as `ServerEvent::Unreadable`; only a
+    /// line that is no event at all breaks the connection.
     pub async fn read(&self) -> Result<Option<ServerEvent>, LinkError> {
         loop {
             if let Some(line) = self.lines.borrow_mut().pop_front() {
-                return decode_line(&line)
+                return read_line(&line)
                     .map(Some)
                     .map_err(|e| LinkError::Broken(format!("decode: {e:?}")));
             }

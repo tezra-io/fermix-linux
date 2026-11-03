@@ -8,7 +8,7 @@ use fermix_client::chat_wire::proposals::{
     self, card, facts, item_header, outside, Footer, Item, OUTSIDE_LINES, STRINGS,
 };
 use fermix_client::chat_wire::protocol::{
-    decode_line, ClientEvent, Decision, DecodeError, ProposalState, ServerEvent,
+    read_line, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
 };
 use fermix_client::chat_wire::timeline::{self, Chat, Standing};
 use serde_json::{json, Value};
@@ -19,7 +19,12 @@ const NOON: i64 = 1_792_677_600;
 const ARGS: &str = "{\n  \"repo\": \"ops\",\n  \"title\": \"Phoenix 2.0\"\n}";
 
 fn event(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("a test event decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 /// A card as the engine writes it, waiting, made at 14:00 and waiting until 14:30.
@@ -131,14 +136,17 @@ fn a_card_decodes_with_nulls_and_with_absent_keys_alike() {
 }
 
 #[test]
-fn a_card_without_its_arguments_is_refused_at_decode() {
+fn the_link_reads_a_card_without_its_arguments_as_unreadable_by_its_id() {
     let mut card = card_json("p1");
     card["outside"].as_object_mut().unwrap().remove("args_text");
     let line = json!({"type": "proposal", "profile_id": "main", "proposal": card});
-    let decoded = decode_line(line.to_string().as_bytes());
-    assert!(
-        matches!(&decoded, Err(DecodeError::BadEvent { kind, .. }) if kind == "proposal"),
-        "{decoded:?}"
+    assert_eq!(
+        read_line(line.to_string().as_bytes()),
+        Ok(ServerEvent::Unreadable(Unreadable {
+            kind: "proposal".into(),
+            card_id: Some("p1".into()),
+            ..Unreadable::default()
+        }))
     );
 }
 

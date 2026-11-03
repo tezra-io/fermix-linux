@@ -6,12 +6,14 @@
 //! `server_seq` behind a cursor, a live row is shown only when it is the next seq, a gap is
 //! closed by a read from the cursor, and at most one read is out at a time. Requests wait in the
 //! outbox until the daemon accepts them, and the outbox is sent again after every handshake.
-//! A mandate's proposals are held by id until they resolve (M60 cues §5.2).
+//! A mandate's proposals are held by id until they resolve (M60 cues §5.2). An event this build
+//! cannot read costs only itself: what it names still settles, ends or asks (`unreadable`).
 
 use crate::chat_wire::protocol::{
     Approval, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution, Row,
-    ServerError, ServerEvent, ToolPhase,
+    ServerError, ServerEvent, ToolPhase, Unreadable,
 };
+use crate::chat_wire::unshown::{self, Asks, Unshown};
 use crate::phone::unix_seconds;
 use std::collections::BTreeSet;
 
@@ -32,6 +34,8 @@ const INTERRUPTED: &str = "The reply was interrupted";
 const TOO_LONG: &str = "The message is too long to send";
 /// No macOS string: its outbox has no cap.
 const OUTBOX_FULL: &str = "Too many messages are waiting to send";
+/// No macOS string: a refusal this build could not read, of a message or a proposal's answer.
+pub const REFUSED_UNREAD: &str = "Fermix refused the request. This app could not read why.";
 
 /// One held row. A reply held from its turn's `text_done` names the turn, and has no time of the
 /// daemon's: it carries when it arrived instead.
@@ -168,6 +172,9 @@ pub struct Chat {
     pub proposals: Vec<HeldProposal>,
     /// A request to bring a proposal's card into view, by id, until the page serves it.
     pub reveal: Option<String>,
+    /// The cards that asked the owner and could not be read, until they resolve or the next
+    /// handshake.
+    pub unshown: BTreeSet<Unshown>,
     /// The latest failure, in a sentence, until the next send.
     pub last_error: Option<String>,
     connected: bool,
@@ -181,10 +188,12 @@ pub struct Chat {
 /// A handshake completed: the catch-up read first, then every request not yet accepted, in
 /// order. Held rows on screen are read again, since notices sent while away are lost. Every
 /// proposal card is dropped but those the daemon resolved or refused: the daemon sends again
-/// each one still waiting, and a refused one sent again asks again.
+/// each one still waiting, and a refused one sent again asks again. The placeholders of the
+/// cards that could not be read go too: one still waiting comes again.
 pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent> {
     chat.connected = true;
     chat.approvals.clear();
+    chat.unshown.clear();
     chat.proposals.retain(|held| {
         matches!(
             held.standing,
@@ -488,12 +497,17 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
         ServerEvent::ApprovalResolved { approval_id, .. } => {
             chat.approvals
                 .retain(|held| held.approval.approval_id != approval_id);
+            unshown::resolved(&mut chat.unshown, Asks::Approval, &approval_id);
         }
         ServerEvent::Proposal { proposal } => hold_proposal(chat, *proposal, now),
-        ServerEvent::ProposalResolved(resolution) => resolve(chat, resolution),
+        ServerEvent::ProposalResolved(resolution) => {
+            unshown::resolved(&mut chat.unshown, Asks::Proposal, &resolution.proposal_id);
+            resolve(chat, resolution);
+        }
         ServerEvent::ReadState { read_up_to_seq } => chat.read_up_to = read_up_to_seq,
         ServerEvent::HistoryPage(page) => return merge(chat, page),
         ServerEvent::Error(error) => refused(chat, &error),
+        ServerEvent::Unreadable(unread) => return unreadable(chat, unread),
         ServerEvent::ServerHello { .. }
         | ServerEvent::SearchResults { .. }
         | ServerEvent::MediaPath(_)
@@ -501,6 +515,43 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
         | ServerEvent::Unknown(_) => {}
     }
     Vec::new()
+}
+
+/// An event this build could not read, by what it still names. A card that asks the owner leaves
+/// its placeholder. A reply or a row is read from the cursor, so it is missing only until that
+/// page; a reply also ends the turn held. A page answers its read with nothing
+/// (`page_unread`). An `accepted` settles the request it names; an `error` naming one refuses it
+/// in this app's words, and one naming a file is the grants'. Any other mends itself: a
+/// resolution by the next handshake, a turn's delta or tool by the next one.
+fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
+    let request = unread.client_msg_id.as_deref();
+    match unread.kind.as_str() {
+        "proposal" => unshown::keep(&mut chat.unshown, Asks::Proposal, unread.card_id),
+        "approval" => unshown::keep(&mut chat.unshown, Asks::Approval, unread.card_id),
+        "history_page" => return page_unread(chat),
+        "text_done" => {
+            chat.turn = None;
+            return read_page(chat, Cursor::AfterSeq(chat.cursor));
+        }
+        "row" => return read_page(chat, Cursor::AfterSeq(chat.cursor)),
+        "turn_done" | "turn_error" => chat.turn = None,
+        "accepted" => request.into_iter().for_each(|id| settle(chat, id)),
+        "error" if unread.r#ref.is_none() => {
+            refuse(chat, request, REFUSED_UNREAD.into(), REFUSED_UNREAD.into());
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// A page that could not be read answers its read with nothing. A page is read again by the next
+/// gap or the reader; held rows it was to read again are read the next time they come on screen,
+/// not at once, so a page that never reads is not asked for again and again.
+fn page_unread(chat: &mut Chat) -> Vec<ClientEvent> {
+    if let Some(Pull::Rows(seqs)) = chat.pull.take() {
+        chat.read_before_disconnect.extend(seqs);
+    }
+    send_waiting(chat)
 }
 
 fn settle(chat: &mut Chat, client_msg_id: &str) {
@@ -676,29 +727,34 @@ fn resolve(chat: &mut Chat, resolution: Resolution) {
     }
 }
 
-/// A refusal the connection survives, in the daemon's word. One naming a request ends that
-/// request's delivery; one naming a proposal's answer refuses that card, in the daemon's sentence,
-/// until the daemon sends the card again, and is not the chat's failure. A media failure (`ref`)
-/// is the grants', not the timeline's.
+/// A refusal the connection survives, in the daemon's word. A media failure (`ref`) is the
+/// grants', not the timeline's.
 fn refused(chat: &mut Chat, error: &ServerError) {
     if error.r#ref.is_some() {
         return;
     }
     let reported = format!("The daemon reported: {}", error.reason);
-    let answered = error.client_msg_id.as_deref().and_then(|id| {
+    let sentence = error.message.clone().unwrap_or_else(|| reported.clone());
+    refuse(chat, error.client_msg_id.as_deref(), reported, sentence);
+}
+
+/// Ends the delivery of the request `client_msg_id` names, if any. One naming a proposal's answer
+/// refuses that card, in `sentence`, until the daemon sends the card again, and is not the chat's
+/// failure; any other is, in `reported`.
+fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, sentence: String) {
+    let answered = client_msg_id.and_then(|id| {
         chat.pending
             .iter()
             .find(|out| out.client_msg_id == id)
             .and_then(|out| out.proposal_id.clone())
     });
-    if let Some(id) = &error.client_msg_id {
+    if let Some(id) = client_msg_id {
         settle(chat, id);
     }
     let Some(proposal_id) = answered else {
         chat.last_error = Some(reported);
         return;
     };
-    let sentence = error.message.clone().unwrap_or(reported);
     let held = chat
         .proposals
         .iter_mut()

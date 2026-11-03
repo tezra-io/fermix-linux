@@ -2,14 +2,19 @@
 //! refuses, and the framing caps.
 
 use fermix_client::chat_wire::protocol::{
-    decode_line, is_media_ref, line_buffer, Block, ClientEvent, DecodeError, ServerEvent,
+    is_media_ref, line_buffer, read_line, Block, ClientEvent, DecodeError, ServerEvent, Unreadable,
     MAX_FRAME_BYTES, MAX_LINE_BYTES,
 };
 use fermix_client::realtime::protocol::LineBuffer;
 use serde_json::{json, Value};
 
 fn decode(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn row(extra: Value) -> Value {
@@ -188,15 +193,19 @@ fn an_approval_never_prints_its_token_or_routes() {
 
 #[test]
 fn a_frame_that_cannot_mean_anything_is_refused() {
-    assert!(matches!(decode_line(b"nope"), Err(DecodeError::NotJson(_))));
-    assert!(matches!(decode_line(b"[1]"), Err(DecodeError::NotAnObject)));
-    assert!(matches!(decode_line(b"{}"), Err(DecodeError::MissingType)));
-    assert!(matches!(
-        decode_line(br#"{"type":"accepted"}"#),
-        Err(DecodeError::BadEvent { .. })
-    ));
+    assert!(matches!(read_line(b"nope"), Err(DecodeError::NotJson(_))));
+    assert!(matches!(read_line(b"[1]"), Err(DecodeError::NotAnObject)));
+    assert!(matches!(read_line(b"{}"), Err(DecodeError::MissingType)));
     assert_eq!(
-        decode_line(br#"{"type":"later_event"}"#).unwrap(),
+        read_line(br#"{"type":"accepted"}"#),
+        Ok(ServerEvent::Unreadable(Unreadable {
+            kind: "accepted".into(),
+            ..Unreadable::default()
+        })),
+        "a known event that does not fit costs only itself"
+    );
+    assert_eq!(
+        read_line(br#"{"type":"later_event"}"#).unwrap(),
         ServerEvent::Unknown("later_event".into())
     );
 }

@@ -3,7 +3,7 @@
 //! in the engine fails here rather than in the chat.
 
 use fermix_client::chat_wire::protocol::{
-    decode_line, Block, ClientEvent, Cursor, Decision, Direction, Grant, ProposalState, Reply,
+    read_line, Block, ClientEvent, Cursor, Decision, Direction, Grant, ProposalState, Reply,
     ServerEvent, TaskRef, ToolPhase, MAX_LINE_BYTES, PROTOCOL_VERSION,
 };
 use serde_json::Value;
@@ -57,7 +57,12 @@ fn server(index: usize) -> ServerEvent {
         .lines()
         .nth(index)
         .expect("the fixture has this line");
-    decode_line(line.as_bytes()).expect("a golden server line decodes")
+    let event = read_line(line.as_bytes()).expect("a golden server line decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a golden server line reads: {event:?}"
+    );
+    event
 }
 
 #[test]
@@ -108,11 +113,11 @@ fn the_fixtures_cover_every_event_type_the_schema_lists() {
 #[test]
 fn every_golden_server_line_decodes_into_a_known_event() {
     for line in SERVER.lines() {
-        let event = decode_line(line.as_bytes())
+        let event = read_line(line.as_bytes())
             .unwrap_or_else(|e| panic!("golden line failed to decode: {line}: {e:?}"));
         assert!(
-            !matches!(event, ServerEvent::Unknown(_)),
-            "golden line decoded as unknown: {line}"
+            !matches!(event, ServerEvent::Unknown(_) | ServerEvent::Unreadable(_)),
+            "golden line decoded as unknown or unreadable: {line}"
         );
     }
 }

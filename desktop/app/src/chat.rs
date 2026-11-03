@@ -28,7 +28,7 @@ use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{view, written_time, Entry, Key, LiveTurn, LocalTime, View};
+use fermix_client::chat::{reveal_key, view, written_time, Entry, Key, LiveTurn, LocalTime, View};
 use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::chat_wire::timeline::Chat;
@@ -388,15 +388,18 @@ impl ChatPage {
         Drawn::new(entry, &self.readers, &self.decider)
     }
 
-    /// Serves a reveal the timeline holds once its card is drawn: the card is scrolled into view
-    /// once a layout has placed it, and only then is its id handed to `served`, which takes the
-    /// request back so a later return to Chat does not scroll again. A card not drawn yet keeps
-    /// the request for the render that draws it; one already on its way is left to finish.
+    /// Serves a reveal the timeline holds once its card is drawn: the card, or the placeholder of
+    /// a card that could not be read (`reveal_key`), is scrolled into view once a layout has placed
+    /// it, and only then is its id handed to `served`, which takes the request back so a later
+    /// return to Chat does not scroll again. A card not drawn yet keeps the request for the render
+    /// that draws it; one already on its way is left to finish.
     pub fn serve_reveal(&self, chat: &Chat, served: impl Fn(&str) + 'static) {
         let Some(id) = chat.reveal.clone() else {
             return;
         };
-        let key = Key::Proposal(id.clone());
+        let Some(key) = reveal_key(chat, &id) else {
+            return;
+        };
         let row = self
             .shown
             .borrow()

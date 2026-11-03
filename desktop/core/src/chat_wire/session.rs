@@ -7,7 +7,7 @@
 //! daemon that cannot speak this build's version ends that, until chat is asked for again
 //! (macOS `CompanionSession`).
 
-use crate::chat_wire::protocol::{Direction, ServerEvent, PROTOCOL_VERSION};
+use crate::chat_wire::protocol::{Direction, ServerEvent, Unreadable, PROTOCOL_VERSION};
 use std::time::Duration;
 
 /// How long each consecutive failure waits; the last delay repeats.
@@ -66,7 +66,8 @@ pub enum Handshake {
     Ignore,
 }
 
-/// The handshake outcome of `event`, for this build's `PROTOCOL_VERSION`.
+/// The handshake outcome of `event`, for this build's `PROTOCOL_VERSION`. A `server_hello` or
+/// an `error` that cannot be read ends the attempt: what it said is unknown.
 pub fn handshake(event: &ServerEvent) -> Handshake {
     match event {
         ServerEvent::ServerHello {
@@ -77,6 +78,11 @@ pub fn handshake(event: &ServerEvent) -> Handshake {
             Some(direction) => Handshake::Refused(refusal(direction)),
             None => Handshake::Lost(error.reason.clone()),
         },
+        ServerEvent::Unreadable(Unreadable { kind, .. })
+            if kind == "server_hello" || kind == "error" =>
+        {
+            Handshake::Lost(format!("the daemon's {kind} could not be read"))
+        }
         _ => Handshake::Ignore,
     }
 }

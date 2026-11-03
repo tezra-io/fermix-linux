@@ -8,6 +8,9 @@
 //! nothing; each decides by its own click, holding the card's id (§6 rule 3). A press disables
 //! both, and a confirm says it is running; the daemon's resolution replaces the buttons. A screen
 //! reader hears the expiry as a card that asks appears, and again a minute before it.
+//!
+//! The proposals the daemon sent that this app could not read stand as one card of words alone,
+//! in the same box, saying where they can be answered (`chat_wire::unshown`).
 
 use super::outside_text;
 use super::{clock, decide_on_click, Decider, Decision};
@@ -17,6 +20,7 @@ use fermix_client::chat_wire::proposals::{
     EXPIRED, LAST_MINUTE, RESULT, RUNNING, TITLE,
 };
 use fermix_client::chat_wire::protocol::Decision as Word;
+use fermix_client::chat_wire::unshown;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -35,22 +39,7 @@ pub struct ProposalCard {
 
 impl ProposalCard {
     pub fn new(card: &Card, decider: &Decider) -> ProposalCard {
-        let widget = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .hexpand(true)
-            .accessible_role(gtk::AccessibleRole::Group)
-            .css_classes(["card"])
-            .build();
-        widget.update_property(&[gtk::accessible::Property::Label(TITLE)]);
-        let inner = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .margin_top(12)
-            .margin_bottom(12)
-            .margin_start(14)
-            .margin_end(14)
-            .build();
+        let (widget, inner) = shell(TITLE);
         inner.append(&lead(card));
         inner.append(&outside_text::block(CALL, None, &card.call, true));
         if let Some(item) = &card.item {
@@ -65,7 +54,6 @@ impl ProposalCard {
         }
         let footer = footer(card, decider);
         inner.append(&footer);
-        widget.append(&inner);
         let asks = card.footer == Footer::Ask;
         if asks {
             widget.announce(
@@ -109,6 +97,46 @@ impl ProposalCard {
         }
         true
     }
+}
+
+/// The placeholder of the proposals that could not be read: its heading and where to answer
+/// them, Fermix's words, with no buttons. A screen reader hears it as it appears.
+pub fn unshown_card() -> gtk::Box {
+    let (widget, inner) = shell(unshown::TITLE);
+    let title = gtk::Label::builder()
+        .label(unshown::TITLE)
+        .xalign(0.0)
+        .css_classes(["heading"])
+        .build();
+    inner.append(&title);
+    inner.append(&line(unshown::PROPOSAL, &[]));
+    widget.announce(
+        unshown::PROPOSAL,
+        gtk::AccessibleAnnouncementPriority::Medium,
+    );
+    widget
+}
+
+/// A card's box, a group named `name`, and the column inside it that its parts go in.
+fn shell(name: &str) -> (gtk::Box, gtk::Box) {
+    let widget = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(10)
+        .hexpand(true)
+        .accessible_role(gtk::AccessibleRole::Group)
+        .css_classes(["card"])
+        .build();
+    widget.update_property(&[gtk::accessible::Property::Label(name)]);
+    let inner = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(10)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(14)
+        .margin_end(14)
+        .build();
+    widget.append(&inner);
+    (widget, inner)
 }
 
 /// A pressed button goes with the footer it stood in. Its focus would move, at the next frame,

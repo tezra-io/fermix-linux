@@ -2,7 +2,7 @@
 //! the vendored PROTOCOL.md ("Keeping a client's timeline", "Delivery and the outbox",
 //! "Streaming a turn", "Approvals") and the macOS reducer it ports.
 
-use fermix_client::chat_wire::protocol::{decode_line, ClientEvent, Cursor, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, ClientEvent, Cursor, ServerEvent};
 use fermix_client::chat_wire::timeline::{
     self, route, Chat, ToolState, MAX_HELD, MAX_PENDING, NEWEST, PAGE_LIMIT,
 };
@@ -10,7 +10,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 fn event(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("a test event decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn message(seq: u64, text: &str) -> Value {

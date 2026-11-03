@@ -2,7 +2,7 @@
 //! for (macOS `MediaGrants`): a file is held only while something reads it.
 
 use fermix_client::chat_wire::grants::{verify, Answer, Grants, Outcome};
-use fermix_client::chat_wire::protocol::{decode_line, ClientEvent, Grant, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, ClientEvent, Grant, ServerEvent};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,12 @@ fn online() -> Grants {
 }
 
 fn event(value: serde_json::Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("an event")
+    let event = read_line(value.to_string().as_bytes()).expect("an event");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn granted(r: &str) -> ServerEvent {
@@ -251,7 +256,7 @@ fn a_grant_is_a_file_named_by_its_ref_in_the_media_directory() {
     const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
     let fixture = SERVER
         .lines()
-        .find_map(|line| match decode_line(line.as_bytes()) {
+        .find_map(|line| match read_line(line.as_bytes()) {
             Ok(ServerEvent::MediaPath(grant)) => Some(grant),
             _ => None,
         })

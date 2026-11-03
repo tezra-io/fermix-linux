@@ -160,7 +160,7 @@ fn log_answer(answered: &Answered) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fermix_client::chat_wire::protocol::decode_line;
+    use fermix_client::chat_wire::protocol::read_line;
 
     const NOTE: &str = "9879f6d3c9efefe8c4f4aabe9d3269762264be52794e96f62ab8ffa53b7fadec";
 
@@ -172,7 +172,9 @@ mod tests {
     /// never asked for and log a warning; a reader waiting still gets it.
     fn missing() -> ServerEvent {
         let line = format!(r#"{{"type":"media_missing","ref":"{NOTE}"}}"#);
-        decode_line(line.as_bytes()).expect("an event")
+        let event = read_line(line.as_bytes()).expect("an event");
+        assert!(!matches!(event, ServerEvent::Unreadable(_)), "{event:?}");
+        event
     }
 
     /// Runs `test` on a main context of its own, as the window's loop runs reads.

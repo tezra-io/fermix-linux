@@ -2,11 +2,12 @@
 //! `companion.sock`, protocol 4 (the vendored `contracts/companion/PROTOCOL.md`). Pure: it turns
 //! lines into typed events and back, and does no I/O.
 //!
-//! Decoding is strict where a frame cannot mean anything (not JSON, not an object, no `type`, or a
-//! known event whose own fields do not fit), and lenient inside a timeline row: a row's role and
-//! kind are open words, a media ref is checked only when it is fetched, and one malformed
-//! message, media ref, preview, block or place is skipped rather than costing the whole page.
-//! A page counts what it skipped, for the caller to log.
+//! A frame that cannot mean anything (not JSON, not an object, no `type`) is refused. A known
+//! event whose own fields do not fit is read as `ServerEvent::Unreadable`, by the ids it still
+//! names: that event alone is dropped and the connection stays. Inside a timeline row decoding is
+//! lenient: a row's role and kind are open words, a media ref is checked only when it is fetched,
+//! and one malformed message, media ref, preview, block or place is skipped rather than costing
+//! the whole page. A page counts what it skipped, for the caller to log.
 
 use crate::realtime::protocol::LineBuffer;
 pub use crate::realtime::protocol::{DecodeError, Direction};
@@ -28,6 +29,8 @@ pub const MAX_LINE_BYTES: usize = 65_536;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// The most unscanned inbound bytes held at once.
 pub const MAX_UNSCANNED_BYTES: usize = 32 * 1024 * 1024;
+/// The longest id an unreadable event is kept by (`Unreadable`).
+pub const MAX_ID_BYTES: usize = 256;
 
 /// The server event types this build decodes; any other `type` is `ServerEvent::Unknown`.
 const KNOWN_TYPES: [&str; 20] = [
@@ -305,6 +308,24 @@ pub enum ServerEvent {
     /// A type published after this build, by name. Log it; it is never fatal.
     #[serde(skip)]
     Unknown(String),
+    /// A type this build knows whose fields do not fit. Only `read_line` makes one.
+    #[serde(skip)]
+    Unreadable(Unreadable),
+}
+
+/// An event this build could not read: its type and the ids it still names, each where its one
+/// field reads as a string no longer than `MAX_ID_BYTES`. Never its content: serde's reason can
+/// quote it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unreadable {
+    pub kind: String,
+    /// The card a `proposal` or an `approval` is: its `proposal_id` or `approval_id`.
+    pub card_id: Option<String>,
+    /// The request an `accepted` or an `error` answers.
+    pub client_msg_id: Option<String>,
+    /// The file a `media_path` or an `error` answers. A `media_missing` whose ref reads is read
+    /// whole: it has no other field.
+    pub r#ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -730,9 +751,21 @@ fn places(value: &Value) -> Option<&Vec<Value>> {
     value.get("places")?.as_array()
 }
 
-/// One line, without its `\n`, as an event. Every NUL in its strings is made U+FFFD here, the
-/// one place the daemon's text enters.
-pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
+/// One line, without its `\n`, as an event. A known event whose fields do not fit is
+/// `Unreadable`, so it costs only itself. Its reason is dropped here on purpose: serde's words can
+/// quote the line, and the caller logs the event's type instead.
+pub fn read_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
+    let (value, kind) = framed(line)?;
+    if !KNOWN_TYPES.contains(&kind.as_str()) {
+        return Ok(ServerEvent::Unknown(kind));
+    }
+    let unread = unreadable(kind, &value);
+    Ok(serde_json::from_value(value).unwrap_or(ServerEvent::Unreadable(unread)))
+}
+
+/// A line as a JSON object and its `type`. Every NUL in its strings is made U+FFFD here, the one
+/// place the daemon's text enters.
+fn framed(line: &[u8]) -> Result<(Value, String), DecodeError> {
     let mut value: Value =
         serde_json::from_slice(line).map_err(|e| DecodeError::NotJson(e.to_string()))?;
     replace_nul(&mut value);
@@ -744,13 +777,32 @@ pub fn decode_line(line: &[u8]) -> Result<ServerEvent, DecodeError> {
         .and_then(Value::as_str)
         .ok_or(DecodeError::MissingType)?
         .to_owned();
-    if !KNOWN_TYPES.contains(&kind.as_str()) {
-        return Ok(ServerEvent::Unknown(kind));
-    }
-    serde_json::from_value(value).map_err(|e| DecodeError::BadEvent {
+    Ok((value, kind))
+}
+
+/// What an event of `kind` that could not be read still names.
+fn unreadable(kind: String, value: &Value) -> Unreadable {
+    let card_id = match kind.as_str() {
+        "proposal" => id_at(value, "/proposal/proposal_id"),
+        "approval" => id_at(value, "/approval_id"),
+        _ => None,
+    };
+    let answers_request = matches!(kind.as_str(), "accepted" | "error");
+    let answers_file = matches!(kind.as_str(), "media_path" | "error");
+    Unreadable {
+        card_id,
+        client_msg_id: answers_request
+            .then(|| id_at(value, "/client_msg_id"))
+            .flatten(),
+        r#ref: answers_file.then(|| id_at(value, "/ref")).flatten(),
         kind,
-        why: e.to_string(),
-    })
+    }
+}
+
+/// The string at `pointer`, where it is one no longer than `MAX_ID_BYTES`.
+fn id_at(value: &Value, pointer: &str) -> Option<String> {
+    let id = value.pointer(pointer)?.as_str()?;
+    (id.len() <= MAX_ID_BYTES).then(|| id.to_owned())
 }
 
 /// JSON may carry a NUL (`\u0000`); a GTK label cannot (GLib panics on one in a debug build and

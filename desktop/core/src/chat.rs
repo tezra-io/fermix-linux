@@ -1,12 +1,14 @@
 //! The Chat page's entries, read off the timeline the chat wire keeps (`chat_wire::timeline`):
-//! the held rows, the proposal cards placed among them by when each was made, the questions
-//! still sending, the turn answering now with its tools, and why the last request failed.
+//! the held rows, the proposal cards placed among them by when each was made, the placeholder of
+//! the cards that could not be read, the questions still sending, the turn answering now with its
+//! tools, and why the last request failed.
 //! Nothing here is decided: it only says how the held facts read.
 
 use crate::activity::ToolKind;
 use crate::chat_wire::proposals;
 use crate::chat_wire::protocol::Row;
 use crate::chat_wire::timeline::{self, Chat, HeldProposal, HeldRow, ToolState};
+use crate::chat_wire::unshown::{self, Asks, Unshown};
 use crate::media::{strip, words, Strip};
 use crate::phone::unix_seconds;
 use crate::places::{cards, Card};
@@ -29,6 +31,9 @@ pub enum Entry {
     Tools(Vec<ToolRun>),
     /// A mandate's proposal, drawn apart from the messages: it answers none of them.
     Proposal(proposals::Card),
+    /// One placeholder for every proposal the daemon sent that could not be read
+    /// (`chat_wire::unshown`).
+    Unshown,
     /// Why the last request did not get its reply.
     Failure(String),
 }
@@ -80,6 +85,7 @@ pub enum Key {
     Tools(String),
     /// A proposal's card, by its id.
     Proposal(String),
+    Unshown,
     Failure,
 }
 
@@ -131,6 +137,9 @@ pub fn view(chat: &Chat) -> View {
         push_row(&mut view, &held.row, reply);
     }
     placed.for_each(|card| push_card(&mut view, card));
+    if unshown::waiting(&chat.unshown, Asks::Proposal) {
+        view.push(Entry::Unshown, Key::Unshown, None, None);
+    }
     let held_ids: Vec<&str> = chat
         .rows
         .iter()
@@ -152,6 +161,24 @@ pub fn view(chat: &Chat) -> View {
         view.push(Entry::Failure(error.clone()), Key::Failure, None, None);
     }
     view
+}
+
+/// What a request to bring `proposal_id`'s card into view scrolls to: its card where it is held,
+/// or the placeholder where that card could not be read. `None` while neither is drawn: the request
+/// waits for the render that draws one.
+pub fn reveal_key(chat: &Chat, proposal_id: &str) -> Option<Key> {
+    let held = chat
+        .proposals
+        .iter()
+        .any(|held| held.proposal.proposal_id == proposal_id);
+    if held {
+        return Some(Key::Proposal(proposal_id.to_owned()));
+    }
+    let unshown = Unshown {
+        asks: Asks::Proposal,
+        id: Some(proposal_id.to_owned()),
+    };
+    chat.unshown.contains(&unshown).then_some(Key::Unshown)
 }
 
 /// The proposal cards in the order they stand in the conversation: by when each was made, a card

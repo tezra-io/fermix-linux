@@ -12,6 +12,9 @@ use super::protocol::{is_media_ref, ClientEvent, Grant, ServerEvent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+/// Why a read failed whose answer the daemon sent and this build could not read.
+pub const UNREADABLE: &str = "the daemon's answer could not be read";
+
 /// What asking for a ref's file came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -128,8 +131,9 @@ impl Grants {
     }
 
     /// The daemon's answer to a fetch, where `event` is one: a grant, checked; a ref it has
-    /// nothing for; or a copy it failed to make. Any other event, an error without a ref among
-    /// them, is not about a file.
+    /// nothing for; a copy it failed to make; or a grant or a failure whose fields could not be
+    /// read, by the ref it names, which fails the reads of that ref. Any other event, an error
+    /// without a ref among them, is not about a file.
     pub fn answered(&mut self, event: &ServerEvent) -> Option<Answered> {
         let (r#ref, outcome) = match event {
             ServerEvent::MediaPath(grant) => (grant.r#ref.clone(), self.granted(grant)),
@@ -141,13 +145,21 @@ impl Grants {
                     .unwrap_or_else(|| error.reason.clone());
                 (error.r#ref.clone()?, Outcome::Failed(why))
             }
+            ServerEvent::Unreadable(unread) => {
+                (unread.r#ref.clone()?, Outcome::Failed(UNREADABLE.into()))
+            }
             _ => return None,
         };
         let asked = self.asked.remove(&r#ref);
         // The daemon holds what it granted for this connection, whether or not this app takes
-        // it (PROTOCOL rules 2 and 3). A grant refused here is never read, so it goes at once;
-        // stored as Failed, its last read releases nothing more.
-        let held = matches!(event, ServerEvent::MediaPath(_));
+        // it (PROTOCOL rules 2 and 3). A grant refused here, or one that could not be read, is
+        // never read, so it goes at once; stored as Failed, its last read releases nothing more.
+        // A failure that could not be read granted nothing.
+        let held = match event {
+            ServerEvent::MediaPath(_) => true,
+            ServerEvent::Unreadable(unread) => unread.kind == "media_path",
+            _ => false,
+        };
         let refused = held && !matches!(outcome, Outcome::Granted(_));
         let Some(uses) = self.uses.get_mut(&r#ref) else {
             // Nothing reads it any more, or nothing ever asked.

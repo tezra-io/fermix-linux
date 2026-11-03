@@ -1,7 +1,7 @@
 //! The chat connection's life: the handshake's four outcomes (PROTOCOL.md "Handshake state
 //! machine", macOS `CompanionSession`), the bounded backoff, and what the page says.
 
-use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, ServerEvent};
 use fermix_client::chat_wire::session::{
     closes, delay, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
 };
@@ -10,11 +10,16 @@ use std::time::Duration;
 const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
 
 fn server(index: usize) -> ServerEvent {
-    decode_line(SERVER.lines().nth(index).unwrap().as_bytes()).unwrap()
+    line(SERVER.lines().nth(index).unwrap())
 }
 
 fn line(text: &str) -> ServerEvent {
-    decode_line(text.as_bytes()).unwrap()
+    let event = read_line(text.as_bytes()).unwrap();
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn handshaking() -> Session {

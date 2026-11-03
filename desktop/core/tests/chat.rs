@@ -2,7 +2,7 @@
 //! sending, the running turn with its tools, and the last failure.
 
 use fermix_client::chat::{view, Entry, Key, RunState};
-use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, ServerEvent};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use fermix_client::media::{Strip, TileKind};
 use fermix_client::places::Card;
@@ -10,7 +10,12 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
 fn event(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("a test event decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn connected() -> Chat {
