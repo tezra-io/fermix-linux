@@ -101,6 +101,25 @@ fn rows_read_as_the_person_and_fermix_with_their_times() {
     assert_eq!(shown.first_seq, Some(1));
 }
 
+/// A time this app cannot read is drawn as no time: the page never tries, and logs, the daemon's
+/// text again at each draw. The row itself is drawn.
+#[test]
+fn a_row_whose_time_cannot_be_read_is_drawn_with_none() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "assistant",
+        "Hello",
+        json!({"ts": "tomorrow-ish"}),
+    );
+    row(&mut chat, 2, "assistant", "Again", json!({}));
+    let shown = view(&chat);
+    assert_eq!(shown.entries, [reply("Hello"), reply("Again")]);
+    assert_eq!(shown.times[0], None);
+    assert_eq!(shown.times[1].as_deref(), Some("2026-09-25T09:00:00Z"));
+}
+
 #[test]
 fn a_question_shows_as_sending_until_its_row_arrives() {
     let mut chat = connected();

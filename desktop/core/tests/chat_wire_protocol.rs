@@ -3,7 +3,7 @@
 
 use fermix_client::chat_wire::protocol::{
     is_media_ref, line_buffer, loggable_id, read_line, Block, ClientEvent, DecodeError,
-    ServerEvent, Unreadable, MAX_FRAME_BYTES, MAX_ID_BYTES, MAX_LINE_BYTES,
+    ServerEvent, Unreadable, MAX_FRAME_BYTES, MAX_LINE_BYTES, MAX_LOGGED_BYTES, NOT_LOGGED,
 };
 use fermix_client::realtime::protocol::LineBuffer;
 use serde_json::{json, Value};
@@ -295,13 +295,37 @@ fn an_events_type_for_the_log_is_the_contracts_word() {
     assert_eq!(done.kind(), "turn_done");
 }
 
-/// An id the daemon names goes into a log line only when it is short and plain: anything else is
+/// An id or a code word the daemon names goes into a log line only when it is in the contract's
+/// id alphabet and length (the schema's `attach_id`, `^[0-9A-Za-z_-]{1,64}$`): anything else is
 /// said without its text.
 #[test]
 fn only_a_short_plain_id_is_logged_as_it_is() {
-    assert_eq!(loggable_id("mac-att-9d04e2"), "mac-att-9d04e2");
-    let long = "a".repeat(MAX_ID_BYTES + 1);
-    for odd in [long.as_str(), "two words", "line\nbreak", "", "caf\u{e9}"] {
-        assert_ne!(loggable_id(odd), odd, "{odd:?}");
+    let longest = "a".repeat(MAX_LOGGED_BYTES);
+    let media_ref = "9879f6d3c9efefe8c4f4aabe9d3269762264be52794e96f62ab8ffa53b7fadec";
+    let plain = [
+        "mac-att-9d04e2",
+        "turn-linux-0a1b2c3d4e5f6071",
+        "client_too_new",
+        media_ref,
+        longest.as_str(),
+    ];
+    for id in plain {
+        assert_eq!(loggable_id(id), id);
+    }
+    let long = "a".repeat(MAX_LOGGED_BYTES + 1);
+    let odd = [
+        long.as_str(),
+        "two words",
+        "line\nbreak",
+        "",
+        "caf\u{e9}",
+        "token=sk-live-1",
+        "/home/me/tax.pdf",
+        "a:b",
+        "{x}",
+        "\"q\"",
+    ];
+    for id in odd {
+        assert_eq!(loggable_id(id), NOT_LOGGED, "{id:?}");
     }
 }

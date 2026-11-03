@@ -7,7 +7,9 @@
 //! daemon that cannot speak this build's version ends that, until chat is asked for again
 //! (macOS `CompanionSession`).
 
-use crate::chat_wire::protocol::{Direction, ServerEvent, Unreadable, PROTOCOL_VERSION};
+use crate::chat_wire::protocol::{
+    loggable_id, Direction, ServerError, ServerEvent, Unreadable, PROTOCOL_VERSION,
+};
 use std::time::Duration;
 
 /// How long each consecutive failure waits; the last delay repeats.
@@ -45,7 +47,11 @@ const UPDATE_APP: &str =
 const UPDATE_FERMIX: &str = "The Fermix engine is older than this app. Update the engine to chat.";
 /// What the page says for `Shown::NoChat`.
 pub const NO_CHAT: &str = "The Fermix engine on this computer has no chat yet";
-const RECONNECTING: &str = "Chat cannot reach Fermix right now and is trying again";
+/// What the page says while it tries again after any other loss.
+pub const RECONNECTING: &str = "Chat cannot reach Fermix right now and is trying again";
+/// What the page says while it tries again after giving up on a history it could not read:
+/// Fermix answered, and only its history could not be read. No macOS string.
+pub const HISTORY_UNREAD: &str = "Chat cannot read Fermix's history right now and is trying again";
 
 /// Whether the daemon closes the connection after an error with this reason.
 pub fn closes(reason: &str) -> bool {
@@ -72,7 +78,8 @@ pub enum Handshake {
 }
 
 /// The handshake outcome of `event`, for this build's `PROTOCOL_VERSION`. A `server_hello` or
-/// an `error` that cannot be read ends the attempt: what it said is unknown.
+/// an `error` that cannot be read ends the attempt: what it said is unknown. A lost one's detail
+/// is the event as the log names it (`logged`).
 pub fn handshake(event: &ServerEvent) -> Handshake {
     match event {
         ServerEvent::ServerHello {
@@ -82,7 +89,7 @@ pub fn handshake(event: &ServerEvent) -> Handshake {
         } => window(*min_version, *max_version),
         ServerEvent::Error(error) => match &error.direction {
             Some(direction) => Handshake::Refused(refusal(direction)),
-            None => Handshake::Lost(error.reason.clone()),
+            None => Handshake::Lost(logged(event)),
         },
         ServerEvent::Unreadable(Unreadable { kind, .. })
             if kind == "server_hello" || kind == "error" =>
@@ -114,6 +121,24 @@ pub fn refusal(direction: &Direction) -> String {
     }
 }
 
+/// A handshake event as the log names it: its type, and an `error`'s reason and direction as code
+/// words (`loggable_id`). Never the daemon's sentence, nor a word outside the contract's alphabet.
+pub fn logged(event: &ServerEvent) -> String {
+    let ServerEvent::Error(ServerError {
+        reason, direction, ..
+    }) = event
+    else {
+        return event.kind().to_owned();
+    };
+    let direction = match direction {
+        None => "none",
+        Some(Direction::ClientTooOld) => "client_too_old",
+        Some(Direction::ClientTooNew) => "client_too_new",
+        Some(Direction::Other(word)) => loggable_id(word),
+    };
+    format!("error {}, direction {direction}", loggable_id(reason))
+}
+
 /// Why a connection ended or never began.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lost {
@@ -121,7 +146,7 @@ pub enum Lost {
     NoSocket,
     /// The history could not be read, page after page (`timeline::history_unreadable`). Its
     /// backoff goes on past the next handshake, whose connection gives up the same way while the
-    /// history stays unreadable.
+    /// history stays unreadable, until a page reads (`Session::history_read`).
     History,
     /// Anything else; the detail is for the log.
     Broken(String),
@@ -189,9 +214,9 @@ impl Session {
         true
     }
 
-    /// An event read during the handshake. `Ok` connects and resets the backoff, unless the
-    /// last connection gave up on its history; `Refused`
-    /// ends the attempts. The caller ends a `Lost` connection with `lost`.
+    /// An event read during the handshake. `Ok` connects and resets the backoff, unless the last
+    /// connection gave up on its history (`history_read` resets it then); `Refused` ends the
+    /// attempts. The caller ends a `Lost` connection with `lost`.
     pub fn hello(&mut self, event: &ServerEvent) -> Handshake {
         let outcome = handshake(event);
         match &outcome {
@@ -206,6 +231,16 @@ impl Session {
             Handshake::Lost(_) | Handshake::Ignore => {}
         }
         outcome
+    }
+
+    /// A page of the history read on this connection. A backoff kept past the handshake because
+    /// the last connection gave up on its history ends here: the history reads again, so the next
+    /// loss waits from the first delay. On a connection that kept none it changes nothing, since
+    /// its handshake already reset the backoff.
+    pub fn history_read(&mut self) {
+        if self.phase == Phase::Connected {
+            self.failures = 0;
+        }
     }
 
     /// The connection ended or never began; returns how long to wait before `start` again.
@@ -233,7 +268,8 @@ impl Session {
             (Phase::Refused(sentence), _) => Shown::Refused(sentence.clone()),
             (_, None) => Shown::Connecting,
             (_, Some(Lost::NoSocket)) => Shown::NoChat,
-            (_, Some(Lost::Broken(_) | Lost::History)) => Shown::Disconnected(RECONNECTING.into()),
+            (_, Some(Lost::History)) => Shown::Disconnected(HISTORY_UNREAD.into()),
+            (_, Some(Lost::Broken(_))) => Shown::Disconnected(RECONNECTING.into()),
         }
     }
 }

@@ -10,10 +10,12 @@ use std::collections::BTreeSet;
 /// The placeholder's heading in the conversation.
 pub const TITLE: &str = "Something needs your answer";
 /// A proposal can be answered in the owner's own chat with Fermix too, which still gets its
-/// message (PROTOCOL.md "Version 4"); never from a paired phone, whose wire is not sent proposals.
-/// With no such chat it waits until it expires, and nothing runs.
-pub const PROPOSAL: &str = "Fermix sent a request this app cannot show. Answer it in your own \
-    chat with Fermix; if you have none, it expires and nothing runs.";
+/// message (PROTOCOL.md "Version 4"): on Linux, Telegram, Signal or WhatsApp, the chats whose
+/// direct message to the owner can carry its answer (iMessage runs only on a Mac); never from a
+/// paired phone, whose wire is not sent proposals. With no such chat it waits until it expires,
+/// and nothing runs.
+pub const PROPOSAL: &str = "Fermix sent a request this app cannot show. Answer it in your \
+    Telegram, Signal or WhatsApp chat with Fermix; if you have none, it expires and nothing runs.";
 /// An approval's token is answered only on the connection whose turn asked for it (PROTOCOL.md
 /// "Approvals"), so no other chat can answer it.
 pub const APPROVAL: &str = "Fermix asked for your approval, but this app cannot show the \

@@ -550,7 +550,10 @@ fn the_placeholders_say_where_an_answer_can_come_from() {
         assert!(!text.contains("  "), "{text} has a double space");
         assert!(!text.contains("fermix "), "{text} names a command");
     }
-    assert!(unshown::PROPOSAL.contains("in your own chat with Fermix"));
+    assert!(
+        unshown::PROPOSAL.contains("in your Telegram, Signal or WhatsApp chat with Fermix"),
+        "the chats that carry a proposal to the owner on Linux"
+    );
     assert!(
         !unshown::PROPOSAL.contains("phone"),
         "a paired phone is never sent a proposal"
@@ -632,15 +635,35 @@ fn an_unreadable_failure_of_the_turn_held_says_the_reply_did_not_finish() {
     assert_eq!(chat.last_error, None, "a turn's end is no failure");
 }
 
+/// A failure whose turn reads is said whether or not that turn is held, as a readable failure
+/// is: a turn the connection no longer holds (one cut by a reconnect, or one queued behind the
+/// reply streaming) still owes the owner a word. One whose turn cannot be read, with no turn
+/// held, names nothing to say it of.
+#[test]
+fn an_unreadable_failure_of_a_turn_not_held_still_says_the_reply_did_not_finish() {
+    let failed = |turn: Value| json!({"type": "turn_error", "profile_id": "main", "turn_id": turn, "code": 5});
+    let mut chat = connected();
+    receive(&mut chat, failed(json!("t5")));
+    assert_eq!(view(&chat).entries, [Entry::Failure(TURN_UNREAD.into())]);
+    let mut chat = connected();
+    receive(&mut chat, failed(json!(7)));
+    assert_eq!(chat.last_error, None, "no turn named and none held");
+}
+
 /// An unreadable end reads the turn it names, as far as `MAX_ID_BYTES`, and ends that turn only;
-/// one naming another turn leaves the turn held, its draft and its Stop, and says nothing.
+/// one naming another turn leaves the turn held, its draft and its Stop. Only a failure says so,
+/// as its readable form does.
 #[test]
 fn an_unreadable_end_ends_only_the_turn_it_names() {
     let ends = [
-        ("text_done", json!({"server_seq": "two"})),
-        ("turn_error", json!({"code": 5})),
+        ("text_done", json!({"server_seq": "two"}), None),
+        (
+            "turn_error",
+            json!({"code": 5}),
+            Some(TURN_UNREAD.to_owned()),
+        ),
     ];
-    for (kind, mut end) in ends {
+    for (kind, mut end, said) in ends {
         end["type"] = json!(kind);
         end["profile_id"] = json!("main");
         let mut chat = connected();
@@ -648,11 +671,27 @@ fn an_unreadable_end_ends_only_the_turn_it_names() {
         end["turn_id"] = json!("t9");
         receive(&mut chat, end.clone());
         assert_eq!(turn_held(&chat), Some("t1"), "{kind} of another turn");
-        assert_eq!(chat.last_error, None, "{kind} of another turn");
+        assert_eq!(chat.last_error, said, "{kind} of another turn");
         end["turn_id"] = json!("t1");
         receive(&mut chat, end);
         assert_eq!(turn_held(&chat), None, "{kind} of the turn held");
     }
+    // A turn_done carries nothing but its turn, so the wire cannot make one unreadable whose turn
+    // reads; the timeline still ends only the turn one names.
+    let done = |turn: &str| {
+        ServerEvent::Unreadable(Unreadable {
+            kind: "turn_done".into(),
+            turn_id: Some(turn.into()),
+            ..Unreadable::default()
+        })
+    };
+    let mut chat = connected();
+    receive(&mut chat, started());
+    timeline::receive(&mut chat, done("t9"), 0);
+    assert_eq!(turn_held(&chat), Some("t1"), "turn_done of another turn");
+    assert_eq!(chat.last_error, None, "a turn's end is no failure");
+    timeline::receive(&mut chat, done("t1"), 0);
+    assert_eq!(turn_held(&chat), None, "turn_done of the turn held");
     let done = json!({"type": "text_done", "turn_id": "t1", "server_seq": "two"});
     let ServerEvent::Unreadable(unread) = read(done) else {
         panic!("an unreadable text_done");
@@ -688,12 +727,18 @@ fn with_no_row_held_a_gap_reads_the_newest_page() {
     );
 }
 
-/// A resolution that cannot be read still settles the card it names: its placeholder goes, a
-/// held proposal's card says Fermix settled it, and a held approval goes with its buttons.
+/// A resolution that cannot be read still settles the card it names, and only that one: its
+/// placeholder goes, a held proposal's card says Fermix settled it, and a held approval goes with
+/// its buttons. One naming another card leaves every card and placeholder as it was.
 #[test]
 fn an_unreadable_resolution_settles_the_card_it_names() {
     let (mut chat, id) = holding_a_card();
     receive(&mut chat, bad_proposal(Some("cpr_x")));
+    let other = json!({"type": "proposal_resolved", "profile_id": "main",
+        "proposal_id": "cpr_other", "state": 5});
+    receive(&mut chat, other);
+    assert_eq!(placeholders(&chat), 1, "another card's resolution");
+    assert_eq!(chat.proposals[0].standing, Standing::Open);
     for card in [id.as_str(), "cpr_x"] {
         let bad = json!({"type": "proposal_resolved", "profile_id": "main",
             "proposal_id": card, "state": 5});
@@ -713,6 +758,11 @@ fn an_unreadable_resolution_settles_the_card_it_names() {
     );
     let (mut chat, id) = holding_an_approval();
     receive(&mut chat, bad_approval("apr_2"));
+    let other = json!({"type": "approval_resolved", "profile_id": "main",
+        "approval_id": "apr_other", "outcome": 5});
+    receive(&mut chat, other);
+    assert_eq!(chat.approvals.len(), 1, "another approval's resolution");
+    assert!(unshown::waiting(&chat.unshown, Asks::Approval));
     for card in [id.as_str(), "apr_2"] {
         let bad = json!({"type": "approval_resolved", "profile_id": "main",
             "approval_id": card, "outcome": 5});

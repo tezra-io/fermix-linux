@@ -90,7 +90,7 @@ pub enum Key {
 }
 
 /// The page's entries, each with its key, the daemon's time for it (RFC 3339) where it has
-/// one, and the held row it draws.
+/// one this app can read, and the held row it draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
     pub entries: Vec<Entry>,
@@ -226,7 +226,9 @@ fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
         },
     };
     let key = reply.unwrap_or(Key::Row(row.server_seq));
-    view.push(entry, key, row.ts.clone(), Some(row.server_seq));
+    // A time this app cannot read is drawn as none, so the page never tries it at each draw.
+    let time = row.ts.clone().filter(|ts| unix_seconds(ts).is_some());
+    view.push(entry, key, time, Some(row.server_seq));
 }
 
 /// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.

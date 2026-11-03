@@ -8,10 +8,14 @@ use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{
-    loggable_id, Attachments, ClientEvent, Decision as Word, Row, ServerError, ServerEvent,
+    loggable_id, Attachments, ClientEvent, Decision as Word, Proposal, Reply, Row, ServerError,
+    ServerEvent,
 };
-use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
+use fermix_client::chat_wire::session::{
+    closes, logged, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
+};
 use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::phone::unix_seconds;
 use gtk::glib;
 use std::rc::Rc;
 use std::time::Duration;
@@ -39,15 +43,82 @@ fn now() -> i64 {
     glib::real_time() / 1_000_000
 }
 
-/// Logs what a decode dropped: a page's unreadable messages (a warning), and the media,
-/// previews, blocks and places its rows skipped (debug: an unknown block type is expected).
+/// Logs what a decode dropped: a page's unreadable messages (a warning), the media, previews,
+/// blocks and places its rows skipped (debug: an unknown block type is expected), and the rows
+/// whose time this app cannot read (a warning, as they arrive: the page draws them with none).
 fn log_skipped<'a>(messages: usize, rows: impl Iterator<Item = &'a Row>) {
     if messages > 0 {
         glib::g_warning!("fermix", "a history page had {messages} unreadable rows");
     }
-    for row in rows.filter(|row| row.skipped > 0) {
+    let mut untimed = 0;
+    for row in rows {
+        untimed += usize::from(!time_reads(row.ts.as_deref()));
         let (seq, skipped) = (row.server_seq, row.skipped);
-        glib::g_debug!("fermix", "row {seq} dropped {skipped} unreadable parts");
+        if skipped > 0 {
+            glib::g_debug!("fermix", "row {seq} dropped {skipped} unreadable parts");
+        }
+    }
+    if untimed > 0 {
+        glib::g_warning!(
+            "fermix",
+            "{untimed} rows came with a time this app cannot read"
+        );
+    }
+}
+
+/// Logs what a streamed reply's decode dropped, as `log_skipped` does a row's.
+fn log_reply(reply: &Reply) {
+    let (seq, skipped) = (reply.server_seq, reply.skipped);
+    if skipped > 0 {
+        glib::g_debug!("fermix", "reply {seq} dropped {skipped} blocks or places");
+    }
+    if !time_reads(reply.ts.as_deref()) {
+        glib::g_warning!(
+            "fermix",
+            "reply {seq} came with a time this app cannot read"
+        );
+    }
+}
+
+/// Whether a daemon's time is absent or one this app can read: one the timeline places by
+/// (`unix_seconds`) and the page writes (`chat::local`). Any other is drawn as none, or as the
+/// daemon wrote it on a card, and logged here once, as it arrives.
+pub fn time_reads(ts: Option<&str>) -> bool {
+    ts.is_none_or(|ts| unix_seconds(ts).is_some() && crate::chat::local(ts).is_some())
+}
+
+/// Logs a card whose times this app cannot all read, by its id alone.
+fn log_card(proposal: &Proposal) {
+    let times = [
+        Some(proposal.created_at.as_str()),
+        Some(proposal.expires_at.as_str()),
+        proposal.received_at.as_deref(),
+    ];
+    if !times.into_iter().all(time_reads) {
+        let id = loggable_id(&proposal.proposal_id);
+        glib::g_warning!("fermix", "card {id} came with a time this app cannot read");
+    }
+}
+
+/// Logs an event this build shows nothing of yet, by its type and a plain id alone.
+fn log_unused(event: &ServerEvent) {
+    match event {
+        // Always On stays behind its flag, so this app shows none of it.
+        ServerEvent::HomeStatusChanged => glib::g_debug!("fermix", "Always On changed"),
+        ServerEvent::Reasoning { turn_id, .. } => {
+            let turn = loggable_id(turn_id);
+            glib::g_debug!("fermix", "turn {turn} reasoned; not shown yet")
+        }
+        ServerEvent::Checklists { .. } | ServerEvent::Checklist { .. } => {
+            glib::g_warning!("fermix", "a list came that this app never asked for")
+        }
+        ServerEvent::AttachStatus { .. } => {
+            glib::g_warning!(
+                "fermix",
+                "a file's status came that this app never handed over"
+            )
+        }
+        _ => {}
     }
 }
 
@@ -159,9 +230,10 @@ impl App {
                     log_offers(&event);
                     return Ok(());
                 }
-                Handshake::Refused(sentence) => {
-                    glib::g_warning!("fermix", "chat refused: {sentence}");
-                    return Err(Lost::Broken(sentence));
+                Handshake::Refused(_) => {
+                    let named = logged(&event);
+                    glib::g_warning!("fermix", "chat refused: {named}");
+                    return Err(Lost::Broken(named));
                 }
                 Handshake::Lost(reason) => return Err(Lost::Broken(reason)),
                 Handshake::Ignore => glib::g_debug!("fermix", "before hello: {}", event.kind()),
@@ -210,9 +282,13 @@ impl App {
             return;
         }
         self.log_event(&event);
+        let page_read = matches!(event, ServerEvent::HistoryPage(_));
         let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
         if timeline::history_unreadable(&self.wire.borrow().chat) {
             return self.chat_lost(Lost::History);
+        }
+        if page_read {
+            self.wire.borrow_mut().session.history_read();
         }
         self.chat_send(events);
         self.chat_seen();
@@ -223,21 +299,21 @@ impl App {
     }
 
     /// Logs what an event says of the wire, never the daemon's text: what did not decode, what
-    /// was refused, and what this build shows nothing of.
+    /// was refused, and what this build shows nothing of. A type, an id or a code word the daemon
+    /// chose is logged only as `loggable_id` lets it.
     fn log_event(&self, event: &ServerEvent) {
         match event {
-            ServerEvent::Unknown(kind) => glib::g_warning!("fermix", "chat event {kind} unread"),
+            ServerEvent::Unknown(kind) => {
+                let kind = loggable_id(kind);
+                glib::g_warning!("fermix", "chat event {kind} unread")
+            }
             ServerEvent::Unreadable(unread) => {
                 log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind)
             }
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
             ServerEvent::Row(row) => log_skipped(0, std::iter::once(row)),
-            ServerEvent::TextDone(reply) if reply.skipped > 0 => glib::g_debug!(
-                "fermix",
-                "reply {} dropped {} blocks or places",
-                reply.server_seq,
-                reply.skipped
-            ),
+            ServerEvent::TextDone(reply) => log_reply(reply),
+            ServerEvent::Proposal { proposal } => log_card(proposal),
             ServerEvent::Error(error) if closes(&error.reason) => {
                 glib::g_warning!("fermix", "the chat was refused: {}", error.reason)
             }
@@ -248,25 +324,7 @@ impl App {
                 let id = loggable_id(id);
                 glib::g_warning!("fermix", "an error came for file {id}, never handed over")
             }
-            // Always On stays behind its flag, so this app shows none of it.
-            ServerEvent::HomeStatusChanged => glib::g_debug!("fermix", "Always On changed"),
-            ServerEvent::Reasoning { turn_id, .. } => {
-                glib::g_debug!(
-                    "fermix",
-                    "turn {} reasoned; not shown yet",
-                    loggable_id(turn_id)
-                )
-            }
-            ServerEvent::Checklists { .. } | ServerEvent::Checklist { .. } => {
-                glib::g_warning!("fermix", "a list came that this app never asked for")
-            }
-            ServerEvent::AttachStatus { .. } => {
-                glib::g_warning!(
-                    "fermix",
-                    "a file's status came that this app never handed over"
-                )
-            }
-            _ => {}
+            _ => log_unused(event),
         }
     }
 

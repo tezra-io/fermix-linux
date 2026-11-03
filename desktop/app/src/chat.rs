@@ -577,16 +577,25 @@ fn decorate(shown: &[Placed], view: &View, live: Option<&Live>) {
 
 /// A daemon's RFC 3339 time as Chat writes it beside its rows and on its proposal cards
 /// (`chat::written_time`), on this computer's clock and in its zone. `None` for a time GLib
-/// cannot read.
+/// cannot read: a row then shows none, and a card the daemon's time as it wrote it. Such a time
+/// was logged once as it arrived (`chat_session::time_reads`), so nothing is logged here, at
+/// each draw.
 fn clock(at: &str) -> Option<String> {
-    let time = glib::DateTime::from_iso8601(at, None).and_then(|time| time.to_local());
-    match (time, glib::DateTime::now_local()) {
-        (Ok(time), Ok(now)) => Some(written_time(local_time(&time), local_time(&now))),
-        (Err(e), _) | (_, Err(e)) => {
-            glib::g_warning!("fermix", "could not show the time {at}: {e}");
+    let time = local(at)?;
+    match glib::DateTime::now_local() {
+        Ok(now) => Some(written_time(local_time(&time), local_time(&now))),
+        Err(e) => {
+            glib::g_warning!("fermix", "this computer's clock could not be read: {e}");
             None
         }
     }
+}
+
+/// An RFC 3339 time on this computer's clock and in its zone, where GLib can read it.
+pub fn local(at: &str) -> Option<glib::DateTime> {
+    glib::DateTime::from_iso8601(at, None)
+        .and_then(|time| time.to_local())
+        .ok()
 }
 
 fn local_time(time: &glib::DateTime) -> LocalTime {

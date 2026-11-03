@@ -43,14 +43,14 @@ pub const SETTLED_UNREAD: &str = "Fermix settled this request. This app could no
 /// The most history pages in a row that may be unreadable before the connection is given up.
 pub const MAX_UNREAD_PAGES: u32 = 3;
 
-/// One held row. A reply held from its turn's `text_done` names the turn, and has no time of the
-/// daemon's: it carries when it arrived instead.
+/// One held row. A reply held from its turn's `text_done` names the turn, carries the time its
+/// row stores where `text_done` says it, and when it arrived.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldRow {
     pub row: Row,
     pub turn_id: Option<String>,
     /// When a streamed reply arrived, on the caller's clock: it places the reply among proposal
-    /// cards until a page brings its row's time.
+    /// cards where the reply's own time is absent or cannot be read.
     pub arrived: Option<i64>,
 }
 
@@ -200,7 +200,8 @@ pub struct Chat {
 /// proposal card is dropped but those the daemon resolved or refused: the daemon sends again
 /// each one still waiting, and a refused one sent again asks again. The placeholders of the
 /// cards that could not be read go too: one still waiting comes again. A history that could not
-/// be read stays one page from being given up (`history_unreadable`).
+/// be read keeps its count of unreadable pages, at most `MAX_UNREAD_PAGES`, so a connection whose
+/// history still cannot be read gives up at its first unreadable page (`history_unreadable`).
 pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent> {
     chat.connected = true;
     chat.approvals.clear();
@@ -221,7 +222,7 @@ pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent
 
 /// Whether more than `MAX_UNREAD_PAGES` history pages in a row could not be read. Such a history
 /// cannot be shown at all, so the caller ends the connection (`Lost::History`), and the page says
-/// Chat cannot reach Fermix while it tries again, less often each time.
+/// Chat cannot read Fermix's history while it tries again, less often each time.
 pub fn history_unreadable(chat: &Chat) -> bool {
     chat.unread_pages > MAX_UNREAD_PAGES
 }
@@ -551,7 +552,8 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
 /// An event this build could not read, by what it still names. A card that asks the owner leaves
 /// its placeholder, and a resolution settles the card it names. A reply or a row is read again
 /// (`catch_up`), so it is missing only until that page; a reply, a turn's end or its failure ends
-/// the turn it names, and a failure that ended one says so. A page answers its read with nothing
+/// the turn it names. A failure says so when its turn reads, held or not, as a readable failure
+/// does, and when it ended the turn held. A page answers its read with nothing
 /// (`page_unread`). An `accepted` settles the request it names; an `error` naming one refuses it
 /// in this app's words, and one naming a file is the grants'. Any other mends itself: a turn's
 /// delta or tool by the next one.
@@ -583,7 +585,8 @@ fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
             end_unread(chat, turn);
         }
         "turn_error" => {
-            if end_unread(chat, turn) {
+            let ended = end_unread(chat, turn);
+            if ended || turn.is_some() {
                 chat.last_error = Some(TURN_UNREAD.into());
             }
         }
@@ -793,8 +796,8 @@ fn answer_waiting(chat: &Chat, proposal_id: &str) -> Option<Decision> {
     })
 }
 
-/// The daemon's last word on a card it holds. One for a card not held changes nothing.
-/// Fermix settled the proposal `id`: its placeholder goes, and its card says so in `sentence`.
+/// Fermix settled the proposal `id`: its placeholder goes, and its card, where one is held, says
+/// so in `sentence`.
 fn proposal_settled(chat: &mut Chat, id: &str, sentence: String, result_text: Option<String>) {
     unshown::resolved(&mut chat.unshown, Asks::Proposal, id);
     let held = chat

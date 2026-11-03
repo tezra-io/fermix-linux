@@ -34,6 +34,11 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_UNSCANNED_BYTES: usize = 32 * 1024 * 1024;
 /// The longest id an unreadable event is kept by (`Unreadable`).
 pub const MAX_ID_BYTES: usize = 256;
+/// The longest id or code word a log line carries as it is (`loggable_id`): the schema's
+/// `attach_id` bound.
+pub const MAX_LOGGED_BYTES: usize = 64;
+/// What a log line says in place of an id or a word it may not carry.
+pub const NOT_LOGGED: &str = "(not logged)";
 
 /// The server event types this build decodes; any other `type` is `ServerEvent::Unknown`.
 const KNOWN_TYPES: [&str; 25] = [
@@ -501,15 +506,19 @@ fn known(kind: &str) -> &'static str {
         .unwrap_or("unknown")
 }
 
-/// `id` as a log line may carry it: as it is when it is at most `MAX_ID_BYTES` of printable ASCII
-/// with no space, and otherwise a phrase that holds none of its text.
+/// An id or a code word the daemon sent, as a log line may carry it: as it is when it is 1 to
+/// `MAX_LOGGED_BYTES` of the contract's id alphabet (ASCII letters, digits, `_` and `-`, the
+/// schema's `attach_id`), and otherwise `NOT_LOGGED`, which holds none of its text.
 pub fn loggable_id(id: &str) -> &str {
-    let plain =
-        !id.is_empty() && id.len() <= MAX_ID_BYTES && id.bytes().all(|b| b.is_ascii_graphic());
+    let plain = !id.is_empty()
+        && id.len() <= MAX_LOGGED_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
     if plain {
         id
     } else {
-        "an id that is not logged"
+        NOT_LOGGED
     }
 }
 
@@ -930,7 +939,7 @@ pub struct Proposal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ask {
     /// A mandate's recorded call, run exactly as recorded once confirmed. `args_text` is its
-    /// arguments as pretty JSON, outside text.
+    /// arguments as pretty JSON, outside text, and never blank.
     Call {
         mandate: String,
         tool: String,
@@ -988,7 +997,8 @@ impl TryFrom<RawProposal> for Proposal {
     type Error = String;
 
     /// The schema's `oneOf`: a call with `mandate`, `tool` and `outside.args_text`, or a
-    /// `follow_up`, never both.
+    /// `follow_up`, never both. A call whose arguments are blank is refused too: its card would
+    /// ask the owner to confirm a call it shows nothing of.
     fn try_from(raw: RawProposal) -> Result<Self, Self::Error> {
         let RawOutside {
             args_text,
@@ -996,6 +1006,7 @@ impl TryFrom<RawProposal> for Proposal {
             reason,
             cue,
         } = raw.outside;
+        let args_text = args_text.filter(|text| !text.trim().is_empty());
         let ask = match (raw.mandate, raw.tool, args_text, raw.follow_up) {
             (Some(mandate), Some(tool), Some(args_text), None) => Ask::Call {
                 mandate,

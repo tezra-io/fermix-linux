@@ -3,7 +3,8 @@
 
 use fermix_client::chat_wire::protocol::{read_line, Attachments, ServerEvent};
 use fermix_client::chat_wire::session::{
-    closes, delay, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
+    closes, delay, handshake, logged, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
+    HISTORY_UNREAD, RECONNECTING,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -193,7 +194,78 @@ fn the_page_says_why_it_is_not_connected() {
         "a retry keeps the last reason"
     );
     session.lost(Lost::Broken("eof".into()));
-    assert!(matches!(session.shown(), Shown::Disconnected(_)));
+    assert_eq!(session.shown(), Shown::Disconnected(RECONNECTING.into()));
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    session.lost(Lost::History);
+    assert_eq!(
+        session.shown(),
+        Shown::Disconnected(HISTORY_UNREAD.into()),
+        "Fermix answered: only its history could not be read"
+    );
+    assert_ne!(HISTORY_UNREAD, RECONNECTING);
+}
+
+/// The backoff kept for a history that could not be read ends with that episode: the first page
+/// read on the next connection resets it, so a daemon whose history reads again is not waited
+/// for 30 s at its next loss. A page read on a connection that kept no backoff changes nothing.
+#[test]
+fn a_page_read_after_a_history_given_up_ends_its_backoff() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    for seconds in [1, 2, 4, 8, 16, 30] {
+        assert_eq!(
+            session.lost(Lost::History),
+            Some(Duration::from_secs(seconds))
+        );
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+    }
+    session.history_read();
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(1))
+    );
+    session.start();
+    session.connected();
+    session.history_read();
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(2)),
+        "a page read only ends a backoff kept on a connection"
+    );
+}
+
+/// The log names a handshake event by its type, and an error by its reason and direction as code
+/// words (`loggable_id`): never the daemon's sentence, nor a word outside the contract's
+/// alphabet. A lost handshake carries the same into the log.
+#[test]
+fn a_handshake_event_is_logged_by_its_codes_alone() {
+    let plain = line(
+        r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_old","message":"Update this app."}"#,
+    );
+    assert_eq!(
+        logged(&plain),
+        "error unsupported_protocol_version, direction client_too_old"
+    );
+    let odd = line(
+        r#"{"type":"error","reason":"a password: hunter2\nforged","direction":"sideways now","message":"secret"}"#,
+    );
+    let text = logged(&odd);
+    for word in ["hunter2", "forged", "sideways", "secret", "\n"] {
+        assert!(!text.contains(word), "{text}");
+    }
+    assert_eq!(logged(&server(0)), "server_hello");
+    let lost = line(r#"{"type":"error","reason":"a password: hunter2","message":"secret"}"#);
+    let Handshake::Lost(detail) = handshake(&lost) else {
+        panic!("an error with no direction loses the handshake");
+    };
+    assert!(
+        !detail.contains("hunter2") && !detail.contains("secret"),
+        "{detail}"
+    );
 }
 
 /// PROTOCOL.md "Errors": each reason in the table closes the connection exactly when its row says

@@ -126,9 +126,15 @@ fn every_golden_server_line_decodes_into_a_known_event() {
     }
 }
 
-/// The parts a row, a reply or a page dropped in decoding: none of a golden line's may be.
+/// The parts a hello, a row, a reply or a page dropped in decoding: none of a golden line's may
+/// be. A hello drops the commands it cannot read, and an offer of attachments it cannot read.
 fn parts_skipped(event: &ServerEvent) -> usize {
     match event {
+        ServerEvent::ServerHello {
+            commands,
+            attachments,
+            ..
+        } => commands.skipped + usize::from(*attachments == Attachments::Unreadable),
         ServerEvent::Row(row) => row.skipped,
         ServerEvent::TextDone(reply) => reply.skipped,
         ServerEvent::HistoryPage(page) => {

@@ -166,6 +166,26 @@ fn follow_up_json(id: &str) -> Value {
     })
 }
 
+/// A call is its arguments: one whose arguments are blank would draw an empty block and ask the
+/// owner to confirm nothing they can see, so it is unreadable by its id.
+#[test]
+fn a_call_with_blank_arguments_is_unreadable_by_its_id() {
+    for blank in ["", "  "] {
+        let mut card = card_json("p1");
+        card["outside"]["args_text"] = json!(blank);
+        let line = json!({"type": "proposal", "profile_id": "main", "proposal": card});
+        assert_eq!(
+            read_line(line.to_string().as_bytes()),
+            Ok(ServerEvent::Unreadable(Unreadable {
+                kind: "proposal".into(),
+                card_id: Some("p1".into()),
+                ..Unreadable::default()
+            })),
+            "{blank:?}"
+        );
+    }
+}
+
 #[test]
 fn a_card_that_is_both_a_call_and_a_follow_up_is_unreadable_by_its_id() {
     let both = with(
