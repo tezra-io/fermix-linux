@@ -1,8 +1,8 @@
 //! The Lists pane (M85 lists §3), as values: whether it is open, wide or narrow, and the owner's
 //! last open or close kept in `lists.json` (§3.2, L4); and what it draws now: the list asked for
-//! while the index holds it, its head and lines, each list's own folds, or the state before the
-//! index answers or with no list (§3.3, §3.4, §3.8); and what a screen reader is told as it is
-//! drawn again (§6.3).
+//! while the index holds it, its head and lines, each list's own folds, an item being reworded,
+//! or the state before the index answers or with no list (§3.3, §3.4, §3.5, §3.8); and what a
+//! screen reader is told as it is drawn again (§6.3).
 //!
 //! The picker counts each list from the index, as a folded card does. The head under it counts
 //! the list as drawn, its edits waiting included, once it is held. While an edit waits for the
@@ -266,6 +266,20 @@ pub fn drawing(
             .and_then(|state| state.refusal())
             .map(str::to_owned),
     }))
+}
+
+/// The drawing with the item `row_id` drawn as it is reworded, its words' entry then its note's in
+/// its place (§3.5), while its lines draw it as an item the engine has named.
+pub fn rewording(drawing: PaneDrawing, row_id: Option<&str>) -> PaneDrawing {
+    match (drawing, row_id) {
+        (PaneDrawing::List(mut list), Some(row_id)) => {
+            if let PaneBody::Lines(lines) = &mut list.body {
+                *lines = panel::with_rewording(std::mem::take(lines), row_id);
+            }
+            PaneDrawing::List(list)
+        }
+        (drawing, _) => drawing,
+    }
 }
 
 /// What a screen reader is told as the pane is drawn again (§3.8, §5.3, §6.3), since focus is

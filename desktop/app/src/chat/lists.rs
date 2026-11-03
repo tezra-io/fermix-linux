@@ -1,10 +1,10 @@
 //! A reply's lists card (M85 lists §2), under its place cards: the owner's lists its turn read or
 //! changed, drawn as they stand now (`fermix_client::checklists::card`). A live card of one list
-//! shows its open items with "N more" and Add an item, a card of several a group per list, and a
-//! folded card one button per list. A list's head, its Open list button, a group's name and a
-//! folded button open the Lists pane at that list. Only stock widgets, markup off before any
-//! text, and no list edit is an exported action: a tick is its check button's own closure, and
-//! the card hands each edit to the session through `Lister`.
+//! shows its open items, each reworded in place, with "N more" and Add an item; a card of several
+//! a group per list, tick only; and a folded card one button per list. A list's head, its Open
+//! list button, a group's name and a folded button open the Lists pane at that list. Only stock
+//! widgets, markup off before any text, and no list edit is an exported action: a tick is its
+//! check button's own closure, and the card hands each edit to the session through `Lister`.
 
 use adw::prelude::*;
 use fermix_client::chat::ListsCard;
@@ -17,7 +17,10 @@ use gtk::glib;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
-use super::list_rows::{self, button_on_click_or_key, on_click_or_key, on_press, LIST_MARK};
+use super::list_reword::Reworder;
+use super::list_rows::{
+    self, button_on_click_or_key, on_click_or_key, on_press, rewords_on, LIST_MARK,
+};
 use super::places::{CARDS_MIN_WIDTH, CARDS_WIDTH};
 
 /// A card's Open list button, and the pane's Hide lists.
@@ -32,8 +35,17 @@ pub enum ListAct {
     Drawn(Vec<String>),
     /// An edit of one list, from a tick or Add an item.
     Edit { list_id: String, op: ListOp },
+    /// A rewording of `began` saved with what its entries hold: the words, and the note where the
+    /// pane rewords it. The library sends what changed from `began`.
+    Reword {
+        list_id: String,
+        began: ListRow,
+        words: String,
+        note: Option<String>,
+    },
     /// A card's or the pane's own state changed (grown, folded back, a section or Done folded or
-    /// opened, a list picked, or a ticked row settled): the lists are drawn again.
+    /// opened, a list picked, a ticked row settled, or a rewording begun or left by Escape): the
+    /// lists are drawn again.
     Redraw,
     /// A card opens the pane at its list. By a key (Return on its row), focus moves to the
     /// pane's picker.
@@ -69,6 +81,10 @@ pub struct ListsView {
     settling: Rc<RefCell<Settling>>,
     /// What the card drew last, so a draw that changes nothing leaves the widgets as they are.
     drawn: Option<Drawing>,
+    /// The item being reworded, if one is.
+    reworder: Reworder,
+    /// The item the card drew as reworded last.
+    drawn_rewording: Option<String>,
 }
 
 impl ListsView {
@@ -98,6 +114,8 @@ impl ListsView {
             grown: Rc::default(),
             settling: Rc::default(),
             drawn: None,
+            reworder: Reworder::new(lister),
+            drawn_rewording: None,
         }
     }
 
@@ -107,17 +125,19 @@ impl ListsView {
     }
 
     /// Draws the card as `library` holds its lists, rebuilding its rows only when what it draws
-    /// changed, and speaks what core's `news` says is new on it. `on_screen`: the card was on
-    /// screen at the page's last look; off screen, it speaks nothing.
+    /// or the item it rewords changed, and speaks what core's `news` says is new on it.
+    /// `on_screen`: the card was on screen at the page's last look; off screen, it speaks nothing.
+    /// A rewording whose item the card no longer draws ends, with nothing sent.
     pub fn show(&mut self, library: &Library, on_screen: bool) {
         let drawn = self.card.as_ref().and_then(|card| {
             let settling = self.settling.borrow().rows();
             drawing(&card.lists, card.live, library, self.grown.get(), &settling)
         });
-        if drawn == self.drawn {
+        if drawn == self.drawn && self.reworder.row_id() == self.drawn_rewording {
             return;
         }
-        let focused = focused_row(&self.column, &self.add);
+        let typing = self.reworder.current().map(|r| r.words.clone());
+        let focused = focused_row(&self.column, &self.add, typing.as_ref());
         clear(&self.column);
         if let Some(drawing) = &drawn {
             self.draw(drawing);
@@ -126,9 +146,14 @@ impl ListsView {
                     .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
             }
         }
-        refocus(&self.column, focused, &self.add);
+        if typing.is_some_and(|words| words.parent().is_none()) {
+            self.reworder.dropped();
+        }
+        let typing = self.reworder.current().map(|r| r.words.clone());
+        refocus(&self.column, focused, &self.add, typing.as_ref());
         self.widget.set_visible(drawn.is_some());
         self.drawn = drawn;
+        self.drawn_rewording = self.reworder.row_id();
     }
 
     /// The reply came on screen: a live card pulls the lists it draws, unless the app holds them.
@@ -168,7 +193,7 @@ impl ListsView {
         ))]);
         list.append(&head_row(head, false, &self.lister));
         for row in &rows.rows {
-            list.append(&self.item_row(&head.list_id, row));
+            list.append(&self.one_item(&head.list_id, row));
         }
         if let Some(sentence) = refusal {
             list.append(&sentence_row(sentence));
@@ -219,7 +244,9 @@ impl ListsView {
         button.set_use_markup(false);
         button.set_title(&title);
         let (grown, lister) = (self.grown.clone(), self.lister.clone());
+        let reworder = self.reworder.clone();
         button_on_click_or_key(&button, move || {
+            reworder.save_going();
             grown.set(!grown.get());
             act(&lister, ListAct::Redraw);
         });
@@ -229,6 +256,18 @@ impl ListsView {
     /// An item whose tick the session sends (`list_rows::item_row`), without its note.
     fn item_row(&self, list_id: &str, row: &ListRow) -> adw::ActionRow {
         list_rows::item_row(row, false, list_id, &self.lister, &self.settling)
+    }
+
+    /// An item of a one-list card: a double-click, Return or F2 rewords its words, never its
+    /// note (§2.2), in one entry kept while it is reworded.
+    fn one_item(&self, list_id: &str, row: &ListRow) -> gtk::ListBoxRow {
+        if let Some(words) = self.reworder.words_of(&row.row_id) {
+            return words.upcast();
+        }
+        let item = self.item_row(list_id, row);
+        let (reworder, list_id, row) = (self.reworder.clone(), list_id.to_owned(), row.clone());
+        rewords_on(&item, move || reworder.start(&list_id, &row, false));
+        item.upcast()
     }
 }
 
@@ -428,26 +467,45 @@ enum Focused {
     Row(i32),
     /// Add an item, which stays focused for the next item.
     Add,
+    /// The entry of the item being reworded, at this place in the card's list.
+    Typing(i32),
 }
 
-/// Where the card holds the focus, if it does.
-fn focused_row(column: &gtk::Box, add: &adw::EntryRow) -> Option<Focused> {
+/// Where the card holds the focus, if it does. `typing` is the entry of the item being
+/// reworded.
+fn focused_row(
+    column: &gtk::Box,
+    add: &adw::EntryRow,
+    typing: Option<&adw::EntryRow>,
+) -> Option<Focused> {
     let list = column.first_child()?.downcast::<gtk::ListBox>().ok()?;
     let focus = list.root()?.focus()?;
-    if focus.is_ancestor(add) || focus == *add.upcast_ref::<gtk::Widget>() {
+    let within = |entry: &adw::EntryRow| {
+        focus.is_ancestor(entry) || focus == *entry.upcast_ref::<gtk::Widget>()
+    };
+    if within(add) {
         return Some(Focused::Add);
     }
     let row = focus.ancestor(gtk::ListBoxRow::static_type())?;
     let row = row.downcast::<gtk::ListBoxRow>().ok()?;
     row.parent().filter(|parent| parent == &list)?;
-    Some(Focused::Row(row.index()))
+    match typing.is_some_and(within) {
+        true => Some(Focused::Typing(row.index())),
+        false => Some(Focused::Row(row.index())),
+    }
 }
 
-/// After a draw, focus that was on the card goes back: to Add an item when it was there, else to
-/// the row now in its place, else the row before, else Add an item. The window's focus is
-/// cleared first: GTK moves focus off a removed widget one frame later, which would undo the
-/// move.
-fn refocus(column: &gtk::Box, focused: Option<Focused>, add: &adw::EntryRow) {
+/// After a draw, focus that was on the card goes back: to Add an item when it was there; to the
+/// entry of the item being reworded, with what is typed and its cursor as they were, while it is
+/// still drawn; else to the row now in its place, else the row before, else Add an item. The
+/// window's focus is cleared first: GTK moves focus off a removed widget one frame later, which
+/// would undo the move.
+fn refocus(
+    column: &gtk::Box,
+    focused: Option<Focused>,
+    add: &adw::EntryRow,
+    typing: Option<&adw::EntryRow>,
+) {
     let Some(focused) = focused else {
         return;
     };
@@ -457,14 +515,20 @@ fn refocus(column: &gtk::Box, focused: Option<Focused>, add: &adw::EntryRow) {
     if let Some(root) = list.root() {
         root.set_focus(None::<&gtk::Widget>);
     }
+    let in_list = |entry: &adw::EntryRow| entry.parent().is_some_and(|parent| parent == list);
+    if let (Focused::Typing(_), Some(words)) = (focused, typing.filter(|e| in_list(e))) {
+        words.grab_focus_without_selecting();
+        return;
+    }
     let row = match focused {
         Focused::Add => None,
-        Focused::Row(at) => list.row_at_index(at).or_else(|| list.row_at_index(at - 1)),
+        Focused::Row(at) | Focused::Typing(at) => {
+            list.row_at_index(at).or_else(|| list.row_at_index(at - 1))
+        }
     };
-    let in_list = add.parent().is_some_and(|parent| parent == list);
     match row {
         Some(row) => row.grab_focus(),
-        None if in_list => add.grab_focus(),
+        None if in_list(add) => add.grab_focus(),
         None => list.grab_focus(),
     };
 }
@@ -481,17 +545,18 @@ mod tests {
         "SimpleAction::new_stateful(\"",
     ];
 
-    /// A tick and an add are their widgets' own closures, and every other ask of a card or the
-    /// pane goes to the session through `Lister`: none is a `win.` or `app.` action, which any
-    /// process of the session reaches on the bus (M85 lists §4.2). Of every action the app
-    /// registers, by any of its ways, the one with "list" in its name is `win.lists`, which only
-    /// shows and hides the pane.
+    /// A tick, an add and a rewording are their widgets' own closures, and every other ask of a
+    /// card or the pane goes to the session through `Lister`: none is a `win.` or `app.` action,
+    /// which any process of the session reaches on the bus (M85 lists §4.2). Of every action the
+    /// app registers, by any of its ways, the one with "list" in its name is `win.lists`, which
+    /// only shows and hides the pane.
     #[test]
     fn no_list_edit_is_a_window_action() {
         let surfaces = [
             ("lists.rs", shipped(include_str!("lists.rs"))),
             ("list_rows.rs", shipped(include_str!("list_rows.rs"))),
             ("lists_pane.rs", shipped(include_str!("lists_pane.rs"))),
+            ("list_reword.rs", shipped(include_str!("list_reword.rs"))),
         ];
         let read: String = surfaces.iter().map(|(_, source)| *source).collect();
         assert!(

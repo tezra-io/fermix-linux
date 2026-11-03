@@ -2,12 +2,13 @@
 //! header. A split view around the chat's body holds it, in a breakpoint bin that collapses the
 //! split below 600sp, where the pane lies over the chat and shows only when asked. Its head picks
 //! the list and gives its folder and counts; its list draws the lines `checklists::panel` gives,
-//! spliced where they changed; Add an item sits at its foot. Whether it shows is the owner's last
-//! open or close (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets,
-//! markup off before any text, and no list edit is an exported action: the pane hands each to
-//! the session through `Lister`.
+//! spliced where they changed, an item being reworded as its two entries; Add an item sits at its
+//! foot. Whether it shows is the owner's last open or close (`checklists::pane::PaneOpen`), which
+//! the session keeps. Only stock widgets, markup off before any text, and no list edit is an
+//! exported action: the pane hands each to the session through `Lister`.
 
-use super::list_rows::{self, on_click_or_key};
+use super::list_reword::Reworder;
+use super::list_rows::{self, on_click_or_key, rewords_on};
 use super::lists::{act, ListAct, Lister, PANE_MARK};
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{List, ListEntry, ListOp, ListRow};
@@ -16,9 +17,9 @@ use fermix_client::checklists::draft::Place;
 use fermix_client::checklists::index::Folders;
 use fermix_client::checklists::library::Library;
 use fermix_client::checklists::pane::{
-    drawing, news, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen,
+    drawing, news, rewording, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen,
 };
-use fermix_client::checklists::panel::{add_place, splice, Line, Splice};
+use fermix_client::checklists::panel::{add_place, rewords, splice, Line, Splice};
 use fermix_client::checklists::words::{
     self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NO_LISTS, RECENTLY_REMOVED,
 };
@@ -79,6 +80,12 @@ pub struct ListsPane {
     return_to: glib::WeakRef<gtk::Widget>,
     /// Where the focus goes when the pane hides with it and that is not on screen: the composer.
     composer: gtk::Widget,
+    /// The item being reworded, if one is.
+    reworder: Reworder,
+    /// The item last reworded: its row takes the focus when its rewording ends by Return or
+    /// Escape, and the selection when it was selected as the rewording began.
+    reworded: RefCell<Option<String>>,
+    reselect: Cell<bool>,
 }
 
 /// The head (§3.3): the picker and Hide lists, then the folder and counts.
@@ -143,6 +150,9 @@ impl ListsPane {
             pulling: Cell::default(),
             return_to: glib::WeakRef::new(),
             composer: composer.clone().upcast(),
+            reworder: Reworder::new(lister),
+            reworded: RefCell::default(),
+            reselect: Cell::default(),
         });
         pane.wire();
         pane
@@ -222,9 +232,10 @@ impl ListsPane {
     }
 
     /// A card's open (§2.6), or Ctrl+Shift+L from another page: the pane shows, at `list_id`
-    /// when one is given. By a key, focus moves to the picker.
+    /// when one is given, saving a rewording going on first. By a key, focus moves to the picker.
     pub fn open_at(self: &Rc<Self>, list_id: Option<&str>, by_key: bool) {
         if let Some(id) = list_id {
+            self.reworder.save_going();
             self.asked.replace(Some(id.to_owned()));
         }
         if !self.shown() {
@@ -421,14 +432,22 @@ impl ListsPane {
         }
     }
 
-    /// Draws the pane as `library` holds the lists, changing only what changed, and pulls the
-    /// list it shows while it is shown.
+    /// Draws the pane as `library` holds the lists, changing only what changed, an item being
+    /// reworded as its entries, and pulls the list it shows while it is shown. A rewording whose
+    /// item is no longer drawn ends, with nothing sent.
     pub fn show(self: &Rc<Self>, library: &Library) {
+        let reworded = self.reworder.row_id();
         let now = {
             let settling = self.settling.borrow().rows();
             let asked = self.asked.borrow();
-            drawing(library, asked.as_deref(), &self.folds.borrow(), &settling)
+            let drawn = drawing(library, asked.as_deref(), &self.folds.borrow(), &settling);
+            rewording(drawn, reworded.as_deref())
         };
+        let lines = lines_of(&now).map(|(_, lines)| lines);
+        let gone = |id: &String| !lines.is_some_and(|lines| rewords(lines, id));
+        if reworded.as_ref().is_some_and(gone) {
+            self.reworder.dropped();
+        }
         let held = match &now {
             PaneDrawing::List(list) => library.shown(&list.list_id),
             PaneDrawing::Waiting | PaneDrawing::NoLists => None,
@@ -486,6 +505,10 @@ impl ListsPane {
             return;
         };
         let (focused, selected) = (focused_at(&self.list), self.selected_line());
+        let at_entry = focused.and_then(|at| self.list.row_at_index(at));
+        let typed = at_entry.is_some_and(|row| row.is::<adw::EntryRow>());
+        let typing = self.reworder.current();
+        let typing = typing.as_ref().and_then(|r| r.focused()).cloned();
         let list_id = new.map_or("", |(id, _)| id);
         let (at, removed) = (index(change.at), index(change.removed));
         let added: Vec<BoxedAnyObject> = change
@@ -503,20 +526,39 @@ impl ListsPane {
             u32::try_from(removed).unwrap_or(0),
             &added,
         );
-        self.refocus(focused.filter(|was| (at..at + removed).contains(was)));
+        let spliced = focused.filter(|was| (at..at + removed).contains(was));
+        let in_list = |entry: &adw::EntryRow| entry.parent().is_some_and(|p| p == self.list);
+        match typing.filter(in_list).filter(|_| spliced.is_some()) {
+            Some(entry) => self.keep_typing(&entry),
+            None if typed => self.refocus(spliced, self.reworded.borrow().as_deref()),
+            None => self.refocus(spliced, None),
+        }
         self.reselect(selected);
     }
 
-    fn refocus(&self, was: Option<i32>) {
+    /// The entry the owner was typing in, drawn again by a splice, takes the focus back with what
+    /// is typed and its cursor as they were. The window's focus is cleared first, as `refocus`
+    /// says.
+    fn keep_typing(&self, entry: &adw::EntryRow) {
+        if let Some(root) = self.list.root() {
+            root.set_focus(None::<&gtk::Widget>);
+        }
+        entry.grab_focus_without_selecting();
+    }
+
+    /// Focus on a row a splice took, at `was`, goes to the row of the `item` whose rewording
+    /// ended, else the row now in its place, else the row before, else Add an item.
+    fn refocus(&self, was: Option<i32>, item: Option<&str>) {
         let Some(was) = was else {
             return;
         };
         if let Some(root) = self.list.root() {
             root.set_focus(None::<&gtk::Widget>);
         }
-        let row = self
-            .list
-            .row_at_index(was)
+        let row = item
+            .and_then(|id| self.index_of(id))
+            .and_then(|at| self.list.row_at_index(at))
+            .or_else(|| self.list.row_at_index(was))
             .or_else(|| self.list.row_at_index(was - 1));
         match row {
             Some(row) => row.grab_focus(),
@@ -530,16 +572,27 @@ impl ListsPane {
         self.line_at(row.index()).map(|line| line.id())
     }
 
-    /// Selects the row drawing `id` again when a splice took the selected row.
+    /// Selects the row drawing `id` again when a splice took the selected row, or the item whose
+    /// rewording began while it was selected, once its row is back.
     fn reselect(&self, id: Option<String>) {
-        let Some(id) = id.filter(|_| self.list.selected_row().is_none()) else {
+        let reworded = self.reworded.borrow().clone();
+        let ended = reworded.filter(|id| self.reworder.row_id().as_ref() != Some(id));
+        let back = ended.filter(|_| self.reselect.get());
+        if back.is_some() {
+            self.reselect.set(false);
+        }
+        let Some(id) = id.or(back).filter(|_| self.list.selected_row().is_none()) else {
             return;
         };
-        let count = i32::try_from(self.lines.n_items()).unwrap_or(0);
-        let at = (0..count).find(|at| self.line_at(*at).is_some_and(|line| line.id() == id));
-        if let Some(row) = at.and_then(|at| self.list.row_at_index(at)) {
+        if let Some(row) = self.index_of(&id).and_then(|at| self.list.row_at_index(at)) {
             self.list.select_row(Some(&row));
         }
+    }
+
+    /// The place of the line `id`.
+    fn index_of(&self, id: &str) -> Option<i32> {
+        let count = i32::try_from(self.lines.n_items()).unwrap_or(0);
+        (0..count).find(|at| self.line_at(*at).is_some_and(|line| line.id() == id))
     }
 
     fn line_at(&self, at: i32) -> Option<Line> {
@@ -613,30 +666,69 @@ impl ListsPane {
         act(&self.lister, ListAct::Edit { list_id, op });
     }
 
-    fn row_of(self: &Rc<Self>, line: &PaneLine) -> adw::ActionRow {
-        let settling = &self.settling;
-        match &line.line {
-            Line::Heading { row, folded } => self.heading_row(&line.list_id, row, *folded),
-            Line::Item(row) | Line::Done(row) => {
-                list_rows::item_row(row, true, &line.list_id, &self.lister, settling)
+    fn row_of(self: &Rc<Self>, line: &PaneLine) -> gtk::ListBoxRow {
+        let row: adw::PreferencesRow = match &line.line {
+            Line::Heading { row, folded } => self.heading_row(&line.list_id, row, *folded).upcast(),
+            Line::Item(row) | Line::Done(row) => self.item_row(&line.list_id, row).upcast(),
+            Line::DoneHeading { count, open } => {
+                self.done_row(&line.list_id, *count, *open).upcast()
             }
-            Line::DoneHeading { count, open } => self.done_row(&line.list_id, *count, *open),
-            Line::RemovedHeading => plain_row(RECENTLY_REMOVED),
+            Line::RemovedHeading => plain_row(RECENTLY_REMOVED).upcast(),
             Line::Removed(row) => {
                 let removed = plain_row(&row.text);
                 removed.add_css_class("dimmed");
-                removed
+                removed.upcast()
+            }
+            Line::Words(row_id) => self.entry_row(self.reworder.words_of(row_id)),
+            Line::Note(row_id) => self.entry_row(self.reworder.note_of(row_id)),
+        };
+        row.upcast()
+    }
+
+    /// An item with its note, whose tick the session sends; a double-click, Return or F2 rewords
+    /// its words and note.
+    fn item_row(self: &Rc<Self>, list_id: &str, row: &ListRow) -> adw::ActionRow {
+        let item = list_rows::item_row(row, true, list_id, &self.lister, &self.settling);
+        let (pane, list_id, row) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
+        rewords_on(&item, move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.reword(&list_id, &row);
+            }
+        });
+        item
+    }
+
+    /// Rewords `row`, keeping its selection for when its row is back. A rewording going on is
+    /// saved first.
+    fn reword(&self, list_id: &str, row: &ListRow) {
+        self.reworder.save_going();
+        let selected = self.selected_line().is_some_and(|id| id == row.row_id);
+        self.reselect.set(selected);
+        self.reworded.replace(Some(row.row_id.clone()));
+        self.reworder.start(list_id, row, true);
+    }
+
+    /// An entry of the item being reworded, kept while it is. A line drawn for no rewording, or
+    /// for one whose entry is still in a list, is a mistake: it draws an empty row, logged.
+    fn entry_row(&self, entry: Option<adw::EntryRow>) -> adw::PreferencesRow {
+        match entry.filter(|entry| entry.parent().is_none()) {
+            Some(entry) => entry.upcast(),
+            None => {
+                glib::g_warning!("fermix", "the Lists pane drew an entry for no rewording");
+                plain_row("").upcast()
             }
         }
     }
 
-    /// A section's heading in `list_id`: a single click, Return or Space folds or opens it.
+    /// A section's heading in `list_id`: a single click, Return or Space folds or opens it. A
+    /// rewording going on is saved first, as a click on another row saves it.
     fn heading_row(self: &Rc<Self>, list_id: &str, row: &ListRow, folded: bool) -> adw::ActionRow {
         let heading = fold_row(&row.text, &row.text, !folded);
         let pane = Rc::downgrade(self);
         let (list_id, id) = (list_id.to_owned(), row.row_id.clone());
         on_click_or_key(&heading, move |_| {
             if let Some(pane) = pane.upgrade() {
+                pane.reworder.save_going();
                 pane.folds.borrow_mut().fold(&list_id, &id);
                 act(&pane.lister, ListAct::Redraw);
             }
@@ -644,13 +736,15 @@ impl ListsPane {
         heading
     }
 
-    /// "Done · 2" in `list_id`: a single click, Return or Space opens or closes the done items.
+    /// "Done · 2" in `list_id`: a single click, Return or Space opens or closes the done items. A
+    /// rewording going on is saved first.
     fn done_row(self: &Rc<Self>, list_id: &str, count: usize, open: bool) -> adw::ActionRow {
         let spoken = words::spoken_done_heading(count);
         let done = fold_row(&words::done_heading(count), &spoken, open);
         let (pane, list_id) = (Rc::downgrade(self), list_id.to_owned());
         on_click_or_key(&done, move |_| {
             if let Some(pane) = pane.upgrade() {
+                pane.reworder.save_going();
                 pane.folds.borrow_mut().open_done(&list_id);
                 act(&pane.lister, ListAct::Redraw);
             }

@@ -1,8 +1,9 @@
-//! The Lists pane's lines (M85 lists §3.4, §3.5): what the one list draws, in order; where Alt+Up
-//! and Alt+Down put a row, by the engine's ops; which section an added item goes to; and the one
-//! splice that turns the drawn lines into the new ones.
+//! The Lists pane's lines (M85 lists §3.4, §3.5): what the one list draws, in order, an item
+//! being reworded among them; where Alt+Up and Alt+Down put a row, by the engine's ops; which
+//! section an added item goes to; and the one splice that turns the drawn lines into the new
+//! ones.
 
-use super::draft::Place;
+use super::draft::{is_local, Place};
 use super::sections;
 use crate::chat_wire::protocol::{List, ListRow};
 use std::collections::BTreeSet;
@@ -26,6 +27,11 @@ pub enum Line {
     /// Recently removed, with each removed item under it.
     RemovedHeading,
     Removed(ListRow),
+    /// The entry for the words of the item being reworded, in its place, by its id alone: a push
+    /// that changes the item leaves the line, and what is typed in it, as it is.
+    Words(String),
+    /// The entry for that item's note, under its words.
+    Note(String),
 }
 
 impl Line {
@@ -37,6 +43,8 @@ impl Line {
             Line::DoneHeading { .. } => "done".to_owned(),
             Line::RemovedHeading => "removed".to_owned(),
             Line::Removed(row) => format!("removed:{}", row.row_id),
+            Line::Words(row_id) => format!("words:{row_id}"),
+            Line::Note(row_id) => format!("note:{row_id}"),
         }
     }
 
@@ -114,6 +122,33 @@ fn removed_lines(list: &List, view: &View) -> Vec<Line> {
                 .map(Line::Removed),
         )
         .collect()
+}
+
+/// The lines with the item `row_id` drawn as it is reworded (§3.5): its words' entry, then its
+/// note's, in its place, an open item or a done one. A heading, a row the engine has not named
+/// yet, and an item not drawn are never reworded, and the lines stay as they were.
+pub fn with_rewording(lines: Vec<Line>, row_id: &str) -> Vec<Line> {
+    if is_local(row_id) {
+        return lines;
+    }
+    let mut drawn = Vec::with_capacity(lines.len() + 1);
+    for line in lines {
+        if line.editable().is_some_and(|row| row.row_id == row_id) {
+            drawn.push(Line::Words(row_id.to_owned()));
+            drawn.push(Line::Note(row_id.to_owned()));
+        } else {
+            drawn.push(line);
+        }
+    }
+    drawn
+}
+
+/// Whether the lines draw the item `row_id` as it is reworded: once they do not, its rewording
+/// has ended.
+pub fn rewords(lines: &[Line], row_id: &str) -> bool {
+    lines
+        .iter()
+        .any(|line| matches!(line, Line::Words(id) if id == row_id))
 }
 
 /// One step up or down for an open item: past the line above or below, a heading included, so

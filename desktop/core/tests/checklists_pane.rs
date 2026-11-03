@@ -1,15 +1,16 @@
-//! The Lists pane as values (M85 lists §3.2, §3.3, §3.4, §3.8; §8 "The pane's open state"):
-//! whether it is shown, wide and narrow, the owner's last open or close kept in `lists.json`, what
-//! it draws from the lists as the library holds them, from the index to a tick under Done and an
-//! add in the selected item's section, each list's own folds, and what a screen reader is told.
+//! The Lists pane as values (M85 lists §3.2, §3.3, §3.4, §3.5, §3.8; §8 "The pane's open
+//! state"): whether it is shown, wide and narrow, the owner's last open or close kept in
+//! `lists.json`, what it draws from the lists as the library holds them, from the index to a tick
+//! under Done and an add in the selected item's section, an item being reworded, each list's own
+//! folds, and what a screen reader is told.
 
 use fermix_client::chat_wire::protocol::{read_line, ClientEvent, ListOp, ServerEvent};
-use fermix_client::checklists::draft::{is_local, Place};
+use fermix_client::checklists::draft::{self, is_local, Place};
 use fermix_client::checklists::library::{Library, MAX_WAITING};
 use fermix_client::checklists::pane::{
     self, drawing, lists_path, Folds, NotLoaded, PaneBody, PaneDrawing, PaneList, PaneOpen,
 };
-use fermix_client::checklists::panel::{add_place, splice, Line};
+use fermix_client::checklists::panel::{self, add_place, splice, Line};
 use fermix_client::checklists::routing::lists_event;
 use fermix_client::checklists::words;
 use serde_json::error::Category;
@@ -497,6 +498,103 @@ fn each_list_keeps_its_own_folded_sections_and_done() {
         [PASSPORT, &heading, SOCKS, "done", SHIRT],
         "Done still open"
     );
+}
+
+/// Packing's lines with `row_id` being reworded.
+fn rewording(lists: &Library, folds: &Folds, row_id: &str) -> Vec<Line> {
+    let drawn = pane::rewording(
+        drawing(lists, Some(PACKING), folds, &BTreeSet::new()),
+        Some(row_id),
+    );
+    let PaneDrawing::List(list) = drawn else {
+        panic!("a list: {drawn:?}");
+    };
+    match list.body {
+        PaneBody::Lines(lines) => lines,
+        other => panic!("its lines: {other:?}"),
+    }
+}
+
+/// An item being reworded is drawn as two entries in its place, its words then its note (§3.5),
+/// an open item and a done one alike. A heading, a row the engine has not named yet, and an item
+/// not drawn (in a folded section) are never reworded; the entries are no item to tick or to add
+/// after.
+#[test]
+fn an_item_being_reworded_is_drawn_as_its_words_then_its_note_in_its_place() {
+    let mut lists = indexed();
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    let mut folds = Folds::default();
+    let heading = format!("heading:{CLOTHES}");
+    let (words, note) = (format!("words:{SOCKS}"), format!("note:{SOCKS}"));
+    let socks = rewording(&lists, &folds, SOCKS);
+    assert_eq!(ids(&socks), [PASSPORT, &heading, &words, &note, "done"]);
+    assert_eq!(
+        socks[2..4],
+        [Line::Words(SOCKS.into()), Line::Note(SOCKS.into())]
+    );
+    assert!(socks[2].editable().is_none() && socks[3].editable().is_none());
+    assert!(panel::rewords(&socks, SOCKS) && !panel::rewords(&socks, PASSPORT));
+    folds.open_done(PACKING);
+    let shirt = rewording(&lists, &folds, SHIRT);
+    let (words, note) = (format!("words:{SHIRT}"), format!("note:{SHIRT}"));
+    assert_eq!(
+        ids(&shirt),
+        [PASSPORT, &heading, SOCKS, "done", &words, &note]
+    );
+    let as_drawn = lines(&lists, &folds, &BTreeSet::new());
+    assert_eq!(rewording(&lists, &folds, CLOTHES), as_drawn, "a heading");
+    let add = ListOp::Add {
+        text: "Hat".into(),
+        note: None,
+        section_id: None,
+        after_id: None,
+    };
+    lists.edit(PACKING, add, "linux-a1".into());
+    let sending = draft::local_row_id("linux-a1");
+    let drawn = lines(&lists, &folds, &BTreeSet::new());
+    assert_eq!(rewording(&lists, &folds, &sending), drawn, "sending");
+    folds.fold(PACKING, CLOTHES);
+    let folded = rewording(&lists, &folds, SOCKS);
+    assert!(!panel::rewords(&folded, SOCKS), "not drawn, not reworded");
+}
+
+/// A push while an item is reworded leaves its entries where they are when it changes the item
+/// itself or the lines around them, so what is typed stays; a push that takes the item away
+/// ends the rewording (§3.5, §3.4).
+#[test]
+fn a_push_mid_rewording_keeps_its_entries_and_one_without_the_item_ends_it() {
+    let mut lists = indexed();
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    let folds = Folds::default();
+    let before = rewording(&lists, &folds, SOCKS);
+    let reworded_elsewhere = json!({"type": "checklist", "profile_id": "main", "list": {
+        "list_id": PACKING, "title": "Packing", "rev": 2, "rows": [
+        {"row_id": PASSPORT, "kind": "item", "text": "Passport", "note": "Renewed", "done": false},
+        {"row_id": CLOTHES, "kind": "section", "text": "Clothes"},
+        {"row_id": SOCKS, "kind": "item", "text": "Wool socks", "note": "Two", "done": false},
+        {"row_id": SHIRT, "kind": "item", "text": "Shirt", "done": true}
+    ]}});
+    receive(&mut lists, reworded_elsewhere);
+    let after = rewording(&lists, &folds, SOCKS);
+    let change = splice(&before, &after).expect("Passport changed");
+    assert_eq!(
+        (change.at, change.removed),
+        (0, 1),
+        "Passport alone is redrawn"
+    );
+    let taken = json!({"type": "checklist", "profile_id": "main", "list": {
+        "list_id": PACKING, "title": "Packing", "rev": 3, "rows": [
+        {"row_id": PASSPORT, "kind": "item", "text": "Passport", "done": false},
+        {"row_id": CLOTHES, "kind": "section", "text": "Clothes"},
+        {"row_id": SHIRT, "kind": "item", "text": "Shirt", "done": true}
+    ]}});
+    receive(&mut lists, taken);
+    let gone = rewording(&lists, &folds, SOCKS);
+    assert!(!panel::rewords(&gone, SOCKS), "the rewording ends");
+    let heading = format!("heading:{CLOTHES}");
+    assert_eq!(ids(&gone), [PASSPORT, &heading, "done"]);
 }
 
 /// A refused edit's sentence stays on its list until the list's next edit, and the pane tells it

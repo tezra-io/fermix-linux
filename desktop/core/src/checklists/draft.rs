@@ -192,6 +192,28 @@ pub fn sendable(op: &ListOp) -> bool {
     }
 }
 
+/// The edit a rewording of `was` saves (M85 lists §3.5): only what changed from the item as the
+/// rewording began, each part trimmed at its ends, as the engine trims what it stores. Words
+/// trimmed to nothing keep the old words, and a note emptied is cleared (`note: ""`). `note` is
+/// `None` where the words alone are reworded, as on a card, and then no note is sent. `None` when
+/// nothing changed.
+pub fn reworded(was: &ListRow, words: &str, note: Option<&str>) -> Option<ListOp> {
+    let words = words.trim();
+    let text = (!words.is_empty() && words != was.text).then(|| words.to_owned());
+    let note = note
+        .map(str::trim)
+        .filter(|note| *note != was.note.as_deref().unwrap_or_default())
+        .map(str::to_owned);
+    if text.is_none() && note.is_none() {
+        return None;
+    }
+    Some(ListOp::Edit {
+        row_id: was.row_id.clone(),
+        text,
+        note,
+    })
+}
+
 fn local_item(client_msg_id: &str, text: &str, note: Option<&str>) -> ListRow {
     ListRow {
         row_id: local_row_id(client_msg_id),

@@ -18,7 +18,9 @@ use super::index::{Created, Index};
 use super::state::ListState;
 use super::words::TOO_MANY;
 use super::LISTS_SINCE;
-use crate::chat_wire::protocol::{ClientEvent, List, ListEntry, ListOp, ServerError, PROFILE};
+use crate::chat_wire::protocol::{
+    ClientEvent, List, ListEntry, ListOp, ListRow, ServerError, PROFILE,
+};
 use crate::chat_wire::timeline::{daemon_reported, MAX_PENDING};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -139,6 +141,23 @@ impl Library {
         out.extend(self.deliver(sent.event()));
         self.unanswered.push(sent);
         out
+    }
+
+    /// A rewording of `began` saved (M85 lists §3.5): the edit of what the owner changed from the
+    /// item as the rewording began, as `draft::reworded` measures it, never what a push changed
+    /// since, made as any edit is. Nothing changed is no edit.
+    pub fn reword(
+        &mut self,
+        list_id: &str,
+        began: &ListRow,
+        words: &str,
+        note: Option<&str>,
+        client_msg_id: String,
+    ) -> Vec<ClientEvent> {
+        match draft::reworded(began, words, note) {
+            Some(op) => self.edit(list_id, op, client_msg_id),
+            None => Vec::new(),
+        }
     }
 
     /// A new list, in a folder when one is named. It is drawn once the engine has made it: the

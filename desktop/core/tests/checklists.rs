@@ -1,7 +1,8 @@
 //! One list as the chat holds it (M85 lists §5.3, §4.3; PROTOCOL.md "Lists"): an edit drawn at
 //! once over the engine's list and placed as the engine would place it, the next pushed rev
 //! confirming it, a stale push dropped, a refusal putting the row back with the engine's sentence,
-//! Copy as text, and the words. A port of the macOS app's ChecklistStoreTests (state and draft).
+//! what a rewording sends, Copy as text, and the words. A port of the macOS app's
+//! ChecklistStoreTests (state and draft).
 
 use fermix_client::chat_wire::protocol::{read_line, List, ListOp, ListRow, ServerEvent};
 use fermix_client::checklists::draft::{self, Place};
@@ -435,6 +436,69 @@ fn words_trimmed_to_nothing_are_no_edit_and_a_note_alone_is_one() {
     assert!(draft::sendable(&check(LEMONS)));
 }
 
+/// What a rewording saves (§3.5): only what changed from the item as the rewording began, the
+/// words and the note each trimmed, as the macOS app trims them.
+#[test]
+fn a_rewording_sends_only_what_changed_each_part_trimmed() {
+    let list = groceries();
+    let lemons = row(&list, LEMONS);
+    let edit = |text: Option<&str>, note: Option<&str>| ListOp::Edit {
+        row_id: LEMONS.into(),
+        text: text.map(str::to_owned),
+        note: note.map(str::to_owned),
+    };
+    let words = draft::reworded(lemons, " Limes ", Some("The unwaxed ones"));
+    assert_eq!(words, Some(edit(Some("Limes"), None)), "the words alone");
+    let note = draft::reworded(lemons, "Lemons", Some("Six "));
+    assert_eq!(note, Some(edit(None, Some("Six"))), "the note alone");
+    let both = draft::reworded(lemons, "Limes", Some("Six"));
+    assert_eq!(both, Some(edit(Some("Limes"), Some("Six"))));
+    let same = draft::reworded(lemons, " Lemons", Some("The unwaxed ones "));
+    assert_eq!(same, None, "nothing changed is nothing sent");
+}
+
+/// An emptied note is cleared with `note: ""`, and words emptied keep the old words (§3.5); a
+/// note that was never there and stays empty is no change.
+#[test]
+fn an_emptied_note_is_cleared_and_emptied_words_keep_the_old_words() {
+    let list = groceries();
+    let lemons = row(&list, LEMONS);
+    let cleared = draft::reworded(lemons, "Lemons", Some("  "));
+    let clear = ListOp::Edit {
+        row_id: LEMONS.into(),
+        text: None,
+        note: Some(String::new()),
+    };
+    assert_eq!(cleared, Some(clear));
+    let blank = draft::reworded(lemons, " \t", Some("The unwaxed ones"));
+    assert_eq!(blank, None, "blank words are no edit");
+    let rice = row(&list, RICE);
+    assert_eq!(draft::reworded(rice, "Rice", Some("")), None, "no note");
+    let noted = draft::reworded(rice, "", Some("Brown"));
+    let note = ListOp::Edit {
+        row_id: RICE.into(),
+        text: None,
+        note: Some("Brown".into()),
+    };
+    assert_eq!(noted, Some(note), "blank words leave the note's edit");
+}
+
+/// A card rewords the words only (§2.2): with no note given, the note is never sent, even where
+/// the item has one.
+#[test]
+fn a_card_rewording_sends_the_words_alone_and_never_the_note() {
+    let list = groceries();
+    let lemons = row(&list, LEMONS);
+    let words = draft::reworded(lemons, "Limes", None);
+    let limes = ListOp::Edit {
+        row_id: LEMONS.into(),
+        text: Some("Limes".into()),
+        note: None,
+    };
+    assert_eq!(words, Some(limes));
+    assert_eq!(draft::reworded(lemons, "Lemons", None), None);
+}
+
 // ---- Copy as text ----
 
 #[test]
@@ -489,6 +553,14 @@ fn the_lists_words_are_sentence_case_free_of_mac_and_of_wire_tokens() {
         assert!(!text.contains('_'), "{text} carries a wire token");
         assert!(!text.contains("  "), "{text} has a double space");
     }
+}
+
+/// The entry of an item's words being reworded shows no title; a screen reader names it "Item",
+/// one of the lists' words (M85 lists §4.1, §6.3).
+#[test]
+fn an_items_words_being_reworded_are_named_item_to_a_screen_reader() {
+    assert_eq!(words::ITEM, "Item");
+    assert!(words::STRINGS.contains(&words::ITEM));
 }
 
 #[test]

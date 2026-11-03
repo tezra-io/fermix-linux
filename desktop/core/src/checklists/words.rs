@@ -32,9 +32,12 @@ pub const ADD_NOTE: &str = "Add a note";
 pub const SHOW_OR_HIDE: &str = "Show or hide lists";
 /// No macOS string: its edits waiting to send have no cap.
 pub const TOO_MANY: &str = "Too many changes are waiting to send";
+/// What a screen reader names the entry of an item's words while it is reworded, which shows no
+/// title.
+pub const ITEM: &str = "Item";
 
 /// Every fixed word the lists show, so a test can hold them to the copy rules.
-pub const STRINGS: [&str; 28] = [
+pub const STRINGS: [&str; 29] = [
     LISTS,
     ADD_ITEM,
     SHOW_LESS,
@@ -63,6 +66,7 @@ pub const STRINGS: [&str; 28] = [
     ADD_NOTE,
     SHOW_OR_HIDE,
     TOO_MANY,
+    ITEM,
 ];
 
 /// "6 open".

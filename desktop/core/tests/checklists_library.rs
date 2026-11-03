@@ -1,6 +1,7 @@
 //! The lists over a connection (M85 lists §5.2 to §5.4; PROTOCOL.md "Lists"): the index pulled at
 //! each handshake, a list pulled when it is drawn, the engine's holding mirrored, edits answered
-//! and sent again, creates named, refusals kept apart from the chat's, and every queue bounded.
+//! and sent again, a rewording measured from the item as it began, creates named, refusals kept
+//! apart from the chat's, and every queue bounded.
 //! A port of the macOS app's ChecklistLibraryTests, with this app's caps. Nothing here opens a
 //! socket: the library returns what to send.
 
@@ -131,6 +132,12 @@ fn holding_groceries() -> (Library, Vec<ClientEvent>) {
 
 fn shown(lists: &Library, list_id: &str) -> List {
     lists.shown(list_id).expect("the list is drawn")
+}
+
+/// The row `row_id` of `list`.
+fn row(list: &List, row_id: &str) -> ListRow {
+    let found = list.rows.iter().find(|row| row.row_id == row_id);
+    found.cloned().expect("the list has the row")
 }
 
 #[test]
@@ -266,6 +273,50 @@ fn an_edit_is_drawn_at_once_and_sent_its_accepted_is_the_lists_and_the_push_conf
     assert!(state.pending()[0].accepted);
     lists.received_list(groceries(8), &BTreeMap::new());
     assert!(lists.state(GROCERIES).expect("held").pending().is_empty());
+}
+
+/// A rewording sends what the owner changed from the item as the rewording began, never what a
+/// push changed since: a note set elsewhere while the words are reworded here stays (M85 lists
+/// §3.5). The macOS app measures from the newest row, and would send the old note back.
+#[test]
+fn a_rewording_sends_what_changed_from_the_item_as_it_began_and_keeps_a_note_pushed_since() {
+    let (mut lists, _) = holding_groceries();
+    let began = row(&shown(&lists, GROCERIES), LEMONS);
+    let mut pushed = groceries(8);
+    for lemons in pushed.rows.iter_mut().filter(|row| row.row_id == LEMONS) {
+        lemons.note = Some("Set on the Mac".into());
+    }
+    lists.received_list(pushed, &BTreeMap::new());
+    let note = began.note.clone().unwrap_or_default();
+
+    let sent = lists.reword(
+        GROCERIES,
+        &began,
+        "Meyer lemons",
+        Some(&note),
+        "linux-r1".into(),
+    );
+
+    let words = ListOp::Edit {
+        row_id: LEMONS.into(),
+        text: Some("Meyer lemons".into()),
+        note: None,
+    };
+    assert_eq!(sent, [edit("linux-r1", Some(GROCERIES), words)]);
+    let lemons = row(&shown(&lists, GROCERIES), LEMONS);
+    assert_eq!(lemons.text, "Meyer lemons");
+    assert_eq!(lemons.note.as_deref(), Some("Set on the Mac"));
+    let unchanged = lists.reword(
+        GROCERIES,
+        &began,
+        &began.text,
+        Some(&note),
+        "linux-r2".into(),
+    );
+    assert!(
+        unchanged.is_empty(),
+        "nothing changed from the item as it began"
+    );
 }
 
 #[test]

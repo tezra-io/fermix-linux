@@ -468,10 +468,10 @@ impl App {
         });
     }
 
-    /// What a lists card or the Lists pane asks: lists pulled as they come on screen, an edit
-    /// drawn at once and sent, the lists drawn again, the pane opened at a card's list, or the
-    /// pane shown or hidden. A pull draws nothing: the page asks it while it holds its entries,
-    /// and the list's arrival draws.
+    /// What a lists card or the Lists pane asks: lists pulled as they come on screen, an edit or a
+    /// rewording drawn at once and sent, the lists drawn again, the pane opened at a card's list,
+    /// or the pane shown or hidden. A pull draws nothing: the page asks it while it holds its
+    /// entries, and the list's arrival draws.
     fn chat_list(self: &Rc<Self>, asked: ListAct) {
         let events = match asked {
             ListAct::Drawn(ids) => {
@@ -484,6 +484,15 @@ impl App {
             ListAct::Edit { list_id, op } => {
                 let lists = &mut self.wire.borrow_mut().lists;
                 lists.edit(&list_id, op, message_id())
+            }
+            ListAct::Reword {
+                list_id,
+                began,
+                words,
+                note,
+            } => {
+                let lists = &mut self.wire.borrow_mut().lists;
+                lists.reword(&list_id, &began, &words, note.as_deref(), message_id())
             }
             ListAct::Redraw => Vec::new(),
             ListAct::Open { list_id, by_key } => {

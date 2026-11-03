@@ -1,8 +1,8 @@
 //! The rows both lists surfaces draw (M85 lists §4.1): an item, as a reply's card and the Lists
-//! pane draw it, with its settle after a tick, and a row or button row that acts on a single
-//! click or Return in a list that activates its rows on a double-click. Markup off before any
-//! text, and no list edit is an exported action: a tick is the check button's own closure, which
-//! hands it to the session through `Lister`.
+//! pane draw it, with its settle after a tick, and what starts its rewording; and a row or button
+//! row that acts on a single click or Return in a list that activates its rows on a double-click.
+//! Markup off before any text, and no list edit is an exported action: a tick is the check
+//! button's own closure, which hands it to the session through `Lister`.
 
 use super::lists::{act, ListAct, Lister};
 use adw::prelude::*;
@@ -133,6 +133,26 @@ fn settle(settling: &Rc<RefCell<Settling>>, row_id: &str, settled: impl FnOnce()
             settled();
         }
     });
+}
+
+/// An item that rewords on a double-click, Return or F2 (M85 lists §2.6, §6.1). Its list
+/// activates its rows on a double-click, so a single click never starts a rewording, and Space,
+/// which also activates a row, ticks it first.
+pub fn rewords_on(item: &adw::ActionRow, start: impl Fn() + 'static) {
+    item.set_activatable(true);
+    let start = Rc::new(start);
+    let by_f2 = start.clone();
+    item.connect_activated(move |_| start());
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let plain = (state & gtk::accelerator_get_default_mod_mask()).is_empty();
+        if !plain || key != gtk::gdk::Key::F2 {
+            return glib::Propagation::Proceed;
+        }
+        by_f2();
+        glib::Propagation::Stop
+    });
+    item.add_controller(keys);
 }
 
 /// A row that acts on a single click, Return or Space, in a list that activates its rows on a
