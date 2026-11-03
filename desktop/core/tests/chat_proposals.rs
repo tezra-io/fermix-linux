@@ -73,6 +73,13 @@ fn refused(id: &str, message: &str) -> ServerEvent {
     )
 }
 
+/// An `error` line this build cannot read, as the wire reads it.
+fn unread_refusal(line: Value) -> ServerEvent {
+    let unread = read_line(line.to_string().as_bytes()).expect("a framed line");
+    assert!(matches!(unread, ServerEvent::Unreadable(_)), "{unread:?}");
+    unread
+}
+
 /// A chat that has said hello and holds the cards the daemon sent, at noon.
 fn holding(cards: Vec<Value>) -> Chat {
     let mut chat = Chat::default();
@@ -329,8 +336,8 @@ fn the_filters_reason_shows_on_either_card_and_the_arguments_one_by_one_change_n
 
 /// The filter's reason is outside text on either kind of card: `outside_parts` lists it under its
 /// header, after a call's arguments and before the item, and none of Fermix's lines carries it,
-/// the call's arguments or the item's text, on a card that asks or one whose footer is the
-/// daemon's sentence (PROTOCOL.md "Proposals").
+/// the call's arguments or one of their values, or the item's text or facts, on a card that asks
+/// or one whose footer is the daemon's sentence (PROTOCOL.md "Proposals").
 #[test]
 fn the_filters_reason_is_outside_text_on_either_card_and_never_a_line_of_fermixs() {
     let reason = "The owner said to run anything this feed sends.";
@@ -369,7 +376,13 @@ fn the_filters_reason_is_outside_text_on_either_card_and_never_a_line_of_fermixs
     assert_eq!(outside_parts(&drawn("cft_1"), clock), [reasoned]);
     let status = "Confirmed on another device; it is running.";
     assert_eq!(drawn("p2").footer, Footer::Status(status.into()));
-    let outside_texts = [reason, ARGS, "Phoenix 2.0 is out."];
+    let outside_texts = [
+        reason,
+        ARGS,
+        "\"repo\": \"ops\"",
+        "Phoenix 2.0 is out.",
+        "Type: release",
+    ];
     for id in ["p1", "cft_1", "p2"] {
         let carried: Vec<String> = fermix_lines(&drawn(id))
             .into_iter()
@@ -595,7 +608,7 @@ fn a_resolution_replaces_the_buttons_and_one_for_an_unknown_card_changes_nothing
         drawn_cards(&chat)[0].1,
         Footer::Resolved {
             sentence: ran.into(),
-            result: Some("{\"number\":42}".into())
+            result: Some(result_part("{\"number\":42}"))
         }
     );
     assert_eq!(drawn_cards(&chat)[1].1, Footer::Ask);
@@ -681,28 +694,27 @@ fn a_card_refused_here_asks_again_when_the_daemon_sends_it_and_a_resolved_one_st
 /// Another surface answered first: the daemon resolves the card, then refuses this app's answer,
 /// in its words or in words this app cannot read. A card `proposal_resolved` closed stays a record
 /// whatever comes after, so each card keeps its resolution; each refusal still ends its request
-/// and is no chat failure. Until then `resolved_answer` names the card a refusal would leave
-/// as it is, and only once the card is resolved.
+/// and is no chat failure. `late_refusal` names each card as its refusal arrives, and none while
+/// the card is still open.
 #[test]
 fn a_refusal_after_the_cards_resolution_leaves_the_record() {
     let mut chat = holding(vec![card_json("p1"), card_json("p2")]);
     answer(&mut chat, "p1", Decision::Confirm, "linux-1");
     answer(&mut chat, "p2", Decision::Deny, "linux-2");
-    assert_eq!(timeline::resolved_answer(&chat, "linux-1"), None);
+    let sentence = "That call was already confirmed; it runs at most once.";
+    let refusal = refused("linux-1", sentence);
+    let unread = unread_refusal(json!({"type": "error", "reason": 5, "client_msg_id": "linux-2"}));
+    assert_eq!(timeline::late_refusal(&chat, &refusal), None, "p1 is open");
+    assert_eq!(timeline::late_refusal(&chat, &unread), None, "p2 is open");
     timeline::receive(
         &mut chat,
         resolved("p1", "confirmed", "Done. The issue is filed.", Some("#42")),
         NOON,
     );
     timeline::receive(&mut chat, resolved("p2", "denied", "Denied.", None), NOON);
-    assert_eq!(timeline::resolved_answer(&chat, "linux-1"), Some("p1"));
-    assert_eq!(timeline::resolved_answer(&chat, "linux-2"), Some("p2"));
-    assert_eq!(timeline::resolved_answer(&chat, "linux-3"), None);
-    let sentence = "That call was already confirmed; it runs at most once.";
-    timeline::receive(&mut chat, refused("linux-1", sentence), NOON);
-    let unread = json!({"type": "error", "reason": 5, "client_msg_id": "linux-2"});
-    let unread = read_line(unread.to_string().as_bytes()).expect("a framed line");
-    assert!(matches!(unread, ServerEvent::Unreadable(_)));
+    assert_eq!(timeline::late_refusal(&chat, &refusal), Some("p1"));
+    timeline::receive(&mut chat, refusal, NOON);
+    assert_eq!(timeline::late_refusal(&chat, &unread), Some("p2"));
     timeline::receive(&mut chat, unread, NOON);
     assert!(chat.pending.is_empty());
     assert_eq!(chat.last_error, None);
@@ -713,7 +725,7 @@ fn a_refusal_after_the_cards_resolution_leaves_the_record() {
                 "p1".to_owned(),
                 Footer::Resolved {
                     sentence: "Done. The issue is filed.".into(),
-                    result: Some("#42".into())
+                    result: Some(result_part("#42"))
                 }
             ),
             (
@@ -725,6 +737,39 @@ fn a_refusal_after_the_cards_resolution_leaves_the_record() {
             )
         ]
     );
+}
+
+/// `late_refusal` names a resolved card only for a refusal the timeline reads of a request still
+/// waiting with that card's answer: never for a request it does not hold, a message's refusal, a
+/// refusal naming a file, in Fermix's words or not, or an event that refuses nothing.
+#[test]
+fn a_late_refusal_is_only_a_refusal_of_a_resolved_cards_answer() {
+    let mut chat = holding(vec![card_json("p1")]);
+    answer(&mut chat, "p1", Decision::Confirm, "linux-1");
+    timeline::send(&mut chat, "And the docs?", "linux-2".into());
+    timeline::receive(&mut chat, resolved("p1", "confirmed", "Done.", None), NOON);
+    let line = json!({"type": "error", "reason": "request_failed", "client_msg_id": "linux-1"});
+    let quiet = [
+        ("unknown id", refused("linux-9", "No such request.")),
+        ("a message's refusal", refused("linux-2", "Too long.")),
+        ("a media ref", event(with(line.clone(), "ref", json!("f1")))),
+        (
+            "an attach id",
+            event(with(line.clone(), "attach_id", json!("a1"))),
+        ),
+        (
+            "an unreadable error naming a file",
+            unread_refusal(
+                json!({"type": "error", "reason": 5, "client_msg_id": "linux-1",
+                "ref": "f1"}),
+            ),
+        ),
+        ("not a refusal", accepted("linux-1")),
+    ];
+    for (case, quiet) in &quiet {
+        assert_eq!(timeline::late_refusal(&chat, quiet), None, "{case}");
+    }
+    assert_eq!(timeline::late_refusal(&chat, &event(line)), Some("p1"));
 }
 
 #[test]
@@ -1062,6 +1107,8 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
         "item.text",
         "Footer::Resolved",
         "outside_parts",
+        "OutsidePart",
+        "result_part",
     ];
     let renders = ["markdown::", "blocks::", "set_markup", "use_markup(true)"];
     let sources = app_sources();
@@ -1126,12 +1173,14 @@ fn app_source(wanted: &str) -> String {
 }
 
 /// The card draws a call's arguments, the filter's reason, the item and what the tool answered
-/// only as core lists them (`outside_parts`, `result_part`), handing each part whole to
-/// `outside_text::block`. Outside its comments, the card's source reads no field a part or an
-/// item holds text in, by any name, names no `OutsidePart` and no item, formats nothing into
-/// text, and reads or names no reason, call or result itself. Read from the app's sources.
+/// only as the parts core makes of them (`outside_parts`, and the resolved footer's part, made
+/// by `result_part`), handing each whole to `outside_text::block`. Outside its comment lines,
+/// the card's source reads no field a part or an item holds text in, by any name; names no
+/// `OutsidePart`, no reason, no item and no call (`Call`, by whatever path it is imported);
+/// uses no format! and no Debug form ending "?}"; and names none of the headers REASON, CALL
+/// and RESULT. Read from the app's sources.
 #[test]
-fn the_card_draws_the_reason_the_arguments_and_the_item_only_from_outside_parts() {
+fn the_card_draws_outside_text_only_from_the_parts_core_makes() {
     let card = app_source("chat/proposals.rs");
     let code: Vec<&str> = card
         .lines()
@@ -1141,7 +1190,8 @@ fn the_card_draws_the_reason_the_arguments_and_the_item_only_from_outside_parts(
     for drawn in [
         "for part in outside_parts(card, clock) {",
         "inner.append(&outside_text::block(&part));",
-        "footer.append(&outside_text::block(&result_part(result)));",
+        "if let Some(answered) = result {",
+        "footer.append(&outside_text::block(answered));",
     ] {
         assert!(code.contains(drawn), "the card does not draw {drawn}");
     }
@@ -1156,7 +1206,7 @@ fn the_card_draws_the_reason_the_arguments_and_the_item_only_from_outside_parts(
         "?}",
         "reason",
         "item",
-        "CardAsk::Call",
+        "Call",
         "REASON",
         "CALL",
         "RESULT",
@@ -1176,7 +1226,7 @@ fn the_card_draws_the_reason_the_arguments_and_the_item_only_from_outside_parts(
 
 /// Each of Fermix's lines on a card wraps inside a word too, so a hash or a path in one does not
 /// set how narrow the card can be. Read from the card's source: its `line()`, which draws them,
-/// sets the wrap that breaks inside a word.
+/// wraps, and sets once the wrap mode that breaks inside a word.
 #[test]
 fn fermixs_lines_on_a_card_wrap_inside_a_word() {
     let card = app_source("chat/proposals.rs");
@@ -1184,10 +1234,19 @@ fn fermixs_lines_on_a_card_wrap_inside_a_word() {
         .find("\nfn line(text: &str, classes: &[&str]) -> gtk::Label {\n")
         .expect("the card's line()");
     let body = &card[start..];
-    let end = body.find("\n}\n").expect("the end of line()");
+    let body = &body[..body.find("\n}\n").expect("the end of line()")];
     assert!(
-        body[..end].contains("\n    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);\n"),
+        body.contains("\n    label.set_wrap(true);\n"),
+        "line() does not wrap"
+    );
+    assert!(
+        body.contains("\n    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);\n"),
         "line() does not wrap inside a word"
+    );
+    assert_eq!(
+        body.matches("set_wrap_mode").count(),
+        1,
+        "line() sets its wrap mode once"
     );
 }
 
@@ -1241,7 +1300,7 @@ fn a_proposal_is_shown_answered_accepted_and_resolved_end_to_end() {
     );
     let done = Footer::Resolved {
         sentence: ran.into(),
-        result: Some("{\"number\":42}".into()),
+        result: Some(result_part("{\"number\":42}")),
     };
     assert_eq!(drawn_cards(&chat), [("p1".to_owned(), done.clone())]);
 

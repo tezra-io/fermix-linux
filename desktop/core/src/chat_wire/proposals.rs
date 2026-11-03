@@ -69,10 +69,11 @@ pub enum Footer {
     Status(String),
     /// Past its expiry on this computer's clock, with no answer sent.
     Expired,
-    /// The daemon's last word, and what the tool answered, outside text.
+    /// The daemon's last word, and what the tool answered as its outside text's part
+    /// (`result_part`), so the card holds that text only inside the part it draws.
     Resolved {
         sentence: String,
-        result: Option<String>,
+        result: Option<OutsidePart>,
     },
 }
 
@@ -193,7 +194,7 @@ fn footer(held: &HeldProposal) -> Footer {
             result_text,
         } => Footer::Resolved {
             sentence: sentence.clone(),
-            result: result_text.clone(),
+            result: result_text.as_deref().map(result_part),
         },
         Standing::Refused { sentence } => Footer::Resolved {
             sentence: sentence.clone(),

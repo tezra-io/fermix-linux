@@ -556,12 +556,13 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
 /// in this app's words, and one naming a file is the grants'. Any other mends itself: a turn's
 /// delta or tool by the next one.
 fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
+    let refusal = refuses_unread(&unread);
     let Unreadable {
         kind,
         card_id,
         turn_id,
         client_msg_id,
-        r#ref,
+        r#ref: _,
     } = unread;
     let turn = turn_id.as_deref();
     match kind.as_str() {
@@ -589,7 +590,7 @@ fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
             }
         }
         "accepted" => client_msg_id.iter().for_each(|id| settle(chat, id)),
-        "error" if r#ref.is_none() => {
+        "error" if refusal => {
             let request = client_msg_id.as_deref();
             refuse(chat, request, REFUSED_UNREAD.into(), REFUSED_UNREAD.into());
         }
@@ -812,7 +813,7 @@ fn approval_settled(chat: &mut Chat, id: &str) {
 /// grants', not the timeline's, and a refused file (`attach_id`) answers a file this build never
 /// hands over.
 fn refused(chat: &mut Chat, error: &ServerError) {
-    if error.r#ref.is_some() || error.attach_id.is_some() {
+    if !refuses(error) {
         return;
     }
     let reported = format!("The daemon reported: {}", error.reason);
@@ -847,10 +848,37 @@ fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, senten
     }
 }
 
+/// Whether an `error` is a refusal the timeline reads: one naming a media `ref` or an
+/// `attach_id` is not (`refused`).
+fn refuses(error: &ServerError) -> bool {
+    error.r#ref.is_none() && error.attach_id.is_none()
+}
+
+/// Whether an event this build could not read is a refusal the timeline reads: an `error`
+/// naming no media `ref` (`unreadable`).
+fn refuses_unread(unread: &Unreadable) -> bool {
+    unread.kind == "error" && unread.r#ref.is_none()
+}
+
+/// The card `event` refuses this app's answer to after `proposal_resolved` closed it: the event
+/// is a refusal the timeline reads, in Fermix's words or in words this app cannot read, of a
+/// request still waiting that carries a card's answer, and that card is resolved. The card then
+/// shows nothing of the refusal (`refuse`). Read before `receive` takes the event, which ends the
+/// request's delivery.
+pub fn late_refusal<'a>(chat: &'a Chat, event: &ServerEvent) -> Option<&'a str> {
+    let request = match event {
+        ServerEvent::Error(error) if refuses(error) => error.client_msg_id.as_deref(),
+        ServerEvent::Unreadable(unread) if refuses_unread(unread) => {
+            unread.client_msg_id.as_deref()
+        }
+        _ => None,
+    };
+    resolved_answer(chat, request?)
+}
+
 /// The card whose answer the request `client_msg_id`, still waiting, carries, when
-/// `proposal_resolved` already closed that card: a refusal of the request then changes nothing on
-/// it (`refuse`), so the card shows no trace of the refusal.
-pub fn resolved_answer<'a>(chat: &'a Chat, client_msg_id: &str) -> Option<&'a str> {
+/// `proposal_resolved` already closed that card.
+fn resolved_answer<'a>(chat: &'a Chat, client_msg_id: &str) -> Option<&'a str> {
     let out = chat
         .pending
         .iter()

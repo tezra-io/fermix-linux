@@ -912,8 +912,8 @@ impl From<String> for ProposalState {
 /// `outside`, everything a model or a stranger wrote. A field that does not apply is absent on
 /// this wire and null on management; both decode as `None`. Times are RFC 3339 UTC, kept as
 /// they came. A card that is neither a mandate's call with its arguments nor a watcher's
-/// follow-up does not decode, and neither does a call whose arguments are blank or a follow-up
-/// that asks anything but `FOLLOW_UP_RUNS`.
+/// follow-up, or is both, does not decode, and neither does a call whose arguments are blank or
+/// a follow-up that asks anything but `FOLLOW_UP_RUNS`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawProposal")]
 pub struct Proposal {

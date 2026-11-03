@@ -163,11 +163,11 @@ fn log_unreadable(chat: &mut Chat, kind: &str) {
     }
 }
 
-/// Logs a refusal of this app's answer to a card Fermix had already resolved: the card keeps its
-/// resolution and shows nothing of the refusal, so this line is its one trace. The card is named
-/// only by `loggable_id`.
-fn log_late_refusal(chat: &Chat, request: Option<&str>) {
-    let Some(card) = request.and_then(|request| timeline::resolved_answer(chat, request)) else {
+/// Logs a refusal of this app's answer to a card Fermix had already resolved (`late_refusal`):
+/// the card keeps its resolution and shows nothing of the refusal, so this line is its one trace.
+/// The card is named only by `loggable_id`.
+fn log_late_refusal(chat: &Chat, event: &ServerEvent) {
+    let Some(card) = timeline::late_refusal(chat, event) else {
         return;
     };
     let id = loggable_id(card);
@@ -325,20 +325,18 @@ impl App {
 
     /// Logs what an event says of the wire, never the daemon's text: what did not decode, what
     /// was refused, and what this build shows nothing of. A type, an id or a code word the daemon
-    /// chose is logged only as `loggable_id` lets it.
+    /// chose is logged only as `loggable_id` lets it. Its raw value is bound under a name the
+    /// log scan (media_grants.rs) does not allow, so a line without its `loggable_id` does not
+    /// build.
     fn log_event(&self, event: &ServerEvent) {
+        log_late_refusal(&self.wire.borrow().chat, event);
         match event {
-            ServerEvent::Unknown(kind) => {
-                let kind = loggable_id(kind);
+            ServerEvent::Unknown(unknown) => {
+                let kind = loggable_id(unknown);
                 glib::g_warning!("fermix", "chat event {kind} unread")
             }
             ServerEvent::Unreadable(unread) => {
-                log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind);
-                // An error the timeline reads as a refusal of the request it names.
-                if unread.kind == "error" && unread.r#ref.is_none() {
-                    let request = unread.client_msg_id.as_deref();
-                    log_late_refusal(&self.wire.borrow().chat, request);
-                }
+                log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind)
             }
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
             ServerEvent::Row(row) => log_skipped(0, std::iter::once(row)),
@@ -349,17 +347,12 @@ impl App {
                 glib::g_warning!("fermix", "the chat was refused: {closing}")
             }
             ServerEvent::Error(ServerError {
-                attach_id: Some(id),
+                attach_id: Some(attach),
                 ..
             }) => {
-                let id = loggable_id(id);
+                let id = loggable_id(attach);
                 glib::g_warning!("fermix", "an error came for file {id}, never handed over")
             }
-            ServerEvent::Error(ServerError {
-                client_msg_id,
-                r#ref: None,
-                ..
-            }) => log_late_refusal(&self.wire.borrow().chat, client_msg_id.as_deref()),
             _ => log_unused(event),
         }
     }

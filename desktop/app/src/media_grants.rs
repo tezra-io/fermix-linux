@@ -313,7 +313,8 @@ mod tests {
         (
             "kind",
             &["chat/levels.rs"],
-            "the note's stream's caps name, a media type oggdemux names from its own list",
+            "the note's stream's caps name, a fixed media type: oggdemux's own, or gst-riff's for \
+             an OGM stream, whose fourcc from the file goes into a field that is not logged",
         ),
         (
             "named",
@@ -354,15 +355,17 @@ mod tests {
             ],
             "grants: REFUSED, UNREADABLE or \"broken grant: \" and verify()'s fixed words; a \
              picture's `refused` above or error_code of its copy; this app's sentences; a voice \
-             note's words(), NOT_STARTED, BUS_UNWATCHED, error_code of GStreamer's start, \
+             note's words(), STATE_REFUSED, BUS_UNWATCHED, error_code of GStreamer's start, \
              levels' fixed `what`, or audio::make's factory name and GStreamer's BoolError for it",
         ),
         (
             "why",
             &["chat_session.rs"],
             "Lost's Debug: Broken holds this app's sentences, a size, `named` above, or \
-             chat_link's: \"connect: \" or \"read: \" and GIO's words for a socket error (no \
-             path: chat_link's tests), or a frame's or decode's error Debug, which read_line \
+             chat_link's: \"connect: \", \"read: \" or \"write: \" and GIO's words for a \
+             socket error, which name no path (chat_link's tests check connect's; GIO words a \
+             failed read or write as \"Error receiving data: \" or \"Error sending data: \" \
+             and the system's error), or a frame's or decode's error Debug, which read_line \
              keeps free of the line",
         ),
     ];
