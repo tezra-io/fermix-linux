@@ -847,6 +847,22 @@ fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, senten
     }
 }
 
+/// The card whose answer the request `client_msg_id`, still waiting, carries, when
+/// `proposal_resolved` already closed that card: a refusal of the request then changes nothing on
+/// it (`refuse`), so the card shows no trace of the refusal.
+pub fn resolved_answer<'a>(chat: &'a Chat, client_msg_id: &str) -> Option<&'a str> {
+    let out = chat
+        .pending
+        .iter()
+        .find(|out| out.client_msg_id == client_msg_id)?;
+    let card = out.proposal_id.as_deref()?;
+    let held = chat
+        .proposals
+        .iter()
+        .find(|held| held.proposal.proposal_id == card)?;
+    matches!(held.standing, Standing::Resolved { .. }).then_some(card)
+}
+
 /// A notice that a held row changed: it is read again. A row not held is read as it stands
 /// when a page brings it.
 fn updated(chat: &mut Chat, seq: u64) -> Vec<ClientEvent> {

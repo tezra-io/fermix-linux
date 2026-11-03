@@ -257,6 +257,17 @@ pub fn outside_parts(card: &Card, clock: impl Fn(&str) -> Option<String>) -> Vec
     [call, reason, item].into_iter().flatten().collect()
 }
 
+/// What the tool answered, as the outside text under a resolved card's sentence: `RESULT` over
+/// it, in the monospace face.
+pub fn result_part(result: &str) -> OutsidePart {
+    OutsidePart {
+        header: RESULT.into(),
+        facts: None,
+        text: result.to_owned(),
+        code: true,
+    }
+}
+
 /// "Waits until 14:32", the time as `clock` shows it, or as the daemon wrote it where `clock`
 /// cannot read it.
 pub fn waits_until(card: &Card, clock: impl Fn(&str) -> Option<String>) -> String {

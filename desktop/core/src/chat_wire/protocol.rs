@@ -912,7 +912,8 @@ impl From<String> for ProposalState {
 /// `outside`, everything a model or a stranger wrote. A field that does not apply is absent on
 /// this wire and null on management; both decode as `None`. Times are RFC 3339 UTC, kept as
 /// they came. A card that is neither a mandate's call with its arguments nor a watcher's
-/// follow-up does not decode.
+/// follow-up does not decode, and neither does a call whose arguments are blank or a follow-up
+/// that asks anything but `FOLLOW_UP_RUNS`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawProposal")]
 pub struct Proposal {
@@ -963,7 +964,7 @@ impl Ask {
 }
 
 /// The one `follow_up.asks` this build reads (PROTOCOL.md "Proposals"): run the follow-up once,
-/// now, which is what its card's answers mean.
+/// now: the one question its card's answers (Skip, Run, Always allow) answer.
 pub const FOLLOW_UP_RUNS: &str = "run";
 
 /// A follow-up as its card names it: the owner's own words for it, and the tools it may use.

@@ -8,7 +8,7 @@
 //! text.
 
 use adw::prelude::*;
-use fermix_client::chat_wire::proposals::{outside, SHOW_ALL};
+use fermix_client::chat_wire::proposals::{outside, OutsidePart, SHOW_ALL};
 
 /// A quiet caption line in Fermix's words, or the item's own fields under it.
 fn caption(text: &str) -> gtk::Label {
@@ -30,10 +30,13 @@ fn plain(text: &str) -> gtk::Label {
     label
 }
 
-/// `header` over the outside text `text`, the item's labelled `facts` (outside text too) on a
+/// `part`'s header over its outside text, the item's labelled facts (outside text too) on a
 /// line inside the inset above it. `code` sets the text in the monospace face, for a call's
-/// arguments and what a tool answered.
-pub fn block(header: &str, facts: Option<&str>, text: &str, code: bool) -> gtk::Box {
+/// arguments and what a tool answered. The card hands each part over whole and reads none of it.
+pub fn block(part: &OutsidePart) -> gtk::Box {
+    let header = part.header.as_str();
+    let facts = part.facts.as_deref();
+    let text = part.text.as_str();
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
@@ -52,7 +55,7 @@ pub fn block(header: &str, facts: Option<&str>, text: &str, code: bool) -> gtk::
     }
     let shown = outside(text);
     let body = plain(&shown.text);
-    if code {
+    if part.code {
         body.add_css_class("monospace");
     }
     // The cut is what the eye sees; a screen reader hears the item whole, header first.

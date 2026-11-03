@@ -3,7 +3,8 @@
 //! runs only if the owner says so. Fermix's lines (the summary, the task, the watcher, the
 //! expiry, the daemon's sentences, and a follow-up's instructions, tools and where it reports)
 //! are drawn as Fermix's; the call's arguments, the filter's reason and the item that led to it
-//! (`outside_parts`), and what the tool answered, only by `outside_text`.
+//! (`outside_parts`), and what the tool answered (`result_part`), only by `outside_text`, each
+//! part handed over whole.
 //!
 //! The buttons (a call's Deny and Confirm, a follow-up's Skip and Run, with Always allow where
 //! its card offers it) look alike and none is the default widget, so Enter on the card does
@@ -19,8 +20,8 @@ use super::outside_text;
 use super::{clock, decide_on_click, Decider, Decision};
 use adw::prelude::*;
 use fermix_client::chat_wire::proposals::{
-    arrival, facts, last_minute_in, outside_parts, Card, CardAsk, Footer, EXPIRED, LAST_MINUTE,
-    RESULT, RUNNING, TITLE,
+    arrival, facts, last_minute_in, outside_parts, result_part, Card, CardAsk, Footer, EXPIRED,
+    LAST_MINUTE, RUNNING, TITLE,
 };
 use fermix_client::chat_wire::unshown;
 use gtk::glib;
@@ -145,7 +146,7 @@ fn let_go_of_focus(footer: &gtk::Box) {
 
 /// What the card asks, under its lead: a follow-up in Fermix's and the owner's words; then the
 /// card's outside text as `outside_parts` lists it (a call's arguments, the filter's reason, the
-/// item), each by `outside_text`.
+/// item), each part handed whole to `outside_text`.
 fn asked(card: &Card, inner: &gtk::Box) {
     if let CardAsk::FollowUp {
         instructions,
@@ -155,12 +156,7 @@ fn asked(card: &Card, inner: &gtk::Box) {
         inner.append(&follow_up(instructions, facts));
     }
     for part in outside_parts(card, clock) {
-        inner.append(&outside_text::block(
-            &part.header,
-            part.facts.as_deref(),
-            &part.text,
-            part.code,
-        ));
+        inner.append(&outside_text::block(&part));
     }
 }
 
@@ -225,7 +221,7 @@ fn footer(card: &Card, decider: &Decider) -> gtk::Box {
         Footer::Resolved { sentence, result } => {
             footer.append(&line(sentence, &[]));
             if let Some(result) = result {
-                footer.append(&outside_text::block(RESULT, None, result, true));
+                footer.append(&outside_text::block(&result_part(result)));
             }
         }
     }

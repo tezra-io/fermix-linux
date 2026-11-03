@@ -163,6 +163,20 @@ fn log_unreadable(chat: &mut Chat, kind: &str) {
     }
 }
 
+/// Logs a refusal of this app's answer to a card Fermix had already resolved: the card keeps its
+/// resolution and shows nothing of the refusal, so this line is its one trace. The card is named
+/// only by `loggable_id`.
+fn log_late_refusal(chat: &Chat, request: Option<&str>) {
+    let Some(card) = request.and_then(|request| timeline::resolved_answer(chat, request)) else {
+        return;
+    };
+    let id = loggable_id(card);
+    glib::g_debug!(
+        "fermix",
+        "card {id} was resolved before its answer was refused"
+    );
+}
+
 /// A request id no other client uses: this app's prefix and 64 random bits.
 fn message_id() -> String {
     format!("linux-{:08x}{:08x}", glib::random_int(), glib::random_int())
@@ -308,7 +322,12 @@ impl App {
                 glib::g_warning!("fermix", "chat event {kind} unread")
             }
             ServerEvent::Unreadable(unread) => {
-                log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind)
+                log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind);
+                // An error the timeline reads as a refusal of the request it names.
+                if unread.kind == "error" && unread.r#ref.is_none() {
+                    let request = unread.client_msg_id.as_deref();
+                    log_late_refusal(&self.wire.borrow().chat, request);
+                }
             }
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
             ServerEvent::Row(row) => log_skipped(0, std::iter::once(row)),
@@ -324,6 +343,11 @@ impl App {
                 let id = loggable_id(id);
                 glib::g_warning!("fermix", "an error came for file {id}, never handed over")
             }
+            ServerEvent::Error(ServerError {
+                client_msg_id,
+                r#ref: None,
+                ..
+            }) => log_late_refusal(&self.wire.borrow().chat, client_msg_id.as_deref()),
             _ => log_unused(event),
         }
     }
