@@ -7,6 +7,7 @@ pub mod capabilities;
 pub mod capped;
 pub mod chat;
 pub mod chat_wire;
+pub mod checklists;
 pub mod companion;
 pub mod cues;
 pub mod doctor;
