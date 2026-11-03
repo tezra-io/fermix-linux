@@ -6,6 +6,7 @@
 //! copy of it on the clipboard is taken back when Scan leaves, if it is still Fermix's. Linux has
 //! no way to keep one window out of a screen share, so nothing here claims to.
 
+use crate::clipboard::SecretCopy;
 use crate::descriptor::{NoteKind, SectionView};
 use adw::prelude::*;
 use fermix_client::mobile::{MobileDevice, MobileDevices};
@@ -26,8 +27,6 @@ pub const WIDTH: i32 = 560;
 pub const HEIGHT: i32 = 560;
 const MARGIN: i32 = 24;
 const _: () = assert!(PairingCode::MAX_SIDE as i32 + 2 * MARGIN <= WIDTH);
-/// What a clipboard manager that honours it reads as "do not keep this".
-const SECRET_HINT: (&str, &[u8]) = ("x-kde-passwordManagerHint", b"secret");
 
 /// What the dialog's two decisions call: Approve or Deny on Compare, and Forget this phone, the
 /// second press in a phone's row. Each is bound to its own button's click and to no `win.*` or
@@ -105,8 +104,7 @@ struct ScanParts {
     /// Whether the last ten seconds have been announced.
     final_announced: Cell<bool>,
     /// This step's copy of the link, while it may still be on the clipboard.
-    copied: Rc<RefCell<Option<gdk::ContentProvider>>>,
-    clipboard: gdk::Clipboard,
+    copied: Rc<SecretCopy>,
 }
 
 struct CompareParts {
@@ -196,7 +194,7 @@ impl PhoneView {
 
     fn retire(&self, parts: Parts) {
         match parts {
-            Parts::Scan(scan) => withdraw(&scan.clipboard, &scan.copied),
+            Parts::Scan(scan) => scan.copied.take_back(),
             Parts::Phones(phones) => self
                 .dialog_views
                 .borrow_mut()
@@ -500,7 +498,6 @@ fn scan_step(scan: &Scan, clipboard: &gdk::Clipboard) -> Built {
         countdown,
         final_announced: Cell::new(false),
         copied,
-        clipboard: clipboard.clone(),
     };
     // The countdown is spoken as Scan appears and once more at the last ten seconds (§7).
     parts.countdown.connect_map(|label| {
@@ -573,11 +570,7 @@ fn draw_code(cr: &cairo::Context, code: &PairingCode) -> Result<(), cairo::Error
 /// "Can't scan the code?", which shows the link as text with Copy link. The text cannot be
 /// selected: Copy is the one way it leaves the dialog, since only Copy marks it secret and takes
 /// it back when Scan leaves.
-fn link_reveal(
-    link: &str,
-    clipboard: &gdk::Clipboard,
-    copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
-) -> gtk::Box {
+fn link_reveal(link: &str, clipboard: &gdk::Clipboard, copied: &Rc<SecretCopy>) -> gtk::Box {
     let text = gtk::Label::builder()
         .label(link)
         .selectable(false)
@@ -595,7 +588,7 @@ fn link_reveal(
         .valign(gtk::Align::Center)
         .build();
     let (board, mine, value) = (clipboard.clone(), copied.clone(), link.to_owned());
-    copy.connect_clicked(move |_| copy_secret(&board, &mine, &value));
+    copy.connect_clicked(move |_| mine.copy(&board, &value, "the pairing link"));
     let shown = gtk::Box::builder()
         .spacing(12)
         .css_classes(["card"])
@@ -623,40 +616,6 @@ fn link_reveal(
         }
     });
     link_box
-}
-
-/// Offers the link as text with the secret hint beside it, and remembers the offer so Scan can
-/// take it back.
-fn copy_secret(
-    clipboard: &gdk::Clipboard,
-    copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
-    link: &str,
-) {
-    let (mime, hint) = SECRET_HINT;
-    let provider = gdk::ContentProvider::new_union(&[
-        gdk::ContentProvider::for_value(&link.to_value()),
-        gdk::ContentProvider::for_bytes(mime, &glib::Bytes::from_static(hint)),
-    ]);
-    match clipboard.set_content(Some(&provider)) {
-        Ok(()) => *copied.borrow_mut() = Some(provider),
-        Err(e) => glib::g_warning!("fermix", "the pairing link was not copied: {e}"),
-    }
-}
-
-/// Takes this step's copy off the clipboard, if the clipboard still holds it.
-fn withdraw(clipboard: &gdk::Clipboard, copied: &Rc<RefCell<Option<gdk::ContentProvider>>>) {
-    let Some(mine) = copied.borrow_mut().take() else {
-        return;
-    };
-    if !clipboard.is_local() || clipboard.content().as_ref() != Some(&mine) {
-        return;
-    }
-    if let Err(e) = clipboard.set_content(None::<&gdk::ContentProvider>) {
-        glib::g_warning!(
-            "fermix",
-            "the pairing link was not taken off the clipboard: {e}"
-        );
-    }
 }
 
 /// Compare: the phone, its six digits large and grouped as the phone draws them, and the

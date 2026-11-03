@@ -12,6 +12,7 @@ mod channels;
 mod chat;
 mod chat_link;
 mod chat_session;
+mod clipboard;
 mod companion;
 mod daemon;
 mod descriptor;
