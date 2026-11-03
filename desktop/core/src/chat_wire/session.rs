@@ -16,7 +16,7 @@ pub const RECONNECT_DELAYS_S: [u64; 6] = [1, 2, 4, 8, 16, 30];
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The error reasons after which the daemon closes the connection (PROTOCOL.md "Errors").
-const CLOSING_REASONS: [&str; 15] = [
+const CLOSING_REASONS: [&str; 20] = [
     "invalid_json",
     "invalid_event",
     "missing_type",
@@ -32,6 +32,11 @@ const CLOSING_REASONS: [&str; 15] = [
     "unsupported_protocol_version",
     "max_clients_reached",
     "unidentified_client",
+    "stale_primary",
+    "primary_epoch_unavailable",
+    "unattended_client",
+    "primary_unreachable",
+    "desktop_revoked",
 ];
 
 // The macOS app's ProductStrings wording (`companion.connection.*`), "this Mac" made "this computer".
@@ -73,6 +78,7 @@ pub fn handshake(event: &ServerEvent) -> Handshake {
         ServerEvent::ServerHello {
             min_version,
             max_version,
+            ..
         } => window(*min_version, *max_version),
         ServerEvent::Error(error) => match &error.direction {
             Some(direction) => Handshake::Refused(refusal(direction)),

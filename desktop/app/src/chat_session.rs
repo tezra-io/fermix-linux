@@ -182,6 +182,20 @@ impl App {
             ServerEvent::Error(error) if closes(&error.reason) => {
                 glib::g_warning!("fermix", "the chat was refused: {}", error.reason)
             }
+            // Always On stays behind its flag, so this app shows none of it.
+            ServerEvent::HomeStatusChanged => glib::g_debug!("fermix", "Always On changed"),
+            ServerEvent::Reasoning { turn_id, .. } => {
+                glib::g_debug!("fermix", "turn {turn_id} reasoned; not shown yet")
+            }
+            ServerEvent::Checklists { .. } | ServerEvent::Checklist { .. } => {
+                glib::g_warning!("fermix", "a list came that this app never asked for")
+            }
+            ServerEvent::AttachStatus { .. } => {
+                glib::g_warning!(
+                    "fermix",
+                    "a file's status came that this app never handed over"
+                )
+            }
             _ => {}
         }
         let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());

@@ -10,8 +10,8 @@
 //! cannot read costs only itself: what it names still settles, ends or asks (`unreadable`).
 
 use crate::chat_wire::protocol::{
-    Approval, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution, Row,
-    ServerError, ServerEvent, ToolPhase, Unreadable,
+    Approval, Ask, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution,
+    Row, ServerError, ServerEvent, ToolPhase, Unreadable,
 };
 use crate::chat_wire::unshown::{self, Asks, Unshown};
 use crate::phone::unix_seconds;
@@ -460,7 +460,10 @@ fn read_again(chat: &mut Chat, seqs: &BTreeSet<u64>) {
     chat.rows_to_read.extend(stale);
 }
 
-/// One server event. `now` is the caller's clock in seconds, for approval deadlines.
+/// One server event. `now` is the caller's clock in seconds, for approval deadlines. Some change
+/// nothing here: a search's results, a file's answer (the grants'), and what this build shows
+/// nothing of yet: the turn's reasoning, Always On (behind its flag), lists it never asks for,
+/// and files it never hands over.
 pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent> {
     match event {
         ServerEvent::Accepted { client_msg_id, .. } => settle(chat, &client_msg_id),
@@ -512,6 +515,11 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
         | ServerEvent::SearchResults { .. }
         | ServerEvent::MediaPath(_)
         | ServerEvent::MediaMissing { .. }
+        | ServerEvent::Reasoning { .. }
+        | ServerEvent::HomeStatusChanged
+        | ServerEvent::Checklists { .. }
+        | ServerEvent::Checklist { .. }
+        | ServerEvent::AttachStatus { .. }
         | ServerEvent::Unknown(_) => {}
     }
     Vec::new()
@@ -673,7 +681,17 @@ fn hold_approval(chat: &mut Chat, approval: Approval, now: i64) {
 /// answer stands, except that one sent again after the daemon refused its answer stands anew: the
 /// daemon's word wins. A new one stands where the outbox says, so a card dropped at a handshake
 /// whose answer still waits to be sent comes back answered. One past its expiry arrives expired.
+/// A watcher's follow-up has no card in this build: it waits behind the placeholder of the cards
+/// this app cannot show, by its id, until it resolves.
 fn hold_proposal(chat: &mut Chat, proposal: Proposal, now: i64) {
+    if let Ask::FollowUp(_) = proposal.ask {
+        unshown::keep(
+            &mut chat.unshown,
+            Asks::Proposal,
+            Some(proposal.proposal_id),
+        );
+        return;
+    }
     let created = unix_seconds(&proposal.created_at);
     let expires = unix_seconds(&proposal.expires_at);
     let id = proposal.proposal_id.clone();
@@ -728,9 +746,10 @@ fn resolve(chat: &mut Chat, resolution: Resolution) {
 }
 
 /// A refusal the connection survives, in the daemon's word. A media failure (`ref`) is the
-/// grants', not the timeline's.
+/// grants', not the timeline's, and a refused file (`attach_id`) answers a file this build never
+/// hands over.
 fn refused(chat: &mut Chat, error: &ServerError) {
-    if error.r#ref.is_some() {
+    if error.r#ref.is_some() || error.attach_id.is_some() {
         return;
     }
     let reported = format!("The daemon reported: {}", error.reason);

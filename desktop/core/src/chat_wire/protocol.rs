@@ -1,6 +1,7 @@
 //! The chat wire's events and framing: one JSON object per `\n`-terminated line over
-//! `companion.sock`, protocol 4 (the vendored `contracts/companion/PROTOCOL.md`). Pure: it turns
-//! lines into typed events and back, and does no I/O.
+//! `companion.sock`, protocol 7 (the vendored `contracts/companion/PROTOCOL.md`). Pure: it turns
+//! lines into typed events and back, and does no I/O. Every event of the contract decodes, and
+//! every client event encodes, whether or not the app shows or sends it yet.
 //!
 //! A frame that cannot mean anything (not JSON, not an object, no `type`) is refused. A known
 //! event whose own fields do not fit is read as `ServerEvent::Unreadable`, by the ids it still
@@ -14,11 +15,13 @@ pub use crate::realtime::protocol::{DecodeError, Direction};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fmt;
 
-/// The version this app speaks: 4, a mandate's proposals (M60 cues §5.1). Engine v0.17.0's daemon
-/// serves 3..4. There is no fallback to 3: a daemon whose window ends at 3 is refused.
-pub const PROTOCOL_VERSION: u64 = 4;
+/// The version this app speaks: 7, the files an owner attaches (PROTOCOL.md "Version 7"), with
+/// 5's follow-ups and 6's turn status, lists and Always On notice. The engine's dev daemon serves
+/// 6..7. There is no fallback: a daemon whose window ends below 7 is refused.
+pub const PROTOCOL_VERSION: u64 = 7;
 /// The one profile the wire serves.
 pub const PROFILE: &str = "main";
 /// The daemon's inbound line cap (`x-max-line-bytes`). Every line this client writes, newline
@@ -33,7 +36,7 @@ pub const MAX_UNSCANNED_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_ID_BYTES: usize = 256;
 
 /// The server event types this build decodes; any other `type` is `ServerEvent::Unknown`.
-const KNOWN_TYPES: [&str; 20] = [
+const KNOWN_TYPES: [&str; 25] = [
     "server_hello",
     "accepted",
     "turn_started",
@@ -54,6 +57,11 @@ const KNOWN_TYPES: [&str; 20] = [
     "proposal",
     "proposal_resolved",
     "error",
+    "reasoning",
+    "home_status_changed",
+    "checklists",
+    "checklist",
+    "attach_status",
 ];
 
 /// A line buffer with this wire's caps.
@@ -83,12 +91,16 @@ pub struct TaskRef {
 pub enum ClientEvent {
     ClientHello {
         protocol_version: u64,
+        /// Decoded for the contract; the app sends none (it has no home that moved).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primary_epoch: Option<u64>,
     },
     Msg {
         client_msg_id: String,
         profile_id: String,
         text: String,
-        /// Always empty: this wire refuses attachments.
+        /// The files the message carries, each answered `present` first. Always empty: the app
+        /// attaches no file yet.
         attach_ids: Vec<String>,
     },
     Command {
@@ -139,14 +151,111 @@ pub enum ClientEvent {
         proposal_id: String,
         decision: Decision,
     },
+    /// Decoded for the contract, like the two below; the app reads no lists yet, and never asks
+    /// for the index before it draws them: a reply then leaves a list's items to the card
+    /// (PROTOCOL.md "Lists").
+    ChecklistsPull {
+        profile_id: String,
+    },
+    ChecklistPull {
+        profile_id: String,
+        list_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        removed: Option<bool>,
+    },
+    ChecklistEdit {
+        client_msg_id: String,
+        profile_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        list_id: Option<String>,
+        op: ListOp,
+    },
+    /// Decoded for the contract; the app attaches no file yet.
+    AttachFile {
+        attach_id: String,
+        kind: String,
+        mime: String,
+        size_bytes: u64,
+        sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
-/// The owner's answer to a proposal, the contract's two words.
+/// The owner's answer to a proposal. `AlwaysAllow` answers only a follow-up whose card offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Confirm,
     Deny,
+    AlwaysAllow,
+}
+
+/// One change to a list (PROTOCOL.md "Lists", schema `checklistOp`), by row id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ListOp {
+    Create {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+    },
+    Add {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_id: Option<String>,
+    },
+    Check {
+        row_id: String,
+    },
+    Uncheck {
+        row_id: String,
+    },
+    /// `note: Some("")` clears the note.
+    Edit {
+        row_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    Move {
+        row_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_list_id: Option<String>,
+    },
+    Section {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_id: Option<String>,
+    },
+    Remove {
+        row_id: String,
+    },
+    /// An empty `folder` takes the list out of its folder.
+    Folder {
+        folder: String,
+    },
+    Rename {
+        text: String,
+    },
+    RemoveList,
+    ClearDone,
+    /// With no `row_id`, the removed list itself, under `title` when given.
+    Restore {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        row_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 /// A line that would reach the daemon's cap, which answers `line_too_large` and closes.
@@ -157,6 +266,7 @@ impl ClientEvent {
     pub fn hello() -> ClientEvent {
         ClientEvent::ClientHello {
             protocol_version: PROTOCOL_VERSION,
+            primary_epoch: None,
         }
     }
 
@@ -244,9 +354,16 @@ impl ClientEvent {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
+    /// `primary_epoch` and `role` are decoded and not acted on (PROTOCOL.md "Primary epoch"): the
+    /// app has no home that moved. `commands` and `attachments` are offered later.
     ServerHello {
         min_version: u64,
         max_version: u64,
+        primary_epoch: Option<u64>,
+        role: Option<String>,
+        #[serde(default)]
+        commands: Vec<CommandDescriptor>,
+        attachments: Option<Inbox>,
     },
     Accepted {
         client_msg_id: String,
@@ -266,6 +383,13 @@ pub enum ServerEvent {
         tool: String,
         phase: ToolPhase,
         detail: Option<String>,
+        /// The engine's sentence for the step, on a start; never the tool's name.
+        activity: Option<String>,
+    },
+    /// The model's summary of one reasoning step, live only.
+    Reasoning {
+        turn_id: String,
+        text: String,
     },
     TextDone(Reply),
     TurnError {
@@ -305,6 +429,24 @@ pub enum ServerEvent {
     /// A proposal left `waiting`, whichever surface decided it.
     ProposalResolved(Resolution),
     Error(ServerError),
+    /// Always On changed, for an app that shows it to read `home.status`. This one shows none
+    /// while Always On stays behind its flag.
+    HomeStatusChanged,
+    /// The owner's lists, each by its counts.
+    Checklists {
+        lists: Vec<ListEntry>,
+    },
+    /// One list whole. `made` maps an edit's `client_msg_id` to the list or row it made.
+    Checklist {
+        list: Box<List>,
+        #[serde(default)]
+        made: BTreeMap<String, String>,
+    },
+    /// A file this connection handed over is in the store.
+    AttachStatus {
+        attach_id: String,
+        status: String,
+    },
     /// A type published after this build, by name. Log it; it is never fatal.
     #[serde(skip)]
     Unknown(String),
@@ -326,6 +468,63 @@ pub struct Unreadable {
     /// The file a `media_path` or an `error` answers. A `media_missing` whose ref reads is read
     /// whole: it has no other field.
     pub r#ref: Option<String>,
+}
+
+/// A slash command the engine takes, as `server_hello` names it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CommandDescriptor {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+}
+
+/// Where the owner's connection hands the daemon a file, and the largest the store takes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Inbox {
+    pub dir: String,
+    pub max_bytes: u64,
+}
+
+/// A list in the owner's index.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ListEntry {
+    pub list_id: String,
+    pub title: String,
+    pub folder: Option<String>,
+    pub open: u64,
+    pub done: u64,
+    pub rev: u64,
+}
+
+/// One list, its rows in order. A removed list carries when (`removed_at`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct List {
+    pub list_id: String,
+    pub title: String,
+    pub rev: u64,
+    pub rows: Vec<ListRow>,
+    /// Rows removed in the last 30 days, which a restore brings back.
+    #[serde(default)]
+    pub removed: Vec<RemovedRow>,
+    pub removed_at: Option<String>,
+}
+
+/// An item or a section heading (`kind`, the daemon's word).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ListRow {
+    pub row_id: String,
+    pub kind: String,
+    pub text: String,
+    pub note: Option<String>,
+    pub done: Option<bool>,
+    pub done_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RemovedRow {
+    #[serde(flatten)]
+    pub row: ListRow,
+    pub removed_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -596,13 +795,14 @@ impl From<String> for ProposalState {
 /// A proposal's card: Fermix's record and `summary`, which carry no outside text, and
 /// `outside`, everything a model or a stranger wrote. A field that does not apply is absent on
 /// this wire and null on management; both decode as `None`. Times are RFC 3339 UTC, kept as
-/// they came.
+/// they came. A card that is neither a mandate's call with its arguments nor a watcher's
+/// follow-up does not decode.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "RawProposal")]
 pub struct Proposal {
     pub proposal_id: String,
     pub state: ProposalState,
-    pub mandate: String,
-    pub tool: String,
+    pub ask: Ask,
     pub task: ProposalTask,
     pub watcher: Option<String>,
     pub source_ref: Option<String>,
@@ -619,6 +819,83 @@ pub struct Proposal {
     pub outside: Outside,
 }
 
+/// What a proposal asks the owner to let run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ask {
+    /// A mandate's recorded call, run exactly as recorded once confirmed. Its arguments are
+    /// `outside.args_text`, always present on such a card.
+    Call { mandate: String, tool: String },
+    /// A watcher's follow-up, a task Fermix starts once confirmed (PROTOCOL.md "Version 5").
+    FollowUp(FollowUp),
+}
+
+/// A follow-up as its card names it: the owner's own words for it, and the tools it may use.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FollowUp {
+    /// The daemon's word for what is asked: `run` today.
+    pub asks: String,
+    /// Whether the card takes `always_allow`.
+    #[serde(default)]
+    pub offers_always_allow: bool,
+    pub name: String,
+    pub instructions: String,
+    pub tools: Vec<String>,
+    pub reports_to: String,
+}
+
+#[derive(Deserialize)]
+struct RawProposal {
+    proposal_id: String,
+    state: ProposalState,
+    mandate: Option<String>,
+    tool: Option<String>,
+    follow_up: Option<FollowUp>,
+    task: ProposalTask,
+    watcher: Option<String>,
+    source_ref: Option<String>,
+    created_at: String,
+    expires_at: String,
+    received_at: Option<String>,
+    decided_at: Option<String>,
+    decided_from: Option<String>,
+    result_status: Option<String>,
+    status_sentence: String,
+    summary: String,
+    outside: Outside,
+}
+
+impl TryFrom<RawProposal> for Proposal {
+    type Error = String;
+
+    /// The schema's `oneOf`: a call with `mandate`, `tool` and `outside.args_text`, or a
+    /// `follow_up`, never both.
+    fn try_from(raw: RawProposal) -> Result<Self, Self::Error> {
+        let has_args = raw.outside.args_text.is_some();
+        let ask = match (raw.mandate, raw.tool, raw.follow_up) {
+            (Some(mandate), Some(tool), None) if has_args => Ask::Call { mandate, tool },
+            (None, None, Some(follow_up)) => Ask::FollowUp(follow_up),
+            _ => return Err("neither a mandate's call nor a follow-up".into()),
+        };
+        Ok(Proposal {
+            proposal_id: raw.proposal_id,
+            state: raw.state,
+            ask,
+            task: raw.task,
+            watcher: raw.watcher,
+            source_ref: raw.source_ref,
+            created_at: raw.created_at,
+            expires_at: raw.expires_at,
+            received_at: raw.received_at,
+            decided_at: raw.decided_at,
+            decided_from: raw.decided_from,
+            result_status: raw.result_status,
+            status_sentence: raw.status_sentence,
+            summary: raw.summary,
+            outside: raw.outside,
+        })
+    }
+}
+
 /// The task whose cue run raised a proposal. One with no name is named by its job.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ProposalTask {
@@ -626,13 +903,23 @@ pub struct ProposalTask {
     pub name: Option<String>,
 }
 
-/// Outside text, kept apart by structure: the recorded call's arguments as pretty JSON, and the
-/// cue's snapshot, absent when Fermix no longer keeps it. A card without `args_text` does not
-/// decode.
+/// Outside text, kept apart by structure: a call's arguments as pretty JSON (`args_text`) and one
+/// by one (`args`), the filter's reason for passing the item, and the cue's snapshot, absent when
+/// Fermix no longer keeps it. A follow-up's card carries no arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Outside {
-    pub args_text: String,
+    pub args_text: Option<String>,
+    #[serde(default)]
+    pub args: Vec<Arg>,
+    pub reason: Option<String>,
     pub cue: Option<Cue>,
+}
+
+/// One argument of a recorded call, outside text.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Arg {
+    pub name: String,
+    pub value: String,
 }
 
 /// The item a proposal acted on. Every field is outside text, `occurred_at` too: it is the
@@ -708,6 +995,8 @@ pub struct ServerError {
     pub event: Option<String>,
     pub client_msg_id: Option<String>,
     pub r#ref: Option<String>,
+    /// The file an `attach_file` named, on its refusal.
+    pub attach_id: Option<String>,
     pub direction: Option<Direction>,
     pub client_version: Option<u64>,
     pub min_version: Option<u64>,

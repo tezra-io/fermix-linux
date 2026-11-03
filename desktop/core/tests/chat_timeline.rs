@@ -788,3 +788,54 @@ fn a_forward_page_that_moves_the_read_nowhere_ends_it() {
         "the next gap reads again"
     );
 }
+
+/// PROTOCOL.md "Version 6" and "Version 7": what this build shows nothing of yet (the turn's
+/// reasoning and step, Always On behind its flag, lists, a file's status) changes nothing.
+#[test]
+fn the_events_this_build_shows_nothing_of_change_nothing() {
+    let mut chat = holding(2);
+    timeline::send(&mut chat, "Is it done?", "linux-1".into());
+    receive(
+        &mut chat,
+        event(
+            json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+            "in_reply_to": "linux-1"}),
+        ),
+    );
+    let before = chat.clone();
+    let quiet = [
+        json!({"type": "reasoning", "turn_id": "t1", "text": "**Checking**"}),
+        json!({"type": "home_status_changed"}),
+        json!({"type": "checklists", "profile_id": "main", "lists": []}),
+        json!({"type": "checklist", "profile_id": "main",
+            "list": {"list_id": "ck_1", "title": "Groceries", "rev": 1, "rows": []}}),
+        json!({"type": "attach_status", "attach_id": "linux-att-1", "status": "present"}),
+        json!({"type": "error", "reason": "request_failed", "message": "Too large.",
+            "attach_id": "linux-att-1"}),
+    ];
+    for line in quiet {
+        assert!(receive(&mut chat, event(line)).is_empty());
+    }
+    assert_eq!(chat, before);
+}
+
+/// A connection that never asked for the lists has their items written out in a reply, and
+/// one that asked has them left to a card this build does not draw (PROTOCOL.md "Lists"): the
+/// app never asks, and sends no file and no list change.
+#[test]
+fn a_handshake_and_a_send_ask_for_no_list_and_carry_no_file() {
+    let mut chat = Chat::default();
+    timeline::send(&mut chat, "Is it done?", "linux-1".into());
+    let sent = timeline::negotiated(&mut chat, &BTreeSet::new());
+    assert_eq!(
+        sent,
+        [
+            pull(Cursor::BeforeSeq(NEWEST), PAGE_LIMIT),
+            ClientEvent::msg("linux-1", "Is it done?")
+        ]
+    );
+    let ClientEvent::Msg { attach_ids, .. } = &sent[1] else {
+        panic!("the outbox's message");
+    };
+    assert!(attach_ids.is_empty());
+}

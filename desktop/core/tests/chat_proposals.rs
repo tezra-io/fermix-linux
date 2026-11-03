@@ -11,6 +11,7 @@ use fermix_client::chat_wire::protocol::{
     read_line, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
 };
 use fermix_client::chat_wire::timeline::{self, Chat, Standing};
+use fermix_client::chat_wire::unshown::{self, Asks};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
@@ -148,6 +149,71 @@ fn the_link_reads_a_card_without_its_arguments_as_unreadable_by_its_id() {
             ..Unreadable::default()
         }))
     );
+}
+
+/// A watcher's follow-up as the engine writes it (PROTOCOL.md "Version 5"): no call, the
+/// follow-up named instead, and outside only the filter's reason and the cue.
+fn follow_up_json(id: &str) -> Value {
+    json!({
+        "proposal_id": id, "state": "waiting", "task": {"job_id": "codex_review"},
+        "created_at": "2026-10-22T14:00:00Z", "expires_at": "2026-10-22T14:30:00Z",
+        "status_sentence": "Waiting for your answer; it runs only if you confirm.",
+        "summary": "Watcher codex-limits wants to run its follow-up \"Codex review\".",
+        "outside": {"reason": "The post says usage limits reset."},
+        "follow_up": {"asks": "run", "offers_always_allow": true, "name": "Codex review",
+            "instructions": "Review the last day's commits.", "tools": ["codex"],
+            "reports_to": "companion"}
+    })
+}
+
+#[test]
+fn a_card_that_is_both_a_call_and_a_follow_up_is_unreadable_by_its_id() {
+    let both = with(
+        card_json("p1"),
+        "follow_up",
+        follow_up_json("p1")["follow_up"].clone(),
+    );
+    let line = json!({"type": "proposal", "profile_id": "main", "proposal": both});
+    assert_eq!(
+        read_line(line.to_string().as_bytes()),
+        Ok(ServerEvent::Unreadable(Unreadable {
+            kind: "proposal".into(),
+            card_id: Some("p1".into()),
+            ..Unreadable::default()
+        }))
+    );
+}
+
+/// This build draws no follow-up's card yet: it waits behind the placeholder, by its id, until
+/// it resolves, and is never held as a card that could take a call's answer.
+#[test]
+fn a_follow_up_waits_behind_the_placeholder_and_is_never_held_as_a_card() {
+    let mut chat = holding(vec![follow_up_json("cft_1")]);
+    assert!(chat.proposals.is_empty());
+    assert!(unshown::waiting(&chat.unshown, Asks::Proposal));
+    assert_eq!(view(&chat).keys, [Key::Unshown]);
+    let sent = answer(&mut chat, "cft_1", Decision::Confirm, "linux-1");
+    assert!(sent.is_empty(), "nothing answers a card that is not held");
+    let gone = resolved(
+        "cft_1",
+        "confirmed",
+        "Confirmed; the follow-up is starting.",
+        None,
+    );
+    timeline::receive(&mut chat, gone, NOON);
+    assert!(!unshown::waiting(&chat.unshown, Asks::Proposal));
+    assert!(view(&chat).keys.is_empty());
+}
+
+#[test]
+fn a_call_with_its_arguments_one_by_one_and_a_reason_draws_as_before() {
+    let mut fuller = card_json("p1");
+    fuller["outside"]["args"] = json!([{"name": "repo", "value": "ops"},
+        {"name": "title", "value": "Phoenix 2.0"}]);
+    fuller["outside"]["reason"] = json!("A Phoenix release.");
+    let plain = holding(vec![card_json("p1")]);
+    let full = holding(vec![fuller]);
+    assert_eq!(card(&full.proposals[0]), card(&plain.proposals[0]));
 }
 
 #[test]

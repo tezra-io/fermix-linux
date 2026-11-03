@@ -8,6 +8,7 @@ use fermix_client::chat_wire::session::{
 use std::time::Duration;
 
 const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
+const PROTOCOL: &str = include_str!("../contracts/companion/PROTOCOL.md");
 
 fn server(index: usize) -> ServerEvent {
     line(SERVER.lines().nth(index).unwrap())
@@ -40,7 +41,7 @@ fn a_hello_whose_window_holds_this_version_connects() {
 
 #[test]
 fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
-    let newer = line(r#"{"type":"server_hello","min_version":5,"max_version":6}"#);
+    let newer = line(r#"{"type":"server_hello","min_version":8,"max_version":9}"#);
     let older = line(r#"{"type":"server_hello","min_version":1,"max_version":2}"#);
     let Handshake::Refused(app) = handshake(&newer) else {
         panic!("refused");
@@ -52,15 +53,20 @@ fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
     assert!(fermix.contains("Update the engine"), "{fermix}");
 }
 
-/// M60 cues §5.1: version 4 carries the proposals, and there is no fallback to 3.
+/// PROTOCOL.md "Versioning": the engine serves 6..7, and there is no fallback below 7.
 #[test]
-fn this_build_speaks_4_on_the_3_to_4_window_and_a_window_ending_at_3_is_refused() {
-    let current = line(r#"{"type":"server_hello","min_version":3,"max_version":4}"#);
+fn this_build_speaks_7_on_the_6_to_7_window_and_a_window_ending_at_6_is_refused() {
+    let current = line(r#"{"type":"server_hello","min_version":6,"max_version":7}"#);
     assert_eq!(handshake(&current), Handshake::Ok);
-    let v0_16 = line(r#"{"type":"server_hello","min_version":2,"max_version":3}"#);
-    let Handshake::Refused(sentence) = handshake(&v0_16) else {
-        panic!("a daemon whose window ends at 3 is refused");
+    let v0_17 = line(r#"{"type":"server_hello","min_version":3,"max_version":4}"#);
+    let at_6 = line(r#"{"type":"server_hello","min_version":5,"max_version":6}"#);
+    let Handshake::Refused(older) = handshake(&v0_17) else {
+        panic!("a daemon whose window ends at 4 is refused");
     };
+    let Handshake::Refused(sentence) = handshake(&at_6) else {
+        panic!("a daemon whose window ends at 6 is refused");
+    };
+    assert_eq!(older, sentence);
     assert_eq!(
         sentence,
         "The Fermix engine is older than this app. Update the engine to chat."
@@ -70,7 +76,7 @@ fn this_build_speaks_4_on_the_3_to_4_window_and_a_window_ending_at_3_is_refused(
 #[test]
 fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
     let mut session = handshaking();
-    let Handshake::Refused(sentence) = session.hello(&server(42)) else {
+    let Handshake::Refused(sentence) = session.hello(&server(59)) else {
         panic!("client_too_new refuses");
     };
     assert!(sentence.contains("Update the engine"), "{sentence}");
@@ -87,7 +93,7 @@ fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
 
 #[test]
 fn other_errors_before_hello_are_lost_and_retried() {
-    for index in [41, 46] {
+    for index in [58, 64] {
         let mut session = handshaking();
         assert!(
             matches!(session.hello(&server(index)), Handshake::Lost(_)),
@@ -105,7 +111,7 @@ fn other_errors_before_hello_are_lost_and_retried() {
 #[test]
 fn any_other_event_before_hello_is_ignored() {
     let mut session = handshaking();
-    assert_eq!(session.hello(&server(24)), Handshake::Ignore);
+    assert_eq!(session.hello(&server(29)), Handshake::Ignore);
     assert_eq!(session.phase(), &Phase::Handshaking);
 }
 
@@ -154,6 +160,28 @@ fn the_page_says_why_it_is_not_connected() {
     assert!(matches!(session.shown(), Shown::Disconnected(_)));
 }
 
+/// PROTOCOL.md "Errors": each reason in the table closes the connection exactly when its row says
+/// `closed`, so a contract taken again that adds a closing reason fails here until this build knows
+/// it.
+#[test]
+fn every_reason_in_the_contracts_errors_table_closes_as_its_row_says() {
+    let section = PROTOCOL
+        .split("\n## Errors\n")
+        .nth(1)
+        .expect("PROTOCOL.md has an Errors section");
+    let table = section.trim_start().split("\n\n").next().unwrap();
+    let rows: Vec<&str> = table.lines().skip(2).collect();
+    assert!(rows.len() > 10, "the table was read: {table}");
+    for row in rows {
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        let closed = cells[3].starts_with("closed");
+        assert!(closed || cells[3] == "open", "closed or open: {row}");
+        for reason in cells[1].split(", ") {
+            assert_eq!(closes(reason.trim_matches('`')), closed, "{reason}");
+        }
+    }
+}
+
 #[test]
 fn the_closing_errors_are_the_contracts() {
     for reason in [
@@ -163,6 +191,11 @@ fn the_closing_errors_are_the_contracts() {
         "line_too_large",
         "max_clients_reached",
         "unsupported_protocol_version",
+        "stale_primary",
+        "primary_epoch_unavailable",
+        "unattended_client",
+        "primary_unreachable",
+        "desktop_revoked",
     ] {
         assert!(closes(reason), "{reason}");
     }

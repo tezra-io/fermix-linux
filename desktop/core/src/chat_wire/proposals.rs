@@ -101,7 +101,8 @@ pub fn card(held: &HeldProposal) -> Card {
         task: task.name.clone().unwrap_or_else(|| task.job_id.clone()),
         watcher: proposal.watcher.clone(),
         expires_at: proposal.expires_at.clone(),
-        call: proposal.outside.args_text.clone(),
+        // Held cards are calls, whose arguments always decode (`Proposal`'s `try_from`).
+        call: proposal.outside.args_text.clone().unwrap_or_default(),
         item: proposal.outside.cue.as_ref().map(|cue| Item {
             source: proposal.source_ref.clone(),
             received_at: proposal.received_at.clone(),
