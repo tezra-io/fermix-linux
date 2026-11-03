@@ -5,7 +5,7 @@
 desktop portal, with a stored screenshot "no", so `screen_capture` is false and `input_control` true.
 Its `result` is copied byte for byte from the record of that name in
 `apps/fermix_core/priv/management/fixtures/success.jsonl` of the engine (fermix) at commit
-`0394bdf331182a532849a312476a09f38ea9f7ea`: the line is `{"name": "computer_use_permissions_get_linux",
+`c2bea7a01f76e77f08073ab33715b4ebba509b82`: the line is `{"name": "computer_use_permissions_get_linux",
 "result": `, then the record's text after its `"result": ` without the response's and the record's
 closing braces, then `}`. The vendored management contract is still the pinned engine's and lacks
 that record. At the next pin bump, the contract's own golden replaces this line. Never edit it by
