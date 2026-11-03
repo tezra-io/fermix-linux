@@ -3,6 +3,7 @@
 //! answers, and reconnects after the session's backoff. The page draws `chat::view` of it.
 
 use crate::app::App;
+use crate::chat::Decision;
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use fermix_client::chat_wire::protocol::{ClientEvent, Row, ServerEvent};
@@ -244,7 +245,24 @@ impl App {
         self.render();
     }
 
-    pub fn answer_approval(&self, approval_id: &str, approve: bool) {
+    /// Hands the page this controller, which its cards' buttons decide through by their own
+    /// clicks. No window or application action decides (M60 cues §6 rule 3).
+    pub fn chat_decide_here(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.chat.decide_with(move |decision| {
+            if let Some(app) = app.upgrade() {
+                app.chat_decide(decision);
+            }
+        });
+    }
+
+    fn chat_decide(self: &Rc<Self>, decision: Decision) {
+        match decision {
+            Decision::Approval { id, approve } => self.answer_approval(&id, approve),
+        }
+    }
+
+    fn answer_approval(&self, approval_id: &str, approve: bool) {
         let events = {
             let chat = &mut self.wire.borrow_mut().chat;
             timeline::answer(chat, approval_id, approve, message_id())

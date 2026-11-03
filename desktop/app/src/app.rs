@@ -625,12 +625,8 @@ fn install_chat_actions(app: &Rc<App>) {
         app.chat_rows_on_screen()
     });
     on_plain(app, "chat-connect", |app| async move { app.chat_connect() });
-    on(app, "chat-approve", |app, id: String| async move {
-        app.answer_approval(&id, true)
-    });
-    on(app, "chat-deny", |app, id: String| async move {
-        app.answer_approval(&id, false)
-    });
+    // A card's answer is never an action: its button decides through this controller.
+    app.chat_decide_here();
 }
 
 fn install_accels(app: &Rc<App>) {

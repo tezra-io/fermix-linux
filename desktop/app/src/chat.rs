@@ -1,7 +1,9 @@
 //! Chat: the conversation, drawn from `chat::view` of the chat wire's timeline,
 //! the cards waiting for the owner's answer, and the composer under them. The
 //! page never talks to Fermix; its buttons fire window actions and
-//! `chat_session.rs` does the work.
+//! `chat_session.rs` does the work. A card's answer is the one exception: it is
+//! never an action, but its button's own click handing the controller a
+//! `Decision` (M60 cues §6 rule 3).
 
 mod activity;
 mod approvals;
@@ -30,7 +32,7 @@ use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
 use picture::Decoder;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -41,6 +43,30 @@ use voice_note::Player;
 const STICK_DISTANCE: f64 = 48.0;
 /// What Chat cannot do without Fermix, on the down page.
 const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.";
+
+/// What a card's own button decides. Never a window or application action: a registered
+/// application exports those on the session bus, where any process of the session, one Fermix
+/// started included, could activate them, and this app's connection, placed as the owner, would
+/// send the answer (M60 cues §6 rule 3, §12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Approval { id: String, approve: bool },
+}
+
+/// Where the cards' buttons send their decisions: the controller, handed over once it exists.
+pub type Decider = Rc<OnceCell<Box<dyn Fn(Decision)>>>;
+
+/// Binds `button` to `decision`: its own click, holding the card's id, hands it to the controller.
+fn decide_on_click(button: &gtk::Button, decider: &Decider, decision: Decision) {
+    let decider = decider.clone();
+    button.connect_clicked(move |_| match decider.get() {
+        Some(decide) => decide(decision.clone()),
+        None => glib::g_warning!(
+            "fermix",
+            "a card was answered before the chat could take it"
+        ),
+    });
+}
 
 /// What the page says while Fermix is out of reach: its problem, or that it is
 /// starting. `None` while it answers, or before the first read.
@@ -75,6 +101,8 @@ pub struct ChatPage {
     down: DownPage,
     banner: adw::Banner,
     approvals: approvals::Cards,
+    /// Where the cards' buttons decide.
+    decider: Decider,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
     first_seq: Cell<Option<u64>>,
     /// What the rows' strips read their files with.
@@ -98,7 +126,8 @@ impl ChatPage {
         let shown = Rc::default();
         let on_screen = OnScreen::new(&shown, &follow.scroller);
         let (composer, input, send) = composer();
-        let approvals = approvals::Cards::new();
+        let decider = Decider::default();
+        let approvals = approvals::Cards::new(&decider);
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
@@ -137,6 +166,7 @@ impl ChatPage {
             down,
             banner,
             approvals,
+            decider,
             first_seq: Cell::default(),
             readers: Readers {
                 media: media.clone(),
@@ -144,6 +174,15 @@ impl ChatPage {
                 player,
             },
         }
+    }
+
+    /// The controller the cards' buttons decide through. Set once, when the controller exists.
+    pub fn decide_with(&self, decide: impl Fn(Decision) + 'static) {
+        let set = self.decider.set(Box::new(decide));
+        assert!(
+            set.is_ok(),
+            "the chat's cards decide through one controller"
+        );
     }
 
     /// `name` is the first name About you holds, for the greeting.
