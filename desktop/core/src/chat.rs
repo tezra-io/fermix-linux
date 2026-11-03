@@ -238,3 +238,36 @@ fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
     }
     view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
 }
+
+/// A time on the reader's clock, in their zone: the year, the month 1 to 12, the day of the month,
+/// the hour and the minute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: i32,
+    pub month: i32,
+    pub day: i32,
+    pub hour: i32,
+    pub minute: i32,
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A daemon's time as Chat writes it, beside its rows and on its proposal cards alike (the Mac's
+/// `CueTimes`): "14:05" on the reader's day, "Oct 28, 14:05" on another day of their year, and
+/// "Oct 28, 2025, 14:05" in another year. `now` is the reader's clock.
+pub fn written_time(at: LocalTime, now: LocalTime) -> String {
+    let month = usize::try_from(at.month - 1)
+        .ok()
+        .and_then(|index| MONTHS.get(index))
+        .unwrap_or_else(|| panic!("a month is 1 to 12, not {}", at.month));
+    let clock = format!("{:02}:{:02}", at.hour, at.minute);
+    if (at.year, at.month, at.day) == (now.year, now.month, now.day) {
+        return clock;
+    }
+    if at.year == now.year {
+        return format!("{month} {}, {clock}", at.day);
+    }
+    format!("{month} {}, {}, {clock}", at.day, at.year)
+}

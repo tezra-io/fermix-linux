@@ -28,7 +28,7 @@ use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
+use fermix_client::chat::{view, written_time, Entry, Key, LiveTurn, LocalTime, View};
 use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::chat_wire::timeline::Chat;
@@ -572,17 +572,27 @@ fn decorate(shown: &[Placed], view: &View, live: Option<&Live>) {
     }
 }
 
-/// "14:05" in the local time zone, from the daemon's RFC 3339 time.
+/// A daemon's RFC 3339 time as Chat writes it beside its rows and on its proposal cards
+/// (`chat::written_time`), on this computer's clock and in its zone. `None` for a time GLib
+/// cannot read.
 fn clock(at: &str) -> Option<String> {
-    let parsed = glib::DateTime::from_iso8601(at, None)
-        .and_then(|time| time.to_local())
-        .and_then(|time| time.format("%H:%M"));
-    match parsed {
-        Ok(text) => Some(text.into()),
-        Err(e) => {
+    let time = glib::DateTime::from_iso8601(at, None).and_then(|time| time.to_local());
+    match (time, glib::DateTime::now_local()) {
+        (Ok(time), Ok(now)) => Some(written_time(local_time(&time), local_time(&now))),
+        (Err(e), _) | (_, Err(e)) => {
             glib::g_warning!("fermix", "could not show the time {at}: {e}");
             None
         }
+    }
+}
+
+fn local_time(time: &glib::DateTime) -> LocalTime {
+    LocalTime {
+        year: time.year(),
+        month: time.month(),
+        day: time.day_of_month(),
+        hour: time.hour(),
+        minute: time.minute(),
     }
 }
 
