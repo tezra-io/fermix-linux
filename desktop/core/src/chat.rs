@@ -6,13 +6,14 @@
 
 use crate::activity::ToolKind;
 use crate::chat_wire::proposals;
-use crate::chat_wire::protocol::Row;
+use crate::chat_wire::protocol::{Block, Row};
 use crate::chat_wire::timeline::{self, Chat, HeldProposal, HeldRow, ToolState};
 use crate::chat_wire::unshown::{self, Asks, Unshown};
+use crate::checklists::{cards as list_cards, ListRef};
 use crate::media::{strip, words, Strip};
 use crate::phone::unix_seconds;
 use crate::places::{cards, Card};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -20,12 +21,14 @@ pub enum Entry {
     User { text: String, media: Strip },
     /// A question the daemon has not accepted yet.
     Sending(String),
-    /// Markdown, growing while it streams, the cards of the places it links, and what its row
-    /// shows under it, which come with its row (none while it streams).
+    /// Markdown, growing while it streams, the cards of the places it links, what its row shows
+    /// under it, and the card of the lists its turn read or changed, which come with its row (none
+    /// while it streams).
     Assistant {
         text: String,
         places: Vec<Card>,
         media: Strip,
+        lists: Option<ListsCard>,
     },
     /// The running turn's tools, drawn as one group.
     Tools(Vec<ToolRun>),
@@ -36,6 +39,51 @@ pub enum Entry {
     Unshown,
     /// Why the last request did not get its reply.
     Failure(String),
+}
+
+/// The card of the lists a reply's turn read or changed (M85 lists §2.1), in the order the turn
+/// first touched them. Live when no newer card draws any list it draws (`cards::live`); every
+/// other card folds to one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListsCard {
+    pub lists: Vec<ListRef>,
+    pub live: bool,
+}
+
+impl ListsCard {
+    /// The lists the card pulls when it comes on screen: a live card the ones it draws
+    /// (`cards::drawn`), a folded one none.
+    pub fn pulls(&self) -> &[ListRef] {
+        if self.live {
+            list_cards::drawn(&self.lists)
+        } else {
+            &[]
+        }
+    }
+}
+
+/// The held rows on screen at the page's last look, by seq. A live lists card asks for its lists
+/// as it comes on screen, once until it leaves (M85 lists §2.1, §5.2): asked at every look, more
+/// than 16 lists on screen would be pulled without end, each answer letting go of a list that
+/// another card on screen then asks for again.
+#[derive(Debug, Default)]
+pub struct RowsSeen {
+    seqs: BTreeSet<u64>,
+}
+
+impl RowsSeen {
+    /// A look at the rows on screen now: the ones that came on screen since the last look, which
+    /// this one then is.
+    pub fn look(&mut self, now: BTreeSet<u64>) -> BTreeSet<u64> {
+        let came = now.difference(&self.seqs).copied().collect();
+        self.seqs = now;
+        came
+    }
+
+    /// Whether the row `seq` was on screen at the last look.
+    pub fn shows(&self, seq: u64) -> bool {
+        self.seqs.contains(&seq)
+    }
 }
 
 /// One tool's run. Times are the caller's clock, in seconds.
@@ -122,6 +170,7 @@ pub fn view(chat: &Chat) -> View {
     // number, which its row will have.
     let mut replies: HashMap<&str, usize> = HashMap::new();
     let mut placed = placed_cards(&chat.proposals).into_iter().peekable();
+    let live = live_lists(&chat.rows);
     for held in &chat.rows {
         if let Some(at) = row_time(held) {
             while let Some(card) = placed.next_if(|card| card.created.is_some_and(|made| made < at))
@@ -134,7 +183,7 @@ pub fn view(chat: &Chat) -> View {
             *count += 1;
             Key::Reply(turn.to_owned(), *count - 1)
         });
-        push_row(&mut view, &held.row, reply);
+        push_row(&mut view, &held.row, reply, &live);
     }
     placed.for_each(|card| push_card(&mut view, card));
     if unshown::waiting(&chat.unshown, Asks::Proposal) {
@@ -205,10 +254,27 @@ fn push_card(view: &mut View, held: &HeldProposal) {
     view.push(Entry::Proposal(card), key, None, None);
 }
 
+/// The seqs of the replies whose lists card is live, over the replies held.
+fn live_lists(rows: &[HeldRow]) -> BTreeSet<u64> {
+    let replies = rows.iter().filter(|held| held.row.role != "user");
+    list_cards::live(replies.map(|held| (held.row.server_seq, list_refs(&held.row.blocks))))
+}
+
+/// The lists a reply's `checklists` block names: the first such block's, or none.
+fn list_refs(blocks: &[Block]) -> &[ListRef] {
+    blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Checklists(lists) => Some(lists.as_slice()),
+            Block::Places(_) => None,
+        })
+        .unwrap_or_default()
+}
+
 /// A held row: its words and what it shows under them, as one entry, or none where it has
 /// neither. `reply` is its key as a reply this connection streamed; any other row is keyed by its
-/// seq.
-fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
+/// seq. `live` holds the seqs of the replies whose lists card is live.
+fn push_row(view: &mut View, row: &Row, reply: Option<Key>, live: &BTreeSet<u64>) {
     let media = strip(row);
     let text = words(row, &media);
     if text.trim().is_empty() && media.is_empty() {
@@ -223,12 +289,22 @@ fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
             text,
             places: cards(&row.blocks),
             media,
+            lists: lists_card(row, live),
         },
     };
     let key = reply.unwrap_or(Key::Row(row.server_seq));
     // A time this app cannot read is drawn as none, so the page never tries it at each draw.
     let time = row.ts.clone().filter(|ts| unix_seconds(ts).is_some());
     view.push(entry, key, time, Some(row.server_seq));
+}
+
+/// A reply's lists card, where its row names lists.
+fn lists_card(row: &Row, live: &BTreeSet<u64>) -> Option<ListsCard> {
+    let lists = list_refs(&row.blocks);
+    (!lists.is_empty()).then(|| ListsCard {
+        lists: lists.to_vec(),
+        live: live.contains(&row.server_seq),
+    })
 }
 
 /// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.
@@ -262,6 +338,7 @@ fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
             text: turn.draft.clone(),
             places: Vec::new(),
             media: Strip::default(),
+            lists: None,
         };
         view.push(draft, key, None, None);
     }

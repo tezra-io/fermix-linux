@@ -482,9 +482,9 @@ fn read_again(chat: &mut Chat, seqs: &BTreeSet<u64>) {
 }
 
 /// One server event. `now` is the caller's clock in seconds, for approval deadlines. Some change
-/// nothing here: a search's results, a file's answer (the grants'), and what this build shows
-/// nothing of yet: the turn's reasoning, Always On (behind its flag), lists it never asks for,
-/// and files it never hands over.
+/// nothing here: a search's results, a file's answer (the grants'), what this build shows nothing
+/// of yet: the turn's reasoning, Always On (behind its flag), and files it never hands over; and
+/// the index and a list, which are the lists' (`checklists::routing`) and never come here.
 pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent> {
     match event {
         ServerEvent::Accepted { client_msg_id, .. } => settle(chat, &client_msg_id),
@@ -809,6 +809,12 @@ fn approval_settled(chat: &mut Chat, id: &str) {
     unshown::resolved(&mut chat.unshown, Asks::Approval, id);
 }
 
+/// What a refusal that carries no sentence of its own says: the daemon's reason. The chat and
+/// the lists word it alike.
+pub fn daemon_reported(reason: &str) -> String {
+    format!("The daemon reported: {reason}")
+}
+
 /// A refusal the connection survives, in the daemon's word. A media failure (`ref`) is the
 /// grants', not the timeline's, and a refused file (`attach_id`) answers a file this build never
 /// hands over.
@@ -816,7 +822,7 @@ fn refused(chat: &mut Chat, error: &ServerError) {
     if !refuses(error) {
         return;
     }
-    let reported = format!("The daemon reported: {}", error.reason);
+    let reported = daemon_reported(&error.reason);
     let sentence = error.message.clone().unwrap_or_else(|| reported.clone());
     refuse(chat, error.client_msg_id.as_deref(), reported, sentence);
 }

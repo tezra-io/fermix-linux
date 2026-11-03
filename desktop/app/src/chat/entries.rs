@@ -1,7 +1,8 @@
 //! The conversation's entries as widgets: the person's bubbles and Fermix's,
 //! with a voice note's chip in its bubble over the words (its tile in the
-//! lane once it cannot play), the cards of the places a reply links under it
-//! and what a row shows under its words
+//! lane once it cannot play), the cards of the places a reply links under it,
+//! the card of the lists its turn read or changed, and what a row shows under
+//! its words
 //! (pictures, files, link cards), the tools it ran, a mandate's proposals
 //! and the placeholder of those that could not be read, and failures. A
 //! streamed entry grows in place, so a chunk never redraws what is already on
@@ -9,13 +10,15 @@
 
 use super::activity::{Group, Live};
 use super::blocks::Shown;
+use super::lists::{Lister, ListsView};
 use super::places::Places;
 use super::proposals::{unshown_card, ProposalCard};
 use super::strip::{Readers, StripView};
 use super::voice_chip::Chip;
 use super::Decider;
 use adw::prelude::*;
-use fermix_client::chat::Entry;
+use fermix_client::chat::{Entry, ListsCard};
+use fermix_client::checklists::library::Library;
 use fermix_client::markdown::{Block, Draft};
 use fermix_client::media::Strip;
 use fermix_client::places::Card;
@@ -41,7 +44,8 @@ pub struct Drawn {
 enum Parts {
     Fixed,
     Message(Message),
-    Reply(Reply),
+    /// Boxed, since it holds the reply's every part.
+    Reply(Box<Reply>),
     /// Tools that ran in a row: live while the turn is on them, then one line.
     Tools(Group),
     /// A proposal's card, whose footer follows the card's state. Boxed, since it holds the whole
@@ -59,10 +63,20 @@ struct Reply {
     source: Rc<RefCell<String>>,
     /// The cards of the places it links, under the bubble; they come with its row.
     places: Places,
+    /// The card of the lists its turn read or changed, under the place cards; it comes with its
+    /// row.
+    lists: ListsView,
     /// What its row shows under the place cards.
     strip: SharedStrip,
     /// The row's voice note, over the words.
     voice: Option<Rc<Chip>>,
+}
+
+/// What a reply's row shows under its words: the place cards, the lists card, then its strip.
+struct Under<'a> {
+    places: &'a [Card],
+    lists: Option<&'a ListsCard>,
+    media: &'a Strip,
 }
 
 /// The person's words, and what their row shows under them.
@@ -76,8 +90,8 @@ struct Message {
 }
 
 impl Drawn {
-    /// `decider` takes what a proposal's buttons decide.
-    pub fn new(entry: &Entry, readers: &Readers, decider: &Decider) -> Drawn {
+    /// `decider` takes what a proposal's buttons decide, and `lister` what a lists card asks.
+    pub fn new(entry: &Entry, readers: &Readers, decider: &Decider, lister: &Lister) -> Drawn {
         if let Entry::Proposal(card) = entry {
             let card = ProposalCard::new(card, decider);
             return Drawn::own_row(entry, &card.widget.clone(), Parts::Proposal(Box::new(card)));
@@ -85,7 +99,7 @@ impl Drawn {
         if let Entry::Unshown = entry {
             return Drawn::own_row(entry, &unshown_card(), Parts::Fixed);
         }
-        let (side, body, source, parts) = draw_body(entry, readers);
+        let (side, body, source, parts) = draw_body(entry, readers, lister);
         let (row, time) = row(side, &body, source);
         let line = row.first_child();
         // Between the bubble's line and the time under it.
@@ -141,6 +155,7 @@ impl Drawn {
                     text,
                     places,
                     media,
+                    lists,
                 },
             ) => {
                 if !same_note(reply.voice.as_ref(), media) {
@@ -148,6 +163,7 @@ impl Drawn {
                 }
                 reply.grow(text);
                 reply.places.show(places);
+                reply.lists.set_card(lists.as_ref());
                 reply.strip.borrow_mut().show(media);
             }
             (Parts::Message(message), Entry::User { text, media }) => {
@@ -191,13 +207,25 @@ impl Drawn {
         }
     }
 
-    /// The entry is on screen: what its row shows is read, where it has not been.
-    pub fn on_screen(&self) {
+    /// A reply's lists card, drawn as `lists` holds its lists now. `on_screen`: the entry was on
+    /// screen at the page's last look.
+    pub fn show_lists(&mut self, lists: &Library, on_screen: bool) {
+        if let Parts::Reply(reply) = &mut self.parts {
+            reply.lists.show(lists, on_screen);
+        }
+    }
+
+    /// The entry is on screen: what its row shows is read, where it has not been. `came`: it came
+    /// on screen since the page's last look, so a live lists card pulls its lists.
+    pub fn on_screen(&self, came: bool) {
         let (strip, voice) = match &self.parts {
             Parts::Message(message) => (&message.strip, &message.voice),
             Parts::Reply(reply) => (&reply.strip, &reply.voice),
             Parts::Fixed | Parts::Tools(_) | Parts::Proposal(_) => return,
         };
+        if let (Parts::Reply(reply), true) = (&self.parts, came) {
+            reply.lists.came_on_screen();
+        }
         strip.borrow().on_screen();
         if let Some(chip) = voice {
             chip.on_screen();
@@ -212,6 +240,7 @@ impl Parts {
             Parts::Message(message) => vec![message.strip.borrow().widget.clone().upcast()],
             Parts::Reply(reply) => vec![
                 reply.places.widget.clone().upcast(),
+                reply.lists.widget.clone().upcast(),
                 reply.strip.borrow().widget.clone().upcast(),
             ],
             Parts::Fixed | Parts::Tools(_) | Parts::Proposal(_) => Vec::new(),
@@ -277,7 +306,11 @@ fn same_note(drawn: Option<&Rc<Chip>>, media: &Strip) -> bool {
 }
 
 /// The entry's widget, its side, what copying it copies, and its parts.
-fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Source>, Parts) {
+fn draw_body(
+    entry: &Entry,
+    readers: &Readers,
+    lister: &Lister,
+) -> (Side, gtk::Widget, Option<Source>, Parts) {
     match entry {
         Entry::User { text, media } => {
             let message = Message::new(text, media, readers);
@@ -288,14 +321,20 @@ fn draw_body(entry: &Entry, readers: &Readers) -> (Side, gtk::Widget, Option<Sou
             text,
             places,
             media,
+            lists,
         } => {
-            let reply = Reply::new(text, places, media, readers);
+            let under = Under {
+                places,
+                lists: lists.as_ref(),
+                media,
+            };
+            let reply = Reply::new(text, &under, readers, lister);
             let source = reply.source.clone();
             (
                 Side::Fermix,
                 reply.body.clone().upcast(),
                 Some(source),
-                Parts::Reply(reply),
+                Parts::Reply(Box::new(reply)),
             )
         }
         Entry::Sending(text) => (Side::Person, sending_bubble(text), None, Parts::Fixed),
@@ -485,7 +524,7 @@ fn voice_bubble(chip: &Chip, label: &gtk::Label, text: &str) -> gtk::Widget {
 }
 
 impl Reply {
-    fn new(text: &str, places: &[Card], media: &Strip, readers: &Readers) -> Reply {
+    fn new(text: &str, under: &Under, readers: &Readers, lister: &Lister) -> Reply {
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -493,7 +532,11 @@ impl Reply {
             .css_classes(["chat-reply"])
             .build();
         body.update_property(&[gtk::accessible::Property::Label("Reply from Fermix")]);
-        let voice = media.voice.as_ref().map(|note| Chip::new(note, readers));
+        let voice = under
+            .media
+            .voice
+            .as_ref()
+            .map(|note| Chip::new(note, readers));
         if let Some(chip) = &voice {
             body.append(&chip.widget);
         }
@@ -503,12 +546,14 @@ impl Reply {
             draft: Draft::default(),
             source: Rc::default(),
             places: Places::new(),
+            lists: ListsView::new(lister),
             strip: Rc::new(RefCell::new(StripView::new(gtk::Align::Start, readers))),
             voice,
         };
         reply.grow(text);
-        reply.places.show(places);
-        reply.strip.borrow_mut().show(media);
+        reply.places.show(under.places);
+        reply.lists.set_card(under.lists);
+        reply.strip.borrow_mut().show(under.media);
         reply
     }
 

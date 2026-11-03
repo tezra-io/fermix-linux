@@ -226,13 +226,14 @@ mod tests {
         });
     }
 
-    /// The files whose log lines speak of the chat's connection, media, files, links, places and
-    /// voice notes.
-    const LOGGING: [(&str, &str); 10] = [
+    /// The files whose log lines speak of the chat's connection, media, files, links, places, lists
+    /// and voice notes.
+    const LOGGING: [(&str, &str); 11] = [
         ("chat_session.rs", include_str!("chat_session.rs")),
         ("media_grants.rs", include_str!("media_grants.rs")),
         ("chat/entries.rs", include_str!("chat/entries.rs")),
         ("chat/levels.rs", include_str!("chat/levels.rs")),
+        ("chat/lists.rs", include_str!("chat/lists.rs")),
         ("chat/picture.rs", include_str!("chat/picture.rs")),
         ("chat/places.rs", include_str!("chat/places.rs")),
         ("chat/playback.rs", include_str!("chat/playback.rs")),

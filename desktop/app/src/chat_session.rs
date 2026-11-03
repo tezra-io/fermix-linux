@@ -1,20 +1,23 @@
 //! The chat's controller: connects to `companion.sock`, shakes hands, feeds what the daemon
-//! sends into the timeline (`fermix_client::chat_wire::timeline`), sends what the timeline
-//! answers, and reconnects after the session's backoff. The page draws `chat::view` of it.
+//! sends into the timeline (`fermix_client::chat_wire::timeline`) and the owner's lists into the
+//! lists' library (`fermix_client::checklists::library`), sends what each answers, and reconnects
+//! after the session's backoff. The page draws `chat::view` of it, with the lists cards.
 
 use crate::app::App;
-use crate::chat::Decision;
+use crate::chat::{Decision, ListAct};
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{
     loggable_id, Attachments, ClientEvent, Decision as Word, LineTooLong, Proposal, Reply, Row,
-    ServerError, ServerEvent,
+    ServerError, ServerEvent, PROTOCOL_VERSION,
 };
 use fermix_client::chat_wire::session::{
     closes, logged, page_read, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
 };
 use fermix_client::chat_wire::timeline::{self, Chat};
+use fermix_client::checklists::library::Library;
+use fermix_client::checklists::routing::lists_event;
 use fermix_client::phone::unix_seconds;
 use gtk::glib;
 use std::rc::Rc;
@@ -26,6 +29,8 @@ const HANDSHAKE_READ_CAP: usize = 16;
 #[derive(Default)]
 pub struct ChatWire {
     pub chat: Chat,
+    /// The owner's lists this connection draws, and the edits made here.
+    pub lists: Library,
     pub session: Session,
     link: Option<Rc<Link>>,
     /// Bumped whenever the link is dropped, so a reader of an older link stops.
@@ -108,9 +113,6 @@ fn log_unused(event: &ServerEvent) {
         ServerEvent::Reasoning { turn_id, .. } => {
             let turn = loggable_id(turn_id);
             glib::g_debug!("fermix", "turn {turn} reasoned; not shown yet")
-        }
-        ServerEvent::Checklists { .. } | ServerEvent::Checklist { .. } => {
-            glib::g_warning!("fermix", "a list came that this app never asked for")
         }
         ServerEvent::AttachStatus { .. } => {
             glib::g_warning!(
@@ -276,7 +278,9 @@ impl App {
         let events = {
             let mut wire = self.wire.borrow_mut();
             wire.link = Some(link.clone());
-            timeline::negotiated(&mut wire.chat, &on_screen)
+            let mut events = timeline::negotiated(&mut wire.chat, &on_screen);
+            events.extend(wire.lists.negotiated(PROTOCOL_VERSION));
+            events
         };
         self.chat_send(events);
         self.media.connected(link.clone());
@@ -307,6 +311,11 @@ impl App {
             return;
         }
         self.log_event(&event);
+        let listed = lists_event(&mut self.wire.borrow_mut().lists, &event);
+        if let Some(events) = listed {
+            self.chat_send(events);
+            return self.render();
+        }
         let read = page_read(&event);
         let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
         if timeline::history_unreadable(&self.wire.borrow().chat) {
@@ -368,6 +377,7 @@ impl App {
             }
             wire.generation += 1;
             timeline::disconnected(&mut wire.chat);
+            wire.lists.disconnected();
             wire.session.lost(why)
         };
         self.media.disconnected();
@@ -432,6 +442,36 @@ impl App {
                 app.chat_decide(decision);
             }
         });
+    }
+
+    /// Hands the page this controller, which the replies' lists cards send their edits and
+    /// pulls to.
+    pub fn chat_list_here(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.chat.list_with(move |asked| {
+            if let Some(app) = app.upgrade() {
+                app.chat_list(asked);
+            }
+        });
+    }
+
+    /// What a lists card asks: its lists pulled as it comes on screen, an edit drawn at once and
+    /// sent, or the cards drawn again. A pull draws nothing: the page asks it while it holds its
+    /// entries, and the list's arrival draws.
+    fn chat_list(self: &Rc<Self>, asked: ListAct) {
+        let pulled = matches!(asked, ListAct::Drawn(_));
+        let events = {
+            let lists = &mut self.wire.borrow_mut().lists;
+            match asked {
+                ListAct::Drawn(ids) => ids.iter().flat_map(|id| lists.draw(id, false)).collect(),
+                ListAct::Edit { list_id, op } => lists.edit(&list_id, op, message_id()),
+                ListAct::Redraw => Vec::new(),
+            }
+        };
+        self.chat_send(events);
+        if !pulled {
+            self.render();
+        }
     }
 
     fn chat_decide(self: &Rc<Self>, decision: Decision) {

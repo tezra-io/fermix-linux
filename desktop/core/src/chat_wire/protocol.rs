@@ -10,6 +10,7 @@
 //! and one malformed message, media ref, preview, block or place is skipped rather than costing
 //! the whole page. A page counts what it skipped, for the caller to log.
 
+use crate::checklists::ListRef;
 use crate::realtime::protocol::LineBuffer;
 pub use crate::realtime::protocol::{DecodeError, Direction};
 use serde::de::DeserializeOwned;
@@ -34,6 +35,12 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_UNSCANNED_BYTES: usize = 32 * 1024 * 1024;
 /// The longest id an unreadable event is kept by (`Unreadable`).
 pub const MAX_ID_BYTES: usize = 256;
+/// The most lists a reply's `checklists` block names (PROTOCOL.md "Blocks under a reply").
+pub const MAX_BLOCK_LISTS: usize = 8;
+/// The longest list title, in characters (PROTOCOL.md "Lists", Bounds).
+pub const MAX_LIST_TITLE: usize = 80;
+/// The most rows a list holds (PROTOCOL.md "Lists", Bounds).
+pub const MAX_LIST_ROWS: usize = 500;
 /// The longest id or code word a log line carries as it is (`loggable_id`): the schema's
 /// `attach_id` bound.
 pub const MAX_LOGGED_BYTES: usize = 64;
@@ -785,6 +792,9 @@ pub struct LinkPreview {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     Places(Vec<Place>),
+    /// The owner's lists the reply's turn read or changed, by id, in the order it first touched
+    /// them.
+    Checklists(Vec<ListRef>),
 }
 
 /// A place a search found and the reply links, cut to the fields the wire carries.
@@ -1174,30 +1184,77 @@ fn lenient<T: DeserializeOwned>(values: Vec<Value>) -> (Vec<T>, usize) {
     (decoded, skipped)
 }
 
-/// A reply's blocks of a known type with the places that decode, and how many blocks and places
-/// were skipped.
+/// A reply's blocks of a known type with the places and lists that decode, and how many blocks,
+/// places and lists were skipped.
 fn blocks(values: Vec<Value>) -> (Vec<Block>, usize) {
     let total = values.len();
     let mut skipped = 0;
     let mut decoded = Vec::new();
     for value in values {
-        let Some(places) = places(&value) else {
+        let Some((block, dropped)) = block(&value) else {
             continue;
         };
-        let (places, dropped) = lenient(places.clone());
         skipped += dropped;
-        decoded.push(Block::Places(places));
+        decoded.push(block);
     }
     let unknown = total - decoded.len();
     (decoded, skipped + unknown)
 }
 
-/// The places of a `places` block; `None` for any other block.
-fn places(value: &Value) -> Option<&Vec<Value>> {
-    if value.get("type").and_then(Value::as_str) != Some("places") {
-        return None;
+/// A `places` or a `checklists` block, with how many of its entries were skipped; `None` for any
+/// other block, or one without its array.
+fn block(value: &Value) -> Option<(Block, usize)> {
+    match value.get("type").and_then(Value::as_str)? {
+        "places" => {
+            let (places, dropped) = lenient(value.get("places")?.as_array()?.clone());
+            Some((Block::Places(places), dropped))
+        }
+        "checklists" => {
+            let (lists, dropped) = list_refs(value.get("lists")?.as_array()?.clone());
+            Some((Block::Checklists(lists), dropped))
+        }
+        _ => None,
     }
-    value.get("places")?.as_array()
+}
+
+/// The lists a `checklists` block names that decode and fit the contract (`fits`), the first
+/// `MAX_BLOCK_LISTS` of them, and how many were skipped. A list naming more rows than a list holds
+/// keeps its first `MAX_LIST_ROWS`: the contract bounds a list's rows, not a block's, and the
+/// engine gathers the rows of each of a turn's calls, so a turn that removes many rows and adds
+/// many can name more.
+fn list_refs(values: Vec<Value>) -> (Vec<ListRef>, usize) {
+    let total = values.len();
+    let (decoded, _) = lenient::<ListRef>(values);
+    let kept: Vec<ListRef> = decoded
+        .into_iter()
+        .map(|mut list| {
+            list.rows.truncate(MAX_LIST_ROWS);
+            list
+        })
+        .filter(fits)
+        .take(MAX_BLOCK_LISTS)
+        .collect();
+    let skipped = total - kept.len();
+    (kept, skipped)
+}
+
+/// A list a block names as the contract has it (PROTOCOL.md "Blocks under a reply", "Lists"): the
+/// engine's ids and a title of 1 to `MAX_LIST_TITLE` characters.
+fn fits(list: &ListRef) -> bool {
+    let title = list.title.chars().count();
+    engine_id(&list.list_id, "ck_")
+        && (1..=MAX_LIST_TITLE).contains(&title)
+        && list.rows.iter().all(|row| engine_id(row, "ci_"))
+}
+
+/// An id the engine makes: `prefix` and ten lowercase ASCII letters or digits.
+fn engine_id(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix).is_some_and(|rest| {
+        rest.len() == 10
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    })
 }
 
 /// One line, without its `\n`, as an event. A known event whose fields do not fit is

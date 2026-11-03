@@ -642,8 +642,10 @@ fn install_chat_actions(app: &Rc<App>) {
         app.chat_rows_on_screen()
     });
     on_plain(app, "chat-connect", |app| async move { app.chat_connect() });
-    // A card's answer is never an action: its button decides through this controller.
+    // A card's answer is never an action: its button decides through this controller. Nor is a
+    // list edit: a lists card sends it through this controller too.
     app.chat_decide_here();
+    app.chat_list_here();
 }
 
 fn install_accels(app: &Rc<App>) {

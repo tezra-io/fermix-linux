@@ -41,7 +41,8 @@ pub fn cards(blocks: &[Block]) -> Vec<Card> {
     blocks
         .iter()
         .flat_map(|block| match block {
-            Block::Places(places) => places.iter(),
+            Block::Places(places) => places.as_slice(),
+            Block::Checklists(_) => &[],
         })
         .take(MAX_PLACES)
         .map(card)
@@ -195,7 +196,8 @@ pub fn opened_by(address: &str, blocks: &[Block]) -> bool {
     blocks
         .iter()
         .flat_map(|block| match block {
-            Block::Places(places) => places.iter(),
+            Block::Places(places) => places.as_slice(),
+            Block::Checklists(_) => &[],
         })
         .any(|place| stands_for(place, &link))
 }

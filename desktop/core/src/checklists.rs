@@ -1,14 +1,17 @@
 //! The owner's lists as the chat holds them (M85 lists; PROTOCOL.md "Lists"): one list over the
 //! engine's last push with the edits it has not confirmed drawn on top (`state`, `draft`), the
-//! connection's share of the lists (`library`, `index`), what a reply's card draws (`cards`), the
-//! pane's lines (`panel`), and the words (`words`). Values only: nothing here touches a socket, and
-//! the session sends what the library returns.
+//! connection's share of the lists (`library`, `index`), what a reply's card draws (`cards`, and
+//! `card` for one card as it stands now), which events are the lists' (`routing`), the pane's
+//! lines (`panel`), and the words (`words`). Values only: nothing here touches a socket, and the
+//! session sends what the library returns.
 
+pub mod card;
 pub mod cards;
 pub mod draft;
 pub mod index;
 pub mod library;
 pub mod panel;
+pub mod routing;
 pub mod state;
 pub mod words;
 
@@ -22,12 +25,12 @@ pub const ITEM: &str = "item";
 pub const SECTION: &str = "section";
 
 /// A list a reply's turn read or changed (PROTOCOL.md "Blocks under a reply"): its id, its title
-/// when the turn ended, and the rows the turn added or changed, none for a list it only read.
+/// when the turn ended, and the rows the turn added or changed, none for a list it only read. Each
+/// field is the contract's to send: a list without one is not read.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ListRef {
     pub list_id: String,
     pub title: String,
-    #[serde(default)]
     pub rows: Vec<String>,
 }
 

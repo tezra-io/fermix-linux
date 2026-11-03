@@ -3,8 +3,10 @@
 
 use fermix_client::chat_wire::protocol::{
     is_media_ref, line_buffer, loggable_id, read_line, Block, ClientEvent, DecodeError,
-    ServerEvent, Unreadable, MAX_FRAME_BYTES, MAX_LINE_BYTES, MAX_LOGGED_BYTES, NOT_LOGGED,
+    ServerEvent, Unreadable, MAX_BLOCK_LISTS, MAX_FRAME_BYTES, MAX_LINE_BYTES, MAX_LIST_ROWS,
+    MAX_LIST_TITLE, MAX_LOGGED_BYTES, NOT_LOGGED,
 };
+use fermix_client::checklists::ListRef;
 use fermix_client::realtime::protocol::LineBuffer;
 use serde_json::{json, Value};
 
@@ -147,6 +149,141 @@ fn a_rating_count_written_as_a_float_keeps_its_place() {
         panic!("the places block");
     };
     assert_eq!(places[0].rating.as_ref().and_then(|r| r.count), Some(321.0));
+}
+
+/// A list a `checklists` block names, as the engine writes it.
+fn list_ref(list_id: &str, title: &str, rows: &[&str]) -> Value {
+    json!({"list_id": list_id, "title": title, "rows": rows})
+}
+
+/// The lists of the one `checklists` block among `blocks`.
+fn named_lists(blocks: &[Block]) -> &[ListRef] {
+    let [Block::Checklists(lists)] = blocks else {
+        panic!("one checklists block: {blocks:?}");
+    };
+    lists
+}
+
+/// A reply's `checklists` block reads the same from its `text_done`, its `row` and its history
+/// message (PROTOCOL.md "Blocks under a reply"), beside a `places` block.
+#[test]
+fn a_checklists_block_decodes_from_text_done_a_row_and_a_history_message() {
+    let blocks = json!([
+        {"type": "places", "places": [
+            {"name": "Here", "location": {"latitude": 1.0, "longitude": 2.0}}
+        ]},
+        {"type": "checklists", "lists": [
+            list_ref("ck_9t3k6w0p5h", "Fermix", &["ci_0a1b2c3d4e", "ci_5f6g7h8i9j"]),
+            list_ref("ck_4q8m2x7v1d", "Groceries", &[])
+        ]}
+    ]);
+    let wanted = [
+        ListRef {
+            list_id: "ck_9t3k6w0p5h".into(),
+            title: "Fermix".into(),
+            rows: vec!["ci_0a1b2c3d4e".into(), "ci_5f6g7h8i9j".into()],
+        },
+        ListRef {
+            list_id: "ck_4q8m2x7v1d".into(),
+            title: "Groceries".into(),
+            rows: Vec::new(),
+        },
+    ];
+    let done = json!({"type": "text_done", "turn_id": "t", "server_seq": 2, "text": "x",
+        "blocks": blocks});
+    let ServerEvent::TextDone(reply) = decode(done) else {
+        panic!("a reply");
+    };
+    assert_eq!(named_lists(&reply.blocks[1..]), wanted);
+    assert_eq!(reply.skipped, 0);
+    let ServerEvent::Row(row) = decode(row(json!({"blocks": blocks}))) else {
+        panic!("a row");
+    };
+    assert_eq!(named_lists(&row.blocks[1..]), wanted);
+    let page = json!({"type": "history_page", "profile_id": "main", "history_head_seq": 5,
+        "messages": [{"server_seq": 5, "role": "assistant", "content": "x", "ts": "t",
+            "media_refs": [], "blocks": blocks}]});
+    let ServerEvent::HistoryPage(page) = decode(page) else {
+        panic!("a page");
+    };
+    assert_eq!(named_lists(&page.messages[0].blocks[1..]), wanted);
+}
+
+/// A list a block names off the contract is skipped and counted, alone: ids not the engine's
+/// (`ck_` or `ci_` and ten lowercase letters or digits), a blank or overlong title, or a field
+/// missing, its rows included. Past `MAX_BLOCK_LISTS`, the rest are skipped too.
+#[test]
+fn a_list_off_the_contract_is_skipped_and_counted_and_a_block_names_at_most_eight() {
+    let good = |n: usize| list_ref(&format!("ck_{n:010}"), "List", &["ci_0a1b2c3d4e"]);
+    let long_title = "x".repeat(MAX_LIST_TITLE + 1);
+    let full_title = "é".repeat(MAX_LIST_TITLE);
+    let off = [
+        list_ref("CK_9t3k6w0p5h", "Upper prefix", &[]),
+        list_ref("ck_9T3K6W0P5H", "Upper id", &[]),
+        list_ref("ck_9t3k6w0p5", "Nine", &[]),
+        list_ref("ck_9t3k6w0p5h0", "Eleven", &[]),
+        list_ref("ci_9t3k6w0p5h", "A row's prefix", &[]),
+        list_ref("ck_9t3k6w0p5h", "A list's id as a row", &["ck_0a1b2c3d4e"]),
+        list_ref("ck_9t3k6w0p5h", "A row with a dash", &["ci_0a1b2-3d4e"]),
+        list_ref("ck_9t3k6w0p5h", "", &[]),
+        list_ref("ck_9t3k6w0p5h", &long_title, &[]),
+        json!({"list_id": "ck_9t3k6w0p5h", "rows": []}),
+        json!({"title": "No id", "rows": []}),
+        json!({"list_id": "ck_9t3k6w0p5h", "title": "No rows"}),
+    ];
+    let mut lists: Vec<Value> = off.to_vec();
+    lists.push(list_ref("ck_9t3k6w0p5h", &full_title, &[]));
+    lists.extend((0..MAX_BLOCK_LISTS).map(good));
+    let ServerEvent::Row(row) = decode(row(json!({"blocks": [
+        {"type": "checklists", "lists": lists}
+    ]}))) else {
+        panic!("a row");
+    };
+    let kept = named_lists(&row.blocks);
+    assert_eq!(kept.len(), MAX_BLOCK_LISTS);
+    assert_eq!(
+        kept[0].title, full_title,
+        "80 characters is a title, whatever its bytes"
+    );
+    assert_eq!(kept[MAX_BLOCK_LISTS - 1].list_id, "ck_0000000006");
+    assert_eq!(
+        row.skipped,
+        off.len() + 1,
+        "each list off the contract, and the ninth"
+    );
+}
+
+/// A list naming more rows than a list holds keeps its first `MAX_LIST_ROWS` and is read: the
+/// contract bounds a list's rows, not a block's, and a turn that removes many rows and adds many
+/// can name more.
+#[test]
+fn a_list_naming_more_rows_than_a_list_holds_keeps_the_first_500() {
+    let rows: Vec<String> = (0..=MAX_LIST_ROWS).map(|n| format!("ci_{n:010}")).collect();
+    let named: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let ServerEvent::Row(row) = decode(row(json!({"blocks": [
+        {"type": "checklists", "lists": [list_ref("ck_9t3k6w0p5h", "Many rows", &named)]}
+    ]}))) else {
+        panic!("a row");
+    };
+    let [list] = named_lists(&row.blocks) else {
+        panic!("the list read");
+    };
+    assert_eq!(list.rows, rows[..MAX_LIST_ROWS]);
+    assert_eq!(row.skipped, 0);
+}
+
+/// A `checklists` block without its array is a block this build cannot read: skipped and
+/// counted, as an unknown one is.
+#[test]
+fn a_checklists_block_without_its_lists_is_skipped_and_counted() {
+    let ServerEvent::Row(row) = decode(row(json!({"blocks": [
+        {"type": "checklists"},
+        {"type": "checklists", "lists": "Groceries"}
+    ]}))) else {
+        panic!("a row");
+    };
+    assert!(row.blocks.is_empty());
+    assert_eq!(row.skipped, 2);
 }
 
 #[test]

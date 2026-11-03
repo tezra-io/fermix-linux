@@ -19,7 +19,7 @@ use super::state::ListState;
 use super::words::TOO_MANY;
 use super::LISTS_SINCE;
 use crate::chat_wire::protocol::{ClientEvent, List, ListEntry, ListOp, ServerError, PROFILE};
-use crate::chat_wire::timeline::MAX_PENDING;
+use crate::chat_wire::timeline::{daemon_reported, MAX_PENDING};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The most lists a connection holds (PROTOCOL.md "Lists", Holding).
@@ -268,8 +268,10 @@ impl Library {
     /// none. `None` when it is not the lists', else what to send.
     pub fn refusal(&mut self, error: &ServerError) -> Option<Vec<ClientEvent>> {
         let client_msg_id = error.client_msg_id.as_deref()?;
-        let reported = || format!("The daemon reported: {}", error.reason);
-        let sentence = error.message.clone().unwrap_or_else(reported);
+        let sentence = error
+            .message
+            .clone()
+            .unwrap_or_else(|| daemon_reported(&error.reason));
         self.refused(client_msg_id, sentence)
     }
 
@@ -367,8 +369,8 @@ impl Library {
             .collect()
     }
 
-    /// A list drawn before it can be pulled. Past 64 waiting the oldest is dropped; a card or the
-    /// pane that still draws it asks again.
+    /// A list drawn before it can be pulled. Past 64 waiting the oldest is dropped, until a card
+    /// or the pane asks for it again.
     fn wait(&mut self, list_id: &str, removed: bool) {
         if let Some(drawn) = self.waiting.iter_mut().find(|(id, _)| id == list_id) {
             drawn.1 |= removed;

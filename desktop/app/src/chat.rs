@@ -10,6 +10,7 @@ mod approvals;
 mod blocks;
 mod entries;
 mod levels;
+mod lists;
 mod outside_text;
 mod picture;
 mod places;
@@ -28,13 +29,17 @@ use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{reveal_key, view, written_time, Entry, Key, LiveTurn, LocalTime, View};
+use fermix_client::chat::{
+    reveal_key, view, written_time, Entry, Key, LiveTurn, LocalTime, RowsSeen, View,
+};
 use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
 use fermix_client::chat_wire::timeline::Chat;
+use fermix_client::checklists::library::Library;
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
+pub use lists::{ListAct, Lister};
 use picture::Decoder;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -119,6 +124,8 @@ pub struct ChatPage {
     approvals: approvals::Cards,
     /// Where the cards' buttons decide.
     decider: Decider,
+    /// Where the replies' lists cards send their edits and pulls.
+    lister: Lister,
     /// The reveal on its way to its card, if any.
     revealing: Rc<RefCell<Option<Revealing>>>,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
@@ -185,6 +192,7 @@ impl ChatPage {
             banner,
             approvals,
             decider,
+            lister: Lister::default(),
             revealing: Rc::default(),
             first_seq: Cell::default(),
             readers: Readers {
@@ -204,6 +212,13 @@ impl ChatPage {
         );
     }
 
+    /// The session the replies' lists cards send their edits and pulls to. Set once, when the
+    /// session exists.
+    pub fn list_with(&self, take: impl Fn(ListAct) + 'static) {
+        let set = self.lister.set(Box::new(take));
+        assert!(set.is_ok(), "the lists cards send to one session");
+    }
+
     /// `name` is the first name About you holds, for the greeting.
     pub fn render(&self, wire: &ChatWire, state: &State, name: Option<&str>) {
         let shown = view(&wire.chat);
@@ -218,6 +233,16 @@ impl ChatPage {
         self.show_banner(down.as_ref(), &wire.session.shown());
         self.approvals.show(&wire.chat);
         self.render_conversation(&shown, state, name);
+        self.show_lists(&wire.lists);
+    }
+
+    /// Draws every reply's lists card as `lists` holds them now: a push, a pull's answer or an
+    /// edit changes the cards with no change to the entries.
+    fn show_lists(&self, lists: &Library) {
+        for placed in self.shown.borrow_mut().iter_mut() {
+            let on_screen = placed.seq.is_some_and(|seq| self.on_screen.shows(seq));
+            placed.drawn.show_lists(lists, on_screen);
+        }
     }
 
     /// With a conversation on screen the page stays, and the banner says why the
@@ -346,7 +371,7 @@ impl ChatPage {
         for ((key, entry), seq) in placed {
             let drawn = match kept.remove(key) {
                 Some(drawn) => self.redrawn(drawn, entry),
-                None => Drawn::new(entry, &self.readers, &self.decider),
+                None => Drawn::new(entry, &self.readers, &self.decider, &self.lister),
             };
             place(&self.list, &drawn.row, previous.as_ref());
             previous = Some(drawn.row.clone().upcast());
@@ -385,7 +410,7 @@ impl ChatPage {
             return drawn;
         }
         self.list.remove(&drawn.row);
-        Drawn::new(entry, &self.readers, &self.decider)
+        Drawn::new(entry, &self.readers, &self.decider, &self.lister)
     }
 
     /// Serves a reveal the timeline holds once its card is drawn: the card, or the placeholder of
@@ -746,12 +771,15 @@ fn newest_seen(widget: &impl IsA<gtk::Widget>) {
 
 /// Which held rows are drawn on screen, told to the window each time that changes, so a row a
 /// reconnect may have changed is read again as the reader comes to it (macOS `rowsOnScreen`).
-/// Each entry on screen also reads the pictures under it, once.
+/// Each entry on screen also reads the pictures under it, once, and a live lists card asks for its
+/// lists as it comes on screen.
 struct OnScreen {
     shown: Rc<RefCell<Vec<Placed>>>,
     scroller: gtk::ScrolledWindow,
     /// What the window was last told; empty while the conversation is off screen.
     told: RefCell<BTreeSet<u64>>,
+    /// The rows on screen at the last look; none while the conversation is off screen.
+    seen: RefCell<RowsSeen>,
     /// A look is due at the next idle, once the layout has settled.
     due: Cell<bool>,
 }
@@ -762,6 +790,7 @@ impl OnScreen {
             shown: shown.clone(),
             scroller: scroller.clone(),
             told: RefCell::default(),
+            seen: RefCell::default(),
             due: Cell::new(false),
         });
         let adjustment = scroller.vadjustment();
@@ -796,12 +825,22 @@ impl OnScreen {
         });
     }
 
-    /// Each entry on screen reads what its strip shows, where it has not yet.
+    /// Each entry on screen reads what its strip shows, where it has not yet, and each that came
+    /// on screen since the last look asks for its lists.
     fn read(&self) {
         let shown = self.shown.borrow();
-        for placed in &shown[self.visible(&shown)] {
-            placed.drawn.on_screen();
+        let visible = &shown[self.visible(&shown)];
+        let seqs = visible.iter().filter_map(|placed| placed.seq).collect();
+        let came = self.seen.borrow_mut().look(seqs);
+        for placed in visible {
+            let arrived = placed.seq.is_some_and(|seq| came.contains(&seq));
+            placed.drawn.on_screen(arrived);
         }
+    }
+
+    /// Whether the row `seq` was on screen at the last look.
+    fn shows(&self, seq: u64) -> bool {
+        self.seen.borrow().shows(seq)
     }
 
     fn tell(&self) {
