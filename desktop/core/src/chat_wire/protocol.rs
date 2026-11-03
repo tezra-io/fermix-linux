@@ -461,8 +461,11 @@ pub enum ServerEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Unreadable {
     pub kind: String,
-    /// The card a `proposal` or an `approval` is: its `proposal_id` or `approval_id`.
+    /// The card a `proposal` or an `approval` is, or a resolution settles: its `proposal_id` or
+    /// `approval_id`.
     pub card_id: Option<String>,
+    /// The turn a `text_done`, a `turn_done` or a `turn_error` ends.
+    pub turn_id: Option<String>,
     /// The request an `accepted` or an `error` answers.
     pub client_msg_id: Option<String>,
     /// The file a `media_path` or an `error` answers. A `media_missing` whose ref reads is read
@@ -1073,13 +1076,16 @@ fn framed(line: &[u8]) -> Result<(Value, String), DecodeError> {
 fn unreadable(kind: String, value: &Value) -> Unreadable {
     let card_id = match kind.as_str() {
         "proposal" => id_at(value, "/proposal/proposal_id"),
-        "approval" => id_at(value, "/approval_id"),
+        "proposal_resolved" => id_at(value, "/proposal_id"),
+        "approval" | "approval_resolved" => id_at(value, "/approval_id"),
         _ => None,
     };
+    let ends_turn = matches!(kind.as_str(), "text_done" | "turn_done" | "turn_error");
     let answers_request = matches!(kind.as_str(), "accepted" | "error");
     let answers_file = matches!(kind.as_str(), "media_path" | "error");
     Unreadable {
         card_id,
+        turn_id: ends_turn.then(|| id_at(value, "/turn_id")).flatten(),
         client_msg_id: answers_request
             .then(|| id_at(value, "/client_msg_id"))
             .flatten(),

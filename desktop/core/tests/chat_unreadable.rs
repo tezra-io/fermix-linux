@@ -12,7 +12,10 @@ use fermix_client::chat_wire::protocol::{
     MAX_FRAME_BYTES,
 };
 use fermix_client::chat_wire::session::{handshake, Handshake, Phase, Session};
-use fermix_client::chat_wire::timeline::{self, Chat, Standing, PAGE_LIMIT, REFUSED_UNREAD};
+use fermix_client::chat_wire::timeline::{
+    self, Chat, Standing, MAX_UNREAD_PAGES, NEWEST, PAGE_LIMIT, REFUSED_UNREAD, SETTLED_UNREAD,
+    TURN_UNREAD,
+};
 use fermix_client::chat_wire::unshown::{self, Asks, MAX_KEPT, STRINGS};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -62,6 +65,36 @@ fn bad_error(names: Value) -> Value {
     error
 }
 
+/// A page whose messages are no list.
+fn bad_page() -> Value {
+    json!({"type": "history_page", "profile_id": "main", "messages": "none"})
+}
+
+fn empty_page() -> Value {
+    json!({"type": "history_page", "profile_id": "main", "messages": [], "history_head_seq": 0})
+}
+
+/// A connected chat holding the golden approval card, and the card's id.
+fn holding_an_approval() -> (Chat, String) {
+    let mut chat = connected();
+    let golden = SERVER
+        .lines()
+        .find(|line| line.starts_with(r#"{"type":"approval","#))
+        .expect("an approval golden");
+    let event = read_line(golden.as_bytes()).expect("a golden line");
+    let ServerEvent::Approval(approval) = &event else {
+        panic!("an approval reads: {event:?}");
+    };
+    let id = approval.approval_id.clone();
+    timeline::receive(&mut chat, event, 0);
+    assert_eq!(chat.approvals.len(), 1);
+    (chat, id)
+}
+
+fn turn_held(chat: &Chat) -> Option<&str> {
+    chat.turn.as_ref().map(|turn| turn.turn_id.as_str())
+}
+
 fn started() -> Value {
     json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
         "in_reply_to": "linux-1"})
@@ -71,9 +104,7 @@ fn started() -> Value {
 fn connected() -> Chat {
     let mut chat = Chat::default();
     timeline::negotiated(&mut chat, &BTreeSet::new());
-    let empty = json!({"type": "history_page", "profile_id": "main", "messages": [],
-        "history_head_seq": 0});
-    assert!(receive(&mut chat, empty).is_empty());
+    assert!(receive(&mut chat, empty_page()).is_empty());
     chat
 }
 
@@ -119,6 +150,7 @@ fn unread(
         card_id: card.map(Into::into),
         client_msg_id: request.map(Into::into),
         r#ref: file.map(Into::into),
+        ..Unreadable::default()
     })
 }
 
@@ -190,6 +222,11 @@ fn a_line_that_is_no_event_still_ends_the_connection() {
     assert_eq!(
         read_line(br#"{"text":"no type"}"#),
         Err(DecodeError::MissingType)
+    );
+    assert_eq!(
+        read_line(br#"{"type":7}"#),
+        Err(DecodeError::MissingType),
+        "a type that is no string is none"
     );
     let mut huge = vec![b'x'; MAX_FRAME_BYTES + 1];
     huge.push(b'\n');
@@ -336,10 +373,9 @@ fn show_in_chat_for_an_unreadable_card_scrolls_to_its_placeholder() {
 #[test]
 fn an_unreadable_page_forgets_its_read_so_the_next_gap_reads_again() {
     let mut chat = connected();
-    let gap = ClientEvent::pull(Cursor::AfterSeq(0), PAGE_LIMIT);
+    let gap = ClientEvent::pull(Cursor::BeforeSeq(NEWEST), PAGE_LIMIT);
     assert_eq!(receive(&mut chat, row(2)), vec![gap.clone()]);
-    let unreadable = json!({"type": "history_page", "profile_id": "main", "messages": "none"});
-    assert!(receive(&mut chat, unreadable).is_empty());
+    assert!(receive(&mut chat, bad_page()).is_empty());
     assert_eq!(receive(&mut chat, row(3)), vec![gap]);
 }
 
@@ -362,6 +398,7 @@ fn an_unreadable_reread_of_held_rows_reads_them_when_next_on_screen() {
     );
 }
 
+/// An end whose turn id cannot be read ends the turn held: this connection streams one at a time.
 #[test]
 fn an_unreadable_end_of_a_turn_ends_the_turn_held() {
     for kind in ["text_done", "turn_done", "turn_error"] {
@@ -498,7 +535,10 @@ fn an_unreadable_failure_fails_the_reads_of_its_ref_and_releases_nothing() {
 
 #[test]
 fn the_placeholders_say_where_an_answer_can_come_from() {
-    for text in STRINGS.into_iter().chain([REFUSED_UNREAD]) {
+    for text in STRINGS
+        .into_iter()
+        .chain([REFUSED_UNREAD, TURN_UNREAD, SETTLED_UNREAD])
+    {
         let first = text.chars().next().expect("not empty");
         assert!(first.is_uppercase(), "{text} starts a sentence");
         assert!(!text.contains("Mac"), "{text} names the Mac");
@@ -510,6 +550,248 @@ fn the_placeholders_say_where_an_answer_can_come_from() {
         assert!(!text.contains("  "), "{text} has a double space");
         assert!(!text.contains("fermix "), "{text} names a command");
     }
-    assert!(unshown::PROPOSAL.contains("a paired phone or another chat"));
+    assert!(unshown::PROPOSAL.contains("in your own chat with Fermix"));
+    assert!(
+        !unshown::PROPOSAL.contains("phone"),
+        "a paired phone is never sent a proposal"
+    );
+    assert!(unshown::PROPOSAL.contains("it expires and nothing runs"));
     assert!(unshown::APPROVAL.contains("No other chat can answer it"));
+}
+
+/// A history whose every page is unreadable cannot be shown at all: past `MAX_UNREAD_PAGES`
+/// pages in a row the connection is given up and nothing more is asked. A new connection keeps
+/// the count, so its first unreadable page gives it up again, while what comes before that page
+/// does not.
+#[test]
+fn a_history_unreadable_page_after_page_ends_the_connection() {
+    let mut chat = connected();
+    for page in 1..=MAX_UNREAD_PAGES {
+        receive(&mut chat, bad_page());
+        assert!(!timeline::history_unreadable(&chat), "page {page}");
+    }
+    assert!(receive(&mut chat, bad_page()).is_empty());
+    assert!(timeline::history_unreadable(&chat));
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    assert!(
+        !timeline::history_unreadable(&chat),
+        "a new connection starts"
+    );
+    receive(&mut chat, row(1));
+    assert!(!timeline::history_unreadable(&chat), "a row is no page");
+    receive(&mut chat, bad_page());
+    assert!(
+        timeline::history_unreadable(&chat),
+        "still unreadable: given up at once"
+    );
+}
+
+/// A readable page counts the unreadable ones from zero, and a card that cannot be read costs
+/// only itself.
+#[test]
+fn a_readable_page_counts_again_and_a_bad_card_never_counts() {
+    let mut chat = connected();
+    for _ in 0..MAX_UNREAD_PAGES {
+        receive(&mut chat, bad_page());
+    }
+    for n in 0..10 {
+        receive(&mut chat, bad_proposal(Some(&format!("cpr_{n}"))));
+        receive(&mut chat, bad_approval(&format!("apr_{n}")));
+    }
+    assert!(!timeline::history_unreadable(&chat), "cards are no pages");
+    receive(&mut chat, empty_page());
+    for _ in 0..MAX_UNREAD_PAGES {
+        receive(&mut chat, bad_page());
+    }
+    assert!(
+        !timeline::history_unreadable(&chat),
+        "counted from the readable page"
+    );
+    receive(&mut chat, bad_page());
+    assert!(timeline::history_unreadable(&chat));
+}
+
+/// A failure of the turn held says the reply did not finish, though why could not be read; a
+/// turn's plain end says nothing, as its readable form does not.
+#[test]
+fn an_unreadable_failure_of_the_turn_held_says_the_reply_did_not_finish() {
+    let mut chat = connected();
+    receive(&mut chat, started());
+    let failed = json!({"type": "turn_error", "profile_id": "main", "turn_id": "t1", "code": 5});
+    receive(&mut chat, failed);
+    assert_eq!(chat.turn, None);
+    assert_eq!(view(&chat).entries, [Entry::Failure(TURN_UNREAD.into())]);
+    let mut chat = connected();
+    receive(&mut chat, started());
+    receive(
+        &mut chat,
+        json!({"type": "turn_done", "profile_id": "main", "turn_id": 7}),
+    );
+    assert_eq!(chat.turn, None);
+    assert_eq!(chat.last_error, None, "a turn's end is no failure");
+}
+
+/// An unreadable end reads the turn it names, as far as `MAX_ID_BYTES`, and ends that turn only;
+/// one naming another turn leaves the turn held, its draft and its Stop, and says nothing.
+#[test]
+fn an_unreadable_end_ends_only_the_turn_it_names() {
+    let ends = [
+        ("text_done", json!({"server_seq": "two"})),
+        ("turn_error", json!({"code": 5})),
+    ];
+    for (kind, mut end) in ends {
+        end["type"] = json!(kind);
+        end["profile_id"] = json!("main");
+        let mut chat = connected();
+        receive(&mut chat, started());
+        end["turn_id"] = json!("t9");
+        receive(&mut chat, end.clone());
+        assert_eq!(turn_held(&chat), Some("t1"), "{kind} of another turn");
+        assert_eq!(chat.last_error, None, "{kind} of another turn");
+        end["turn_id"] = json!("t1");
+        receive(&mut chat, end);
+        assert_eq!(turn_held(&chat), None, "{kind} of the turn held");
+    }
+    let done = json!({"type": "text_done", "turn_id": "t1", "server_seq": "two"});
+    let ServerEvent::Unreadable(unread) = read(done) else {
+        panic!("an unreadable text_done");
+    };
+    assert_eq!(unread.turn_id.as_deref(), Some("t1"));
+    let long = json!({"type": "turn_error", "turn_id": "t".repeat(300), "code": 5});
+    let ServerEvent::Unreadable(unread) = read(long) else {
+        panic!("an unreadable turn_error");
+    };
+    assert_eq!(unread.turn_id, None, "an id past its bound is not kept");
+}
+
+/// With no row held, a gap reads the newest page again, as a cold start does, never every row
+/// from the first; with one held it reads on from the cursor.
+#[test]
+fn with_no_row_held_a_gap_reads_the_newest_page() {
+    let cold = vec![ClientEvent::pull(Cursor::BeforeSeq(NEWEST), PAGE_LIMIT)];
+    let mut chat = connected();
+    assert_eq!(receive(&mut chat, row(40)), cold);
+    let mut chat = connected();
+    let bad = json!({"type": "row", "profile_id": "main", "server_seq": "forty"});
+    assert_eq!(receive(&mut chat, bad), cold);
+    let mut chat = connected();
+    receive(&mut chat, started());
+    let done = json!({"type": "text_done", "profile_id": "main", "turn_id": "t1",
+        "server_seq": "forty"});
+    assert_eq!(receive(&mut chat, done), cold);
+    let mut chat = connected();
+    receive(&mut chat, row(1));
+    assert_eq!(
+        receive(&mut chat, row(40)),
+        vec![ClientEvent::pull(Cursor::AfterSeq(1), PAGE_LIMIT)]
+    );
+}
+
+/// A resolution that cannot be read still settles the card it names: its placeholder goes, a
+/// held proposal's card says Fermix settled it, and a held approval goes with its buttons.
+#[test]
+fn an_unreadable_resolution_settles_the_card_it_names() {
+    let (mut chat, id) = holding_a_card();
+    receive(&mut chat, bad_proposal(Some("cpr_x")));
+    for card in [id.as_str(), "cpr_x"] {
+        let bad = json!({"type": "proposal_resolved", "profile_id": "main",
+            "proposal_id": card, "state": 5});
+        assert_eq!(
+            read(bad.clone()),
+            unread("proposal_resolved", Some(card), None, None)
+        );
+        receive(&mut chat, bad);
+    }
+    assert_eq!(placeholders(&chat), 0);
+    assert_eq!(
+        chat.proposals[0].standing,
+        Standing::Resolved {
+            sentence: SETTLED_UNREAD.into(),
+            result_text: None
+        }
+    );
+    let (mut chat, id) = holding_an_approval();
+    receive(&mut chat, bad_approval("apr_2"));
+    for card in [id.as_str(), "apr_2"] {
+        let bad = json!({"type": "approval_resolved", "profile_id": "main",
+            "approval_id": card, "outcome": 5});
+        assert_eq!(
+            read(bad.clone()),
+            unread("approval_resolved", Some(card), None, None)
+        );
+        receive(&mut chat, bad);
+    }
+    assert!(chat.approvals.is_empty());
+    assert!(!unshown::waiting(&chat.unshown, Asks::Approval));
+}
+
+/// The first unreadable event of a type on a connection is warned of and the rest are not, so a
+/// type that drifted cannot flood the log while a reply streams; a new connection warns again.
+#[test]
+fn each_type_of_unreadable_event_is_warned_of_once_a_connection() {
+    let mut chat = connected();
+    assert!(timeline::first_unreadable(&mut chat, "text_delta"));
+    assert!(!timeline::first_unreadable(&mut chat, "text_delta"));
+    assert!(timeline::first_unreadable(&mut chat, "tool_event"));
+    timeline::disconnected(&mut chat);
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    assert!(timeline::first_unreadable(&mut chat, "text_delta"));
+}
+
+#[test]
+fn a_handshake_clears_the_approvals_placeholder_too() {
+    let mut chat = connected();
+    receive(&mut chat, bad_approval("apr_1"));
+    receive(
+        &mut chat,
+        json!({"type": "approval", "profile_id": "main", "text": 5}),
+    );
+    timeline::disconnected(&mut chat);
+    assert!(
+        unshown::waiting(&chat.unshown, Asks::Approval),
+        "kept while away"
+    );
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    assert!(!unshown::waiting(&chat.unshown, Asks::Approval));
+}
+
+#[test]
+fn an_unreadable_refusal_naming_no_request_is_the_chats_failure() {
+    let mut chat = connected();
+    timeline::send(&mut chat, "Is it done?", "linux-1".into());
+    assert!(receive(&mut chat, bad_error(json!({}))).is_empty());
+    assert_eq!(chat.last_error.as_deref(), Some(REFUSED_UNREAD));
+    assert_eq!(
+        chat.pending.len(),
+        1,
+        "the message still waits for its own answer"
+    );
+}
+
+/// A refused answer to an approval ends that answer, so the card takes one again; an approval
+/// card has no refusal of its own, so the chat says it.
+#[test]
+fn an_unreadable_refusal_of_an_approvals_answer_lets_the_card_be_answered_again() {
+    let (mut chat, id) = holding_an_approval();
+    assert_eq!(
+        timeline::answer(&mut chat, &id, true, "linux-3".into()).len(),
+        1
+    );
+    assert!(timeline::answering(&chat, &id));
+    let refusal = bad_error(json!({"client_msg_id": "linux-3"}));
+    assert!(receive(&mut chat, refusal).is_empty());
+    assert!(!timeline::answering(&chat, &id));
+    assert_eq!(chat.approvals.len(), 1, "the card stays");
+    assert_eq!(chat.last_error.as_deref(), Some(REFUSED_UNREAD));
+}
+
+/// The approval strip says it waits for an answer only while it holds a card this app can
+/// answer; holding only the placeholder, it says what it holds.
+#[test]
+fn the_approval_strip_asks_only_while_it_holds_a_card_it_can_answer() {
+    assert_eq!(unshown::approvals_label(true), unshown::APPROVALS_ASK);
+    assert_eq!(unshown::approvals_label(false), unshown::APPROVALS_UNSHOWN);
+    assert!(!unshown::APPROVALS_UNSHOWN.contains("answer"));
+    assert!(!unshown::APPROVALS_UNSHOWN.contains("Waiting"));
 }

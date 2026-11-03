@@ -9,16 +9,21 @@ use std::collections::BTreeSet;
 
 /// The placeholder's heading in the conversation.
 pub const TITLE: &str = "Something needs your answer";
-/// A proposal can be answered from a paired phone or the owner's other chats too (PROTOCOL.md
-/// "Proposals").
-pub const PROPOSAL: &str = "Fermix sent a request this app cannot show. Answer it from a paired \
-    phone or another chat you have with Fermix.";
+/// A proposal can be answered in the owner's own chat with Fermix too, which still gets its
+/// message (PROTOCOL.md "Version 4"); never from a paired phone, whose wire is not sent proposals.
+/// With no such chat it waits until it expires, and nothing runs.
+pub const PROPOSAL: &str = "Fermix sent a request this app cannot show. Answer it in your own \
+    chat with Fermix; if you have none, it expires and nothing runs.";
 /// An approval's token is answered only on the connection whose turn asked for it (PROTOCOL.md
 /// "Approvals"), so no other chat can answer it.
 pub const APPROVAL: &str = "Fermix asked for your approval, but this app cannot show the \
     request. No other chat can answer it, so it expires unanswered.";
-/// Every sentence here, for the strings test.
-pub const STRINGS: [&str; 3] = [TITLE, PROPOSAL, APPROVAL];
+/// The approval strip's accessible label while it holds a card this app can answer.
+pub const APPROVALS_ASK: &str = "Waiting for your answer";
+/// Its label while it holds only the placeholder, which nothing here can answer.
+pub const APPROVALS_UNSHOWN: &str = "An approval this app cannot show";
+/// Every sentence and label here, for the strings test.
+pub const STRINGS: [&str; 5] = [TITLE, PROPOSAL, APPROVAL, APPROVALS_ASK, APPROVALS_UNSHOWN];
 
 /// The most unreadable cards of one kind kept by their ids. Past it a card of that kind is kept
 /// without one, which no resolution takes, so its placeholder stands until the next handshake.
@@ -54,4 +59,14 @@ pub fn resolved(kept: &mut BTreeSet<Unshown>, asks: Asks, id: &str) {
 /// Whether an unreadable card of this kind still waits, so its placeholder shows.
 pub fn waiting(kept: &BTreeSet<Unshown>, asks: Asks) -> bool {
     kept.iter().any(|card| card.asks == asks)
+}
+
+/// The approval strip's accessible label: it says it waits for an answer only while it holds a
+/// card this app can answer.
+pub fn approvals_label(answerable: bool) -> &'static str {
+    if answerable {
+        APPROVALS_ASK
+    } else {
+        APPROVALS_UNSHOWN
+    }
 }

@@ -49,6 +49,22 @@ fn log_skipped<'a>(messages: usize, rows: impl Iterator<Item = &'a Row>) {
     }
 }
 
+/// Logs an event that could not be read by its type alone: what it held is the daemon's, and may
+/// be the owner's. The first of a type on a connection is a warning, the rest are debug.
+fn log_unreadable(chat: &mut Chat, kind: &str) {
+    if timeline::first_unreadable(chat, kind) {
+        glib::g_warning!(
+            "fermix",
+            "chat event {kind} could not be read and was dropped"
+        );
+    } else {
+        glib::g_debug!(
+            "fermix",
+            "chat event {kind} could not be read and was dropped"
+        );
+    }
+}
+
 /// A request id no other client uses: this app's prefix and 64 random bits.
 fn message_id() -> String {
     format!("linux-{:08x}{:08x}", glib::random_int(), glib::random_int())
@@ -165,12 +181,9 @@ impl App {
         }
         match &event {
             ServerEvent::Unknown(kind) => glib::g_warning!("fermix", "chat event {kind} unread"),
-            // The type alone: what the event held is the daemon's, and may be the owner's.
-            ServerEvent::Unreadable(unread) => glib::g_warning!(
-                "fermix",
-                "chat event {} could not be read and was dropped",
-                unread.kind
-            ),
+            ServerEvent::Unreadable(unread) => {
+                log_unreadable(&mut self.wire.borrow_mut().chat, &unread.kind)
+            }
             ServerEvent::HistoryPage(page) => log_skipped(page.skipped, page.messages.iter()),
             ServerEvent::Row(row) => log_skipped(0, std::iter::once(row)),
             ServerEvent::TextDone(reply) if reply.skipped > 0 => glib::g_debug!(
@@ -199,6 +212,9 @@ impl App {
             _ => {}
         }
         let events = timeline::receive(&mut self.wire.borrow_mut().chat, event, now());
+        if timeline::history_unreadable(&self.wire.borrow().chat) {
+            return self.chat_lost(Lost::History);
+        }
         self.chat_send(events);
         self.chat_seen();
         self.keep_approval_clock();

@@ -142,6 +142,41 @@ fn a_handshake_resets_the_backoff() {
     );
 }
 
+/// A connection given up because its history could not be read keeps its backoff past the next
+/// handshake, so a history that stays unreadable is tried less and less often, at most every 30 s;
+/// the first loss of another kind after it waits that backoff once, and the next handshake resets
+/// it.
+#[test]
+fn a_history_given_up_keeps_its_backoff_past_the_handshake() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    assert_eq!(session.lost(Lost::History), Some(Duration::from_secs(1)));
+    assert!(matches!(session.shown(), Shown::Disconnected(_)));
+    for seconds in [2, 4, 8, 16, 30, 30] {
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+        assert_eq!(
+            session.lost(Lost::History),
+            Some(Duration::from_secs(seconds))
+        );
+    }
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(30))
+    );
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(1))
+    );
+}
+
 #[test]
 fn the_page_says_why_it_is_not_connected() {
     let mut session = Session::default();

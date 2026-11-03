@@ -36,6 +36,12 @@ const TOO_LONG: &str = "The message is too long to send";
 const OUTBOX_FULL: &str = "Too many messages are waiting to send";
 /// No macOS string: a refusal this build could not read, of a message or a proposal's answer.
 pub const REFUSED_UNREAD: &str = "Fermix refused the request. This app could not read why.";
+/// What the chat says when the turn held failed and its failure could not be read.
+pub const TURN_UNREAD: &str = "The reply did not finish. This app could not read why.";
+/// What a proposal's card says when Fermix settled it and the settlement could not be read.
+pub const SETTLED_UNREAD: &str = "Fermix settled this request. This app could not read how.";
+/// The most history pages in a row that may be unreadable before the connection is given up.
+pub const MAX_UNREAD_PAGES: u32 = 3;
 
 /// One held row. A reply held from its turn's `text_done` names the turn, and has no time of the
 /// daemon's: it carries when it arrived instead.
@@ -178,6 +184,10 @@ pub struct Chat {
     /// The latest failure, in a sentence, until the next send.
     pub last_error: Option<String>,
     connected: bool,
+    /// History pages in a row that could not be read; a readable one counts from zero.
+    unread_pages: u32,
+    /// The types of unreadable event warned of on this connection.
+    warned: BTreeSet<String>,
     pull: Option<Pull>,
     older_waiting: Option<u64>,
     rows_to_read: BTreeSet<u64>,
@@ -189,26 +199,38 @@ pub struct Chat {
 /// order. Held rows on screen are read again, since notices sent while away are lost. Every
 /// proposal card is dropped but those the daemon resolved or refused: the daemon sends again
 /// each one still waiting, and a refused one sent again asks again. The placeholders of the
-/// cards that could not be read go too: one still waiting comes again.
+/// cards that could not be read go too: one still waiting comes again. A history that could not
+/// be read stays one page from being given up (`history_unreadable`).
 pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent> {
     chat.connected = true;
     chat.approvals.clear();
     chat.unshown.clear();
+    chat.warned.clear();
+    chat.unread_pages = chat.unread_pages.min(MAX_UNREAD_PAGES);
     chat.proposals.retain(|held| {
         matches!(
             held.standing,
             Standing::Resolved { .. } | Standing::Refused { .. }
         )
     });
-    let cursor = if chat.rows.is_empty() {
-        Cursor::BeforeSeq(NEWEST)
-    } else {
-        Cursor::AfterSeq(chat.cursor)
-    };
     read_again(chat, on_screen);
-    let mut sent = read_page(chat, cursor);
+    let mut sent = catch_up(chat);
     sent.extend(chat.pending.iter().map(|out| out.event.clone()));
     sent
+}
+
+/// Whether more than `MAX_UNREAD_PAGES` history pages in a row could not be read. Such a history
+/// cannot be shown at all, so the caller ends the connection (`Lost::History`), and the page says
+/// Chat cannot reach Fermix while it tries again, less often each time.
+pub fn history_unreadable(chat: &Chat) -> bool {
+    chat.unread_pages > MAX_UNREAD_PAGES
+}
+
+/// Whether this is the first unreadable event of `kind` on this connection: the first is warned
+/// of and the rest logged quietly, so a type that drifted cannot flood the log while a reply
+/// streams. Only the contract's types are unreadable, so the set stays small.
+pub fn first_unreadable(chat: &mut Chat, kind: &str) -> bool {
+    chat.warned.insert(kind.to_owned())
 }
 
 /// The connection ended. Nothing asked on it will be answered and a turn's end is live-only,
@@ -497,15 +519,16 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
         }
         ServerEvent::RowUpdated { server_seq } => return updated(chat, server_seq),
         ServerEvent::Approval(approval) => hold_approval(chat, approval, now),
-        ServerEvent::ApprovalResolved { approval_id, .. } => {
-            chat.approvals
-                .retain(|held| held.approval.approval_id != approval_id);
-            unshown::resolved(&mut chat.unshown, Asks::Approval, &approval_id);
-        }
+        ServerEvent::ApprovalResolved { approval_id, .. } => approval_settled(chat, &approval_id),
         ServerEvent::Proposal { proposal } => hold_proposal(chat, *proposal, now),
         ServerEvent::ProposalResolved(resolution) => {
-            unshown::resolved(&mut chat.unshown, Asks::Proposal, &resolution.proposal_id);
-            resolve(chat, resolution);
+            let Resolution {
+                proposal_id,
+                sentence,
+                result_text,
+                ..
+            } = resolution;
+            proposal_settled(chat, &proposal_id, sentence, result_text);
         }
         ServerEvent::ReadState { read_up_to_seq } => chat.read_up_to = read_up_to_seq,
         ServerEvent::HistoryPage(page) => return merge(chat, page),
@@ -526,25 +549,47 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
 }
 
 /// An event this build could not read, by what it still names. A card that asks the owner leaves
-/// its placeholder. A reply or a row is read from the cursor, so it is missing only until that
-/// page; a reply also ends the turn held. A page answers its read with nothing
+/// its placeholder, and a resolution settles the card it names. A reply or a row is read again
+/// (`catch_up`), so it is missing only until that page; a reply, a turn's end or its failure ends
+/// the turn it names, and a failure that ended one says so. A page answers its read with nothing
 /// (`page_unread`). An `accepted` settles the request it names; an `error` naming one refuses it
-/// in this app's words, and one naming a file is the grants'. Any other mends itself: a
-/// resolution by the next handshake, a turn's delta or tool by the next one.
+/// in this app's words, and one naming a file is the grants'. Any other mends itself: a turn's
+/// delta or tool by the next one.
 fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
-    let request = unread.client_msg_id.as_deref();
-    match unread.kind.as_str() {
-        "proposal" => unshown::keep(&mut chat.unshown, Asks::Proposal, unread.card_id),
-        "approval" => unshown::keep(&mut chat.unshown, Asks::Approval, unread.card_id),
+    let Unreadable {
+        kind,
+        card_id,
+        turn_id,
+        client_msg_id,
+        r#ref,
+    } = unread;
+    let turn = turn_id.as_deref();
+    match kind.as_str() {
+        "proposal" => unshown::keep(&mut chat.unshown, Asks::Proposal, card_id),
+        "approval" => unshown::keep(&mut chat.unshown, Asks::Approval, card_id),
+        "proposal_resolved" => card_id
+            .into_iter()
+            .for_each(|id| proposal_settled(chat, &id, SETTLED_UNREAD.into(), None)),
+        "approval_resolved" => card_id
+            .into_iter()
+            .for_each(|id| approval_settled(chat, &id)),
         "history_page" => return page_unread(chat),
         "text_done" => {
-            chat.turn = None;
-            return read_page(chat, Cursor::AfterSeq(chat.cursor));
+            end_unread(chat, turn);
+            return catch_up(chat);
         }
-        "row" => return read_page(chat, Cursor::AfterSeq(chat.cursor)),
-        "turn_done" | "turn_error" => chat.turn = None,
-        "accepted" => request.into_iter().for_each(|id| settle(chat, id)),
-        "error" if unread.r#ref.is_none() => {
+        "row" => return catch_up(chat),
+        "turn_done" => {
+            end_unread(chat, turn);
+        }
+        "turn_error" => {
+            if end_unread(chat, turn) {
+                chat.last_error = Some(TURN_UNREAD.into());
+            }
+        }
+        "accepted" => client_msg_id.iter().for_each(|id| settle(chat, id)),
+        "error" if r#ref.is_none() => {
+            let request = client_msg_id.as_deref();
             refuse(chat, request, REFUSED_UNREAD.into(), REFUSED_UNREAD.into());
         }
         _ => {}
@@ -552,12 +597,28 @@ fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
     Vec::new()
 }
 
+/// Ends the turn an unreadable end names. One whose turn id cannot be read ends the turn held:
+/// a connection streams its turns one at a time, so the turn held is the one that ended. Whether
+/// a turn ended.
+fn end_unread(chat: &mut Chat, turn_id: Option<&str>) -> bool {
+    let ended = match turn_id {
+        Some(id) => chat.turn.take_if(|turn| turn.turn_id == id),
+        None => chat.turn.take(),
+    };
+    ended.is_some()
+}
+
 /// A page that could not be read answers its read with nothing. A page is read again by the next
 /// gap or the reader; held rows it was to read again are read the next time they come on screen,
-/// not at once, so a page that never reads is not asked for again and again.
+/// not at once, so a page that never reads is not asked for again and again. Past
+/// `MAX_UNREAD_PAGES` in a row nothing more is asked: the connection is given up.
 fn page_unread(chat: &mut Chat) -> Vec<ClientEvent> {
     if let Some(Pull::Rows(seqs)) = chat.pull.take() {
         chat.read_before_disconnect.extend(seqs);
+    }
+    chat.unread_pages = chat.unread_pages.saturating_add(1);
+    if history_unreadable(chat) {
+        return Vec::new();
     }
     send_waiting(chat)
 }
@@ -732,17 +793,26 @@ fn answer_waiting(chat: &Chat, proposal_id: &str) -> Option<Decision> {
 }
 
 /// The daemon's last word on a card it holds. One for a card not held changes nothing.
-fn resolve(chat: &mut Chat, resolution: Resolution) {
+/// Fermix settled the proposal `id`: its placeholder goes, and its card says so in `sentence`.
+fn proposal_settled(chat: &mut Chat, id: &str, sentence: String, result_text: Option<String>) {
+    unshown::resolved(&mut chat.unshown, Asks::Proposal, id);
     let held = chat
         .proposals
         .iter_mut()
-        .find(|held| held.proposal.proposal_id == resolution.proposal_id);
+        .find(|held| held.proposal.proposal_id == id);
     if let Some(held) = held {
         held.standing = Standing::Resolved {
-            sentence: resolution.sentence,
-            result_text: resolution.result_text,
+            sentence,
+            result_text,
         };
     }
+}
+
+/// Fermix settled the approval `id`: its card goes, and its placeholder.
+fn approval_settled(chat: &mut Chat, id: &str) {
+    chat.approvals
+        .retain(|held| held.approval.approval_id != id);
+    unshown::resolved(&mut chat.unshown, Asks::Approval, id);
 }
 
 /// A refusal the connection survives, in the daemon's word. A media failure (`ref`) is the
@@ -793,15 +863,15 @@ fn updated(chat: &mut Chat, seq: u64) -> Vec<ClientEvent> {
     send_waiting(chat)
 }
 
-/// A live row is shown when it is the next seq, dropped at or below the cursor, and on a gap
-/// pulled from the cursor instead: the pull brings every row the gap hides.
+/// A live row is shown when it is the next seq, dropped at or below the cursor, and on a gap read
+/// instead (`catch_up`): the read brings every row the gap hides.
 fn apply_live(chat: &mut Chat, held: HeldRow) -> Vec<ClientEvent> {
     let seq = held.row.server_seq;
     if seq <= chat.cursor {
         return Vec::new();
     }
     if seq != chat.cursor + 1 {
-        return read_page(chat, Cursor::AfterSeq(chat.cursor));
+        return catch_up(chat);
     }
     chat.rows.push(held);
     chat.cursor = seq;
@@ -820,8 +890,9 @@ fn apply_live(chat: &mut Chat, held: HeldRow) -> Vec<ClientEvent> {
 /// forward page that leaves the cursor where its read asked from ends the read: asked again, it
 /// would answer the same, forever (PROTOCOL.md "Delivery and the outbox"). One that moved it, by
 /// its rows or by rows shown live while it was out, reads on, so each read asks from a later
-/// cursor.
+/// cursor. A page that reads counts the unreadable ones from zero.
 fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
+    chat.unread_pages = 0;
     let answered = chat.pull.take();
     let asked_from = match &answered {
         Some(Pull::Page(Cursor::AfterSeq(seq))) => Some(*seq),
@@ -871,6 +942,17 @@ fn put_rows(chat: &mut Chat, rows: Vec<Row>) {
             }
         }
     }
+}
+
+/// Reads what was written past the cursor. With no row held that is the newest page, as at a
+/// cold start, never every row from the first.
+fn catch_up(chat: &mut Chat) -> Vec<ClientEvent> {
+    let cursor = if chat.rows.is_empty() {
+        Cursor::BeforeSeq(NEWEST)
+    } else {
+        Cursor::AfterSeq(chat.cursor)
+    };
+    read_page(chat, cursor)
 }
 
 /// Reads a page from `cursor`, when no read is out.

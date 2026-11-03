@@ -32,7 +32,6 @@ impl Cards {
             .margin_end(18)
             .margin_bottom(12)
             .build();
-        list.update_property(&[gtk::accessible::Property::Label("Waiting for your answer")]);
         let widget = adw::Clamp::builder()
             .maximum_size(760)
             .child(&list)
@@ -67,6 +66,9 @@ impl Cards {
         if *self.drawn.borrow() == drawn {
             return;
         }
+        let label = unshown::approvals_label(!drawn.0.is_empty());
+        self.list
+            .update_property(&[gtk::accessible::Property::Label(label)]);
         self.list.remove_all();
         for card in &drawn.0 {
             self.list.append(&card_row(card, &self.decider));

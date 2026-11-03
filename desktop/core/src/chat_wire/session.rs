@@ -119,6 +119,10 @@ pub fn refusal(direction: &Direction) -> String {
 pub enum Lost {
     /// No `companion.sock` file: an engine that predates chat.
     NoSocket,
+    /// The history could not be read, page after page (`timeline::history_unreadable`). Its
+    /// backoff goes on past the next handshake, whose connection gives up the same way while the
+    /// history stays unreadable.
+    History,
     /// Anything else; the detail is for the log.
     Broken(String),
 }
@@ -185,14 +189,17 @@ impl Session {
         true
     }
 
-    /// An event read during the handshake. `Ok` connects and resets the backoff; `Refused`
+    /// An event read during the handshake. `Ok` connects and resets the backoff, unless the
+    /// last connection gave up on its history; `Refused`
     /// ends the attempts. The caller ends a `Lost` connection with `lost`.
     pub fn hello(&mut self, event: &ServerEvent) -> Handshake {
         let outcome = handshake(event);
         match &outcome {
             Handshake::Ok => {
+                if self.last_lost != Some(Lost::History) {
+                    self.failures = 0;
+                }
                 self.phase = Phase::Connected;
-                self.failures = 0;
                 self.last_lost = None;
             }
             Handshake::Refused(sentence) => self.phase = Phase::Refused(sentence.clone()),
@@ -226,7 +233,7 @@ impl Session {
             (Phase::Refused(sentence), _) => Shown::Refused(sentence.clone()),
             (_, None) => Shown::Connecting,
             (_, Some(Lost::NoSocket)) => Shown::NoChat,
-            (_, Some(Lost::Broken(_))) => Shown::Disconnected(RECONNECTING.into()),
+            (_, Some(Lost::Broken(_) | Lost::History)) => Shown::Disconnected(RECONNECTING.into()),
         }
     }
 }
