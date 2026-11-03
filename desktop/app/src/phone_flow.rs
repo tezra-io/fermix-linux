@@ -222,8 +222,9 @@ impl App {
     }
 
     /// Pairing begins on the channel as it stands: Turn on while it is not running, and the
-    /// window once it is. The switch's row is read first, since it says whether throwing the
-    /// switch starts the channel in place or waits for a restart.
+    /// window once it is, or while it is held until setup is finished, where the daemon's refusal
+    /// says so. The switch's row is read first, since it says whether throwing the switch starts
+    /// the channel in place or waits for a restart.
     async fn phone_pair(&self, token: u64) {
         self.phone_show(token, Step::Waiting { session: None });
         self.read_section(SECTION).await;

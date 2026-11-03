@@ -6,7 +6,7 @@
 //! switched on the published state and reason and never on a verb word.
 
 use crate::mobile::{
-    MobileStatus, OutcomeReason, PairingSession, PairingStart, PairingSummary, SessionState,
+    Hold, MobileStatus, OutcomeReason, PairingSession, PairingStart, PairingSummary, SessionState,
 };
 use crate::phone::{
     ENDED_CANCELLED, ENDED_DENIED, ENDED_ELSEWHERE, ENDED_EXPIRED, ENDED_UNREADABLE, PAIR_AGAIN,
@@ -381,9 +381,11 @@ pub fn reduce(step: &Step, answer: Answer) -> Transition {
 
 /// Pairing begins on the channel as it stands: Turn on while it is not running. A switch that is
 /// off is thrown, with a restart unless its row says it starts the channel in place; one that is
-/// on owes the restart that starts the channel.
+/// on owes the restart that starts the channel. One held until setup is finished is owed no
+/// restart, which would start nothing: the window is asked for, and the daemon's refusal says what
+/// the channel waits for. A hold this build cannot name is read as if the field were absent.
 fn opening(status: &MobileStatus, switch_starts_in_place: bool) -> Transition {
-    if status.started {
+    if status.started || status.hold == Some(Hold::Setup) {
         return Transition::to(Step::Waiting { session: None });
     }
     let action = match (status.enabled, switch_starts_in_place) {
