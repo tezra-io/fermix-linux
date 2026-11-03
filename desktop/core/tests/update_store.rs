@@ -1,7 +1,8 @@
 //! What the updater remembers between runs, in `$XDG_STATE_HOME/fermix-desktop`
-//! (the app keeps no other state of its own): the switch, the newest feed
-//! accepted, the last check and the skipped version, written atomically. And
-//! the downloads folder, private to this account and emptied at each launch.
+//! (beside the Lists pane's kept open or close, the app's one other file
+//! there): the switch, the newest feed accepted, the last check and the
+//! skipped version, written atomically. And the downloads folder, private to
+//! this account and emptied at each launch.
 
 use fermix_client::update::store::{
     clear_downloads, download_dir, load, prepare_downloads, save, state_path, Checked, LastCheck,

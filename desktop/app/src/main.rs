@@ -63,6 +63,8 @@ mod voice_flow;
 mod wordmark;
 
 use adw::prelude::*;
+use app::LISTS_SHORTCUT;
+use fermix_client::checklists::words::SHOW_OR_HIDE;
 use gtk::{gdk, gio, glib};
 use std::cell::Cell;
 use std::ops::ControlFlow;
@@ -154,6 +156,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
     let chat = adw::ShortcutsSection::new(Some("Chat"));
     chat.add(adw::ShortcutsItem::new("Send", "Return"));
     chat.add(adw::ShortcutsItem::new("New line", "<Shift>Return"));
+    chat.add(adw::ShortcutsItem::new(SHOW_OR_HIDE, LISTS_SHORTCUT));
     let general = adw::ShortcutsSection::new(Some("General"));
     general.add(adw::ShortcutsItem::new(
         "Keyboard shortcuts",

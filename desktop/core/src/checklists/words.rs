@@ -95,6 +95,15 @@ pub fn head_line(folder: Option<&str>, open_count: usize, done_count: usize) -> 
     }
 }
 
+/// "Projects, 6 open, 2 done", the pane's head line to a screen reader.
+pub fn spoken_head_line(folder: Option<&str>, open_count: usize, done_count: usize) -> String {
+    let counts = spoken_counts(open_count, done_count);
+    match folder {
+        Some(folder) => format!("{folder}, {counts}"),
+        None => counts,
+    }
+}
+
 /// "2 more", under a one-list card's first four items.
 pub fn more(count: usize) -> String {
     format!("{count} more")

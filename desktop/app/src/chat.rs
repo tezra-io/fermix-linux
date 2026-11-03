@@ -1,16 +1,19 @@
 //! Chat: the conversation, drawn from `chat::view` of the chat wire's timeline,
-//! the cards waiting for the owner's answer, and the composer under them. The
-//! page never talks to Fermix; its buttons fire window actions and
-//! `chat_session.rs` does the work. A card's answer is the one exception: it is
-//! never an action, but its button's own click handing the controller a
-//! `Decision` (M60 cues §6 rule 3).
+//! the cards waiting for the owner's answer, and the composer under them, with
+//! the Lists pane at their end (`lists_pane`). The page never talks to Fermix;
+//! its buttons fire window actions and `chat_session.rs` does the work. A card's
+//! answer is the one exception: it is never an action, but its button's own
+//! click handing the controller a `Decision` (M60 cues §6 rule 3). Nor is a list
+//! edit: the lists hand theirs to the controller through `Lister`.
 
 mod activity;
 mod approvals;
 mod blocks;
 mod entries;
 mod levels;
+mod list_rows;
 mod lists;
+mod lists_pane;
 mod outside_text;
 mod picture;
 mod places;
@@ -40,6 +43,7 @@ use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
 pub use lists::{ListAct, Lister};
+pub use lists_pane::ListsPane;
 use picture::Decoder;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -124,8 +128,10 @@ pub struct ChatPage {
     approvals: approvals::Cards,
     /// Where the cards' buttons decide.
     decider: Decider,
-    /// Where the replies' lists cards send their edits and pulls.
+    /// Where the replies' lists cards and the Lists pane send their edits and pulls.
     lister: Lister,
+    /// The Lists pane beside the chat's body.
+    pub lists: Rc<ListsPane>,
     /// The reveal on its way to its card, if any.
     revealing: Rc<RefCell<Option<Revealing>>>,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
@@ -152,6 +158,7 @@ impl ChatPage {
         let on_screen = OnScreen::new(&shown, &follow.scroller);
         let (composer, input, send) = composer();
         let decider = Decider::default();
+        let lister = Lister::default();
         let approvals = approvals::Cards::new(&decider);
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -161,11 +168,12 @@ impl ChatPage {
         body.append(&conversation);
         body.append(&approvals.widget);
         body.append(&composer);
+        let lists = ListsPane::new(&lister, &body, &input);
         let down = DownPage::new();
         let root = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
-        root.add_named(&body, Some("chat"));
+        root.add_named(&lists.widget, Some("chat"));
         root.add_named(&down.page, Some("down"));
         let player = Player::new(media, endpoints);
         // Leaving the page, or the window going, stops a voice note.
@@ -192,7 +200,8 @@ impl ChatPage {
             banner,
             approvals,
             decider,
-            lister: Lister::default(),
+            lister,
+            lists,
             revealing: Rc::default(),
             first_seq: Cell::default(),
             readers: Readers {
@@ -212,8 +221,8 @@ impl ChatPage {
         );
     }
 
-    /// The session the replies' lists cards send their edits and pulls to. Set once, when the
-    /// session exists.
+    /// The session the replies' lists cards and the Lists pane send their edits and pulls to.
+    /// Set once, when the session exists.
     pub fn list_with(&self, take: impl Fn(ListAct) + 'static) {
         let set = self.lister.set(Box::new(take));
         assert!(set.is_ok(), "the lists cards send to one session");
@@ -234,6 +243,7 @@ impl ChatPage {
         self.approvals.show(&wire.chat);
         self.render_conversation(&shown, state, name);
         self.show_lists(&wire.lists);
+        self.lists.show(&wire.lists);
     }
 
     /// Draws every reply's lists card as `lists` holds them now: a push, a pull's answer or an
@@ -352,6 +362,11 @@ impl ChatPage {
 
     pub fn focus_input(&self) {
         self.input.grab_focus();
+    }
+
+    /// Whether the down page has the chat's place, the conversation and the Lists pane with it.
+    pub fn is_down(&self) -> bool {
+        self.root.visible_child_name().as_deref() == Some("down")
     }
 
     /// Scrolls to the newest entry and keeps following it, as after sending.

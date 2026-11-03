@@ -1,7 +1,8 @@
 //! The chat's controller: connects to `companion.sock`, shakes hands, feeds what the daemon
 //! sends into the timeline (`fermix_client::chat_wire::timeline`) and the owner's lists into the
 //! lists' library (`fermix_client::checklists::library`), sends what each answers, and reconnects
-//! after the session's backoff. The page draws `chat::view` of it, with the lists cards.
+//! after the session's backoff. The page draws `chat::view` of it, with the lists cards and the
+//! Lists pane, whose owner's open or close it keeps in `$XDG_STATE_HOME` (M85 lists §3.2).
 
 use crate::app::App;
 use crate::chat::{Decision, ListAct};
@@ -17,9 +18,11 @@ use fermix_client::chat_wire::session::{
 };
 use fermix_client::chat_wire::timeline::{self, Chat};
 use fermix_client::checklists::library::Library;
+use fermix_client::checklists::pane;
 use fermix_client::checklists::routing::lists_event;
 use fermix_client::phone::unix_seconds;
-use gtk::glib;
+use gtk::{gio, glib};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -31,6 +34,9 @@ pub struct ChatWire {
     pub chat: Chat,
     /// The owner's lists this connection draws, and the edits made here.
     pub lists: Library,
+    /// A handshake has served lists since the app started: the Lists toggle shows on Chat from
+    /// then on.
+    pub lists_served: bool,
     pub session: Session,
     link: Option<Rc<Link>>,
     /// Bumped whenever the link is dropped, so a reader of an older link stops.
@@ -187,6 +193,12 @@ fn link_lost(error: LinkError) -> Lost {
     }
 }
 
+/// Where the pane's open or close is kept: `$XDG_STATE_HOME/fermix-desktop/lists.json`.
+fn lists_file() -> PathBuf {
+    let state_home = std::env::var_os("XDG_STATE_HOME");
+    pane::lists_path(state_home.as_deref(), &glib::home_dir())
+}
+
 /// A request id no other client uses: this app's prefix and 64 random bits.
 fn message_id() -> String {
     format!("linux-{:08x}{:08x}", glib::random_int(), glib::random_int())
@@ -280,6 +292,7 @@ impl App {
             wire.link = Some(link.clone());
             let mut events = timeline::negotiated(&mut wire.chat, &on_screen);
             events.extend(wire.lists.negotiated(PROTOCOL_VERSION));
+            wire.lists_served |= wire.lists.index().served();
             events
         };
         self.chat_send(events);
@@ -455,23 +468,123 @@ impl App {
         });
     }
 
-    /// What a lists card asks: its lists pulled as it comes on screen, an edit drawn at once and
-    /// sent, or the cards drawn again. A pull draws nothing: the page asks it while it holds its
-    /// entries, and the list's arrival draws.
+    /// What a lists card or the Lists pane asks: lists pulled as they come on screen, an edit
+    /// drawn at once and sent, the lists drawn again, the pane opened at a card's list, or the
+    /// pane shown or hidden. A pull draws nothing: the page asks it while it holds its entries,
+    /// and the list's arrival draws.
     fn chat_list(self: &Rc<Self>, asked: ListAct) {
-        let pulled = matches!(asked, ListAct::Drawn(_));
-        let events = {
-            let lists = &mut self.wire.borrow_mut().lists;
-            match asked {
-                ListAct::Drawn(ids) => ids.iter().flat_map(|id| lists.draw(id, false)).collect(),
-                ListAct::Edit { list_id, op } => lists.edit(&list_id, op, message_id()),
-                ListAct::Redraw => Vec::new(),
+        let events = match asked {
+            ListAct::Drawn(ids) => {
+                let pulls = {
+                    let lists = &mut self.wire.borrow_mut().lists;
+                    ids.iter().flat_map(|id| lists.draw(id, false)).collect()
+                };
+                return self.chat_send(pulls);
             }
+            ListAct::Edit { list_id, op } => {
+                let lists = &mut self.wire.borrow_mut().lists;
+                lists.edit(&list_id, op, message_id())
+            }
+            ListAct::Redraw => Vec::new(),
+            ListAct::Open { list_id, by_key } => {
+                self.chat.lists.open_at(Some(&list_id), by_key);
+                Vec::new()
+            }
+            ListAct::Pane { shown, chosen } => return self.lists_shown(shown, chosen),
         };
         self.chat_send(events);
-        if !pulled {
-            self.render();
+        self.render();
+    }
+
+    /// `win.lists`, from the toggle or Ctrl+Shift+L: on Chat it shows or hides the pane, and
+    /// from any other page it opens Chat with the pane shown (M85 lists §3.2). Focus moves to the
+    /// picker unless the toggle, which holds the focus after a click, opened it.
+    pub fn toggle_lists(&self) {
+        if self.shell.visible_page().as_deref() == Some("chat") {
+            let by_key = !self.shell.lists.is_focus();
+            self.chat.lists.toggle(by_key);
+        } else {
+            self.shell.show_page("chat");
+            self.chat.lists.open_at(None, true);
         }
+        self.render();
+    }
+
+    /// `win.lists` asked to be `open`, as a SetState on the session bus asks: the pane shows or
+    /// hides to match, an open from another page showing Chat as the toggle's press does.
+    pub fn set_lists(&self, open: bool) {
+        let on_chat = self.shell.visible_page().as_deref() == Some("chat");
+        let shown = self.chat.lists.shown();
+        if open && !(shown && on_chat) {
+            return self.toggle_lists();
+        }
+        if !open && shown {
+            self.chat.lists.close();
+        }
+        self.render();
+    }
+
+    /// The Lists toggle shows on Chat once a handshake has served lists, and `win.lists` works
+    /// from then on. Its state is whether the pane shows, which it never does while the down
+    /// page has the chat's place, and the toggle hides then too.
+    pub fn show_lists_toggle(&self) {
+        let served = self.wire.borrow().lists_served;
+        let on_chat = self.shell.visible_page().as_deref() == Some("chat");
+        let down = self.chat.is_down();
+        self.shell.lists.set_visible(served && on_chat && !down);
+        if let Some(action) = self.lists_action() {
+            action.set_enabled(served);
+            let shown = self.chat.lists.shown() && !down;
+            action.set_state(&shown.to_variant());
+        }
+    }
+
+    /// The owner's last open or close of the pane, kept since the last run: closed when nothing
+    /// was kept, and when the file does not load, which is logged by its code alone, since the
+    /// path holds the home folder.
+    pub fn load_lists_pane(&self) {
+        let open = match pane::load(&lists_file()) {
+            Ok(open) => open,
+            Err(code) => {
+                glib::g_warning!(
+                    "fermix",
+                    "the Lists pane's open or close did not load: {code:?}"
+                );
+                false
+            }
+        };
+        self.chat.lists.keep_open(open);
+        self.lists_shown(open, None);
+    }
+
+    /// The pane was shown or hidden: the toggle follows, and an open or close the owner made is
+    /// kept for the next run.
+    fn lists_shown(&self, shown: bool, chosen: Option<bool>) {
+        let shown = shown && !self.chat.is_down();
+        match self.lists_action() {
+            Some(action) => action.set_state(&shown.to_variant()),
+            None => glib::g_warning!(
+                "fermix",
+                "the Lists pane changed with no action to follow it"
+            ),
+        }
+        let Some(open) = chosen else {
+            return;
+        };
+        if let Err(e) = pane::save(&lists_file(), open) {
+            let code = e.kind();
+            glib::g_warning!(
+                "fermix",
+                "the Lists pane's open or close was not kept: {code:?}"
+            );
+        }
+    }
+
+    fn lists_action(&self) -> Option<gio::SimpleAction> {
+        self.shell
+            .window
+            .lookup_action("lists")
+            .and_downcast::<gio::SimpleAction>()
     }
 
     fn chat_decide(self: &Rc<Self>, decision: Decision) {

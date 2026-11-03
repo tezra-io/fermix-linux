@@ -228,12 +228,13 @@ mod tests {
 
     /// The files whose log lines speak of the chat's connection, media, files, links, places, lists
     /// and voice notes.
-    const LOGGING: [(&str, &str); 11] = [
+    const LOGGING: [(&str, &str); 12] = [
         ("chat_session.rs", include_str!("chat_session.rs")),
         ("media_grants.rs", include_str!("media_grants.rs")),
         ("chat/entries.rs", include_str!("chat/entries.rs")),
         ("chat/levels.rs", include_str!("chat/levels.rs")),
         ("chat/lists.rs", include_str!("chat/lists.rs")),
+        ("chat/lists_pane.rs", include_str!("chat/lists_pane.rs")),
         ("chat/picture.rs", include_str!("chat/picture.rs")),
         ("chat/places.rs", include_str!("chat/places.rs")),
         ("chat/playback.rs", include_str!("chat/playback.rs")),
@@ -245,7 +246,7 @@ mod tests {
     /// The only names a log call in those files formats, inline (`{id}`) or as an argument after
     /// its format string: each with the files that log it, and where its value comes from there,
     /// which is why it holds no file name, path, address, message or sentence of the daemon's.
-    const LOGGABLE: [(&str, &[&str], &str); 22] = [
+    const LOGGABLE: [(&str, &[&str], &str); 23] = [
         (
             "id",
             &[
@@ -277,6 +278,13 @@ mod tests {
             "code",
             &["chat/voice_chip.rs"],
             "the Debug of cairo's Error, a C enum: its variant's name",
+        ),
+        (
+            "code",
+            &["chat_session.rs"],
+            "the Lists pane's kept open or close not loaded or not kept: the Debug of \
+             checklists::pane::NotLoaded or of an io::ErrorKind, variants' names that hold no \
+             path",
         ),
         (
             "bytes",

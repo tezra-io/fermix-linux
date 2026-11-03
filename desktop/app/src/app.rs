@@ -49,6 +49,8 @@ use std::time::{Duration, Instant};
 
 /// How often the window re-reads the daemon while nothing is happening.
 const IDLE_REFRESH: Duration = Duration::from_secs(30);
+/// Shows or hides the Lists pane (M85 lists §3.2): on Chat, or from any page.
+pub const LISTS_SHORTCUT: &str = "<Ctrl><Shift>l";
 
 pub struct App {
     pub shell: Shell,
@@ -192,6 +194,7 @@ fn start(app: &Rc<App>, hidden: bool) {
     app.state.borrow_mut().background.opens_at_login = opens_at_login;
     app.load_updates();
     install_actions(app);
+    app.load_lists_pane();
     app.wire_cues();
     follow_visible_page(app);
     mark_read_when_active(app);
@@ -239,6 +242,7 @@ impl App {
         self.shell
             .restart
             .set_visible(restart_pending && !setup_needed);
+        self.show_lists_toggle();
         drop(state);
         self.render_voice();
         self.render_assistant();
@@ -435,6 +439,8 @@ fn follow_visible_page(app: &Rc<App>) {
         .stack
         .connect_visible_child_name_notify(move |stack| {
             let Some(app) = weak.upgrade() else { return };
+            // The Lists toggle shows on Chat alone.
+            app.show_lists_toggle();
             let name = stack.visible_child_name();
             // Logs polls only while in view, whichever page replaces it.
             if name.as_deref() != Some("logs") {
@@ -643,9 +649,34 @@ fn install_chat_actions(app: &Rc<App>) {
     });
     on_plain(app, "chat-connect", |app| async move { app.chat_connect() });
     // A card's answer is never an action: its button decides through this controller. Nor is a
-    // list edit: a lists card sends it through this controller too.
+    // list edit: a lists card and the Lists pane send it through this controller too.
     app.chat_decide_here();
     app.chat_list_here();
+    install_lists_action(app);
+}
+
+/// `win.lists`, the one lists action: it only shows and hides the Lists pane, and is enabled
+/// once a handshake has served lists. Its state is whether the pane shows, which the toggle
+/// draws; a state asked for, as by a SetState on the session bus, shows or hides the pane to
+/// match while the action is enabled.
+fn install_lists_action(app: &Rc<App>) {
+    let lists = gio::SimpleAction::new_stateful("lists", None, &false.to_variant());
+    lists.set_enabled(false);
+    let weak = Rc::downgrade(app);
+    lists.connect_activate(move |_, _| {
+        if let Some(app) = weak.upgrade() {
+            app.toggle_lists();
+        }
+    });
+    let weak = Rc::downgrade(app);
+    lists.connect_change_state(move |lists, asked| {
+        let open = asked.and_then(|asked| asked.get::<bool>());
+        let open = open.filter(|_| lists.is_enabled());
+        if let Some((app, open)) = weak.upgrade().zip(open) {
+            app.set_lists(open);
+        }
+    });
+    app.shell.window.add_action(&lists);
 }
 
 fn install_accels(app: &Rc<App>) {
@@ -656,6 +687,7 @@ fn install_accels(app: &Rc<App>) {
         .expect("the window belongs to the application");
     application.set_accels_for_action("win.open-settings", &["<Ctrl>comma"]);
     application.set_accels_for_action("win.find-setting", &["<Ctrl>f"]);
+    application.set_accels_for_action("win.lists", &[LISTS_SHORTCUT]);
     for (index, (page, _, _)) in shell::PAGES.iter().enumerate() {
         application.set_accels_for_action(
             &format!("win.page::{page}"),

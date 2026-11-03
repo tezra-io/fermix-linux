@@ -1,10 +1,10 @@
 //! What the updater remembers between runs: the "Check for updates
 //! automatically" switch, the newest feed it accepted (rule 2), its last
-//! check and how that ended, and the version the person skipped (rule 5). The
-//! app keeps no other per-user state, so this is its own file under
-//! `$XDG_STATE_HOME`, replaced in one step on every save. Downloads go to a
-//! folder in the cache that only this account can open, which every launch
-//! empties.
+//! check and how that ended, and the version the person skipped (rule 5). Each
+//! thing the app remembers has its own file under `$XDG_STATE_HOME`
+//! (`state_file`), replaced in one step on every save (`save`); the Lists
+//! pane's is the other. Downloads go to a folder in the cache that only this
+//! account can open, which every launch empties.
 
 use crate::update::version::Version;
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,12 @@ pub enum Checked {
 /// when that is unset, empty or relative, which the XDG base directory
 /// specification says to ignore.
 pub fn state_path(state_home: Option<&OsStr>, home: &Path) -> PathBuf {
-    xdg_dir(state_home, home, ".local/state").join(STATE_FILE)
+    state_file(state_home, home, STATE_FILE)
+}
+
+/// `$XDG_STATE_HOME/<name>`, or under `~/.local/state`, as `state_path`.
+pub fn state_file(state_home: Option<&OsStr>, home: &Path, name: &str) -> PathBuf {
+    xdg_dir(state_home, home, ".local/state").join(name)
 }
 
 /// `$XDG_CACHE_HOME/fermix-desktop/updates`, or under `~/.cache`.
@@ -111,7 +116,7 @@ pub fn load(path: &Path) -> Result<Remembered, String> {
 
 /// Writes a temporary file beside `path`, flushes it to disk, and renames it
 /// over `path`, so a reader sees the old state or the new, never a mix.
-pub fn save(path: &Path, remembered: &Remembered) -> io::Result<()> {
+pub fn save<T: Serialize>(path: &Path, remembered: &T) -> io::Result<()> {
     let dir = path
         .parent()
         .expect("the state file has a parent directory");

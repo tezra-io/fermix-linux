@@ -1,48 +1,52 @@
 //! A reply's lists card (M85 lists §2), under its place cards: the owner's lists its turn read or
 //! changed, drawn as they stand now (`fermix_client::checklists::card`). A live card of one list
 //! shows its open items with "N more" and Add an item, a card of several a group per list, and a
-//! folded card one line per list. Only stock widgets, markup off before any text, and no list
-//! edit is an exported action: a tick is its check button's own closure, and the card hands each
-//! edit to the session through `Lister`.
+//! folded card one button per list. A list's head, its Open list button, a group's name and a
+//! folded button open the Lists pane at that list. Only stock widgets, markup off before any
+//! text, and no list edit is an exported action: a tick is its check button's own closure, and
+//! the card hands each edit to the session through `Lister`.
 
 use adw::prelude::*;
 use fermix_client::chat::ListsCard;
 use fermix_client::chat_wire::protocol::{ListOp, ListRow};
 use fermix_client::checklists::card::{drawing, Drawing, Head, ListGroup, Settling, Stands};
 use fermix_client::checklists::cards::OneList;
-use fermix_client::checklists::draft::is_local;
 use fermix_client::checklists::library::Library;
-use fermix_client::checklists::words::{self, ADD_ITEM, LIST_REMOVED, SHOW_LESS};
+use fermix_client::checklists::words::{self, ADD_ITEM, LIST_REMOVED, OPEN_LIST, SHOW_LESS};
 use gtk::glib;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
+use super::list_rows::{self, on_click_or_key, on_press, LIST_MARK};
 use super::places::{CARDS_MIN_WIDTH, CARDS_WIDTH};
 
-/// How long a ticked row keeps its place before it folds away, with animations on.
-const SETTLE: Duration = Duration::from_millis(700);
-/// The mark of a list, on a card's head and a folded line.
-const LIST_MARK: &str = "checkbox-checked-symbolic";
+/// A card's Open list button, and the pane's Hide lists.
+pub const PANE_MARK: &str = "sidebar-show-right-symbolic";
 
-/// What a reply's lists card asks of the session.
+/// What a reply's lists card and the Lists pane ask of the session.
 pub enum ListAct {
-    /// A live card came on screen: each list it draws is pulled unless the app holds it. The
-    /// page asks this while it holds its entries, so the answer draws nothing: a pull changes no
-    /// card until its list arrives, and that arrival draws. Asked once each time the card comes
-    /// on screen, not at every look.
+    /// A live card came on screen, or the pane shows a list: each list is pulled unless the app
+    /// holds it. The page asks this while it holds its entries, so the answer draws nothing: a
+    /// pull changes no card until its list arrives, and that arrival draws. A card asks once each
+    /// time it comes on screen, not at every look.
     Drawn(Vec<String>),
     /// An edit of one list, from a tick or Add an item.
     Edit { list_id: String, op: ListOp },
-    /// The card's own state changed (grown, folded back, or a ticked row settled): the cards
-    /// are drawn again.
+    /// A card's or the pane's own state changed (grown, folded back, a section or Done folded or
+    /// opened, a list picked, or a ticked row settled): the lists are drawn again.
     Redraw,
+    /// A card opens the pane at its list. By a key (Return on its row), focus moves to the
+    /// pane's picker.
+    Open { list_id: String, by_key: bool },
+    /// The pane was shown or hidden; `chosen` is the owner's open or close to keep, when it was
+    /// one.
+    Pane { shown: bool, chosen: Option<bool> },
 }
 
 /// Where the cards send what they ask: the session, handed over once it exists.
 pub type Lister = Rc<OnceCell<Box<dyn Fn(ListAct)>>>;
 
-fn act(lister: &Lister, asked: ListAct) {
+pub fn act(lister: &Lister, asked: ListAct) {
     match lister.get() {
         Some(take) => take(asked),
         None => glib::g_warning!("fermix", "a lists card acted before the chat could take it"),
@@ -143,7 +147,7 @@ impl ListsView {
                 refusal,
             } => self.draw_one(head, rows, refusal.as_deref()),
             Drawing::Several { groups, more_lists } => self.draw_several(groups, *more_lists),
-            Drawing::Folded(heads) => self.column.append(&folded_line(heads)),
+            Drawing::Folded(heads) => self.column.append(&folded_line(heads, &self.lister)),
         }
     }
 
@@ -159,7 +163,7 @@ impl ListsView {
             &head.title,
             open,
         ))]);
-        list.append(&head_row(head, false));
+        list.append(&head_row(head, false, &self.lister));
         for row in &rows.rows {
             list.append(&self.item_row(&head.list_id, row));
         }
@@ -186,7 +190,7 @@ impl ListsView {
             &titles,
         ))]);
         for group in groups {
-            list.append(&head_row(&group.head, true));
+            list.append(&head_row(&group.head, true, &self.lister));
             for row in &group.rows {
                 list.append(&self.item_row(&group.head.list_id, row));
             }
@@ -219,53 +223,9 @@ impl ListsView {
         Some(button)
     }
 
-    /// An item: its words, and a check that ticks it, which takes no focus; Space on the row
-    /// ticks it too. Done items are dimmed, and a row added here that the engine has not named
-    /// yet takes no tick.
+    /// An item whose tick the session sends (`list_rows::item_row`), without its note.
     fn item_row(&self, list_id: &str, row: &ListRow) -> adw::ActionRow {
-        let item = adw::ActionRow::new();
-        item.set_use_markup(false);
-        item.set_title(&row.text);
-        item.set_title_lines(0);
-        let check = gtk::CheckButton::new();
-        check.set_active(row.is_done());
-        check.set_focusable(false);
-        check.set_valign(gtk::Align::Center);
-        item.add_prefix(&check);
-        if row.is_done() {
-            item.add_css_class("dimmed");
-        }
-        item.set_sensitive(!is_local(&row.row_id));
-        let spoken = item.upcast_ref::<gtk::Widget>();
-        spoken.update_property(&[gtk::accessible::Property::Label(&row.text)]);
-        let checked = match row.is_done() {
-            true => gtk::AccessibleTristate::True,
-            false => gtk::AccessibleTristate::False,
-        };
-        spoken.update_state(&[gtk::accessible::State::Checked(checked)]);
-        self.tick_on_toggle(&check, list_id, &row.row_id);
-        tick_on_space(&item, &check);
-        item
-    }
-
-    /// The check's own closure sends the tick. A row ticked done keeps its place while it
-    /// settles, with animations on, then the card is drawn again without it.
-    fn tick_on_toggle(&self, check: &gtk::CheckButton, list_id: &str, row_id: &str) {
-        let (lister, settling) = (self.lister.clone(), self.settling.clone());
-        let (list_id, row_id) = (list_id.to_owned(), row_id.to_owned());
-        check.connect_toggled(move |check| {
-            let done = check.is_active();
-            if done && check.settings().is_gtk_enable_animations() {
-                settle(&settling, &lister, &row_id);
-            }
-            let row_id = row_id.clone();
-            let op = match done {
-                true => ListOp::Check { row_id },
-                false => ListOp::Uncheck { row_id },
-            };
-            let list_id = list_id.clone();
-            act(&lister, ListAct::Edit { list_id, op });
-        });
+        list_rows::item_row(row, false, list_id, &self.lister, &self.settling)
     }
 }
 
@@ -294,38 +254,6 @@ fn add_row(lister: &Lister, add_to: &Rc<RefCell<String>>) -> adw::EntryRow {
     add
 }
 
-/// Keeps `row_id` in its place for `SETTLE`, then, unless a later settle of it is running, asks
-/// for the cards to be drawn again.
-fn settle(settling: &Rc<RefCell<Settling>>, lister: &Lister, row_id: &str) {
-    settling.borrow_mut().begin(row_id);
-    let (settling, lister, row_id) = (settling.clone(), lister.clone(), row_id.to_owned());
-    glib::timeout_add_local_once(SETTLE, move || {
-        let ended = settling.borrow_mut().end(&row_id);
-        if ended {
-            act(&lister, ListAct::Redraw);
-        }
-    });
-}
-
-/// Space on a focused item ticks it, before the row's own Space activates it.
-fn tick_on_space(item: &adw::ActionRow, check: &gtk::CheckButton) {
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let check = check.downgrade();
-    keys.connect_key_pressed(move |_, key, _, state| {
-        let plain = (state & gtk::accelerator_get_default_mod_mask()).is_empty();
-        let Some(check) = check
-            .upgrade()
-            .filter(|_| plain && key == gtk::gdk::Key::space)
-        else {
-            return glib::Propagation::Proceed;
-        };
-        check.set_active(!check.is_active());
-        glib::Propagation::Stop
-    });
-    item.add_controller(keys);
-}
-
 /// The card's list: boxed, no selection, a row activated by a double-click.
 fn card_list() -> gtk::ListBox {
     gtk::ListBox::builder()
@@ -337,8 +265,9 @@ fn card_list() -> gtk::ListBox {
 
 /// A list's head: its title over its counts, or that it was removed; the block's title alone
 /// while its pull is not answered. A group of a card of several counts its open items alone
-/// (§2.3).
-fn head_row(head: &Head, group: bool) -> adw::ActionRow {
+/// (§2.3). Unless removed, it opens the pane at its list: a one-list card's head by its Open list
+/// button too, a group's name with a go-next mark.
+fn head_row(head: &Head, several: bool, lister: &Lister) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_use_markup(false);
     row.set_title(&head.title);
@@ -348,7 +277,7 @@ fn head_row(head: &Head, group: bool) -> adw::ActionRow {
     row.add_prefix(&mark);
     match head.stands {
         Stands::Counted { open, done } => {
-            let (counts, spoken) = match group {
+            let (counts, spoken) = match several {
                 true => (words::open(open), words::open(open)),
                 false => (words::counts(open, done), words::spoken_counts(open, done)),
             };
@@ -359,7 +288,37 @@ fn head_row(head: &Head, group: bool) -> adw::ActionRow {
         Stands::Removed => row.set_subtitle(LIST_REMOVED),
         Stands::Waiting => {}
     }
+    if head.stands != Stands::Removed {
+        opens_the_pane(&row, &head.list_id, several, lister);
+    }
     row
+}
+
+/// A single click, Return or Space on the row opens the pane at the list, and so does a one-list
+/// card's Open list button.
+fn opens_the_pane(row: &adw::ActionRow, list_id: &str, several: bool, lister: &Lister) {
+    let (lister, list_id) = (lister.clone(), list_id.to_owned());
+    let open = move |by_key| {
+        let list_id = list_id.clone();
+        act(&lister, ListAct::Open { list_id, by_key });
+    };
+    if several {
+        let next = gtk::Image::from_icon_name("go-next-symbolic");
+        next.set_accessible_role(gtk::AccessibleRole::Presentation);
+        row.add_suffix(&next);
+        return on_click_or_key(row, open);
+    }
+    let button = gtk::Button::from_icon_name(PANE_MARK);
+    button.add_css_class("flat");
+    button.set_valign(gtk::Align::Center);
+    button.set_tooltip_text(Some(OPEN_LIST));
+    let spoken = button.upcast_ref::<gtk::Widget>();
+    spoken.update_property(&[gtk::accessible::Property::Label(OPEN_LIST)]);
+    let open = Rc::new(open);
+    let pressed = open.clone();
+    on_press(&button, move |by_key| pressed(by_key));
+    row.add_suffix(&button);
+    on_click_or_key(row, move |by_key| open(by_key));
 }
 
 /// "and N more lists", a sentence in a row that is not activatable.
@@ -379,35 +338,42 @@ fn more_lists_row(count: usize) -> gtk::ListBoxRow {
     row
 }
 
-/// A folded card (§2.4): one line per list it drew, with the list's mark, counted from the index;
-/// a removed list says so. Labels for now: the pane they would open is not drawn yet. Each part is
-/// one line, cut short at its end when it is wider than the card, so a long title never sets the
+/// A folded card (§2.4): one button per list it drew, with the list's mark, counted from the
+/// index, which opens the pane at its list; a removed list says so, as a label. Each part is one
+/// line, cut short at its end when it is wider than the card, so a long title never sets the
 /// chat's width; a screen reader hears it whole.
-fn folded_line(heads: &[Head]) -> adw::WrapBox {
+fn folded_line(heads: &[Head], lister: &Lister) -> adw::WrapBox {
     let line = adw::WrapBox::new();
-    line.set_child_spacing(12);
+    line.set_child_spacing(6);
     line.set_line_spacing(6);
     for head in heads {
-        line.append(&folded_part(head));
+        line.append(&folded_part(head, lister));
     }
     line
 }
 
-fn folded_part(head: &Head) -> gtk::Widget {
+fn folded_part(head: &Head, lister: &Lister) -> gtk::Widget {
     let Stands::Counted { open, .. } = head.stands else {
         let removed = matches!(head.stands, Stands::Removed);
         let label = one_line(if removed { LIST_REMOVED } else { &head.title });
         label.add_css_class("dimmed");
         return label.upcast();
     };
-    let part = gtk::Box::builder().spacing(6).build();
-    let mark = gtk::Image::from_icon_name(LIST_MARK);
-    mark.set_accessible_role(gtk::AccessibleRole::Presentation);
-    part.append(&mark);
-    part.append(&one_line(&words::folded(&head.title, open)));
+    let content = adw::ButtonContent::new();
+    content.set_icon_name(LIST_MARK);
+    content.set_use_underline(false);
+    content.set_label(&words::folded(&head.title, open));
+    content.set_can_shrink(true);
+    let button = gtk::Button::new();
+    button.set_child(Some(&content));
     let spoken = words::list_label(&head.title, open);
-    part.update_property(&[gtk::accessible::Property::Label(&spoken)]);
-    part.upcast()
+    button.update_property(&[gtk::accessible::Property::Label(&spoken)]);
+    let (lister, list_id) = (lister.clone(), head.list_id.clone());
+    on_press(&button, move |by_key| {
+        let list_id = list_id.clone();
+        act(&lister, ListAct::Open { list_id, by_key });
+    });
+    button.upcast()
 }
 
 /// `text` on one line, cut short with an ellipsis at its end when it has less room than it needs,
@@ -546,24 +512,33 @@ mod tests {
         "SimpleAction::new_stateful(\"",
     ];
 
-    /// A card's tick and add are its widgets' own closures, never a `win.` or `app.` action,
-    /// which any process of the session reaches on the bus (M85 lists §4.2): the card names no
-    /// action, and no action the app registers, by any of its ways, has "list" in its name.
+    /// A tick and an add are their widgets' own closures, and every other ask of a card or the
+    /// pane goes to the session through `Lister`: none is a `win.` or `app.` action, which any
+    /// process of the session reaches on the bus (M85 lists §4.2). Of every action the app
+    /// registers, by any of its ways, the one with "list" in its name is `win.lists`, which only
+    /// shows and hides the pane.
     #[test]
     fn no_list_edit_is_a_window_action() {
-        let card = shipped(include_str!("lists.rs"));
+        let surfaces = [
+            ("lists.rs", shipped(include_str!("lists.rs"))),
+            ("list_rows.rs", shipped(include_str!("list_rows.rs"))),
+            ("lists_pane.rs", shipped(include_str!("lists_pane.rs"))),
+        ];
+        let read: String = surfaces.iter().map(|(_, source)| *source).collect();
         assert!(
-            card.contains("connect_toggled") && card.contains("connect_entry_activated"),
-            "the scan reads the card's edits"
+            read.contains("connect_toggled") && read.contains("connect_entry_activated"),
+            "the scan reads the edits"
         );
-        for named in [
-            "action_name(",
-            "activate_action(",
-            "\"win.",
-            "\"app.",
-            "SimpleAction",
-        ] {
-            assert!(!card.contains(named), "the card names {named}");
+        for (file, source) in surfaces {
+            for named in [
+                "action_name(",
+                "activate_action(",
+                "\"win.",
+                "\"app.",
+                "SimpleAction",
+            ] {
+                assert!(!source.contains(named), "{file} names {named}");
+            }
         }
         let registers = [
             squeezed(include_str!("../app.rs")),
@@ -575,7 +550,7 @@ mod tests {
             assert!(names.contains(&read), "the scan reads {read}");
         }
         let lists: Vec<&&str> = names.iter().filter(|name| name.contains("list")).collect();
-        assert!(lists.is_empty(), "list actions registered: {lists:?}");
+        assert_eq!(lists, [&"lists"], "win.lists alone");
     }
 
     /// The name of every action `source` registers in one of the `REGISTERS` ways.
@@ -588,6 +563,17 @@ mod tests {
             }
         }
         names
+    }
+
+    /// Ctrl+Shift+L is `win.lists`'s, and the Keyboard Shortcuts dialog lists it under Chat
+    /// (M85 lists §3.2): the dialog and the two accelerator lists are kept in step.
+    #[test]
+    fn ctrl_shift_l_shows_or_hides_the_pane_and_the_shortcuts_dialog_lists_it() {
+        assert_eq!(crate::app::LISTS_SHORTCUT, "<Ctrl><Shift>l");
+        let app = squeezed(include_str!("../app.rs"));
+        assert!(app.contains("set_accels_for_action(\"win.lists\",&[LISTS_SHORTCUT])"));
+        let main = squeezed(include_str!("../main.rs"));
+        assert!(main.contains("chat.add(adw::ShortcutsItem::new(SHOW_OR_HIDE,LISTS_SHORTCUT))"));
     }
 
     /// A source cut at its test module. The marker is built from two parts, so this file holds it

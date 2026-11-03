@@ -2,14 +2,16 @@
 //! engine's last push with the edits it has not confirmed drawn on top (`state`, `draft`), the
 //! connection's share of the lists (`library`, `index`), what a reply's card draws (`cards`, and
 //! `card` for one card as it stands now), which events are the lists' (`routing`), the pane's
-//! lines (`panel`), and the words (`words`). Values only: nothing here touches a socket, and the
-//! session sends what the library returns.
+//! lines (`panel`), whether the pane is open and what it shows (`pane`), and the words (`words`).
+//! Nothing here touches a socket, and the session sends what the library returns; the one file
+//! read or written is the pane's kept open or close (`pane::load`, `pane::save`).
 
 pub mod card;
 pub mod cards;
 pub mod draft;
 pub mod index;
 pub mod library;
+pub mod pane;
 pub mod panel;
 pub mod routing;
 pub mod state;
