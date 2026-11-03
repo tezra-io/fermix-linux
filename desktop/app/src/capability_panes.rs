@@ -5,11 +5,14 @@
 
 use crate::descriptor::{Drawn, SectionView};
 use crate::marks::{mark, Kind};
+use crate::update_dialog::note_markup;
 use adw::prelude::*;
+use fermix_client::capabilities::{checked_words, linux_probe, Ability, LinuxProbe, ProbeNote};
 use fermix_client::capabilities::{meetbot_state, phase_words, verdict, MeetbotState};
 use fermix_client::capabilities::{
     ComputerPermissions, COMPUTER_SIDECAR, MEETBOT, MEETBOT_SIGN_IN_NOTE,
 };
+use fermix_client::doctor::Tone;
 use fermix_client::ledger::MEETINGS_SLEEP_STATEMENT;
 use fermix_client::model::DetectRow;
 use fermix_client::settings::SectionRows;
@@ -325,10 +328,13 @@ fn probe_rows(probe: Option<&Result<ComputerPermissions, String>>) -> Vec<gtk::W
         Some(Err(sentence)) => return vec![fact("The helper could not be checked", sentence)],
         Some(Ok(permissions)) => permissions,
     };
+    if let Some(linux) = linux_probe(permissions) {
+        return linux_rows(&linux);
+    }
     let when = permissions
         .probed_at
         .as_deref()
-        .map(|at| format!(" · Checked {}", at.replace('T', " ").trim_end_matches('Z')))
+        .map(|at| format!(" · Checked {}", checked_words(at)))
         .unwrap_or_default();
     let at = permissions.probed_at.as_deref();
     vec![
@@ -350,4 +356,52 @@ fn fact(title: &str, subtitle: &str) -> gtk::Widget {
         .css_classes(["property"])
         .build()
         .upcast()
+}
+
+/// What Linux computer use can do in this session, then the helper's notes, then when it
+/// checked. Nothing here is granted, so there is nothing to grant.
+fn linux_rows(probe: &LinuxProbe) -> Vec<gtk::Widget> {
+    let abilities = probe.abilities.iter().map(ability_row);
+    let notes = probe.notes.iter().map(note_row);
+    let checked = probe.checked.iter().map(|at| fact("Checked", at));
+    abilities.chain(notes).chain(checked).collect()
+}
+
+fn ability_row(ability: &Ability) -> gtk::Widget {
+    // Markup on for the detail's inline code; every word of text is escaped.
+    let row = adw::ActionRow::new();
+    row.set_use_markup(true);
+    row.set_title(&glib::markup_escape_text(ability.title));
+    row.set_subtitle(&note_markup(&ability.subtitle));
+    row.add_suffix(&state_label(ability.state, ability.tone));
+    row.upcast()
+}
+
+fn state_label(word: &str, tone: Tone) -> gtk::Label {
+    let tone = match tone {
+        Tone::Good => "success",
+        Tone::Warn => "warning",
+        Tone::Bad => "error",
+        Tone::Quiet => "dimmed",
+    };
+    gtk::Label::builder()
+        .label(word)
+        .css_classes(["caption-heading", tone])
+        .valign(gtk::Align::Center)
+        .build()
+}
+
+/// A helper row as written, its inline code set apart. A command can be copied, never run.
+fn note_row(note: &ProbeNote) -> gtk::Widget {
+    let row = adw::ActionRow::new();
+    row.set_use_markup(true);
+    row.set_title(&glib::markup_escape_text(&note.title));
+    row.set_subtitle(&note_markup(&note.detail));
+    row.set_subtitle_selectable(note.selectable);
+    if note.attention {
+        let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+        icon.add_css_class("warning");
+        row.add_prefix(&icon);
+    }
+    row.upcast()
 }
