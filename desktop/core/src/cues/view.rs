@@ -213,10 +213,23 @@ pub fn offers_approve(mandate: &MandateRow) -> bool {
         && has(&mandate.actions, MandateAction::Approve)
 }
 
-/// The address a source's page draws under its kind, as the Mac does: the feed or stream URL the
-/// daemon publishes, whole. A webhook's address is never published there; none draws no row.
-pub fn source_url(source: &SourceRow) -> Option<&str> {
-    source.url.as_deref().filter(|u| !u.is_empty())
+/// What a source's page says it is and did, each fact a title and its value, in order (M60 cues
+/// §4.4): its kind, the host of the feed or stream it reads (`location`, never its address, which
+/// can carry a credential), its daily limit, its last day and the watchers listening. A webhook
+/// and local push have no host, and no row for one.
+pub fn source_facts(source: &SourceRow) -> Vec<(&'static str, String)> {
+    let mut facts = vec![(words::KIND, source.label.clone())];
+    if let Some(host) = source.location.as_deref().filter(|h| !h.is_empty()) {
+        facts.push((words::ADDRESS_HOST, host.to_owned()));
+    }
+    let counts = &source.counts;
+    facts.push((words::ITEMS_A_DAY, words::items_a_day(source.daily_budget)));
+    facts.push((
+        words::LAST_DAY,
+        words::source_last_day(counts.received, counts.routed),
+    ));
+    facts.push((words::LISTENING, words::list(&source.listening)));
+    facts
 }
 
 /// Where a source row opens its page: at the secret the daemon says it waits for, where its

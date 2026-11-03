@@ -47,7 +47,8 @@ pub const PRESET: &str = "Preset";
 pub const SECRET_UNSTORABLE: &str =
     "This version of the app cannot store this secret; update the app.";
 pub const ONE_OF_PUBLISHED: &str = "This setting takes one of its published values.";
-pub const URL: &str = "URL";
+/// The row naming the host a feed or stream source reads from (M60 cues §4.4).
+pub const ADDRESS_HOST: &str = "Address host";
 pub const COPY_URL: &str = "Copy URL";
 pub const ADDRESS_MADE: &str = "Made";
 pub const ADDRESS_NOT_MADE: &str = "Not made yet";
@@ -147,7 +148,7 @@ pub const STRINGS: [&str; 92] = [
     PRESET,
     SECRET_UNSTORABLE,
     ONE_OF_PUBLISHED,
-    URL,
+    ADDRESS_HOST,
     COPY_URL,
     ADDRESS_MADE,
     ADDRESS_NOT_MADE,

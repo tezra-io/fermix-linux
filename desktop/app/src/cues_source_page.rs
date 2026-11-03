@@ -16,8 +16,8 @@ use crate::secret_save::set_secret;
 use adw::prelude::*;
 use fermix_client::cues::form::{secret_id, Arrival};
 use fermix_client::cues::view::{
-    has, kind_icon, question_text, read_failure, secrets_first, source_switch, source_tone,
-    source_url, Asking, Question,
+    has, kind_icon, question_text, read_failure, secrets_first, source_facts, source_switch,
+    source_tone, Asking, Question,
 };
 use fermix_client::cues::wire::{
     HandedOut, SecretField, SecretSlot, SourceAction, SourceDetail, SourceRow,
@@ -586,43 +586,15 @@ fn stored(present: bool) -> &'static str {
     }
 }
 
-/// What the source is and did: its kind, the feed or stream address it reads from (one line,
-/// the middle left out; a webhook's address is never published here), its daily limit, its last
-/// day and the watchers listening.
+/// What the source is and did, as core reads it (`source_facts`): its kind, the host of the feed
+/// or stream it reads, never its address (M60 cues §4.4), its daily limit, its last day and the
+/// watchers listening.
 fn facts(source: &SourceRow) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    group.add(&fact_row(words::KIND, &source.label));
-    if let Some(url) = source_url(source) {
-        group.add(&url_row(url));
+    for (title, value) in source_facts(source) {
+        group.add(&fact_row(title, &value));
     }
-    group.add(&fact_row(
-        words::ITEMS_A_DAY,
-        &words::items_a_day(source.daily_budget),
-    ));
-    let day = words::source_last_day(source.counts.received, source.counts.routed);
-    group.add(&fact_row(words::LAST_DAY, &day));
-    group.add(&fact_row(words::LISTENING, &words::list(&source.listening)));
     group
-}
-
-/// The address on one line, its middle left out, selectable, and whole in its tooltip.
-fn url_row(url: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(words::URL)
-        .activatable(false)
-        .build();
-    let value = gtk::Label::builder()
-        .label(url)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
-        .single_line_mode(true)
-        .selectable(true)
-        .hexpand(true)
-        .xalign(1.0)
-        .tooltip_text(url)
-        .css_classes(["dimmed"])
-        .build();
-    row.add_suffix(&value);
-    row
 }
 
 /// What it refused and what it missed, in the daemon's sentences, only where there is any.

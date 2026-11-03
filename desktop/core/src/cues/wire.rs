@@ -287,12 +287,11 @@ pub struct SourceRow {
     pub primary_action: Option<Word<SourceAction>>,
     #[serde(default)]
     pub actions: Vec<Word<SourceAction>>,
-    /// A feed's or stream's host.
+    /// A feed's or stream's host, all a source's page draws of its address. The address itself
+    /// (`url`) is never decoded: it can carry a credential, in its user, its path or its query
+    /// (M60 cues §4.4). The owner edits it through the form's values.
     #[serde(default)]
     pub location: Option<String>,
-    /// The feed or stream URL Fermix reads from. Never a webhook's address.
-    #[serde(default)]
-    pub url: Option<String>,
     /// Items a UTC day; 0 is no limit.
     pub daily_budget: u64,
     #[serde(default)]

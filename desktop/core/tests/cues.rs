@@ -6,7 +6,7 @@
 use fermix_client::chat::{written_time, LocalTime};
 use fermix_client::cues::view::{
     approval_line, available, door_in_the_open, failure, mandate_line, model_shown,
-    model_suggestions, opening, secrets_first, shows_model_row, shut, source_line, source_url,
+    model_suggestions, opening, secrets_first, shows_model_row, shut, source_facts, source_line,
     status_tone, waiting_lines, watcher_filter, watcher_line, watcher_task, Asking, Failure,
     FilterDraft, Question, Tone,
 };
@@ -684,17 +684,63 @@ fn a_waiting_proposal_reads_as_who_wants_to_run_what_and_until_when() {
     assert_eq!(waiting_lines(&list, written).len(), 100, "at most 100");
 }
 
+/// Pinboard's private feed carries its secret in the path, a user-data stream its key; any
+/// address can carry a user and password.
+const SECRET_ADDRESS: &str =
+    "https://reader:hunter2@feeds.pinboard.in/rss/secret:0123abcd/u:me/?token=abc";
+
+/// M60 cues §4.4: a source's page names the feed or stream it reads by its host (`location`),
+/// never by its address, which can carry a credential.
 #[test]
-fn a_sources_page_draws_its_feed_or_stream_url_whole_and_nothing_for_others() {
-    let listed = sources();
-    assert_eq!(
-        source_url(&listed[0]),
-        Some("https://example.org/releases.atom"),
-        "the whole address, not its host"
+fn a_sources_page_names_its_feed_by_its_host_and_never_its_address() {
+    let feed = source(
+        "eng-blogs",
+        json!({"url": SECRET_ADDRESS, "location": "feeds.pinboard.in"}),
     );
-    assert_eq!(source_url(&listed[1]), None, "a webhook publishes none");
-    assert_eq!(source_url(&listed[2]), None, "nor does local push");
-    let mut blank = listed[0].clone();
-    blank.url = Some(String::new());
-    assert_eq!(source_url(&blank), None, "an empty address draws no row");
+    let facts = source_facts(&feed);
+    let titles: Vec<&str> = facts.iter().map(|(title, _)| *title).collect();
+    assert_eq!(
+        titles,
+        [
+            words::KIND,
+            words::ADDRESS_HOST,
+            words::ITEMS_A_DAY,
+            words::LAST_DAY,
+            words::LISTENING
+        ]
+    );
+    assert_eq!(facts[1].1, "feeds.pinboard.in");
+    for (title, value) in &facts {
+        for part in ["hunter2", "secret:0123abcd", "token", "://", "/rss/"] {
+            assert!(!value.contains(part), "{title} draws {part}: {value}");
+        }
+    }
+}
+
+#[test]
+fn a_source_without_a_host_draws_no_address_row() {
+    let listed = sources();
+    for webhook_or_push in &listed[1..] {
+        let facts = source_facts(webhook_or_push);
+        assert!(
+            facts.iter().all(|(title, _)| *title != words::ADDRESS_HOST),
+            "{}",
+            webhook_or_push.name
+        );
+    }
+    let blank = source("eng-blogs", json!({"location": ""}));
+    assert!(source_facts(&blank)
+        .iter()
+        .all(|(title, _)| *title != words::ADDRESS_HOST));
+}
+
+/// The page is handed a row that does not hold the address at all, so no drawing of it can
+/// reach the address: it is never decoded.
+#[test]
+fn a_source_row_never_holds_its_address() {
+    let feed = source("eng-blogs", json!({"url": SECRET_ADDRESS}));
+    let held = format!("{feed:?}");
+    for part in ["hunter2", "secret:0123abcd", "token=abc"] {
+        assert!(!held.contains(part), "the row holds {part}: {held}");
+    }
 }
