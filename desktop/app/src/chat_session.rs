@@ -6,6 +6,7 @@ use crate::app::App;
 use crate::chat::Decision;
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
+use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{ClientEvent, Decision as Word, Row, ServerEvent};
 use fermix_client::chat_wire::session::{closes, Handshake, Lost, Session, HANDSHAKE_TIMEOUT};
 use fermix_client::chat_wire::timeline::{self, Chat};
@@ -279,6 +280,17 @@ impl App {
         self.chat_send(events);
         self.keep_proposal_clock();
         self.render();
+    }
+
+    /// Brings a proposal's card into view in Chat, by its id: the window comes forward on Chat,
+    /// and the card is scrolled to once it is drawn, now or when the daemon sends it. The Cues
+    /// page's Show in chat and the tray's line call this; it never decides anything.
+    pub fn chat_reveal(self: &Rc<Self>, proposal_id: &str) {
+        timeline::reveal(&mut self.wire.borrow_mut().chat, proposal_id);
+        self.shell.show_page("chat");
+        self.shell.window.present();
+        self.render();
+        self.serve_reveal();
     }
 
     /// The page scrolls to a revealed card once it is laid out, and only then is the request

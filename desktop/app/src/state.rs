@@ -1,7 +1,7 @@
 //! Everything the window knows, in one place. Pages render from this; only the
 //! controller in `app.rs` changes it.
 
-use fermix_client::model::{ProviderRow, SetupState};
+use fermix_client::model::{Capabilities, ProviderRow, SetupState};
 use fermix_client::overview::Overview;
 use fermix_client::service::ServiceRead;
 use fermix_client::update::state::Updates;
@@ -26,6 +26,15 @@ pub struct Snapshot {
     pub protocol: u64,
     /// `overview.get`, when the daemon answered it.
     pub overview: Option<Overview>,
+    /// The methods `hello` lists. An optional feature whose method is missing has no surface.
+    pub capabilities: Capabilities,
+}
+
+impl Snapshot {
+    /// Whether the running daemon serves `method` (M60 cues L6).
+    pub fn has_method(&self, method: &str) -> bool {
+        self.capabilities.has_method(method)
+    }
 }
 
 /// The background service and the login registration, as last read.

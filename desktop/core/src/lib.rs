@@ -8,6 +8,7 @@ pub mod capped;
 pub mod chat;
 pub mod chat_wire;
 pub mod companion;
+pub mod cues;
 pub mod doctor;
 pub mod frame;
 pub mod greeting;

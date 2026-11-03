@@ -7,6 +7,7 @@ use crate::background_flow::{binding_file, login_entry};
 use crate::chat::ChatPage;
 use crate::chat_session::ChatWire;
 use crate::companion::Companion;
+use crate::cues::{CueHooks, CuesPane};
 use crate::daemon::{fermix_home, Daemon};
 use crate::doctor::DoctorPage;
 use crate::home::HomePage;
@@ -65,6 +66,7 @@ pub struct App {
     pub phone: RefCell<Phone>,
     /// Pages that read the daemon themselves while they are in view.
     pub integrations: Rc<IntegrationsPane>,
+    pub cues: Rc<CuesPane>,
     doctor: Rc<DoctorPage>,
     logs: Rc<LogsPage>,
     pub voice: VoicePage,
@@ -112,10 +114,19 @@ fn build_app(application: &adw::Application) -> Rc<App> {
     let providers = ProvidersPage::new();
     let toast = through_window(application, "win.toast");
     let integrations = IntegrationsPane::new(Daemon::new(), Rc::new(toast));
+    let cues = CuesPane::new(
+        Daemon::new(),
+        CueHooks {
+            toast: Rc::new(through_window(application, "win.toast")),
+            read_section: Rc::new(through_window(application, "win.section-read")),
+            page: Rc::new(through_window(application, "win.page")),
+        },
+    );
     let settings = SettingsPage::new(
         providers.root.upcast_ref(),
         &providers.page,
         &integrations.page,
+        cues.clone(),
     );
     let doctor = DoctorPage::new(
         Daemon::new(),
@@ -147,6 +158,7 @@ fn build_app(application: &adw::Application) -> Rc<App> {
         assistant: RefCell::default(),
         phone: RefCell::default(),
         integrations,
+        cues,
         doctor,
         logs,
         voice,
@@ -180,6 +192,7 @@ fn start(app: &Rc<App>, hidden: bool) {
     app.state.borrow_mut().background.opens_at_login = opens_at_login;
     app.load_updates();
     install_actions(app);
+    app.wire_cues();
     follow_visible_page(app);
     mark_read_when_active(app);
     keep_alive_with_window(app);
@@ -231,6 +244,8 @@ impl App {
         self.render_assistant();
         self.show_tray();
         self.redraw_update_dialog();
+        // Last, with nothing borrowed: a route away redraws through the window's own signals.
+        self.leave_shut_cues();
     }
 
     /// Re-reads the daemon and redraws. A failure is a state, never an error dialog.
@@ -267,6 +282,7 @@ impl App {
         if let Some(pid) = pid {
             self.follow_daemon_process(pid).await;
             self.read_about_you().await;
+            self.read_cues().await;
         }
     }
 
@@ -392,6 +408,7 @@ fn connection_from(answer: Result<Read, CallError>) -> Connection {
         overview: overview
             .inspect_err(|e| glib::g_warning!("fermix", "overview.get failed: {e:?}"))
             .ok(),
+        capabilities: hello.capabilities,
     }))
 }
 

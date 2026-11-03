@@ -35,6 +35,7 @@ fn facts<'a>(daemon: Daemon<'a>, switch: &'a BackgroundSwitch) -> TrayFacts<'a> 
         background: switch,
         update: "Check for Updates…".into(),
         restart_pending: false,
+        proposals_waiting: 0,
     }
 }
 
@@ -309,5 +310,86 @@ fn an_installed_update_still_running_old_code_asks_for_the_restart() {
         tray_view(&down).status,
         "Not running",
         "a daemon that is down says so first"
+    );
+}
+
+#[test]
+fn a_waiting_proposal_badges_the_mark_and_its_line_opens_chat() {
+    let ready = state("ready", false);
+    let switch = background(true, true);
+    let up = Daemon::Up {
+        state: &ready,
+        uptime_ms: Some(60_000),
+    };
+    let mut one = facts(up, &switch);
+    one.proposals_waiting = 1;
+    let view = tray_view(&one);
+    assert_eq!(view.glyph, Glyph::Attention);
+    assert_eq!(view.status, "A task is waiting for your decision");
+    let Row::Item(line) = &view.rows[0] else {
+        panic!("the top line opens Chat: {:?}", view.rows[0]);
+    };
+    assert_eq!(line.command, Command::ShowWaiting);
+    assert_eq!(line.label, view.status);
+    assert!(line.enabled && line.checked.is_none());
+    assert!(Command::ShowWaiting.needs_window());
+    one.proposals_waiting = 3;
+    assert_eq!(
+        tray_view(&one).status,
+        "3 tasks are waiting for your decision"
+    );
+    one.proposals_waiting = 0;
+    let none = tray_view(&one);
+    assert!(
+        items(&none.rows)
+            .iter()
+            .all(|i| i.command != Command::ShowWaiting),
+        "no line while nothing waits"
+    );
+    assert!(matches!(none.rows[0], Row::Status(_)));
+}
+
+#[test]
+fn a_waiting_proposal_ranks_under_a_daemon_down_and_over_the_rest() {
+    let switch = background(true, true);
+    let not_running = DaemonProblem::NotRunning;
+    let mut down = facts(Daemon::Down(&not_running), &switch);
+    down.proposals_waiting = 2;
+    let view = tray_view(&down);
+    assert_eq!(
+        view.status, "Not running",
+        "a daemon that is down says so first"
+    );
+    assert!(items(&view.rows)
+        .iter()
+        .all(|i| i.command != Command::ShowWaiting));
+    let ready = state("ready", false);
+    let mut updated = facts(
+        Daemon::Up {
+            state: &ready,
+            uptime_ms: Some(60_000),
+        },
+        &switch,
+    );
+    updated.restart_pending = true;
+    updated.proposals_waiting = 1;
+    assert_eq!(
+        tray_view(&updated).status,
+        "A task is waiting for your decision",
+        "over the restart to finish updating"
+    );
+    let setup = state("setup_required", true);
+    let mut unfinished = facts(
+        Daemon::Up {
+            state: &setup,
+            uptime_ms: Some(60_000),
+        },
+        &switch,
+    );
+    unfinished.proposals_waiting = 1;
+    assert_eq!(
+        tray_view(&unfinished).status,
+        "A task is waiting for your decision",
+        "over setup or a restart"
     );
 }

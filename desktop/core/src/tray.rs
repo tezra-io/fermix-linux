@@ -62,6 +62,9 @@ pub struct TrayFacts<'a> {
     pub update: String,
     /// An installed update waits for Fermix to restart (M38 §9.2).
     pub restart_pending: bool,
+    /// Cue proposals waiting for the owner's decision, from `cues.status` while the Cues gate
+    /// holds (M60 cues §5.4); 0 otherwise. Never read from Chat.
+    pub proposals_waiting: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +81,8 @@ pub enum Command {
     ToggleBackground,
     /// Check for Updates…, or the update a check found: the dialog, in the window.
     Update,
+    /// Chat, at the oldest proposal waiting. It only opens Chat; it never decides.
+    ShowWaiting,
     Quit,
 }
 
@@ -93,6 +98,7 @@ impl Command {
                 | Command::Restart
                 | Command::ToggleBackground
                 | Command::Update
+                | Command::ShowWaiting
         )
     }
 }
@@ -122,9 +128,18 @@ pub struct TrayView {
 }
 
 pub fn tray_view(facts: &TrayFacts) -> TrayView {
-    let (glyph, status) = condition(&facts.daemon, facts.restart_pending);
+    let waiting = waiting(&facts.daemon, facts.proposals_waiting);
+    let (glyph, status) = match &waiting {
+        Some(line) => (Glyph::Attention, line.clone()),
+        None => condition(&facts.daemon, facts.restart_pending),
+    };
+    // While a proposal waits, the top line says so and opens Chat at it.
+    let top = match waiting {
+        Some(line) => plain(Command::ShowWaiting, &line, true),
+        None => Row::Status(status.clone()),
+    };
     let rows = vec![
-        Row::Status(status.clone()),
+        top,
         Row::Separator,
         plain(Command::OpenFermix, "Open Fermix", true),
         plain(Command::Settings, "Settings", true),
@@ -147,6 +162,18 @@ pub fn tray_view(facts: &TrayFacts) -> TrayView {
         status,
         rows,
     }
+}
+
+/// The line for proposals waiting, in Fermix's words alone: only while the daemon runs, under a
+/// daemon that is down and over everything else (M60 cues §5.4).
+fn waiting(daemon: &Daemon, count: u64) -> Option<String> {
+    if count == 0 || !matches!(daemon, Daemon::Up { .. }) {
+        return None;
+    }
+    Some(match count {
+        1 => "A task is waiting for your decision".to_owned(),
+        n => format!("{n} tasks are waiting for your decision"),
+    })
 }
 
 /// The daemon's condition first; while it runs, an installed update waiting

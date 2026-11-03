@@ -4,11 +4,11 @@
 use fermix_client::management::{decode_response, CallError, Refusal};
 use fermix_client::model::{ChannelRow, ModelPage, SetupState};
 use fermix_client::settings::{
-    channel_word, choice_items, list_with, list_without, matching_panes, number_answer,
-    number_view, offered_channels, pane, placeholder, read_failure, sections_for, switch_key,
-    text_answer, unlisted_models, value_width, with_listing, ApplyResult, Kind, ReloadResult, Row,
-    SectionRows, Sections, FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS, MODELS_UNLISTED, PANES,
-    WIDEST_VALUE_CHARS,
+    channel_word, choice_items, list_prompt, list_with, list_without, matching_panes,
+    number_answer, number_view, offered_channels, pane, placeholder, read_failure, sections_for,
+    switch_key, text_answer, unlisted_models, value_width, with_listing, ApplyResult, Kind,
+    ReloadResult, Row, SectionRows, Sections, FIELD_CHARS, GROUPS, KEPT_VALUE_CHARS,
+    MODELS_UNLISTED, PANES, WIDEST_VALUE_CHARS,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -85,11 +85,11 @@ fn sections_keep_the_daemons_order_and_linux_drops_computer_history() {
 }
 
 #[test]
-fn the_fifteen_panes_sit_in_four_groups() {
-    assert_eq!(PANES.len(), 15);
+fn the_sixteen_panes_sit_in_four_groups() {
+    assert_eq!(PANES.len(), 16);
     assert_eq!(GROUPS.len(), 4);
     let grouped: usize = GROUPS.iter().map(|(_, panes)| panes.len()).sum();
-    assert_eq!(grouped, 15);
+    assert_eq!(grouped, 16);
     for (_, panes) in GROUPS {
         for slug in panes {
             assert!(pane(slug).is_some(), "{slug} is a pane");
@@ -221,6 +221,27 @@ fn an_empty_text_shows_the_inherit_label_or_not_set() {
     assert_eq!(placeholder(&row(json!({"value": ""}))), "Not set");
 }
 
+/// A row's example is what its empty field shows (M60 cues, change 2): a text row's in place of
+/// Not set, a suggestion row's ahead of the inherit option's label, a list row's in place of Add.
+#[test]
+fn an_empty_field_shows_the_rows_example_first() {
+    let example = row(json!({"value": "", "example": "wss://news.example.com/stream"}));
+    assert_eq!(placeholder(&example), "wss://news.example.com/stream");
+    let inherit = row(json!({
+        "value": "", "kind": "choice", "suggestions": true, "example": "gpt-5-mini",
+        "options": [{"value": "", "label": "Same as main model", "hint": null, "disabled": false}]
+    }));
+    assert_eq!(placeholder(&inherit), "gpt-5-mini");
+    let list = row(json!({"kind": "list", "value": [], "example": "message"}));
+    assert_eq!(list_prompt(&list), "message");
+    assert_eq!(
+        list_prompt(&row(json!({"kind": "list", "value": []}))),
+        "Add"
+    );
+    let blank = row(json!({"value": "", "example": ""}));
+    assert_eq!(placeholder(&blank), "Not set", "an empty example is none");
+}
+
 #[test]
 fn text_is_sent_only_when_it_changed_and_blank_clears_it() {
     let r = row(json!({"value": "Fermix Notetaker"}));
@@ -316,19 +337,19 @@ fn search_finds_panes_by_title_and_by_rows_already_read() {
     let memory: SectionRows = decode("settings_get_memory");
     let loaded = HashMap::from([(memory.id.clone(), memory)]);
     assert_eq!(
-        matching_panes("sand", &sections.sections, &loaded),
+        matching_panes("sand", &sections.sections, &loaded, &[]),
         ["sandbox"]
     );
     assert_eq!(
-        matching_panes("compact", &sections.sections, &loaded),
+        matching_panes("compact", &sections.sections, &loaded, &[]),
         ["memory"]
     );
     assert_eq!(
-        matching_panes("TELEGRAM", &sections.sections, &loaded),
+        matching_panes("TELEGRAM", &sections.sections, &loaded, &[]),
         ["channels"]
     );
-    assert!(matching_panes("  ", &sections.sections, &loaded).len() == PANES.len());
-    assert!(matching_panes("zzz", &sections.sections, &loaded).is_empty());
+    assert!(matching_panes("  ", &sections.sections, &loaded, &[]).len() == PANES.len());
+    assert!(matching_panes("zzz", &sections.sections, &loaded, &[]).is_empty());
 }
 
 #[test]
@@ -407,6 +428,7 @@ fn a_section_that_could_not_be_read_says_why() {
         sentence: "Fermix has no settings section called voices.".into(),
         field: None,
         reason: None,
+        requires: None,
     });
     assert_eq!(
         read_failure(&refused),

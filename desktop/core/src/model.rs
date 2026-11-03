@@ -198,6 +198,15 @@ pub struct Capabilities {
     pub minimum_versions: HashMap<String, u64>,
 }
 
+impl Capabilities {
+    /// Whether this daemon serves `method`. An optional feature whose method is missing has no
+    /// surface at all; only a method every screen needs makes the daemon too old (M60 cues L6).
+    pub fn has_method(&self, method: &str) -> bool {
+        assert!(!method.is_empty(), "a method is asked about by name");
+        self.methods.iter().any(|m| m == method)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EngineIdentity {
     pub product_version: String,

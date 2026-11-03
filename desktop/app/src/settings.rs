@@ -1,17 +1,19 @@
-//! Settings: fifteen panes in four groups (M38 §5.7), a searchable pane list
+//! Settings: sixteen panes in four groups (M38 §5.7), a searchable pane list
 //! that replaces the sidebar, and the banner for a settings file changed or
 //! broken outside Fermix. Most panes are the daemon's sections drawn by
 //! `descriptor.rs`; Providers, Channels and Permissions add rows of their own,
-//! and Updates is the app's own.
+//! and Updates is the app's own. Cues exists only while the daemon serves it.
 
 use crate::capability_panes::{ComputerPane, Facts, MeetingsPane, Running, MEETINGS_SIGN_IN};
 use crate::channels::ChannelsPane;
+use crate::cues::CuesPane;
 use crate::descriptor::{Drawn, SectionView};
-use crate::state::{Connection, State};
+use crate::state::{Connection, Snapshot, State};
 use crate::status::{down_view, waiting, DownPage};
 use crate::updates_pane::UpdatesPane;
 use adw::prelude::*;
 use fermix_client::capabilities::{ComputerPermissions, COMPUTER_SIDECAR, MEETBOT};
+use fermix_client::cues::view::{PANE as CUES, SECTION as CUES_SECTION};
 use fermix_client::ledger::{MICROPHONE_DETAIL, MICROPHONE_HEADLINE, PLATFORM_FACT, RIGHTS};
 use fermix_client::mobile::{MobileDevices, MobileStatus, Remote};
 use fermix_client::model::DetectRow;
@@ -143,6 +145,7 @@ pub struct SettingsPage {
     pub list: gtk::ListBox,
     pub banner: adw::Banner,
     pub channels: ChannelsPane,
+    cues: Rc<CuesPane>,
     meetings: MeetingsPane,
     computer: ComputerPane,
     updates: UpdatesPane,
@@ -156,6 +159,8 @@ pub struct SettingsPage {
     pub dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>,
     /// Pane slugs the search leaves visible.
     visible: Rc<RefCell<Vec<&'static str>>>,
+    /// Pane slugs whose feature the daemon does not serve now; no route or search reaches them.
+    hidden: Rc<RefCell<Vec<&'static str>>>,
     down: DownPage,
     /// Fermix is down, so panes that need it show the down page instead.
     down_shown: Rc<Cell<bool>>,
@@ -163,11 +168,12 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     /// `providers` is the Providers pane built by `providers.rs`, and `providers_page` its list;
-    /// `integrations` is the pane `integrations.rs` builds and feeds itself.
+    /// `integrations` and `cues` are the panes `integrations.rs` and `cues.rs` build and feed.
     pub fn new(
         providers: &gtk::Widget,
         providers_page: &adw::PreferencesPage,
         integrations: &adw::PreferencesPage,
+        cues: Rc<CuesPane>,
     ) -> SettingsPage {
         let panes = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -177,6 +183,7 @@ impl SettingsPage {
         panes.add_named(&channels.page, Some("channels"));
         panes.add_named(&permissions_page(), Some("permissions"));
         panes.add_named(integrations, Some("integrations"));
+        panes.add_named(&cues.page, Some(CUES));
         let meetings = MeetingsPane::new();
         panes.add_named(&meetings.page, Some("meetings"));
         let computer = ComputerPane::new();
@@ -207,7 +214,9 @@ impl SettingsPage {
         let (shown, stack) = (down_shown.clone(), root.clone());
         panes.connect_visible_child_name_notify(move |panes| show_root(&stack, panes, shown.get()));
         let visible = Rc::new(RefCell::new(PANES.iter().map(|p| p.slug).collect()));
-        let (sidebar, list, search) = sidebar(&visible);
+        // Hidden until the daemon is known to serve it.
+        let hidden = Rc::new(RefCell::new(vec![CUES]));
+        let (sidebar, list, search) = sidebar(&visible, &hidden);
         SettingsPage {
             root,
             panes,
@@ -215,6 +224,7 @@ impl SettingsPage {
             list,
             banner,
             channels,
+            cues,
             meetings,
             computer,
             updates,
@@ -224,6 +234,7 @@ impl SettingsPage {
             views: RefCell::default(),
             dialog_views: Rc::default(),
             visible,
+            hidden,
             down,
             down_shown,
         }
@@ -250,8 +261,28 @@ impl SettingsPage {
             view.show(data.drawn(&view.id, locked));
         }
         self.channels.render(&snapshot.state.channels, data, locked);
+        self.render_cues(snapshot, data, locked);
         self.render_capabilities(data, locked, snapshot.architecture.as_deref());
         self.show_banner(config, data.unreadable.as_deref());
+    }
+
+    /// Cues shows in the list only while the daemon serves it (M60 cues §4.1).
+    fn render_cues(&self, snapshot: &Snapshot, data: &SettingsData, locked: bool) {
+        let open = self
+            .cues
+            .available(&snapshot.capabilities, data.sections.as_deref());
+        let hidden: Vec<&'static str> = if open { Vec::new() } else { vec![CUES] };
+        if *self.hidden.borrow() != hidden {
+            *self.hidden.borrow_mut() = hidden;
+            self.list.invalidate_filter();
+        }
+        self.cues
+            .render_settings(data.rows.get(CUES_SECTION), locked);
+    }
+
+    /// The panes no route or search reaches now.
+    pub fn hidden(&self) -> Vec<&'static str> {
+        self.hidden.borrow().clone()
     }
 
     fn render_capabilities(&self, data: &SettingsData, locked: bool, architecture: Option<&str>) {
@@ -309,6 +340,9 @@ impl SettingsPage {
         }
         views.push(self.channels.editors_view(sections));
         views.extend(self.providers_views(sections));
+        // Drawn whether or not this daemon publishes it: the pane is hidden while it does not,
+        // and shows once a restarted daemon does.
+        views.push(self.cues.view.clone());
         *self.views.borrow_mut() = views;
     }
 
@@ -419,7 +453,10 @@ fn permissions_page() -> adw::PreferencesPage {
 /// The pane list: search, then each group's panes under its heading. The way
 /// back to Fermix is a button in the sidebar's header (shell), so it never
 /// scrolls away.
-fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox, gtk::SearchEntry) {
+fn sidebar(
+    visible: &Rc<RefCell<Vec<&'static str>>>,
+    hidden: &Rc<RefCell<Vec<&'static str>>>,
+) -> (gtk::Box, gtk::ListBox, gtk::SearchEntry) {
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search settings")
         .margin_start(12)
@@ -437,8 +474,8 @@ fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox,
             list.append(&nav_row(pane.slug, pane.title, pane.icon));
         }
     }
-    let shown = visible.clone();
-    list.set_filter_func(move |row| row_visible(row, &shown.borrow()));
+    let (shown, hidden) = (visible.clone(), hidden.clone());
+    list.set_filter_func(move |row| row_visible(row, &shown.borrow(), &hidden.borrow()));
     wire_sidebar(&list, &search);
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -451,14 +488,15 @@ fn sidebar(visible: &Rc<RefCell<Vec<&'static str>>>) -> (gtk::Box, gtk::ListBox,
     (sidebar, list, search)
 }
 
-fn row_visible(row: &gtk::ListBoxRow, visible: &[&'static str]) -> bool {
+fn row_visible(row: &gtk::ListBoxRow, visible: &[&'static str], hidden: &[&'static str]) -> bool {
+    let shown = |slug: &str| visible.contains(&slug) && !hidden.contains(&slug);
     let name = row.widget_name();
     match name.strip_prefix("group:") {
         Some(group) => GROUPS
             .iter()
             .find(|(g, _)| *g == group)
-            .is_some_and(|(_, slugs)| slugs.iter().any(|s| visible.contains(s))),
-        None => visible.contains(&name.as_str()),
+            .is_some_and(|(_, slugs)| slugs.iter().any(|s| shown(s))),
+        None => shown(name.as_str()),
     }
 }
 

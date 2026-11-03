@@ -43,6 +43,9 @@ pub struct Refusal {
     pub field: Option<String>,
     /// The daemon's reason word (`details.reason`), where the code has several.
     pub reason: Option<String>,
+    /// The protocol version a `method_not_found` names (`details.requires`): the method exists,
+    /// and this session's version is too old for it. None for a method the daemon does not have.
+    pub requires: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -271,11 +274,13 @@ fn refusal(error: &Value) -> Result<Refusal, CallError> {
     let specific = error.pointer("/details/sentence").and_then(Value::as_str);
     let field = error.pointer("/details/field").and_then(Value::as_str);
     let reason = error.pointer("/details/reason").and_then(Value::as_str);
+    let requires = error.pointer("/details/requires").and_then(Value::as_u64);
     Ok(Refusal {
         code: code.to_owned(),
         sentence: specific.unwrap_or(message).to_owned(),
         field: field.map(str::to_owned),
         reason: reason.map(str::to_owned),
+        requires,
     })
 }
 
