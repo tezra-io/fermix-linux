@@ -17,7 +17,8 @@ pub const TITLE: &str = "A task wants to act";
 pub const DENY: &str = "Deny";
 pub const CONFIRM: &str = "Confirm";
 /// A follow-up's answers: Skip runs nothing, Run starts it once, and Always allow starts it and
-/// lets its later items run with no card.
+/// lets its later items run with no card, but only while the follow-up and what sets it off still
+/// match what the card showed (PROTOCOL.md "Proposals").
 pub const SKIP: &str = "Skip";
 pub const RUN: &str = "Run";
 pub const ALWAYS_ALLOW: &str = "Always allow";
@@ -215,6 +216,45 @@ fn item_facts(cue: &Cue) -> Vec<String> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// One block of outside text on a card: a header in Fermix's words naming where it came from,
+/// the item's labelled fields where it has any, and the text as written. `code` sets it in the
+/// monospace face.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutsidePart {
+    pub header: String,
+    pub facts: Option<String>,
+    pub text: String,
+    pub code: bool,
+}
+
+/// What a card draws as outside text between what it asks and its footer, in order: a call's
+/// arguments, the filter's reason, and the item. Each is drawn only as outside text, never as one
+/// of Fermix's lines (PROTOCOL.md "Proposals": `outside` is never Fermix's words).
+pub fn outside_parts(card: &Card, clock: impl Fn(&str) -> Option<String>) -> Vec<OutsidePart> {
+    let call = match &card.ask {
+        CardAsk::Call { call } => Some(OutsidePart {
+            header: CALL.into(),
+            facts: None,
+            text: call.clone(),
+            code: true,
+        }),
+        CardAsk::FollowUp { .. } => None,
+    };
+    let reason = card.reason.as_ref().map(|reason| OutsidePart {
+        header: REASON.into(),
+        facts: None,
+        text: reason.clone(),
+        code: false,
+    });
+    let item = card.item.as_ref().map(|item| OutsidePart {
+        header: item_header(item, &clock),
+        facts: joined_facts(item),
+        text: item.text.clone(),
+        code: false,
+    });
+    [call, reason, item].into_iter().flatten().collect()
 }
 
 /// "Waits until 14:32", the time as `clock` shows it, or as the daemon wrote it where `clock`

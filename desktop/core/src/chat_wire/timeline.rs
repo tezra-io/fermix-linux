@@ -822,7 +822,8 @@ fn refused(chat: &mut Chat, error: &ServerError) {
 
 /// Ends the delivery of the request `client_msg_id` names, if any. One naming a proposal's answer
 /// refuses that card, in `sentence`, until the daemon sends the card again, and is not the chat's
-/// failure; any other is, in `reported`.
+/// failure; any other is, in `reported`. A card `proposal_resolved` already closed stays the
+/// record it is: the refusal changes nothing on it.
 fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, sentence: String) {
     let answered = client_msg_id.and_then(|id| {
         chat.pending
@@ -837,11 +838,11 @@ fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, senten
         chat.last_error = Some(reported);
         return;
     };
-    let held = chat
-        .proposals
-        .iter_mut()
-        .find(|held| held.proposal.proposal_id == proposal_id);
-    if let Some(held) = held {
+    let open = chat.proposals.iter_mut().find(|held| {
+        held.proposal.proposal_id == proposal_id
+            && !matches!(held.standing, Standing::Resolved { .. })
+    });
+    if let Some(held) = open {
         held.standing = Standing::Refused { sentence };
     }
 }

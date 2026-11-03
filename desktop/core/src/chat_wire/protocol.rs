@@ -962,10 +962,14 @@ impl Ask {
     }
 }
 
+/// The one `follow_up.asks` this build reads (PROTOCOL.md "Proposals"): run the follow-up once,
+/// now, which is what its card's answers mean.
+pub const FOLLOW_UP_RUNS: &str = "run";
+
 /// A follow-up as its card names it: the owner's own words for it, and the tools it may use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FollowUp {
-    /// The daemon's word for what is asked: `run` today.
+    /// The daemon's word for what is asked. `FOLLOW_UP_RUNS` is the one this build reads.
     pub asks: String,
     /// Whether the card takes `always_allow`.
     #[serde(default)]
@@ -1011,7 +1015,8 @@ impl TryFrom<RawProposal> for Proposal {
 
     /// The schema's `oneOf`: a call with `mandate`, `tool` and `outside.args_text`, or a
     /// `follow_up`, never both. A call whose arguments are blank is refused too: its card would
-    /// ask the owner to confirm a call it shows nothing of.
+    /// ask the owner to confirm a call it shows nothing of. So is a follow-up that asks anything
+    /// but `FOLLOW_UP_RUNS`: its card's answers would mean what it does not ask.
     fn try_from(raw: RawProposal) -> Result<Self, Self::Error> {
         let RawOutside {
             args_text,
@@ -1026,7 +1031,10 @@ impl TryFrom<RawProposal> for Proposal {
                 tool,
                 args_text,
             },
-            (None, None, _, Some(follow_up)) => Ask::FollowUp(follow_up),
+            (None, None, _, Some(follow_up)) if follow_up.asks == FOLLOW_UP_RUNS => {
+                Ask::FollowUp(follow_up)
+            }
+            (None, None, _, Some(_)) => return Err("a follow-up that asks no run".into()),
             _ => return Err("neither a mandate's call nor a follow-up".into()),
         };
         Ok(Proposal {

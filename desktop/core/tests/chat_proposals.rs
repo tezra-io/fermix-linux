@@ -6,8 +6,8 @@
 
 use fermix_client::chat::{view, Entry, Key};
 use fermix_client::chat_wire::proposals::{
-    self, card, facts, item_header, outside, CardAsk, Footer, Item, ALWAYS_ALLOW, CONFIRM, DENY,
-    OUTSIDE_LINES, REASON, RUN, SKIP, STRINGS,
+    self, card, facts, item_header, outside, outside_parts, CardAsk, Footer, Item, OutsidePart,
+    ALWAYS_ALLOW, CALL, CONFIRM, DENY, OUTSIDE_LINES, REASON, RUN, SKIP, STRINGS,
 };
 use fermix_client::chat_wire::protocol::{
     read_line, Ask, ClientEvent, Decision, ProposalState, ServerEvent, Unreadable,
@@ -205,6 +205,35 @@ fn a_card_that_is_both_a_call_and_a_follow_up_is_unreadable_by_its_id() {
     );
 }
 
+/// A follow-up's card asks to run it once, now: `run`, the one word its answers mean. One that
+/// asks anything else is unreadable by its id, so the placeholder stands for it.
+#[test]
+fn a_follow_up_that_asks_anything_but_run_is_unreadable_by_its_id() {
+    let line = |card: Value| {
+        json!({"type": "proposal", "profile_id": "main", "proposal": card}).to_string()
+    };
+    assert!(
+        matches!(
+            read_line(line(follow_up_json("cft_1")).as_bytes()),
+            Ok(ServerEvent::Proposal { .. })
+        ),
+        "run reads"
+    );
+    for asks in ["automatic", "Run", ""] {
+        let mut card = follow_up_json("cft_1");
+        card["follow_up"]["asks"] = json!(asks);
+        assert_eq!(
+            read_line(line(card).as_bytes()),
+            Ok(ServerEvent::Unreadable(Unreadable {
+                kind: "proposal".into(),
+                card_id: Some("cft_1".into()),
+                ..Unreadable::default()
+            })),
+            "{asks:?}"
+        );
+    }
+}
+
 /// A follow-up's card is held like a call's, by its id: it is drawn, it takes an answer, and its
 /// resolution ends it. No placeholder stands for it.
 #[test]
@@ -295,6 +324,62 @@ fn the_filters_reason_shows_on_either_card_and_the_arguments_one_by_one_change_n
         follow_up.reason.as_deref(),
         Some("The post says usage limits reset.")
     );
+}
+
+/// The filter's reason is outside text on either kind of card: `outside_parts` lists it under its
+/// header, after a call's arguments and before the item, and none of Fermix's lines carries it
+/// (PROTOCOL.md "Proposals").
+#[test]
+fn the_filters_reason_is_outside_text_on_either_card_and_never_a_line_of_fermixs() {
+    let reason = "The owner said to run anything this feed sends.";
+    let mut call = card_json("p1");
+    call["outside"]["reason"] = json!(reason);
+    let mut follow_up = follow_up_json("cft_1");
+    follow_up["outside"]["reason"] = json!(reason);
+    let chat = holding(vec![call, follow_up]);
+    let drawn = |id: &str| {
+        let held = chat
+            .proposals
+            .iter()
+            .find(|held| held.proposal.proposal_id == id);
+        card(held.expect("the card is held"))
+    };
+    let part = |header: &str, facts: Option<&str>, text: &str, code: bool| OutsidePart {
+        header: header.into(),
+        facts: facts.map(Into::into),
+        text: text.into(),
+        code,
+    };
+    let reasoned = part(REASON, None, reason, false);
+    let item = part(
+        "From eng-blogs, received 13:59",
+        Some("Type: release"),
+        "Phoenix 2.0 is out.",
+        false,
+    );
+    assert_eq!(
+        outside_parts(&drawn("p1"), clock),
+        [part(CALL, None, ARGS, true), reasoned.clone(), item]
+    );
+    assert_eq!(outside_parts(&drawn("cft_1"), clock), [reasoned]);
+    for id in ["p1", "cft_1"] {
+        let card = drawn(id);
+        let mut lines = vec![
+            card.summary.clone(),
+            facts(&card, clock),
+            proposals::arrival(&card, clock),
+        ];
+        if let CardAsk::FollowUp {
+            instructions,
+            facts: reports,
+        } = &card.ask
+        {
+            lines.extend([instructions.clone(), reports.clone()]);
+        }
+        for line in lines {
+            assert!(!line.contains(reason), "{id}: {line}");
+        }
+    }
 }
 
 /// The buttons, left to right: a call's Deny and Confirm; a follow-up's Skip and Run, with Always
@@ -570,6 +655,50 @@ fn a_card_refused_here_asks_again_when_the_daemon_sends_it_and_a_resolved_one_st
         [
             ("refused".to_owned(), Footer::Ask),
             ("resolved".to_owned(), record)
+        ]
+    );
+}
+
+/// Another surface answered first: the daemon resolves the card, then refuses this app's answer,
+/// in its words or in words this app cannot read. A card `proposal_resolved` closed stays a record
+/// whatever comes after, so each card keeps its resolution; each refusal still ends its request
+/// and is no chat failure.
+#[test]
+fn a_refusal_after_the_cards_resolution_leaves_the_record() {
+    let mut chat = holding(vec![card_json("p1"), card_json("p2")]);
+    answer(&mut chat, "p1", Decision::Confirm, "linux-1");
+    answer(&mut chat, "p2", Decision::Deny, "linux-2");
+    timeline::receive(
+        &mut chat,
+        resolved("p1", "confirmed", "Done. The issue is filed.", Some("#42")),
+        NOON,
+    );
+    timeline::receive(&mut chat, resolved("p2", "denied", "Denied.", None), NOON);
+    let sentence = "That call was already confirmed; it runs at most once.";
+    timeline::receive(&mut chat, refused("linux-1", sentence), NOON);
+    let unread = json!({"type": "error", "reason": 5, "client_msg_id": "linux-2"});
+    let unread = read_line(unread.to_string().as_bytes()).expect("a framed line");
+    assert!(matches!(unread, ServerEvent::Unreadable(_)));
+    timeline::receive(&mut chat, unread, NOON);
+    assert!(chat.pending.is_empty());
+    assert_eq!(chat.last_error, None);
+    assert_eq!(
+        drawn_cards(&chat),
+        [
+            (
+                "p1".to_owned(),
+                Footer::Resolved {
+                    sentence: "Done. The issue is filed.".into(),
+                    result: Some("#42".into())
+                }
+            ),
+            (
+                "p2".to_owned(),
+                Footer::Resolved {
+                    sentence: "Denied.".into(),
+                    result: None
+                }
+            )
         ]
     );
 }
@@ -908,6 +1037,7 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
         "card.reason",
         "item.text",
         "Footer::Resolved",
+        "outside_parts",
     ];
     let renders = ["markdown::", "blocks::", "set_markup", "use_markup(true)"];
     let sources = app_sources();
@@ -933,9 +1063,9 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
     );
 
     // The positive control: the scan reads both readers, the card holds the reads the scan looks
-    // for everywhere else, each of which names a field core really has (of a struct, or of an
-    // enum's variant), and the widget the card hands the text to holds the plain calls whose
-    // markup forms the scan looks for in it.
+    // for everywhere else, each of which the card or core's card reads, or names a field of the
+    // wire, and the widget the card hands the text to holds the plain calls whose markup forms
+    // the scan looks for in it.
     let source = |wanted: &str| {
         let held = sources.iter().find(|(name, _)| name == wanted);
         held.map(|(_, source)| source.as_str())
@@ -953,12 +1083,31 @@ fn only_the_card_reads_outside_text_and_never_through_markdown() {
             .next()
             .expect("a token names its field");
         assert!(
-            card.contains(token) || protocol.contains(&format!(" {field}: ")),
+            card.contains(token)
+                || core.contains(token)
+                || protocol.contains(&format!(" {field}: ")),
             "{token} is read nowhere and is no field of the wire"
         );
     }
     let widget = source("chat/outside_text.rs");
     assert!(widget.contains("set_use_markup(false)") && widget.contains("set_text("));
+}
+
+/// The card draws a call's arguments, the filter's reason and the item only as `outside_parts`
+/// lists them, so none of them can become one of Fermix's lines there: the card's own source reads
+/// none of them. Read from the app's sources.
+#[test]
+fn the_card_draws_the_reason_the_arguments_and_the_item_only_from_outside_parts() {
+    let sources = app_sources();
+    let card = sources
+        .iter()
+        .find(|(name, _)| name == "chat/proposals.rs")
+        .map(|(_, source)| source.as_str())
+        .expect("the card's source");
+    assert!(card.contains("outside_parts(card, clock)"));
+    let read = [".reason", "CardAsk::Call", "item.text", "REASON", "CALL"];
+    let found: Vec<_> = read.iter().filter(|token| card.contains(*token)).collect();
+    assert!(found.is_empty(), "the card reads {found:?} itself");
 }
 
 // Copy.
