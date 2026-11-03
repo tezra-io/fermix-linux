@@ -5,7 +5,7 @@
 
 use crate::chat_link::Link;
 use fermix_client::chat_wire::grants::{Answer, Answered, Grants, Outcome, Ticket};
-use fermix_client::chat_wire::protocol::{loggable_id, ClientEvent, ServerEvent};
+use fermix_client::chat_wire::protocol::{loggable_id, ClientEvent, LineTooLong, ServerEvent};
 use futures_channel::oneshot;
 use gtk::glib;
 use std::cell::RefCell;
@@ -108,8 +108,8 @@ impl Media {
         };
         for sender in senders {
             if sender.send(outcome.clone()).is_err() {
-                let r#ref = loggable_id(&r#ref);
-                glib::g_debug!("fermix", "a read of {ref} ended before its answer");
+                let id = loggable_id(&r#ref);
+                glib::g_debug!("fermix", "a read of {id} ended before its answer");
             }
         }
         true
@@ -127,8 +127,8 @@ impl Shared {
             return;
         };
         for event in events {
-            if let Err(e) = link.send(&event) {
-                glib::g_warning!("fermix", "a media event was not sent: {e:?}");
+            if let Err(LineTooLong(bytes)) = link.send(&event) {
+                glib::g_warning!("fermix", "a media event of {bytes} bytes was not sent");
             }
         }
     }
@@ -148,14 +148,14 @@ impl Drop for Hold {
 
 /// The ref and this app's words for what came of it, never the daemon's text.
 fn log_answer(answered: &Answered) {
-    let r#ref = loggable_id(&answered.r#ref);
+    let id = loggable_id(&answered.r#ref);
     if !answered.asked {
-        glib::g_warning!("fermix", "the daemon answered for {ref}, never asked for");
+        glib::g_warning!("fermix", "the daemon answered for {id}, never asked for");
     }
     match &answered.outcome {
-        Outcome::Granted(_) => glib::g_debug!("fermix", "{ref} is granted"),
-        Outcome::Missing => glib::g_debug!("fermix", "{ref} is not on this computer"),
-        Outcome::Failed(why) => glib::g_warning!("fermix", "{ref} cannot be read: {why}"),
+        Outcome::Granted(_) => glib::g_debug!("fermix", "{id} is granted"),
+        Outcome::Missing => glib::g_debug!("fermix", "{id} is not on this computer"),
+        Outcome::Failed(why) => glib::g_warning!("fermix", "{id} cannot be read: {why}"),
     }
 }
 
@@ -225,80 +225,180 @@ mod tests {
         });
     }
 
-    /// The files whose log lines speak of the chat's media and files.
-    const LOGGING: [(&str, &str); 6] = [
+    /// The files whose log lines speak of the chat's media, files, links, places and voice notes.
+    const LOGGING: [(&str, &str); 9] = [
         ("media_grants.rs", include_str!("media_grants.rs")),
         ("chat/entries.rs", include_str!("chat/entries.rs")),
+        ("chat/levels.rs", include_str!("chat/levels.rs")),
         ("chat/picture.rs", include_str!("chat/picture.rs")),
+        ("chat/places.rs", include_str!("chat/places.rs")),
+        ("chat/playback.rs", include_str!("chat/playback.rs")),
         ("chat/strip.rs", include_str!("chat/strip.rs")),
         ("chat/voice_chip.rs", include_str!("chat/voice_chip.rs")),
         ("chat/voice_note.rs", include_str!("chat/voice_note.rs")),
     ];
 
-    /// What a log call of these files never formats: a row's file name, a path, a link's
-    /// address, a toast's text, a GLib error's message, or a ref read straight from a row or a
-    /// chip, unbounded by `loggable_id`.
-    const UNLOGGED: [&str; 7] = [
+    /// What a log call of these files never formats: a row's file name (`.name`, `{name}`), a
+    /// path (`.display()`, `{path…}`), a link card's address, a toast's text, an error itself
+    /// (`{e}`, `{e:?}`, which print its message), or a ref that is not the bounded `id` (`{ref}`,
+    /// or one read straight from a row or a chip).
+    const UNLOGGED: [&str; 11] = [
         ".name",
+        "{name",
         ".display()",
+        "{path",
         "{opens}",
         "{text",
-        ".message()",
+        "{e}",
+        "{e:?}",
+        "{ref}",
         ".r#ref",
         "r#ref()",
     ];
 
+    /// What these files never read outside their tests: a GLib error's message and GStreamer's
+    /// debug text. Either can quote a path or an address, and reach a log line through a value.
+    const UNREAD: [&str; 2] = [".message()", ".debug()"];
+
+    /// One planted line for each token above, one whose format string holds a `)`, and one in
+    /// each kind of macro the scan reads beyond the first.
+    const PLANTED: [(&str, &str); 22] = [
+        (
+            r#"glib::g_warning!("fermix", "copying {} failed", file.name);"#,
+            ".name",
+        ),
+        (
+            r#"glib::g_warning!("fermix", "could not open {name}");"#,
+            "{name",
+        ),
+        (r#"glib::g_debug!("fermix", "at {path:?}");"#, "{path"),
+        (
+            r#"glib::g_debug!("fermix", "at {}", path.display());"#,
+            ".display()",
+        ),
+        (
+            r#"glib::g_warning!("fermix", "no web address: {opens}");"#,
+            "{opens}",
+        ),
+        (
+            r#"glib::g_warning!("fermix", "no toast {text:?}");"#,
+            "{text",
+        ),
+        (
+            r#"glib::g_warning!("fermix", "the link did not open: {e}");"#,
+            "{e}",
+        ),
+        (r#"glib::g_warning!("fermix", "not sent: {e:?}");"#, "{e:?}"),
+        (
+            r#"glib::g_debug!("fermix", "no thumbnail of {ref}");"#,
+            "{ref}",
+        ),
+        (
+            r#"glib::g_debug!("fermix", "{} opens", file.r#ref);"#,
+            ".r#ref",
+        ),
+        (
+            r#"glib::g_debug!("fermix", "{} plays", chip.r#ref());"#,
+            "r#ref()",
+        ),
+        (
+            r#"glib::g_debug!("fermix", "copied :) {}", file.name);"#,
+            ".name",
+        ),
+        (r#"let why = e.message().to_owned();"#, ".message()"),
+        (r#"let details = error.debug();"#, ".debug()"),
+        (r#"glib::g_critical!("fermix", "{}", file.name);"#, ".name"),
+        (r#"glib::g_message!("fermix", "{}", file.name);"#, ".name"),
+        (r#"glib::g_info!("fermix", "{}", file.name);"#, ".name"),
+        (r#"glib::g_error!("fermix", "{}", file.name);"#, ".name"),
+        (
+            r#"glib::g_log!("fermix", glib::LogLevel::Debug, "{}", file.name);"#,
+            ".name",
+        ),
+        (r#"println!("{}", file.name);"#, ".name"),
+        (r#"eprintln!("{}", file.name);"#, ".name"),
+        (r#"glib::g_warning!("fermix", "{}", file.r#ref);"#, ".r#ref"),
+    ];
+
+    /// A source without its tests.
+    fn shipped(source: &str) -> &str {
+        source.split("#[cfg(test)]").next().unwrap_or(source)
+    }
+
     /// Each log call in `source`, from its macro's name to its closing parenthesis.
     fn log_calls(source: &str) -> Vec<&str> {
-        let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
         let macros = [
             "g_warning!(",
             "g_debug!(",
             "g_critical!(",
             "g_message!(",
             "g_info!(",
+            "g_error!(",
+            "g_log!(",
+            "println!(",
         ];
         macros
             .iter()
-            .flat_map(|name| shipped.match_indices(name))
+            .flat_map(|name| source.match_indices(name))
             .map(|(start, _)| {
-                let rest = &shipped[start..];
+                let rest = &source[start..];
                 &rest[..call_end(rest)]
             })
             .collect()
     }
 
-    /// Where the macro call opening `rest` closes: its parenthesis matched, so a call that is a
-    /// match arm's value, ending in `),`, ends there too.
+    /// Where the macro call opening `rest` closes: its parenthesis matched outside string
+    /// literals, so a `)` in the format string does not end it, and a call that is a match arm's
+    /// value, ending in `),`, ends there too.
     fn call_end(rest: &str) -> usize {
-        let mut depth = 0i32;
-        rest.char_indices()
-            .find(|&(_, c)| {
-                depth += i32::from(c == '(') - i32::from(c == ')');
-                c == ')' && depth == 0
-            })
-            .map_or(rest.len(), |(at, _)| at)
+        let (mut depth, mut quoted, mut escaped) = (0i32, false, false);
+        for (at, c) in rest.char_indices() {
+            match (quoted, escaped, c) {
+                (true, true, _) => escaped = false,
+                (true, false, '\\') => escaped = true,
+                (_, false, '"') => quoted = !quoted,
+                (false, _, '(') => depth += 1,
+                (false, _, ')') if depth == 1 => return at,
+                (false, _, ')') => depth -= 1,
+                _ => {}
+            }
+        }
+        rest.len()
     }
 
-    fn unlogged(call: &str) -> Option<&'static str> {
-        UNLOGGED.into_iter().find(|text| call.contains(text))
+    fn found<'a>(text: &str, tokens: &[&'a str]) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .copied()
+            .filter(|token| text.contains(token))
+            .collect()
     }
 
     /// The log carries no daemon text from the chat's files: a log call names a file by its
-    /// bounded ref, and an error by its code. The checker catches a planted line, and the scan
-    /// reads files that log.
+    /// bounded `id`, and an error by its code, and the files read no error's message or debug
+    /// text. The checker catches a planted line for each token, and the scan reads every file it
+    /// names, each of which logs.
     #[test]
     fn no_media_log_line_names_a_file_a_path_an_address_or_an_unbounded_ref() {
-        let planted = "glib::g_warning!(\"fermix\", \"copying {} failed\", file.name);";
-        assert_eq!(log_calls(planted).len(), 1);
-        assert_eq!(unlogged(log_calls(planted)[0]), Some(".name"));
+        for (line, token) in PLANTED {
+            let calls = log_calls(line);
+            let caught = match calls.as_slice() {
+                [call] => found(call, &UNLOGGED),
+                _ => found(line, &UNREAD),
+            };
+            assert!(caught.contains(&token), "{line} is caught as {token}");
+        }
         let mut calls = 0;
         for (file, source) in LOGGING {
-            for call in log_calls(source) {
+            let source = shipped(source);
+            assert_eq!(found(source, &UNREAD), Vec::<&str>::new(), "{file}");
+            let lines = log_calls(source);
+            assert!(!lines.is_empty(), "{file} has log lines");
+            for call in lines {
                 calls += 1;
-                assert_eq!(unlogged(call), None, "{file}: {call}");
+                assert_eq!(found(call, &UNLOGGED), Vec::<&str>::new(), "{file}: {call}");
             }
         }
-        assert!(calls >= 20, "the scan reads the files' log lines ({calls})");
+        assert!(calls >= 30, "the scan reads the files' log lines ({calls})");
     }
 }

@@ -5,6 +5,7 @@
 //! came to back on the main loop. An Ogg holding no Opus stops at oggdemux, its stream linked to
 //! nothing ("not-linked"), and that failure is what turns the note into its file tile.
 
+use super::entries::error_code;
 use crate::audio::{self, AudioFailure};
 use fermix_client::media::{Admission, MAX_WAITING};
 use fermix_client::waveform::{self, Levels, Power, Unheard};
@@ -152,11 +153,15 @@ fn link_stream(stream: &gst::Pad, input: &gst::Pad) {
         glib::g_debug!("fermix", "a voice note's second stream is not played");
         return;
     }
-    if let Err(e) = stream.link(input) {
+    // The link's error is its result, whose name is a code.
+    if let Err(code) = stream.link(input) {
         let kind = stream
             .current_caps()
             .and_then(|caps| caps.structure(0).map(|first| first.name().to_string()));
-        glib::g_debug!("fermix", "a voice note's stream {kind:?} is no Opus: {e:?}");
+        glib::g_debug!(
+            "fermix",
+            "a voice note's stream {kind:?} is no Opus: {code:?}"
+        );
     }
 }
 
@@ -224,21 +229,18 @@ fn watch(
     .map_err(|e| Unheard::Undecodable(format!("could not watch the bus: {e}")))
 }
 
-/// GStreamer's words for an error, with the element that raised it; its details go to the debug
-/// log. A note this app cannot decode ends its pass this way by design, so the caller decides
-/// whether it is a fault.
+/// A GStreamer error as this app names it: the element that raised it, and the error's domain
+/// and code (`error_code`). Never its message or its debug text, which can quote the note's file
+/// (filesrc's "Could not open file", "No such file"). A note this app cannot decode ends its
+/// pass this way by design, so the caller decides whether it is a fault.
 pub(crate) fn words(error: &gst::message::Error) -> String {
     let source = error
         .src()
         .map(|s| s.name().to_string())
         .unwrap_or_default();
-    glib::g_debug!(
-        "fermix",
-        "a voice note: {source}: {} ({:?})",
-        error.error(),
-        error.debug()
-    );
-    format!("{source}: {}", error.error())
+    let words = format!("{source}: {}", error_code(&error.error()));
+    glib::g_debug!("fermix", "a voice note: {words}");
+    words
 }
 
 /// The error a failed state change left on the bus, if any.
@@ -353,6 +355,24 @@ pub(crate) mod tests {
             };
             assert!(unheard.falls_back(), "{unheard:?}");
             assert!(seen.borrow().is_none());
+        });
+    }
+
+    /// A note filesrc cannot read is named by the element and the error's code, never by the
+    /// file: filesrc's message for a folder, or a file it may not open, quotes the path.
+    #[test]
+    fn a_note_that_cannot_be_read_is_named_by_its_code_and_not_its_path() {
+        on_own_loop(|context| {
+            let folder = fixture("");
+            let (pass, seen) = read(context, &folder);
+            let unheard = match pass {
+                Err(unheard) => unheard,
+                Ok(_pass) => seen.take().expect("done ran").expect_err("no levels"),
+            };
+            let said = unheard.to_string();
+            assert!(said.contains("filesrc"), "{said}");
+            assert!(said.contains("gst-resource-error-quark"), "{said}");
+            assert!(!said.contains("fixtures"), "{said}");
         });
     }
 

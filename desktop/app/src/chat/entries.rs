@@ -398,10 +398,14 @@ pub(super) fn copy_text(widget: &impl IsA<gtk::Widget>, text: &str) {
 }
 
 /// Shows `text` in the window's toast. A toast that cannot show is logged without its text,
-/// which can name a row's file.
+/// which can name a row's file. Activating fails only where the action does not exist.
 pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
-    if let Err(e) = widget.activate_action("win.toast", Some(&text.to_variant())) {
-        glib::g_warning!("fermix", "could not show a toast: {e}");
+    let shown = widget.activate_action("win.toast", Some(&text.to_variant()));
+    if shown.is_err() {
+        glib::g_warning!(
+            "fermix",
+            "could not show a toast: the window has no win.toast"
+        );
     }
 }
 

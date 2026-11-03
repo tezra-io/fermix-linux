@@ -136,8 +136,8 @@ impl Player {
                 return self.refresh();
             }
             Outcome::Failed(why) => {
-                let logged = loggable_id(r#ref);
-                glib::g_warning!("fermix", "voice note {logged} did not play: {why}");
+                let id = loggable_id(r#ref);
+                glib::g_warning!("fermix", "voice note {id} did not play: {why}");
                 self.state.borrow_mut().let_go(r#ref);
                 toast(&chip.widget, NOT_READY);
                 return self.refresh();
@@ -162,8 +162,8 @@ impl Player {
                 });
             }
             Err(why) => {
-                let r#ref = loggable_id(chip.r#ref());
-                glib::g_warning!("fermix", "voice note {ref} did not start: {why}");
+                let id = loggable_id(chip.r#ref());
+                glib::g_warning!("fermix", "voice note {id} did not start: {why}");
                 self.state.borrow_mut().let_go(chip.r#ref());
                 chip.fall_back(&why);
             }

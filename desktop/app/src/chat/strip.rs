@@ -245,8 +245,8 @@ async fn thumbnail(readers: &Readers, r#ref: &str, side: u32) -> Thumbnail {
     match decoded {
         Ok(texture) => Thumbnail::Drawn(texture),
         Err(refused) => {
-            let r#ref = loggable_id(r#ref);
-            glib::g_debug!("fermix", "no thumbnail of {ref}: {refused}");
+            let id = loggable_id(r#ref);
+            glib::g_debug!("fermix", "no thumbnail of {id}: {refused}");
             Thumbnail::Refused(refused)
         }
     }
@@ -435,8 +435,8 @@ fn open(button: &gtk::Button, face: &Face, tile: &Tile, readers: &Readers) {
             Outcome::Granted(path) => path,
             Outcome::Missing => return face.gone(&button),
             Outcome::Failed(why) => {
-                let r#ref = loggable_id(&file.r#ref);
-                glib::g_warning!("fermix", "{ref} did not open: {why}");
+                let id = loggable_id(&file.r#ref);
+                glib::g_warning!("fermix", "{id} did not open: {why}");
                 return toast(&window, NOT_READY);
             }
         };
@@ -453,8 +453,8 @@ async fn view(window: &gtk::Window, decoder: &Rc<Decoder>, path: &Path, side: u3
     match decoder.picture(path.to_owned(), side, Fit::Contain).await {
         Ok(texture) => picture::open_viewer(window, &texture, file, decoder),
         Err(refused) => {
-            let r#ref = loggable_id(&file.r#ref);
-            glib::g_debug!("fermix", "{ref} opens outside: {refused}");
+            let id = loggable_id(&file.r#ref);
+            glib::g_debug!("fermix", "{id} opens outside: {refused}");
             open_outside(window, path, file).await;
         }
     }
@@ -469,8 +469,8 @@ async fn open_outside(window: &gtk::Window, path: &Path, file: &FileRef) {
         return;
     };
     if !turned_down(&e) {
-        let (r#ref, code) = (loggable_id(&file.r#ref), error_code(&e));
-        glib::g_warning!("fermix", "{ref} did not open: {code}");
+        let (id, code) = (loggable_id(&file.r#ref), error_code(&e));
+        glib::g_warning!("fermix", "{id} did not open: {code}");
         toast(window, &format!("Could not open {}", file.name));
     }
 }
@@ -552,7 +552,7 @@ fn open_link(row: &adw::ActionRow, opens: &str) {
             return;
         };
         if !turned_down(&e) {
-            glib::g_warning!("fermix", "the link did not open: {e}");
+            glib::g_warning!("fermix", "the link did not open: {}", error_code(&e));
             toast(&window, NO_LINK);
         }
     });

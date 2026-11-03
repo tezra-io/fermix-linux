@@ -189,8 +189,8 @@ impl Chip {
                 self.fall_back(&unheard.to_string());
             }
             Read::Heard(Err(unheard)) => {
-                let r#ref = loggable_id(&self.note.r#ref);
-                glib::g_debug!("fermix", "voice note {ref} rests: {unheard}");
+                let id = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "voice note {id} rests: {unheard}");
                 self.settled.set(true);
             }
             Read::Gone => {
@@ -198,8 +198,8 @@ impl Chip {
                 self.gone();
             }
             Read::Failed(why) => {
-                let r#ref = loggable_id(&self.note.r#ref);
-                glib::g_debug!("fermix", "no levels for {ref} yet: {why}");
+                let id = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "no levels for {id} yet: {why}");
             }
         }
     }
@@ -243,8 +243,9 @@ impl Chip {
         if drawn.is_ok() && self.waveform.has_visible_focus() {
             drawn = focus_ring(cr, &ink, width, height);
         }
-        if let Err(e) = drawn {
-            glib::g_warning!("fermix", "a voice note's waveform did not draw: {e}");
+        // cairo's error is its status, whose name is a code.
+        if let Err(code) = drawn {
+            glib::g_warning!("fermix", "a voice note's waveform did not draw: {code:?}");
         }
     }
 
@@ -314,13 +315,13 @@ impl Chip {
         if !self.plays.replace(false) {
             return;
         }
-        let r#ref = loggable_id(&self.note.r#ref);
-        glib::g_debug!("fermix", "voice note {ref} is a file tile: {why}");
+        let id = loggable_id(&self.note.r#ref);
+        glib::g_debug!("fermix", "voice note {id} is a file tile: {why}");
         self.widget.set_visible(false);
         let hook = self.unplayable.take();
         match hook {
             Some(hook) => hook(),
-            None => glib::g_critical!("fermix", "voice note {ref} has no row"),
+            None => glib::g_critical!("fermix", "voice note {id} has no row"),
         }
     }
 

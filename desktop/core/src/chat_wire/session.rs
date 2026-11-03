@@ -48,7 +48,7 @@ const UPDATE_FERMIX: &str = "The Fermix engine is older than this app. Update th
 /// What the page says for a version refusal in a direction this build does not know. No macOS
 /// string: the macOS app shows the daemon's word.
 pub const UPDATE_BOTH: &str =
-    "Fermix refused this app's version without saying which is older. Update the app and the engine to chat.";
+    "Fermix refused this app's version in a way this app cannot read. Update the app and the engine to chat.";
 /// What the page says for `Shown::NoChat`.
 pub const NO_CHAT: &str = "The Fermix engine on this computer has no chat yet";
 /// What the page says while it tries again after any other loss.
@@ -256,9 +256,9 @@ impl Session {
         outcome
     }
 
-    /// A page of the history read on this connection. A backoff kept past the handshake because
-    /// the last connection gave up on its history ends here: the history reads again, so the next
-    /// loss waits from the first delay. On a connection that kept none it changes nothing, since
+    /// A page of the history read on this connection. A backoff kept because a connection gave
+    /// up on its history, and kept through every loss since, ends here: the history reads again,
+    /// so the next loss waits from the first delay. On a connection that kept none it changes nothing, since
     /// its handshake already reset the backoff.
     pub fn history_read(&mut self) {
         if self.phase == Phase::Connected {

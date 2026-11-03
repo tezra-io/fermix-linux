@@ -261,16 +261,16 @@ async fn copy_picture(anchor: &gtk::Button, file: &FileRef, decoder: &Rc<Decoder
         Outcome::Failed(why) => Err(why),
     };
     drop(hold);
-    let r#ref = loggable_id(&file.r#ref);
+    let id = loggable_id(&file.r#ref);
     match whole {
         Ok(texture) => {
             let (width, height) = (texture.width(), texture.height());
-            glib::g_debug!("fermix", "copied {ref} whole, {width}x{height}");
+            glib::g_debug!("fermix", "copied {id} whole, {width}x{height}");
             anchor.clipboard().set_texture(&texture);
             toast(anchor, "Copied");
         }
         Err(why) => {
-            glib::g_warning!("fermix", "copying {ref} failed: {why}");
+            glib::g_warning!("fermix", "copying {id} failed: {why}");
             toast(anchor, "The picture was not copied.");
         }
     }
@@ -302,7 +302,7 @@ async fn save_picture(anchor: &gtk::Button, file: &FileRef) {
         Ok(target) => target,
         Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
         Err(e) => {
-            glib::g_warning!("fermix", "the save dialog failed: {e}");
+            glib::g_warning!("fermix", "the save dialog failed: {}", error_code(&e));
             return toast(anchor, "The save dialog did not open.");
         }
     };
@@ -316,8 +316,8 @@ async fn save_picture(anchor: &gtk::Button, file: &FileRef) {
     match copied {
         Ok(()) => toast(anchor, "Picture saved"),
         Err(why) => {
-            let r#ref = loggable_id(&file.r#ref);
-            glib::g_warning!("fermix", "saving {ref} failed: {why}");
+            let id = loggable_id(&file.r#ref);
+            glib::g_warning!("fermix", "saving {id} failed: {why}");
             toast(anchor, "The picture was not saved.");
         }
     }
