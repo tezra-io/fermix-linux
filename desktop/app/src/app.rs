@@ -700,7 +700,8 @@ fn install_settings_actions(app: &Rc<App>) {
     });
 }
 
-/// The Phone row's button and every button of the Phone dialog.
+/// The Phone row's button and every button of the Phone dialog but its decisions, Approve, Deny
+/// and Forget this phone, which their own buttons hold (`phone_flow.rs`).
 fn install_phone_actions(app: &Rc<App>) {
     on(app, "phone-open", |app, target| async move {
         match intent(&target) {
@@ -716,9 +717,6 @@ fn install_phone_actions(app: &Rc<App>) {
     on_plain(app, "phone-turn-on", |app| async move {
         app.phone_turn_on().await
     });
-    on_value(app, "phone-decide", |app, approved: bool| async move {
-        app.phone_decide(approved).await
-    });
     on_plain(app, "phone-ending", |app| async move {
         app.phone_ending().await
     });
@@ -733,9 +731,6 @@ fn install_phone_actions(app: &Rc<App>) {
     });
     on_plain(app, "phone-forget-withdraw", |app| async move {
         app.phone_forget_withdraw()
-    });
-    on_plain(app, "phone-forget", |app| async move {
-        app.phone_forget().await
     });
 }
 

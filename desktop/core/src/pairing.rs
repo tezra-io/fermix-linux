@@ -217,6 +217,12 @@ impl Step {
             Step::TurnOn(_) | Step::Paired { .. } | Step::Ended(_) | Step::Phones => None,
         }
     }
+
+    /// Whether a decision about `session`, the window Approve and Deny were drawn for, is this
+    /// step's to take: only Compare, while it still shows that window.
+    pub fn decides(&self, session: &str) -> bool {
+        matches!(self, Step::Compare(compare) if compare.session == session)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

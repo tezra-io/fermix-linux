@@ -658,6 +658,25 @@ fn closing_cancels_the_window_in_scan_and_compare_and_nothing_once_it_has_ended(
     }
 }
 
+/// Approve and Deny hold the window their Compare step shows (M60 cues §6 rule 3), and decide
+/// only while that step still shows it: never another window, and never from another step.
+#[test]
+fn a_decision_is_taken_only_on_the_compare_step_showing_its_window() {
+    assert!(comparing().decides(SESSION));
+    assert!(!comparing().decides(OTHER), "another window");
+    let elsewhere = [
+        scanning(),
+        Step::Waiting {
+            session: Some(SESSION.into()),
+        },
+        ended(ENDED_DENIED),
+        Step::Phones,
+    ];
+    for step in elsewhere {
+        assert!(!step.decides(SESSION), "{:?}", step.kind());
+    }
+}
+
 // The link and its code
 
 #[test]

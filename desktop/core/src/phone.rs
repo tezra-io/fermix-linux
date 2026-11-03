@@ -338,14 +338,16 @@ impl Forgetting {
         self.asking = None;
     }
 
-    /// The second press: the phone the row asked about, which is then the one being forgotten.
-    pub fn confirm(&mut self) -> Option<String> {
-        if self.forgetting.is_some() {
-            return None;
+    /// The second press, in `device`'s own row: true where that row is the one asking, and the
+    /// phone is then the one being forgotten. A press for any other phone forgets nothing, so a
+    /// question moved to another phone between the two presses is never answered by them.
+    pub fn confirm(&mut self, device: &str) -> bool {
+        if self.forgetting.is_some() || self.asking.as_deref() != Some(device) {
+            return false;
         }
-        let device = self.asking.take()?;
-        self.forgetting = Some(device.clone());
-        Some(device)
+        self.asking = None;
+        self.forgetting = Some(device.to_owned());
+        true
     }
 
     /// The daemon answered. A refusal stays under the row it refused.

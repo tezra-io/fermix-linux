@@ -5,7 +5,7 @@
 //! While Phones is shown it follows reach from anywhere, for the line under that switch.
 
 use crate::app::App;
-use crate::phone::{PhoneView, Screen};
+use crate::phone::{Decisions, PhoneView, Screen};
 use adw::prelude::*;
 use fermix_client::management::CallError;
 use fermix_client::mobile::{MobileStatus, PairingStart};
@@ -91,7 +91,8 @@ impl App {
             return;
         }
         let dialog_views = self.settings.dialog_views.clone();
-        let view = Rc::new(PhoneView::new(&self.phone_title(), dialog_views));
+        let decisions = self.phone_decisions();
+        let view = Rc::new(PhoneView::new(&self.phone_title(), dialog_views, decisions));
         let weak = Rc::downgrade(self);
         view.dialog.connect_closed(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -109,6 +110,29 @@ impl App {
                 Intent::Phones => app.phone_phones(token).await,
             }
         });
+    }
+
+    /// What the dialog's Approve, Deny and Forget this phone call, handed to the dialog rather
+    /// than registered as actions, which the session bus exports to every process of the session
+    /// (M60 cues §6 rule 3). Each button hands over the id it was drawn for: the window it
+    /// decides about, or the phone its row names.
+    fn phone_decisions(self: &Rc<Self>) -> Decisions {
+        let weak = Rc::downgrade(self);
+        let decide = move |session: String, approved: bool| {
+            if let Some(app) = weak.upgrade() {
+                glib::spawn_future_local(app.phone_decide(session, approved));
+            }
+        };
+        let weak = Rc::downgrade(self);
+        let forget = move |device: String| {
+            if let Some(app) = weak.upgrade() {
+                glib::spawn_future_local(app.phone_forget(device));
+            }
+        };
+        Decisions {
+            decide: Rc::new(decide),
+            forget: Rc::new(forget),
+        }
     }
 
     /// The daemon's own title for the channel's section.
@@ -379,12 +403,11 @@ impl App {
         Ok(())
     }
 
-    pub async fn phone_decide(self: Rc<Self>, approved: bool) {
-        let session = match &self.phone.borrow().step {
-            Step::Compare(compare) => compare.session.clone(),
-            _ => return,
-        };
-        if self.phone.borrow().deciding {
+    /// Approve or Deny, about the window the button was drawn for: nothing unless Compare still
+    /// shows it.
+    async fn phone_decide(self: Rc<Self>, session: String, approved: bool) {
+        let decides = self.phone.borrow().step.decides(&session);
+        if !decides || self.phone.borrow().deciding {
             return;
         }
         let token = self.phone_begin();
@@ -531,14 +554,13 @@ impl App {
         self.render();
     }
 
-    /// The second press forgets the phone the row asked about. The list is read again before
-    /// the row stops saying so, so a forgotten phone leaves the list rather than offering Forget
-    /// once more; a refusal stays under its row in the daemon's words.
-    pub async fn phone_forget(self: Rc<Self>) {
-        let confirmed = self.phone.borrow_mut().forgetting.confirm();
-        let Some(device) = confirmed else {
+    /// The second press forgets the phone its own row names, and only while that row asks. The
+    /// list is read again before the row stops saying so, so a forgotten phone leaves the list
+    /// rather than offering Forget once more; a refusal stays under its row in the daemon's words.
+    async fn phone_forget(self: Rc<Self>, device: String) {
+        if !self.phone.borrow_mut().forgetting.confirm(&device) {
             return;
-        };
+        }
         self.render();
         let id = device.clone();
         let answer = self

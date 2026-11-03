@@ -236,7 +236,7 @@ fn a_phones_detail_is_its_model_and_when_it_was_seen() {
 #[test]
 fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     let mut forgetting = Forgetting::default();
-    assert_eq!(forgetting.confirm(), None, "nothing was asked");
+    assert!(!forgetting.confirm("a"), "nothing was asked");
     forgetting.ask("a");
     forgetting.ask("b");
     assert_eq!(
@@ -246,10 +246,10 @@ fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     );
     forgetting.withdraw();
     assert_eq!(forgetting.asking(), None);
-    assert_eq!(forgetting.confirm(), None);
+    assert!(!forgetting.confirm("b"));
 
     forgetting.ask("a");
-    assert_eq!(forgetting.confirm().as_deref(), Some("a"));
+    assert!(forgetting.confirm("a"));
     assert_eq!(forgetting.forgetting(), Some("a"));
     forgetting.ask("b");
     assert_eq!(
@@ -265,6 +265,21 @@ fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     );
     forgetting.ask("a");
     assert_eq!(forgetting.refusal("a"), None, "asking again clears it");
+}
+
+/// The second press holds the phone its own row names (M60 cues §6 rule 3). The first press is
+/// still an action the session bus exports, so a process of the session can move the question to
+/// another phone between the owner's two presses; the owner's press then forgets nothing.
+#[test]
+fn a_second_press_forgets_only_the_phone_whose_row_asks() {
+    let mut forgetting = Forgetting::default();
+    forgetting.ask("a");
+    forgetting.ask("b");
+    assert!(!forgetting.confirm("a"), "a's press does not forget b");
+    assert_eq!(forgetting.forgetting(), None);
+    assert_eq!(forgetting.asking(), Some("b"), "b's row still asks");
+    assert!(forgetting.confirm("b"));
+    assert_eq!(forgetting.forgetting(), Some("b"));
 }
 
 /// Android is named where a person is told to reach for their phone, and nowhere else.
