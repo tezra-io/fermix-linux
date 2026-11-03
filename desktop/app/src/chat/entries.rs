@@ -404,7 +404,7 @@ pub(super) fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
     if shown.is_err() {
         glib::g_warning!(
             "fermix",
-            "could not show a toast: the window has no win.toast"
+            "could not show a toast: no win.toast reaches this widget"
         );
     }
 }

@@ -144,12 +144,14 @@ fn open_in_maps(widget: &impl IsA<gtk::Widget>, card: &Card) {
         if turned_down(&e) {
             return;
         }
-        glib::g_warning!("fermix", "the place did not open: {}", error_code(&e));
+        let code = error_code(&e);
+        glib::g_warning!("fermix", "the place did not open: {code}");
         let Some(fallback) = launch.fallback else {
             return toast(&window, NO_MAP);
         };
         if let Err(e) = launched(&window, &fallback).await {
-            glib::g_warning!("fermix", "the web map did not open: {}", error_code(&e));
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the web map did not open: {code}");
             toast(&window, NO_MAP);
         }
     });
@@ -167,7 +169,8 @@ fn open_website(row: &adw::ActionRow, card: &Card) {
             return;
         };
         if !turned_down(&e) {
-            glib::g_warning!("fermix", "the website did not open: {}", error_code(&e));
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the website did not open: {code}");
             toast(&window, NO_WEBSITE);
         }
     });

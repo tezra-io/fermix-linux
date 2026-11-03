@@ -139,3 +139,58 @@ impl Link {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// A directory of the test's own under the system's temp dir, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                eprintln!("scratch {} not removed: {e}", self.0.display());
+            }
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let dir =
+            std::env::temp_dir().join(format!("fermix-chat-link-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        Scratch(dir)
+    }
+
+    fn connected(socket: &Path) -> Result<Rc<Link>, LinkError> {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| context.block_on(connect(socket)))
+            .expect("the test's context")
+    }
+
+    /// A socket file no daemon listens on any more, as a daemon that stopped leaves it, refuses
+    /// the connect. GIO's words for that ("Could not connect: Connection refused") name no path,
+    /// and the connection's end is logged in them, so the log never holds the socket's path,
+    /// which holds the owner's home.
+    #[test]
+    fn a_refused_connect_is_logged_without_the_sockets_path() {
+        let dir = scratch("refused");
+        let socket = dir.0.join("companion.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket file"));
+        let Err(LinkError::Broken(why)) = connected(&socket) else {
+            panic!("a socket no daemon listens on is refused");
+        };
+        assert!(why.starts_with("connect: "), "{why}");
+        assert!(!why.contains("fermix-chat-link"), "{why}");
+    }
+
+    /// No socket file at all is an engine without chat, and says nothing more.
+    #[test]
+    fn a_missing_socket_is_not_found() {
+        let dir = scratch("missing");
+        let found = connected(&dir.0.join("companion.sock"));
+        assert!(matches!(found, Err(LinkError::NotFound)));
+    }
+}

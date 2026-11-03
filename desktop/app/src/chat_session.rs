@@ -8,8 +8,8 @@ use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{
-    loggable_id, Attachments, ClientEvent, Decision as Word, Proposal, Reply, Row, ServerError,
-    ServerEvent,
+    loggable_id, Attachments, ClientEvent, Decision as Word, LineTooLong, Proposal, Reply, Row,
+    ServerError, ServerEvent,
 };
 use fermix_client::chat_wire::session::{
     closes, logged, page_read, Handshake, Lost, Session, HANDSHAKE_TIMEOUT,
@@ -177,6 +177,14 @@ fn log_late_refusal(chat: &Chat, request: Option<&str>) {
     );
 }
 
+/// Why the link ended the connection, in its own words: a missing socket file, or what broke.
+fn link_lost(error: LinkError) -> Lost {
+    match error {
+        LinkError::NotFound => Lost::NoSocket,
+        LinkError::Broken(why) => Lost::Broken(why),
+    }
+}
+
 /// A request id no other client uses: this app's prefix and 64 random bits.
 fn message_id() -> String {
     format!("linux-{:08x}{:08x}", glib::random_int(), glib::random_int())
@@ -205,16 +213,16 @@ impl App {
         let socket = fermix_home().join("companion.sock");
         let link = match chat_link::connect(&socket).await {
             Ok(link) => link,
-            Err(LinkError::NotFound) => return self.chat_lost(Lost::NoSocket),
-            Err(LinkError::Broken(why)) => return self.chat_lost(Lost::Broken(why)),
+            Err(e) => return self.chat_lost(link_lost(e)),
         };
         if !self.wire.borrow_mut().session.connected() {
             // The attempt ended while the connect ran; its socket is not this session's.
             link.close();
             return;
         }
-        if let Err(e) = link.send(&ClientEvent::hello()) {
-            return self.chat_lost(Lost::Broken(format!("{e:?}")));
+        if let Err(LineTooLong(bytes)) = link.send(&ClientEvent::hello()) {
+            let why = format!("the hello of {bytes} bytes was not sent");
+            return self.chat_lost(Lost::Broken(why));
         }
         let shaken = glib::future_with_timeout(HANDSHAKE_TIMEOUT, self.handshake(&link)).await;
         match shaken {
@@ -236,7 +244,7 @@ impl App {
             let event = match link.read().await {
                 Ok(Some(event)) => event,
                 Ok(None) => return Err(Lost::Broken("closed during the handshake".into())),
-                Err(e) => return Err(Lost::Broken(format!("{e:?}"))),
+                Err(e) => return Err(link_lost(e)),
             };
             let outcome = self.wire.borrow_mut().session.hello(&event);
             match outcome {
@@ -250,7 +258,10 @@ impl App {
                     return Err(Lost::Broken(named));
                 }
                 Handshake::Lost(reason) => return Err(Lost::Broken(reason)),
-                Handshake::Ignore => glib::g_debug!("fermix", "before hello: {}", event.kind()),
+                Handshake::Ignore => {
+                    let kind = event.kind();
+                    glib::g_debug!("fermix", "before hello: {kind}")
+                }
             }
         }
         Err(Lost::Broken(
@@ -285,7 +296,7 @@ impl App {
             match read {
                 Ok(Some(event)) => self.on_chat_event(event),
                 Ok(None) => return self.chat_lost(Lost::Broken("Fermix closed the chat".into())),
-                Err(e) => return self.chat_lost(Lost::Broken(format!("{e:?}"))),
+                Err(e) => return self.chat_lost(link_lost(e)),
             }
         }
     }
@@ -334,7 +345,8 @@ impl App {
             ServerEvent::TextDone(reply) => log_reply(reply),
             ServerEvent::Proposal { proposal } => log_card(proposal),
             ServerEvent::Error(error) if closes(&error.reason) => {
-                glib::g_warning!("fermix", "the chat was refused: {}", error.reason)
+                let closing = &error.reason;
+                glib::g_warning!("fermix", "the chat was refused: {closing}")
             }
             ServerEvent::Error(ServerError {
                 attach_id: Some(id),
@@ -388,8 +400,8 @@ impl App {
             return;
         };
         for event in events {
-            if let Err(e) = link.send(&event) {
-                glib::g_warning!("fermix", "a chat event was not sent: {e:?}");
+            if let Err(LineTooLong(bytes)) = link.send(&event) {
+                glib::g_warning!("fermix", "a chat event of {bytes} bytes was not sent");
             }
         }
     }

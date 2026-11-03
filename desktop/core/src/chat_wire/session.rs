@@ -258,8 +258,8 @@ impl Session {
 
     /// A page of the history read on this connection. A backoff kept because a connection gave
     /// up on its history, and kept through every loss since, ends here: the history reads again,
-    /// so the next loss waits from the first delay. On a connection that kept none it changes nothing, since
-    /// its handshake already reset the backoff.
+    /// so the next loss waits from the first delay. On a connection that kept none it changes
+    /// nothing, since its handshake already reset the backoff.
     pub fn history_read(&mut self) {
         if self.phase == Phase::Connected {
             self.failures = 0;

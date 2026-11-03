@@ -80,7 +80,9 @@ pub(crate) fn start(
     done: impl FnOnce(Result<Levels, Unheard>) + 'static,
 ) -> Result<Pass, Unheard> {
     // Once per process; later calls return at once.
-    gst::init().map_err(|e| Unheard::Undecodable(format!("GStreamer did not start: {e}")))?;
+    gst::init().map_err(|e| {
+        Unheard::Undecodable(format!("GStreamer did not start: {}", error_code(&e)))
+    })?;
     let pipeline = gst::Pipeline::new();
     let power = Arc::new(Mutex::new(Power::new(waveform::WINDOW_FRAMES)));
     let tail = [
@@ -93,15 +95,22 @@ pub(crate) fn start(
         pipeline,
         watch: None,
     };
-    if let Err(e) = pass.pipeline.set_state(gst::State::Playing) {
+    if pass.pipeline.set_state(gst::State::Playing).is_err() {
         // Returning drops `pass`, which takes the pipeline back to Null.
         return Err(Unheard::Undecodable(
-            first_error(&pass.pipeline).unwrap_or_else(|| e.to_string()),
+            first_error(&pass.pipeline).unwrap_or_else(|| STATE_REFUSED.to_owned()),
         ));
     }
     pass.watch = Some(watch(&pass.pipeline, power, done)?);
     Ok(pass)
 }
+
+/// A state change the pipeline refused, where no element posted why: GStreamer's error for it
+/// says no more than that.
+pub(crate) const STATE_REFUSED: &str = "the pipeline did not change its state";
+
+/// The bus took no watch: GStreamer adds only one to a bus.
+pub(crate) const BUS_UNWATCHED: &str = "could not watch the bus";
 
 fn undecodable(failure: AudioFailure) -> Unheard {
     Unheard::Undecodable(why(failure))
@@ -125,7 +134,8 @@ pub(crate) fn ogg_opus(
     source.set_property("location", path);
     let demux = audio::make("oggdemux")?;
     let decoder = audio::make("opusdec")?;
-    let broken = |what: &str, e: glib::BoolError| AudioFailure::Other(format!("{what}: {e}"));
+    // GStreamer's words for either failure name the elements, which `what` names already.
+    let broken = |what: &str, _: glib::BoolError| AudioFailure::Other(what.to_owned());
     pipeline
         .add_many([&source, &demux, &decoder])
         .and_then(|()| pipeline.add_many(tail))
@@ -226,7 +236,7 @@ fn watch(
         }
         glib::ControlFlow::Break
     })
-    .map_err(|e| Unheard::Undecodable(format!("could not watch the bus: {e}")))
+    .map_err(|_| Unheard::Undecodable(BUS_UNWATCHED.to_owned()))
 }
 
 /// A GStreamer error as this app names it: the element that raised it, and the error's domain

@@ -552,7 +552,8 @@ fn open_link(row: &adw::ActionRow, opens: &str) {
             return;
         };
         if !turned_down(&e) {
-            glib::g_warning!("fermix", "the link did not open: {}", error_code(&e));
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the link did not open: {code}");
             toast(&window, NO_LINK);
         }
     });

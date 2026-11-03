@@ -152,14 +152,11 @@ async fn run(decode: Decode, job: Job) {
     }
     let decoded = match gio::spawn_blocking(move || decode(&path, side, fit)).await {
         Ok(decoded) => decoded,
-        Err(panic) => {
-            let why = panic
-                .downcast_ref::<&str>()
-                .map(|words| words.to_string())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "no words".to_owned());
-            glib::g_critical!("fermix", "the picture decoder panicked: {why}");
-            Err(Refused::Failed(format!("the decoder panicked: {why}")))
+        // The panic's words are the decoder's and can quote the file it read: they are neither
+        // logged nor kept.
+        Err(_) => {
+            glib::g_critical!("fermix", "the picture decoder panicked");
+            Err(Refused::Failed("the decoder panicked".into()))
         }
     };
     if answer.send(decoded).is_err() {
@@ -302,7 +299,8 @@ async fn save_picture(anchor: &gtk::Button, file: &FileRef) {
         Ok(target) => target,
         Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
         Err(e) => {
-            glib::g_warning!("fermix", "the save dialog failed: {}", error_code(&e));
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the save dialog failed: {code}");
             return toast(anchor, "The save dialog did not open.");
         }
     };
@@ -372,7 +370,8 @@ mod tests {
     }
 
     /// Every decode slot a panic took is given back: the panics are refusals, and the picture
-    /// asked after them still decodes.
+    /// asked after them still decodes. A refusal says the decoder panicked, without the panic's
+    /// words, which are the decoder's about the file.
     #[test]
     fn a_decoder_that_panics_gives_its_turn_back() {
         on_loop(|context| {
@@ -389,7 +388,7 @@ mod tests {
             }
             let seen = seen.borrow();
             assert_eq!(seen.len(), MAX_DECODING + 1, "{seen:?}");
-            let panicked = Refused::Failed("the decoder panicked: a planted decoder panic".into());
+            let panicked = Refused::Failed("the decoder panicked".into());
             for (name, decoded) in seen.iter() {
                 match name.as_str() {
                     "panics" => assert_eq!(decoded, &Err(panicked.clone())),
