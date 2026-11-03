@@ -657,3 +657,129 @@ fn a_forgotten_row_leaves_no_read_behind() {
     receive(&mut chat, live(MAX_HELD as u64 + 1, "new"));
     assert!(timeline::rows_on_screen(&mut chat, &BTreeSet::from([1])).is_empty());
 }
+
+/// A message a page holds that this build cannot read: skipped, as `lenient` skips it.
+fn unreadable_message(seq: u64) -> Value {
+    json!({"server_seq": seq, "role": 5, "content": "x"})
+}
+
+/// PROTOCOL.md "Delivery and the outbox": a forward page's `next_after_seq` names the last row
+/// it sent, and a client pulls on from it, whether or not it could show that row.
+#[test]
+fn a_forward_page_whose_rows_were_all_skipped_still_moves_the_read_on() {
+    let mut chat = holding(2);
+    assert_eq!(
+        receive(&mut chat, live(5, "gap")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)]
+    );
+    let skipped = page(vec![unreadable_message(3)], 5, Some(3), None);
+    assert_eq!(
+        receive(&mut chat, skipped),
+        [pull(Cursor::AfterSeq(3), PAGE_LIMIT)]
+    );
+    assert_eq!(chat.cursor, 3);
+    let rest = page(
+        vec![message(4, "four"), message(5, "five")],
+        5,
+        Some(5),
+        None,
+    );
+    assert!(receive(&mut chat, rest).is_empty());
+    assert_eq!(seqs(&chat), [1, 2, 4, 5]);
+}
+
+/// PROTOCOL.md: rows can be announced out of seq order ("Keeping a client's timeline"), and a page
+/// can be cut short ("Delivery and the outbox"). A row shown live while the read was out moved the
+/// cursor, not the page.
+#[test]
+fn a_forward_page_cut_at_a_row_shown_live_while_it_was_out_reads_on() {
+    let mut chat = holding(2);
+    assert_eq!(
+        receive(&mut chat, live(4, "reply")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)]
+    );
+    assert!(receive(&mut chat, live(3, "job")).is_empty());
+    let cut = page(vec![message(3, "job")], 4, Some(3), None);
+    assert_eq!(
+        receive(&mut chat, cut),
+        [pull(Cursor::AfterSeq(3), PAGE_LIMIT)]
+    );
+}
+
+#[test]
+fn only_a_forward_page_moves_the_read_to_the_row_it_names() {
+    let mut cold = Chat::default();
+    timeline::negotiated(&mut cold, &BTreeSet::new());
+    let newest = page(vec![message(70, "x")], 70, Some(90), Some(70));
+    assert!(receive(&mut cold, newest).is_empty());
+    assert_eq!(
+        cold.cursor, 70,
+        "a backward page names no row to read on from"
+    );
+    let mut warm = holding(2);
+    let changed = event(json!({"type": "row_updated", "profile_id": "main", "server_seq": 1}));
+    assert_eq!(receive(&mut warm, changed), [pull(Cursor::AfterSeq(0), 1)]);
+    let reread = page(vec![message(1, "one")], 2, Some(5), None);
+    assert!(receive(&mut warm, reread).is_empty());
+    assert_eq!(warm.cursor, 2, "nor does a read of held rows again");
+}
+
+/// The read frontier names the newest row this app holds, never the cursor past it: a skipped
+/// row above it stays unread on the owner's other devices until a later row is seen here.
+#[test]
+fn the_read_frontier_stops_at_the_newest_held_row_below_a_skipped_one() {
+    let mut chat = holding(2);
+    receive(&mut chat, live(4, "gap"));
+    let skipped = page(
+        vec![message(3, "three"), unreadable_message(4)],
+        4,
+        Some(4),
+        None,
+    );
+    assert!(receive(&mut chat, skipped).is_empty());
+    assert_eq!(chat.cursor, 4);
+    assert_eq!(
+        timeline::newest_seen(&mut chat),
+        [ClientEvent::read_state(3)]
+    );
+    assert!(timeline::newest_seen(&mut chat).is_empty());
+}
+
+#[test]
+fn a_cold_start_whose_newest_row_cannot_be_read_reads_once_more_and_stops() {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    let newest = page(
+        vec![message(1, "one"), unreadable_message(2)],
+        2,
+        None,
+        None,
+    );
+    assert_eq!(
+        receive(&mut chat, newest),
+        [pull(Cursor::AfterSeq(1), PAGE_LIMIT)]
+    );
+    let forward = page(vec![unreadable_message(2)], 2, Some(2), None);
+    assert!(
+        receive(&mut chat, forward).is_empty(),
+        "read once, not again"
+    );
+    assert_eq!(chat.cursor, 2);
+}
+
+#[test]
+fn a_forward_page_that_moves_the_read_nowhere_ends_it() {
+    let mut chat = holding(2);
+    receive(&mut chat, live(4, "gap"));
+    let empty = page(Vec::new(), 9, Some(2), None);
+    assert!(
+        receive(&mut chat, empty).is_empty(),
+        "an empty page echoes the cursor: reading on would ask the same page forever"
+    );
+    assert_eq!(chat.cursor, 2);
+    assert_eq!(
+        receive(&mut chat, live(5, "next")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)],
+        "the next gap reads again"
+    );
+}

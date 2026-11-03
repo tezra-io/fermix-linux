@@ -153,7 +153,7 @@ enum Pull {
 pub struct Chat {
     /// Ascending by seq, each seq once.
     pub rows: Vec<HeldRow>,
-    /// The newest seq held, 0 before any.
+    /// The newest seq read past, shown or skipped as unreadable; 0 before any.
     pub cursor: u64,
     /// The newest seq the daemon had when it read the latest page.
     pub head: u64,
@@ -422,13 +422,16 @@ pub fn pull_older(chat: &mut Chat) -> Vec<ClientEvent> {
     read_page(chat, cursor)
 }
 
-/// The newest held row is on screen: moves the shared read frontier, once per new row.
+/// The newest held row is on screen: moves the shared read frontier to it, once per new row. Never
+/// to the cursor past it: a skipped row above the newest held one stays unread for the owner's
+/// other devices until a later row is seen here.
 pub fn newest_seen(chat: &mut Chat) -> Vec<ClientEvent> {
-    if !chat.connected || chat.cursor <= chat.read_up_to.max(chat.read_sent) {
+    let newest = chat.rows.last().map_or(0, |held| held.row.server_seq);
+    if !chat.connected || newest <= chat.read_up_to.max(chat.read_sent) {
         return Vec::new();
     }
-    chat.read_sent = chat.cursor;
-    vec![ClientEvent::read_state(chat.cursor)]
+    chat.read_sent = newest;
+    vec![ClientEvent::read_state(newest)]
 }
 
 /// Held rows came on screen: those a disconnect may have changed are read again, once.
@@ -737,13 +740,23 @@ fn apply_live(chat: &mut Chat, held: HeldRow) -> Vec<ClientEvent> {
 }
 
 /// A page answers the read out. Its rows go over the held ones by seq; the cursor moves to its
-/// newest row, and while that is below the head the read goes on, ahead of anything waiting.
+/// newest row, or for a forward page to the last row it names (`next_after_seq`), shown or
+/// skipped, and while that is below the head the read goes on, ahead of anything waiting. A
+/// forward page that leaves the cursor where its read asked from ends the read: asked again, it
+/// would answer the same, forever (PROTOCOL.md "Delivery and the outbox"). One that moved it, by
+/// its rows or by rows shown live while it was out, reads on, so each read asks from a later
+/// cursor.
 fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
     let answered = chat.pull.take();
+    let asked_from = match &answered {
+        Some(Pull::Page(Cursor::AfterSeq(seq))) => Some(*seq),
+        _ => None,
+    };
     let page_seqs: BTreeSet<u64> = page.messages.iter().map(|row| row.server_seq).collect();
     let newest = page_seqs.last().copied();
     put_rows(chat, page.messages);
-    chat.cursor = chat.cursor.max(newest.unwrap_or(0));
+    let named = page.next_after_seq.filter(|_| asked_from.is_some());
+    chat.cursor = chat.cursor.max(newest.unwrap_or(0)).max(named.unwrap_or(0));
     chat.head = page.history_head_seq;
     if let Some(Pull::Page(Cursor::BeforeSeq(_))) = answered {
         chat.has_older = page.next_before_seq.is_some();
@@ -755,7 +768,8 @@ fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
         chat.rows_to_read
             .extend(asked.into_iter().filter(|seq| *seq > reached));
     }
-    if chat.cursor < chat.head {
+    let stalled = asked_from == Some(chat.cursor);
+    if chat.cursor < chat.head && !stalled {
         let cursor = Cursor::AfterSeq(chat.cursor);
         return read_page(chat, cursor);
     }
