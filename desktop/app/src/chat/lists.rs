@@ -621,6 +621,31 @@ mod tests {
         }
     }
 
+    /// The list's menu acts through an action group of its own, inserted on More under `list`,
+    /// never added to the window or the application (M85 lists §4.2).
+    #[test]
+    fn the_list_menus_actions_are_mores_own() {
+        let source = shipped(include_str!("list_more.rs"));
+        let flat = squeezed(source);
+        assert!(flat.contains("constLIST_GROUP:&str=\"list\";"));
+        assert_eq!(flat.matches("insert_action_group(").count(), 1);
+        assert!(flat.contains("more.insert_action_group(LIST_GROUP,Some(&actions));"));
+        assert!(flat.contains("letgroup=gio::SimpleActionGroup::new();"));
+        let added = flat.matches(".add_action(").count();
+        assert!(added > 0, "the scan reads the actions");
+        assert_eq!(added, flat.matches("group.add_action(").count());
+        for named in [
+            "\"win.",
+            "\"app.",
+            "activate_action(",
+            "action_name(",
+            "Application",
+            "set_accels",
+        ] {
+            assert!(!source.contains(named), "list_more.rs names {named}");
+        }
+    }
+
     /// The name of every action `source` registers in one of the `REGISTERS` ways.
     fn registered(source: &str) -> Vec<&str> {
         let mut names = Vec::new();

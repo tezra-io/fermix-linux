@@ -2,13 +2,14 @@
 //! state"): whether it is shown, wide and narrow, the owner's last open or close kept in
 //! `lists.json`, what it draws from the lists as the library holds them, from the index to a tick
 //! under Done and an add in the selected item's section, an item being reworded, each list's own
-//! folds, and what a screen reader is told.
+//! folds, what the list's menu offers, and what a screen reader is told.
 
 use fermix_client::chat_wire::protocol::{read_line, ClientEvent, ListOp, ServerEvent};
 use fermix_client::checklists::draft::{self, is_local, Place};
 use fermix_client::checklists::library::{Library, MAX_WAITING};
 use fermix_client::checklists::pane::{
-    self, drawing, lists_path, Folds, NotLoaded, PaneBody, PaneDrawing, PaneList, PaneOpen,
+    self, drawing, lists_path, Folds, ListOffers, NotLoaded, PaneBody, PaneDrawing, PaneList,
+    PaneOpen,
 };
 use fermix_client::checklists::panel::{self, add_place, splice, Line};
 use fermix_client::checklists::routing::lists_event;
@@ -379,6 +380,169 @@ fn a_held_list_draws_its_lines_and_its_head_counts_the_edits_waiting() {
     lists.edit(PACKING, check, "linux-t1".into());
     let shown = shown_list(&lists, Some(PACKING), &folds);
     assert_eq!(shown.head, "Home · 1 open · 2 done", "drawn at once");
+}
+
+/// The list's menu (M85 lists §3.6, §10): Copy as text and Clear done are off while the list's
+/// pull waits. Clear done is on while an item drawn is done, a tick waiting included, and off once
+/// nothing drawn is, an uncheck or a Clear done waiting, though the engine's list still holds a
+/// done item. A removed list has no menu.
+#[test]
+fn the_list_menu_offers_copy_once_pulled_and_clear_done_while_an_item_drawn_is_done() {
+    let mut lists = indexed();
+    let folds = Folds::default();
+    let offers = |lists: &Library| pane::list_offers(&shown_list(lists, Some(PACKING), &folds));
+    let waiting = ListOffers {
+        folders: vec!["Home".into()],
+        folder: "Home".into(),
+        moving_to: None,
+        copy: false,
+        clear_done: false,
+    };
+    assert_eq!(offers(&lists), Some(waiting), "its pull waits");
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    let held = offers(&lists).expect("a menu");
+    assert!(held.copy && held.clear_done, "Shirt is done");
+    let uncheck = ListOp::Uncheck {
+        row_id: SHIRT.into(),
+    };
+    lists.edit(PACKING, uncheck, "linux-t1".into());
+    assert_eq!(shown_list(&lists, Some(PACKING), &folds).done, 0);
+    let unchecked = offers(&lists).expect("a menu");
+    assert!(unchecked.copy);
+    assert!(!unchecked.clear_done, "nothing drawn is done");
+    let check = ListOp::Check {
+        row_id: SOCKS.into(),
+    };
+    lists.edit(PACKING, check, "linux-t2".into());
+    assert!(
+        offers(&lists).is_some_and(|o| o.clear_done),
+        "a tick waiting"
+    );
+    lists.edit(PACKING, ListOp::ClearDone, "linux-t3".into());
+    assert_eq!(shown_list(&lists, Some(PACKING), &folds).done, 0);
+    assert!(offers(&lists).is_some_and(|o| !o.clear_done), "cleared");
+    receive(&mut lists, packing(2, Some("2026-11-03T09:00:00Z")));
+    assert_eq!(offers(&lists), None, "More is hidden on a removed list");
+}
+
+/// The list's menu over a list in `folder`, with a move to `moving_to` waiting, if any.
+fn in_folder(folder: &str, moving_to: Option<&str>) -> ListOffers {
+    ListOffers {
+        folders: vec!["Home".into()],
+        folder: folder.into(),
+        moving_to: moving_to.map(str::to_owned),
+        copy: true,
+        clear_done: false,
+    }
+}
+
+fn to_folder(folder: &str) -> ListOp {
+    ListOp::Folder {
+        folder: folder.into(),
+    }
+}
+
+/// Move to folder (M85 lists §3.6, §7) checks the folder the index puts the list in, empty for
+/// none, among every folder in picker order. Picking another sends `folder` with its name, and No
+/// folder sends it empty; picking the one checked sends nothing. The head shows the new folder
+/// when the index comes back, not before.
+#[test]
+fn move_to_folder_checks_the_lists_own_folder_and_sends_nothing_for_it() {
+    let mut lists = indexed();
+    let folds = Folds::default();
+    let errands = pane::list_offers(&shown_list(&lists, Some(ERRANDS), &folds));
+    let errands = errands.expect("a menu");
+    assert_eq!(
+        (errands.folder.as_str(), errands.folders),
+        ("", vec!["Home".to_owned()])
+    );
+    assert_eq!(pane::folder_op(&in_folder("Home", None), "Home"), None);
+    assert_eq!(
+        pane::folder_op(&in_folder("", None), ""),
+        None,
+        "No folder for a list in none"
+    );
+    let none = to_folder("");
+    assert_eq!(
+        pane::folder_op(&in_folder("Home", None), ""),
+        Some(none.clone())
+    );
+    let work = to_folder("Home_work");
+    assert_eq!(
+        pane::folder_op(&in_folder("", None), "Home_work"),
+        Some(work)
+    );
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    lists.edit(PACKING, none, "linux-t1".into());
+    let sent = shown_list(&lists, Some(PACKING), &folds);
+    assert_eq!(
+        sent.folder.as_deref(),
+        Some("Home"),
+        "drawn when the index comes back"
+    );
+    assert_eq!(sent.head, "Home · 2 open · 1 done");
+    receive(
+        &mut lists,
+        json!({"type": "checklists", "profile_id": "main", "lists": [
+            {"list_id": ERRANDS, "title": "Errands", "open": 1, "done": 0, "rev": 1},
+            {"list_id": GROCERIES, "title": "Groceries", "folder": "Home", "open": 6, "done": 2,
+             "rev": 4},
+            {"list_id": PACKING, "title": "Packing", "open": 2, "done": 1, "rev": 2}
+        ]}),
+    );
+    let moved = shown_list(&lists, Some(PACKING), &folds);
+    assert_eq!(moved.folder, None);
+    assert_eq!(moved.head, "2 open · 1 done");
+}
+
+/// While a move to another folder waits, Move to folder still checks the folder the index gives,
+/// as the move is drawn when the index comes back. Picking that folder sends, since the move
+/// waiting takes the list away from it; picking the folder the newest move waiting goes to sends
+/// nothing (M85 lists §7).
+#[test]
+fn a_pick_back_to_the_folder_a_waiting_move_leaves_is_sent() {
+    let mut lists = indexed();
+    let folds = Folds::default();
+    lists.draw(PACKING, false);
+    receive(&mut lists, packing(1, None));
+    lists.edit(PACKING, to_folder("Work"), "linux-t1".into());
+    let offers = pane::list_offers(&shown_list(&lists, Some(PACKING), &folds));
+    let offers = offers.expect("a menu");
+    assert_eq!(
+        (offers.folder.as_str(), offers.moving_to.as_deref()),
+        ("Home", Some("Work")),
+        "Home stays checked while Work waits"
+    );
+    assert_eq!(pane::folder_op(&offers, "Home"), Some(to_folder("Home")));
+    assert_eq!(pane::folder_op(&offers, "Work"), None);
+    lists.edit(PACKING, to_folder("Home"), "linux-t2".into());
+    let back = pane::list_offers(&shown_list(&lists, Some(PACKING), &folds));
+    let back = back.expect("a menu");
+    assert_eq!(back.moving_to.as_deref(), Some("Home"), "the newest move");
+    assert_eq!(pane::folder_op(&back, "Home"), None);
+    assert_eq!(pane::folder_op(&back, "Work"), Some(to_folder("Work")));
+}
+
+/// Move to folder lists the folders in the picker's order, which is the index's: Work, which the
+/// index names first, before Home, though Home comes first by the alphabet.
+#[test]
+fn move_to_folder_lists_the_folders_in_the_index_order_not_the_alphabets() {
+    let mut lists = Library::default();
+    lists.negotiated(7);
+    receive(
+        &mut lists,
+        json!({"type": "checklists", "profile_id": "main", "lists": [
+            {"list_id": ERRANDS, "title": "Errands", "folder": "Work", "open": 1, "done": 0,
+             "rev": 1},
+            {"list_id": PACKING, "title": "Packing", "folder": "Home", "open": 2, "done": 1,
+             "rev": 1}
+        ]}),
+    );
+    let offers = pane::list_offers(&shown_list(&lists, Some(PACKING), &Folds::default()));
+    let offers = offers.expect("a menu");
+    assert_eq!(offers.folders, ["Work", "Home"]);
 }
 
 #[test]

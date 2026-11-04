@@ -1,14 +1,17 @@
 //! The Lists pane (M85 lists §3): one of the owner's lists at the chat's end, under the window's
 //! header. A split view around the chat's body holds it, in a breakpoint bin that collapses the
 //! split below 600sp, where the pane lies over the chat and shows only when asked. Its head picks
-//! the list and gives its folder and counts; its list draws the lines `checklists::panel` gives,
-//! spliced where they changed, an item being reworded as its two entries, each item with its menu
-//! (`list_menu`) and its moves; Add an item sits at its foot. Whether it shows is the owner's last
-//! open or close (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets,
-//! markup off before any text, and no list edit is an exported action: the pane hands each to the
-//! session through `Lister`.
+//! the list, opens the list's menu behind More (`list_more`), and gives its folder and counts; its
+//! list draws the lines `checklists::panel` gives, spliced where they changed, an item being
+//! reworded as its two entries, each item with its menu (`list_menu`) and its moves; Add an item
+//! sits at its foot. Whether it shows is the owner's last open or close
+//! (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets, markup off before
+//! any text, and no list edit is an exported action: the pane hands each to the session through
+//! `Lister`.
 
+use super::entries::copy_text;
 use super::list_menu::{self, ItemOffers};
+use super::list_more::{self, ListActs};
 use super::list_reword::Reworder;
 use super::list_rows::{self, moves_on, on_click_or_key, rewords_on};
 use super::lists::{act, ListAct, Lister, PANE_MARK};
@@ -19,7 +22,8 @@ use fermix_client::checklists::draft::Place;
 use fermix_client::checklists::index::Folders;
 use fermix_client::checklists::library::Library;
 use fermix_client::checklists::pane::{
-    drawing, news, rewording, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen,
+    drawing, folder_op, list_offers, news, rewording, Folds, ListOffers, PaneBody, PaneDrawing,
+    PaneList, PaneOpen,
 };
 use fermix_client::checklists::panel::{self, add_place, rewords, splice, Line, Splice, Steps};
 use fermix_client::checklists::words::{
@@ -94,7 +98,7 @@ pub struct ListsPane {
     moving: RefCell<Option<String>>,
 }
 
-/// The head (§3.3): the picker and Hide lists, then the folder and counts.
+/// The head (§3.3): the picker, More and Hide lists, then the folder and counts.
 struct Head {
     picker: gtk::MenuButton,
     title: gtk::Label,
@@ -103,6 +107,11 @@ struct Head {
     /// The index's folders and the shown list the picks were drawn for: a tick or a push that
     /// changes neither leaves the picks, and an open picker, as they are.
     picks_of: RefCell<Option<(Folders, String)>>,
+    /// Opens the list's menu; shown while a list is drawn that is not removed.
+    more: gtk::MenuButton,
+    /// The list and the offers More's menu was last made for, none while it is being made: a
+    /// draw that changes either closes the menu while it shows.
+    menu_of: RefCell<Option<(String, ListOffers)>>,
     hide: gtk::Button,
     counts: gtk::Label,
 }
@@ -205,6 +214,8 @@ impl ListsPane {
                 pane.add_item();
             }
         });
+        let pane = Rc::downgrade(self);
+        list_more::menu_on(&self.head.more, move || pane.upgrade()?.list_menu());
         self.wire_picks();
     }
 
@@ -815,6 +826,73 @@ impl ListsPane {
         act(&self.lister, ListAct::Edit { list_id, op });
     }
 
+    /// The list's menu as More opens it, for the list drawn: what it offers, and what each item
+    /// does to that list. A rewording going on is saved first, as a click on another row saves
+    /// it; the draw that saving makes leaves the menu opening. None while no list is drawn, or the
+    /// one drawn is removed.
+    fn list_menu(self: &Rc<Self>) -> Option<(ListOffers, ListActs)> {
+        self.head.menu_of.replace(None);
+        self.reworder.save_going();
+        let (offers, list_id) = match self.drawn.borrow().as_ref() {
+            Some(PaneDrawing::List(list)) => (list_offers(list)?, list.list_id.clone()),
+            _ => return None,
+        };
+        let made = Some((list_id.clone(), offers.clone()));
+        self.head.menu_of.replace(made);
+        let (pane, list, offered) = (Rc::downgrade(self), list_id.clone(), offers.clone());
+        let folder = move |picked: &str| {
+            if let Some(pane) = pane.upgrade() {
+                pane.to_folder(&list, &offered, picked);
+            }
+        };
+        let (pane, list) = (Rc::downgrade(self), list_id.clone());
+        let copy = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.copy(&list);
+            }
+        };
+        let (pane, list) = (Rc::downgrade(self), list_id);
+        let clear_done = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.clear_done(&list);
+            }
+        };
+        let acts = ListActs {
+            folder: Rc::new(folder),
+            copy: Rc::new(copy),
+            clear_done: Rc::new(clear_done),
+        };
+        Some((offers, acts))
+    }
+
+    /// Closes More's menu, which a folder picked with Space leaves open, then moves `list_id` to
+    /// `picked`, empty for no folder, as `offers` says: nothing for the folder it will be in once
+    /// its edits land. The head shows the new folder when the index comes back.
+    fn to_folder(&self, list_id: &str, offers: &ListOffers, picked: &str) {
+        self.head.more.popdown();
+        if let Some(op) = folder_op(offers, picked) {
+            let list_id = list_id.to_owned();
+            act(&self.lister, ListAct::Edit { list_id, op });
+        }
+    }
+
+    /// Puts `list_id` on the clipboard as text, the whole list as drawn with its edits waiting,
+    /// with the app's "Copied" toast.
+    fn copy(&self, list_id: &str) {
+        let held = self.held.borrow();
+        match held.as_ref().filter(|list| list.list_id == list_id) {
+            Some(list) => copy_text(&self.column, &list.markdown()),
+            None => glib::g_warning!("fermix", "Copy as text found its list no longer drawn"),
+        }
+    }
+
+    /// Clears the done items of `list_id`, drawn at once.
+    fn clear_done(&self, list_id: &str) {
+        let list_id = list_id.to_owned();
+        let op = ListOp::ClearDone;
+        act(&self.lister, ListAct::Edit { list_id, op });
+    }
+
     /// Rewords `row`, keeping its selection for when its row is back. A rewording going on is
     /// saved first.
     fn reword(&self, list_id: &str, row: &ListRow) {
@@ -915,6 +993,8 @@ impl Head {
             picks,
             picked: Rc::default(),
             picks_of: RefCell::default(),
+            more: list_more::more_button(),
+            menu_of: RefCell::default(),
             hide,
             counts,
         }
@@ -924,6 +1004,7 @@ impl Head {
     fn draw_none(&self) {
         self.title.set_text(LISTS);
         self.picker.set_sensitive(false);
+        self.show_more(false);
         self.counts.set_visible(false);
         self.picked.borrow_mut().clear();
         self.picks_of.replace(None);
@@ -933,6 +1014,9 @@ impl Head {
     fn draw(&self, list: &PaneList) {
         self.title.set_text(&list.title);
         self.picker.set_sensitive(true);
+        let offers = list_offers(list);
+        self.close_stale_menu(&list.list_id, offers.as_ref());
+        self.show_more(offers.is_some());
         self.counts.set_text(&list.head);
         let spoken = gtk::accessible::Property::Label(&list.spoken_head);
         self.counts.update_property(&[spoken]);
@@ -942,6 +1026,35 @@ impl Head {
             self.draw_picks(&list.folders, &list.list_id);
             self.picks_of.replace(picks_of);
         }
+    }
+
+    /// Closes More's menu while it shows when `list_id` or its `offers` are not what the menu was
+    /// made for, as an item's menu closes when its row goes: its items would act on what was drawn.
+    fn close_stale_menu(&self, list_id: &str, offers: Option<&ListOffers>) {
+        let stale = self
+            .menu_of
+            .borrow()
+            .as_ref()
+            .is_some_and(|(made_for, made)| made_for != list_id || Some(made) != offers);
+        if stale && self.more.is_active() {
+            self.more.popdown();
+        }
+    }
+
+    /// Shows More, or hides it. Hiding it while it holds the focus gives the focus to Hide lists,
+    /// the window's focus cleared first, as GTK would move it out of the pane a frame later.
+    fn show_more(&self, shown: bool) {
+        let root = self.more.root();
+        let focus = root.as_ref().and_then(|root| root.focus());
+        let more: &gtk::Widget = self.more.upcast_ref();
+        let held = focus.is_some_and(|focus| focus == *more || focus.is_ancestor(more));
+        if !shown && held {
+            if let Some(root) = root {
+                root.set_focus(None::<&gtk::Widget>);
+            }
+            self.hide.grab_focus();
+        }
+        self.more.set_visible(shown);
     }
 
     /// The picker's lists: each folder's in the index's order, then those in no folder, each
@@ -1123,6 +1236,7 @@ fn column(head: &Head, body: &gtk::Stack, foot: &Foot) -> gtk::Box {
         .margin_top(6)
         .build();
     bar.append(&head.picker);
+    bar.append(&head.more);
     bar.append(&head.hide);
     column.append(&bar);
     column.append(&head.counts);

@@ -1,8 +1,9 @@
 //! The Lists pane (M85 lists §3), as values: whether it is open, wide or narrow, and the owner's
 //! last open or close kept in `lists.json` (§3.2, L4); and what it draws now: the list asked for
 //! while the index holds it, its head and lines, each list's own folds, an item being reworded,
-//! or the state before the index answers or with no list (§3.3, §3.4, §3.5, §3.8); and what a
-//! screen reader is told as it is drawn again (§6.3).
+//! or the state before the index answers or with no list (§3.3, §3.4, §3.5, §3.8); what the
+//! list's menu offers for it, and the op Move to folder sends (§3.6); and what a screen reader is
+//! told as it is drawn again (§6.3).
 //!
 //! The picker counts each list from the index, as a folded card does. The head under it counts
 //! the list as drawn, its edits waiting included, once it is held. While an edit waits for the
@@ -12,7 +13,9 @@
 use super::index::Folders;
 use super::library::Library;
 use super::panel::{self, Line, View};
+use super::state::PendingEdit;
 use super::words;
+use crate::chat_wire::protocol::ListOp;
 use crate::update::store;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -176,6 +179,13 @@ pub struct PaneList {
     pub folders: Folders,
     pub list_id: String,
     pub title: String,
+    /// The folder the index puts it in, if any.
+    pub folder: Option<String>,
+    /// The folder the newest Move to folder still waiting takes it to, empty for none: where it
+    /// will be once its edits land, while the index still gives `folder`.
+    pub moving_to: Option<String>,
+    /// Its done items, counted as the head counts them.
+    pub done: usize,
     /// Its folder and counts under the picker, on screen and to a screen reader.
     pub head: String,
     pub spoken_head: String,
@@ -249,6 +259,9 @@ pub fn drawing(
         None => (count(entry.open), count(entry.done)),
     };
     let folder = entry.folder.as_deref();
+    let moving_to = library
+        .state(id)
+        .and_then(|state| moving_to(state.pending()));
     let body = match &held {
         _ if removed => PaneBody::Removed,
         Some(list) => PaneBody::Lines(panel::lines(list, &folds.view(id, settling))),
@@ -258,6 +271,9 @@ pub fn drawing(
         folders: index.folders(),
         list_id: id.clone(),
         title: held.map_or_else(|| entry.title.clone(), |list| list.title),
+        folder: folder.map(str::to_owned),
+        moving_to,
+        done,
         head: words::head_line(folder, open, done),
         spoken_head: words::spoken_head_line(folder, open, done),
         body,
@@ -266,6 +282,62 @@ pub fn drawing(
             .and_then(|state| state.refusal())
             .map(str::to_owned),
     }))
+}
+
+/// The folder the newest folder edit in `pending` moves the list to, empty for none.
+fn moving_to(pending: &[PendingEdit]) -> Option<String> {
+    pending.iter().rev().find_map(|edit| match &edit.op {
+        ListOp::Folder { folder } => Some(folder.clone()),
+        _ => None,
+    })
+}
+
+/// What the list's menu, behind More, offers for the list drawn (M85 lists §3.6, §10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListOffers {
+    /// Every folder's name, in picker order, for Move to folder.
+    pub folders: Vec<String>,
+    /// The folder the index puts the list in, empty for none: the one Move to folder checks.
+    pub folder: String,
+    /// The folder the newest Move to folder still waiting takes the list to, empty for none.
+    pub moving_to: Option<String>,
+    /// Copy as text, once the list's pull is answered.
+    pub copy: bool,
+    /// Clear done, once the list's pull is answered and while an item drawn is done, a tick
+    /// waiting or settling included.
+    pub clear_done: bool,
+}
+
+/// The list's menu for `list`, or none while the list is removed: More is hidden then.
+pub fn list_offers(list: &PaneList) -> Option<ListOffers> {
+    let held = match list.body {
+        PaneBody::Removed => return None,
+        PaneBody::Waiting => false,
+        PaneBody::Lines(_) => true,
+    };
+    let folders = list
+        .folders
+        .names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    Some(ListOffers {
+        folders,
+        folder: list.folder.clone().unwrap_or_default(),
+        moving_to: list.moving_to.clone(),
+        copy: held,
+        clear_done: held && list.done > 0,
+    })
+}
+
+/// The op Move to folder sends when the owner picks `picked`, empty for no folder, as No folder's
+/// own pick is: none for the folder the list will be in once its edits land, which is the one
+/// checked unless a move to another still waits (§7). It is drawn when the index comes back.
+pub fn folder_op(offers: &ListOffers, picked: &str) -> Option<ListOp> {
+    let landing = offers.moving_to.as_deref().unwrap_or(&offers.folder);
+    (picked != landing).then(|| ListOp::Folder {
+        folder: picked.to_owned(),
+    })
 }
 
 /// The drawing with the item `row_id` drawn as it is reworded, its words' entry then its note's in
