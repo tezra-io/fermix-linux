@@ -574,8 +574,9 @@ impl ListsPane {
     }
 
     /// Turns the list's rows from `old` into `new` with one splice, or all of them for another
-    /// list. Focus on a row the splice took goes to the row now in its place, else the row
-    /// before, else Add an item; the selected item stays selected.
+    /// list. Focus on a row the splice took goes to the row now in its place, else the list's last
+    /// row, else Add an item, and the list keeps its scroll while that row is scrolled into view
+    /// once laid out; the selected item stays selected.
     fn draw_lines(&self, old: Option<(&str, &[Line])>, new: Option<(&str, &[Line])>) {
         let change = match (old, new) {
             (Some((was, old)), Some((id, new))) if was == id => splice(old, new),
@@ -589,6 +590,7 @@ impl ListsPane {
             return;
         };
         let (focused, selected) = (focused_at(&self.list), self.selected_line());
+        let kept = self.scrolled().map(|(_, adjustment)| adjustment.value());
         let at_entry = focused.and_then(|at| self.list.row_at_index(at));
         let typed = at_entry.is_some_and(|row| row.is::<adw::EntryRow>());
         let typing = self.reworder.current();
@@ -617,7 +619,33 @@ impl ListsPane {
             None if typed => self.refocus(spliced, self.reworded.borrow().as_deref()),
             None => self.refocus(spliced, self.moving.borrow().as_deref()),
         }
+        if spliced.is_some() {
+            self.keep_scrolled(kept);
+        }
         self.reselect(selected);
+    }
+
+    /// After a splice gave the focus to another row, the list stays scrolled as it was (`kept`),
+    /// and the focused row is scrolled into view once it is laid out. GTK scrolls to a row given
+    /// the focus at once, which for a row the splice just made is before it has a place: its
+    /// bounds read y 0, and the list went to its top (gtklistbox.c ensure_row_visible,
+    /// gtkviewport.c scroll-to-focus). Arrow keys move the focus between rows already laid out,
+    /// and GTK scrolls to them as before.
+    fn keep_scrolled(&self, kept: Option<f64>) {
+        let (Some((viewport, adjustment)), Some(kept)) = (self.scrolled(), kept) else {
+            return;
+        };
+        adjustment.set_value(kept);
+        if let Some(row) = focused_at(&self.list).and_then(|at| self.list.row_at_index(at)) {
+            into_view_when_laid_out(&viewport, &row);
+        }
+    }
+
+    /// The viewport the list scrolls in, and its vertical adjustment.
+    fn scrolled(&self) -> Option<(gtk::Viewport, gtk::Adjustment)> {
+        let viewport = self.list.parent().and_downcast::<gtk::Viewport>()?;
+        let adjustment = viewport.vadjustment()?;
+        Some((viewport, adjustment))
     }
 
     /// The entry the owner was typing in, drawn again by a splice, takes the focus back with what
@@ -631,8 +659,8 @@ impl ListsPane {
     }
 
     /// Focus on a row a splice took, at `was`, goes to the row of the `item` whose rewording
-    /// ended, or of the line a move gives it to, else the row now in its place, else the row
-    /// before, else Add an item.
+    /// ended, or of the line a move gives it to, else the row now in its place, else the last row
+    /// before it, however many rows the splice took, else Add an item.
     fn refocus(&self, was: Option<i32>, item: Option<&str>) {
         let Some(was) = was else {
             return;
@@ -643,12 +671,16 @@ impl ListsPane {
         let row = item
             .and_then(|id| self.index_of(id))
             .and_then(|at| self.list.row_at_index(at))
-            .or_else(|| self.list.row_at_index(was))
-            .or_else(|| self.list.row_at_index(was - 1));
+            .or_else(|| self.list.row_at_index(refocus_at(was, self.list_rows())?));
         match row {
             Some(row) => row.grab_focus(),
             None => self.foot.add.grab_focus(),
         };
+    }
+
+    /// How many rows the list has.
+    fn list_rows(&self) -> i32 {
+        i32::try_from(self.lines.n_items()).unwrap_or(i32::MAX)
     }
 
     /// The line of the selected row, by its id.
@@ -1711,6 +1743,64 @@ fn lines_of(drawing: &PaneDrawing) -> Option<(&str, &[Line])> {
     }
 }
 
+/// Where the focus goes after a splice took the row it was on, at `was`, with `rows` rows now: the
+/// row now in its place, else the last row, the one before it however many went (hiding Recently
+/// removed takes its heading and every row under it), else none.
+fn refocus_at(was: i32, rows: i32) -> Option<i32> {
+    Some(was.min(rows - 1)).filter(|at| *at >= 0)
+}
+
+/// How many frames the list waits for a row given the focus to be laid out before it gives up
+/// scrolling it into view.
+const LAYOUT_FRAMES: u32 = 10;
+
+/// Scrolls `row` into view in `viewport` on its first frame after a layout gave it a height, as
+/// little as shows it whole (gtk_viewport_scroll_to with no scroll info), unless the focus left it
+/// first; the window losing activation meanwhile leaves the focus where it is. It waits at most
+/// `LAYOUT_FRAMES` frames, then says so in the log.
+fn into_view_when_laid_out(viewport: &gtk::Viewport, row: &gtk::ListBoxRow) {
+    let (viewport, frames) = (viewport.downgrade(), Cell::new(0));
+    row.add_tick_callback(move |row, _| {
+        frames.set(frames.get() + 1);
+        if !holds_focus(row) {
+            return glib::ControlFlow::Break;
+        }
+        if frames.get() > 1 && row.height() > 0 {
+            scroll_into_view(&viewport, row);
+            return glib::ControlFlow::Break;
+        }
+        if frames.get() < LAYOUT_FRAMES {
+            return glib::ControlFlow::Continue;
+        }
+        glib::g_warning!(
+            "fermix",
+            "A row given the focus was never laid out, so it is not scrolled into view"
+        );
+        glib::ControlFlow::Break
+    });
+}
+
+/// Whether the window's focus is `row` or inside it. The root's focus, not the FOCUS_WITHIN flag:
+/// GTK clears that flag along the focus chain when the window loses activation, though the focus
+/// stays (gtkwindow.c:6174-6176).
+fn holds_focus(row: &gtk::ListBoxRow) -> bool {
+    let row = row.upcast_ref::<gtk::Widget>();
+    row.root()
+        .and_then(|root| root.focus())
+        .is_some_and(|focus| focus == *row || focus.is_ancestor(row))
+}
+
+/// Scrolls `row` into view in the viewport it was given the focus in.
+fn scroll_into_view(viewport: &glib::WeakRef<gtk::Viewport>, row: &gtk::ListBoxRow) {
+    let Some(viewport) = viewport.upgrade() else {
+        return glib::g_warning!(
+            "fermix",
+            "A row given the focus outlived its list's viewport"
+        );
+    };
+    viewport.scroll_to(row, None);
+}
+
 /// The row holding the focus in `list`, by its place.
 fn focused_at(list: &gtk::ListBox) -> Option<i32> {
     let focus = list.root()?.focus()?;
@@ -1727,8 +1817,28 @@ fn index(n: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{gio, TITLE_NODES};
+    use super::{gio, refocus_at, TITLE_NODES};
     use adw::prelude::*;
+
+    /// After a splice took the row the focus was on, the focus goes to the row now in its place,
+    /// else to the last row, the one before it however many rows went, else to none, which is Add
+    /// an item. A click on Recently removed's heading with the focus on its third row takes the
+    /// heading and its rows, and the focus goes to Done, the list's last row now (M85 lists §3.4).
+    #[test]
+    fn the_focus_goes_to_the_row_in_its_place_else_the_last_one_before_it() {
+        assert_eq!(refocus_at(2, 5), Some(2), "the row now in its place");
+        assert_eq!(
+            refocus_at(4, 4),
+            Some(3),
+            "the last row went: the one before it"
+        );
+        assert_eq!(
+            refocus_at(10, 8),
+            Some(7),
+            "hiding a section took the rows under the focus"
+        );
+        assert_eq!(refocus_at(0, 0), None, "no rows left");
+    }
 
     /// An object of a GtkBuilder file: its class, its style classes, and whether its label is the
     /// row's title.
