@@ -2,13 +2,15 @@
 //! header. A split view around the chat's body holds it, in a breakpoint bin that collapses the
 //! split below 600sp, where the pane lies over the chat and shows only when asked. Its head picks
 //! the list and gives its folder and counts; its list draws the lines `checklists::panel` gives,
-//! spliced where they changed, an item being reworded as its two entries; Add an item sits at its
-//! foot. Whether it shows is the owner's last open or close (`checklists::pane::PaneOpen`), which
-//! the session keeps. Only stock widgets, markup off before any text, and no list edit is an
-//! exported action: the pane hands each to the session through `Lister`.
+//! spliced where they changed, an item being reworded as its two entries, each item with its menu
+//! (`list_menu`) and its moves; Add an item sits at its foot. Whether it shows is the owner's last
+//! open or close (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets,
+//! markup off before any text, and no list edit is an exported action: the pane hands each to the
+//! session through `Lister`.
 
+use super::list_menu::{self, ItemOffers};
 use super::list_reword::Reworder;
-use super::list_rows::{self, on_click_or_key, rewords_on};
+use super::list_rows::{self, moves_on, on_click_or_key, rewords_on};
 use super::lists::{act, ListAct, Lister, PANE_MARK};
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{List, ListEntry, ListOp, ListRow};
@@ -19,13 +21,14 @@ use fermix_client::checklists::library::Library;
 use fermix_client::checklists::pane::{
     drawing, news, rewording, Folds, PaneBody, PaneDrawing, PaneList, PaneOpen,
 };
-use fermix_client::checklists::panel::{add_place, rewords, splice, Line, Splice};
+use fermix_client::checklists::panel::{self, add_place, rewords, splice, Line, Splice, Steps};
 use fermix_client::checklists::words::{
     self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NO_LISTS, RECENTLY_REMOVED,
 };
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
 
 /// The pane's share of the chat: 0.4 of it, from 280 to 420sp, so 330 at the default window.
@@ -86,6 +89,9 @@ pub struct ListsPane {
     /// Escape, and the selection when it was selected as the rewording began.
     reworded: RefCell<Option<String>>,
     reselect: Cell<bool>,
+    /// While a move within the list is drawn, the line that takes the focus: the moved item in
+    /// its new place, or the folded heading it went under.
+    moving: RefCell<Option<String>>,
 }
 
 /// The head (§3.3): the picker and Hide lists, then the folder and counts.
@@ -153,6 +159,7 @@ impl ListsPane {
             reworder: Reworder::new(lister),
             reworded: RefCell::default(),
             reselect: Cell::default(),
+            moving: RefCell::default(),
         });
         pane.wire();
         pane
@@ -531,7 +538,7 @@ impl ListsPane {
         match typing.filter(in_list).filter(|_| spliced.is_some()) {
             Some(entry) => self.keep_typing(&entry),
             None if typed => self.refocus(spliced, self.reworded.borrow().as_deref()),
-            None => self.refocus(spliced, None),
+            None => self.refocus(spliced, self.moving.borrow().as_deref()),
         }
         self.reselect(selected);
     }
@@ -547,7 +554,8 @@ impl ListsPane {
     }
 
     /// Focus on a row a splice took, at `was`, goes to the row of the `item` whose rewording
-    /// ended, else the row now in its place, else the row before, else Add an item.
+    /// ended, or of the line a move gives it to, else the row now in its place, else the row
+    /// before, else Add an item.
     fn refocus(&self, was: Option<i32>, item: Option<&str>) {
         let Some(was) = was else {
             return;
@@ -686,16 +694,125 @@ impl ListsPane {
     }
 
     /// An item with its note, whose tick the session sends; a double-click, Return or F2 rewords
-    /// its words and note.
+    /// its words and note; a right-click, a touch long press, Menu or Shift+F10 opens its menu
+    /// (§3.6), and Alt+Up and Alt+Down move it (§6.1). A row still being sent is insensitive, so
+    /// it takes none of these.
     fn item_row(self: &Rc<Self>, list_id: &str, row: &ListRow) -> adw::ActionRow {
         let item = list_rows::item_row(row, true, list_id, &self.lister, &self.settling);
-        let (pane, list_id, row) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
+        let (pane, list, words) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
         rewords_on(&item, move || {
             if let Some(pane) = pane.upgrade() {
-                pane.reword(&list_id, &row);
+                pane.reword(&list, &words);
+            }
+        });
+        let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row.row_id.clone());
+        list_menu::menu_on(&item, move |item, at| {
+            if let Some(pane) = pane.upgrade() {
+                pane.item_menu(item, &list, &id, at);
+            }
+        });
+        let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row.row_id.clone());
+        moves_on(&item, move |up| {
+            if let Some(pane) = pane.upgrade() {
+                pane.step(&list, &id, up);
             }
         });
         item
+    }
+
+    /// The menu of the item `row_id` of `list_id`, over `item`, pointing at (x, y) after a
+    /// pointer or a touch: Move to list with the other lists, and Move up and Move down where the
+    /// item steps that way. A rewording going on is saved first, as a click on another row saves
+    /// it.
+    fn item_menu(
+        self: &Rc<Self>,
+        item: &adw::ActionRow,
+        list_id: &str,
+        row_id: &str,
+        at: Option<(f64, f64)>,
+    ) {
+        self.reworder.save_going();
+        let steps = self.steps_of(list_id, row_id).unwrap_or_default();
+        let offers = ItemOffers {
+            others: self.others(),
+            up: steps.up.is_some(),
+            down: steps.down.is_some(),
+        };
+        let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row_id.to_owned());
+        let to_list = move |to: &str| {
+            if let Some(pane) = pane.upgrade() {
+                pane.move_to(&list, &id, to);
+            }
+        };
+        let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row_id.to_owned());
+        let step = move |up| {
+            if let Some(pane) = pane.upgrade() {
+                pane.step(&list, &id, up);
+            }
+        };
+        let actions = list_menu::item_actions(&offers, to_list, step);
+        list_menu::pop_up(item, &list_menu::item_menu(&offers.others), &actions, at);
+    }
+
+    /// Move up and Move down for the item `row_id`, while the pane holds `list_id`.
+    fn steps_of(&self, list_id: &str, row_id: &str) -> Option<Steps> {
+        let held = self.held.borrow();
+        let list = held.as_ref().filter(|list| list.list_id == list_id)?;
+        Some(panel::steps(list, row_id))
+    }
+
+    /// Where the item `row_id` of `list_id` steps up or down, and the line that takes the focus
+    /// once it has: the item, or the heading of the folded section the step takes it into.
+    fn step_of(&self, list_id: &str, row_id: &str, up: bool) -> Option<(Place, String)> {
+        let held = self.held.borrow();
+        let list = held.as_ref().filter(|list| list.list_id == list_id)?;
+        let steps = panel::steps(list, row_id);
+        let place = if up { steps.up } else { steps.down }?;
+        let view = self.folds.borrow().view(list_id, &BTreeSet::new());
+        let focus = panel::hidden_under(list, &view, &place).unwrap_or_else(|| row_id.to_owned());
+        Some((place, focus))
+    }
+
+    /// The lists other than the one shown, by folder: where an item can move to.
+    fn others(&self) -> Folders {
+        match self.drawn.borrow().as_ref() {
+            Some(PaneDrawing::List(list)) => list.folders.without(&list.list_id),
+            _ => Folders::default(),
+        }
+    }
+
+    /// Moves the item `row_id` of `list_id` past the line above or below it, as Move up and Move
+    /// down, Alt+Up and Alt+Down do, drawn at once. The focus goes to the item in its new place,
+    /// or, where the step takes it into a folded section, to that section's heading, so a held
+    /// Alt+Up stops there. Nothing where no op can say the step.
+    fn step(&self, list_id: &str, row_id: &str, up: bool) {
+        let Some((place, focus)) = self.step_of(list_id, row_id, up) else {
+            return;
+        };
+        let (section_id, after_id) = Place::fields(Some(place));
+        let op = ListOp::Move {
+            row_id: row_id.to_owned(),
+            section_id,
+            after_id,
+            to_list_id: None,
+        };
+        self.moving.replace(Some(focus));
+        let list_id = list_id.to_owned();
+        act(&self.lister, ListAct::Edit { list_id, op });
+        self.moving.replace(None);
+    }
+
+    /// Moves the item `row_id` of `list_id` to the list `to`, where the engine puts it at the end
+    /// of the first group. It leaves this list at once.
+    fn move_to(&self, list_id: &str, row_id: &str, to: &str) {
+        let op = ListOp::Move {
+            row_id: row_id.to_owned(),
+            section_id: None,
+            after_id: None,
+            to_list_id: Some(to.to_owned()),
+        };
+        let list_id = list_id.to_owned();
+        act(&self.lister, ListAct::Edit { list_id, op });
     }
 
     /// Rewords `row`, keeping its selection for when its row is back. A rewording going on is

@@ -1,7 +1,7 @@
 //! The Lists pane's lines (M85 lists §3.4, §3.5): what the one list draws, in order, an item
-//! being reworded among them; where Alt+Up and Alt+Down put a row, by the engine's ops; which
-//! section an added item goes to; and the one splice that turns the drawn lines into the new
-//! ones.
+//! being reworded among them; where Move up and Move down, Alt+Up and Alt+Down, put a row, by
+//! the engine's ops, and the folded heading a step takes it under (§3.6, §6.1); which section an
+//! added item goes to; and the one splice that turns the drawn lines into the new ones.
 
 use super::draft::{is_local, Place};
 use super::sections;
@@ -170,6 +170,50 @@ pub fn step(row_id: &str, up: bool, lines: &[Line]) -> Option<Place> {
         Line::Heading { row, .. } | Line::Item(row) => Some(Place::After(row.row_id.clone())),
         _ => None,
     }
+}
+
+/// Where Move up and Move down put an item, as Alt+Up and Alt+Down do (M85 lists §3.6, §6.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Steps {
+    pub up: Option<Place>,
+    pub down: Option<Place>,
+}
+
+/// Move up and Move down for the item `row_id`: a `step` each way over the list's open lines, as
+/// if no section were folded, nothing were settling and Done were closed, as the macOS app steps.
+/// So neither a done item nor one ticked a moment ago steps, and a step into a folded section
+/// lands where it would with the section open. Nor does a row the engine has not named yet step,
+/// nor does a step land after one: no op names such a row (§5.3). Passing over one to a named row
+/// stays on.
+pub fn steps(list: &List, row_id: &str) -> Steps {
+    if is_local(row_id) {
+        return Steps::default();
+    }
+    let lines = lines(list, &View::default());
+    let named = |place: &Place| match place {
+        Place::Section(id) | Place::After(id) => !is_local(id),
+    };
+    Steps {
+        up: step(row_id, true, &lines).filter(named),
+        down: step(row_id, false, &lines).filter(named),
+    }
+}
+
+/// The id of the heading's line an item moved to `place` goes under, where `view` folds that
+/// section: the item is then not drawn, and the pane gives the heading the focus, so a held
+/// Alt+Up stops there. `None` in the first group or a section drawn open.
+pub fn hidden_under(list: &List, view: &View, place: &Place) -> Option<String> {
+    let (Place::Section(id) | Place::After(id)) = place;
+    let at = list.rows.iter().position(|row| row.row_id == *id)?;
+    let heading = list.rows[..=at].iter().rev().find(|row| row.is_section())?;
+    if !view.folded.contains(&heading.row_id) {
+        return None;
+    }
+    let line = Line::Heading {
+        row: heading.clone(),
+        folded: true,
+    };
+    Some(line.id())
 }
 
 /// Where an item added from the pane goes (M85 lists §3.5): the selected item's section, or with

@@ -1,6 +1,7 @@
 //! The rows both lists surfaces draw (M85 lists §4.1): an item, as a reply's card and the Lists
-//! pane draw it, with its settle after a tick, and what starts its rewording; and a row or button
-//! row that acts on a single click or Return in a list that activates its rows on a double-click.
+//! pane draw it, with its settle after a tick, what starts its rewording, and the keys that move
+//! it in the pane; and a row or button row that acts on a single click or Return in a list that
+//! activates its rows on a double-click.
 //! Markup off before any text, and no list edit is an exported action: a tick is the check
 //! button's own closure, which hands it to the session through `Lister`.
 
@@ -150,6 +151,27 @@ pub fn rewords_on(item: &adw::ActionRow, start: impl Fn() + 'static) {
             return glib::Propagation::Proceed;
         }
         by_f2();
+        glib::Propagation::Stop
+    });
+    item.add_controller(keys);
+}
+
+/// An item that Alt+Up and Alt+Down move past the line above or below (M85 lists §6.1): `step`
+/// learns which way. Ctrl+Up and Ctrl+Down stay the list's own focus moves.
+pub fn moves_on(item: &adw::ActionRow, step: impl Fn(bool) + 'static) {
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let alt =
+            (state & gtk::accelerator_get_default_mod_mask()) == gtk::gdk::ModifierType::ALT_MASK;
+        let up = match key {
+            gtk::gdk::Key::Up | gtk::gdk::Key::KP_Up => true,
+            gtk::gdk::Key::Down | gtk::gdk::Key::KP_Down => false,
+            _ => return glib::Propagation::Proceed,
+        };
+        if !alt {
+            return glib::Propagation::Proceed;
+        }
+        step(up);
         glib::Propagation::Stop
     });
     item.add_controller(keys);

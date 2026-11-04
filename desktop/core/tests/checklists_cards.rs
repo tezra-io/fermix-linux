@@ -9,7 +9,7 @@ use fermix_client::checklists::cards::{self, GROUP_LISTS, ONE_LIST_ROWS};
 use fermix_client::checklists::draft::Place;
 use fermix_client::checklists::index::Folders;
 use fermix_client::checklists::library::Library;
-use fermix_client::checklists::panel::{self, Line, View};
+use fermix_client::checklists::panel::{self, Line, Steps, View};
 use fermix_client::checklists::{ListRef, ITEM, SECTION};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -330,6 +330,122 @@ fn a_step_lands_past_the_line_above_or_below_a_heading_included_and_nowhere_an_o
     assert_eq!(panel::step("nowhere", false, &lines), None);
 }
 
+/// The steps are taken over the list's open lines, as if no section were folded, nothing were
+/// settling and Done were closed, whatever the pane draws (M85 lists §3.6, §6.1).
+#[test]
+fn move_up_and_move_down_step_over_the_open_lines_with_nothing_folded_or_settling() {
+    let list = fermix();
+    let after = |id: &str| Some(Place::After(id.into()));
+    let drawn = View {
+        done_open: true,
+        settling: BTreeSet::from(["b".to_owned()]),
+        ..View::default()
+    };
+
+    assert_eq!(
+        panel::steps(&list, "a"),
+        Steps {
+            up: after("loose"),
+            down: after("later"),
+        }
+    );
+    let lines = panel::lines(&list, &drawn);
+    assert_eq!(
+        panel::step("b", true, &lines),
+        after("active"),
+        "drawn, b keeps its place while it settles, and would step"
+    );
+    assert_eq!(
+        panel::steps(&list, "b"),
+        Steps::default(),
+        "a done item does not step, settling or not"
+    );
+    assert_eq!(
+        panel::steps(&list, "loose"),
+        Steps {
+            up: None,
+            down: after("active"),
+        },
+        "the top of a headless group"
+    );
+    assert_eq!(
+        panel::steps(&list, "c"),
+        Steps {
+            up: after("a"),
+            down: None,
+        },
+        "nothing below the last open line"
+    );
+    assert_eq!(panel::steps(&list, "active"), Steps::default());
+}
+
+/// A step into a folded section lands where it would with the section open, and the item goes
+/// out of sight under that section's heading, which takes the focus; a step into a section drawn
+/// open, or into the first group, hides nothing.
+#[test]
+fn a_step_into_a_folded_section_lands_as_if_it_were_open_and_goes_under_its_heading() {
+    let list = fermix();
+    let folded = |id: &str| View {
+        folded: BTreeSet::from([id.to_owned()]),
+        ..View::default()
+    };
+    let up = panel::steps(&list, "c").up.expect("c steps up");
+    assert_eq!(up, Place::After("a".into()), "the end of active");
+    let active = folded("active");
+    assert!(!line_ids(&panel::lines(&list, &active)).contains(&"a".to_owned()));
+    assert_eq!(
+        panel::hidden_under(&list, &active, &up).as_deref(),
+        Some("heading:active")
+    );
+    let down = panel::steps(&list, "a").down.expect("a steps down");
+    assert_eq!(down, Place::After("later".into()), "first in later");
+    assert_eq!(
+        panel::hidden_under(&list, &folded("later"), &down).as_deref(),
+        Some("heading:later")
+    );
+    assert_eq!(panel::hidden_under(&list, &folded("later"), &up), None);
+    assert_eq!(panel::hidden_under(&list, &View::default(), &up), None);
+    let loose = Place::After("loose".into());
+    assert_eq!(panel::hidden_under(&list, &active, &loose), None);
+}
+
+/// A row the engine has not named yet takes no step, and no step lands after one, up or down; a
+/// step past one to a named row stays on (§5.3).
+#[test]
+fn a_row_the_engine_has_not_named_neither_steps_nor_takes_a_step_that_lands_after_it() {
+    let sending = "local:linux-0000000000000001";
+    let between = list(
+        "ck_a",
+        vec![item("x", false), item(sending, false), item("y", false)],
+    );
+    let list = list(
+        "ck_a",
+        vec![item(sending, false), item("y", false), item("w", false)],
+    );
+    let after = |id: &str| Some(Place::After(id.into()));
+
+    assert_eq!(panel::steps(&list, sending), Steps::default());
+    assert_eq!(
+        panel::steps(&list, "w"),
+        Steps {
+            up: None,
+            down: None,
+        },
+        "up would land after the sending row"
+    );
+    assert_eq!(panel::steps(&list, "y").down, after("w"));
+    assert_eq!(
+        panel::steps(&between, "x").down,
+        None,
+        "down would land after the sending row"
+    );
+    assert_eq!(
+        panel::steps(&between, "y").up,
+        after("x"),
+        "past the sending row to a named one"
+    );
+}
+
 #[test]
 fn an_added_item_goes_to_the_selected_items_section_else_the_first_group() {
     let list = fermix();
@@ -395,6 +511,79 @@ fn the_picker_names_each_folder_over_its_lists_in_index_order_then_the_lists_in_
     assert_eq!(titles, [vec!["Fermix", "Portfolio site"], vec!["Packing"]]);
     let loose: Vec<&str> = folders.loose.iter().map(|l| l.title.as_str()).collect();
     assert_eq!(loose, ["Groceries"]);
+}
+
+#[test]
+fn an_item_moves_to_the_other_lists_by_folder_in_picker_order() {
+    let folders = Folders::of(&[
+        entry("ck_a", "Fermix", Some("Projects")),
+        entry("ck_b", "Groceries", None),
+        entry("ck_c", "Packing", Some("Trips")),
+        entry("ck_d", "Portfolio site", Some("Projects")),
+    ]);
+    let titles = |folders: &Folders| -> (Vec<(String, Vec<String>)>, Vec<String>) {
+        let named = folders
+            .folders
+            .iter()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    f.lists.iter().map(|l| l.title.clone()).collect(),
+                )
+            })
+            .collect();
+        let loose = folders.loose.iter().map(|l| l.title.clone()).collect();
+        (named, loose)
+    };
+
+    let others = folders.without("ck_a");
+    assert_eq!(
+        titles(&others),
+        (
+            vec![
+                ("Projects".to_owned(), vec!["Portfolio site".to_owned()]),
+                ("Trips".to_owned(), vec!["Packing".to_owned()]),
+            ],
+            vec!["Groceries".to_owned()]
+        )
+    );
+    assert!(!others.is_empty());
+    let others = folders.without("ck_c");
+    assert_eq!(
+        others.names(),
+        ["Projects"],
+        "a folder with no other list is left out"
+    );
+    assert_eq!(titles(&folders.without("ck_b")).1, Vec::<String>::new());
+    assert!(
+        !folders.without("ck_b").is_empty(),
+        "lists in folders, none loose"
+    );
+
+    let alone = Folders::of(&[entry("ck_a", "Fermix", Some("Projects"))]);
+    assert!(alone.without("ck_a").is_empty(), "no other list");
+    assert_eq!(alone.without("ck_a"), Folders::default());
+}
+
+/// The other lists keep the index's order, folders and lists alike, never the alphabet's.
+#[test]
+fn the_other_lists_keep_the_index_order_not_the_alphabets() {
+    let folders = Folders::of(&[
+        entry("ck_z", "Zebra", Some("Trips")),
+        entry("ck_y", "Yarn", None),
+        entry("ck_m", "Mail", Some("Home")),
+        entry("ck_a", "Apples", Some("Trips")),
+        entry("ck_b", "Bills", None),
+    ]);
+    let others = folders.without("ck_m");
+    assert_eq!(others.names(), ["Trips"]);
+    let titles = |lists: &[ListEntry]| -> Vec<String> {
+        lists.iter().map(|list| list.title.clone()).collect()
+    };
+    assert_eq!(titles(&others.folders[0].lists), ["Zebra", "Apples"]);
+    assert_eq!(titles(&others.loose), ["Yarn", "Bills"]);
+    let others = folders.without("ck_y");
+    assert_eq!(others.names(), ["Trips", "Home"]);
 }
 
 #[test]

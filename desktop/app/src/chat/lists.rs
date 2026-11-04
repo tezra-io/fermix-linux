@@ -595,6 +595,32 @@ mod tests {
         assert_eq!(lists, [&"lists"], "win.lists alone");
     }
 
+    /// An item's menu acts through an action group of its own, inserted on the menu's popover
+    /// under `item`, never added to the window or the application: GTK exports theirs on the
+    /// session bus, and never a widget's own group (M85 lists §4.2).
+    #[test]
+    fn the_item_menus_actions_are_its_popovers_own() {
+        let source = shipped(include_str!("list_menu.rs"));
+        let flat = squeezed(source);
+        assert!(flat.contains("constITEM_GROUP:&str=\"item\";"));
+        assert_eq!(flat.matches("insert_action_group(").count(), 1);
+        assert!(flat.contains("popover.insert_action_group(ITEM_GROUP,Some(actions));"));
+        assert!(flat.contains("letgroup=gio::SimpleActionGroup::new();"));
+        let added = flat.matches(".add_action(").count();
+        assert!(added > 0, "the scan reads the actions");
+        assert_eq!(added, flat.matches("group.add_action(").count());
+        for named in [
+            "\"win.",
+            "\"app.",
+            "activate_action(",
+            "action_name(",
+            "Application",
+            "set_accels",
+        ] {
+            assert!(!source.contains(named), "list_menu.rs names {named}");
+        }
+    }
+
     /// The name of every action `source` registers in one of the `REGISTERS` ways.
     fn registered(source: &str) -> Vec<&str> {
         let mut names = Vec::new();

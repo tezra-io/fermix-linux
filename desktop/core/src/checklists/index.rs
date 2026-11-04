@@ -141,6 +141,36 @@ impl Folders {
             .map(|folder| folder.name.as_str())
             .collect()
     }
+
+    /// The lists an item of `list_id` can move to (M85 lists §3.6): these, in the same order,
+    /// without `list_id`, a folder left with no list dropped.
+    pub fn without(&self, list_id: &str) -> Folders {
+        let others = |lists: &[ListEntry]| -> Vec<ListEntry> {
+            lists
+                .iter()
+                .filter(|entry| entry.list_id != list_id)
+                .cloned()
+                .collect()
+        };
+        let folders = self
+            .folders
+            .iter()
+            .map(|folder| Folder {
+                name: folder.name.clone(),
+                lists: others(&folder.lists),
+            })
+            .filter(|folder| !folder.lists.is_empty())
+            .collect();
+        Folders {
+            folders,
+            loose: others(&self.loose),
+        }
+    }
+
+    /// Whether no list is named.
+    pub fn is_empty(&self) -> bool {
+        self.loose.is_empty() && self.folders.iter().all(|folder| folder.lists.is_empty())
+    }
 }
 
 fn in_folder(entries: &[ListEntry], folder: Option<&str>) -> Vec<ListEntry> {
