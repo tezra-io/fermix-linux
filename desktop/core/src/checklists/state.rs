@@ -99,8 +99,14 @@ impl ListState {
     /// The engine refused the edit: it changed nothing, so it stops being drawn and the row is
     /// the engine's again, under the engine's sentence.
     pub fn refused(&mut self, client_msg_id: &str, sentence: String) {
+        self.dropped(client_msg_id);
+        self.refusal = Some(sentence);
+    }
+
+    /// The engine refused the edit, and its sentence is not the list's to show: it stops being
+    /// drawn, and the list keeps the sentence it had.
+    pub fn dropped(&mut self, client_msg_id: &str) {
         self.pending
             .retain(|edit| edit.client_msg_id != client_msg_id);
-        self.refusal = Some(sentence);
     }
 }

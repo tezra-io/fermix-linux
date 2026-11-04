@@ -49,6 +49,18 @@ pub enum ListAct {
         words: String,
         note: Option<String>,
     },
+    /// Remove, by Delete or a menu in the pane: the row `row_id` of `list_id`, or the list itself
+    /// with none, which `text` names in the toast that offers Undo.
+    Remove {
+        list_id: String,
+        row_id: Option<String>,
+        text: String,
+    },
+    /// Undo: takes back the removal a toast's token names, or with none the newest still kept
+    /// (Ctrl+Z in the pane).
+    TakeBack(Option<u64>),
+    /// The Undo on a removed list's page: brings that list back.
+    UndoList { list_id: String },
     /// A card's or the pane's own state changed (grown, folded back, a section or Done folded or
     /// opened, a list picked, a ticked row settled, or a rewording begun or left by Escape): the
     /// lists are drawn again.
@@ -650,6 +662,52 @@ mod tests {
             "set_accels",
         ] {
             assert!(!source.contains(named), "list_more.rs names {named}");
+        }
+    }
+
+    /// The Undo toast shows the removed words as written, markup off, and its button takes the
+    /// removal back by its own closure, never through an action such as `win.toast`, which carries
+    /// only text (M85 lists §4.1, §4.2).
+    #[test]
+    fn the_undo_toast_is_plain_and_its_button_is_its_own_closure() {
+        let session = shipped(include_str!("../chat_session.rs"));
+        let start = session
+            .find("fn undo_toast(")
+            .expect("the session makes the toast");
+        let rest = &session[start..];
+        let body = &rest[..rest.find("\n    }\n").expect("its end")];
+        assert!(body.contains("let toast = plain_toast("));
+        assert!(body.contains("toast.connect_button_clicked("));
+        for named in [
+            "use_markup",
+            "action_name(",
+            "action_target",
+            "\"win.",
+            "\"app.",
+        ] {
+            assert!(!body.contains(named), "the Undo toast names {named}");
+        }
+    }
+
+    /// Ctrl+Z on the pane is a shortcut on the Z key with Control, which GTK matches by the key's
+    /// keycode as well as by the letter it types, and not a key handler comparing letters; it
+    /// stays in the bubble phase, after a text field's own Ctrl+Z (M85 lists §3.7, §6.1).
+    #[test]
+    fn ctrl_z_on_the_pane_is_a_shortcut_on_the_z_key() {
+        let pane = shipped(include_str!("lists_pane.rs"));
+        let start = pane.find("fn undo_on(").expect("the pane takes Ctrl+Z");
+        let rest = &pane[start..];
+        let body = squeezed(&rest[..rest.find("\n}\n").expect("its end")]);
+        assert!(body.contains("gtk::ShortcutController::new()"));
+        assert!(
+            body.contains("gtk::KeyvalTrigger::new(gdk::Key::z,gdk::ModifierType::CONTROL_MASK)")
+        );
+        for named in [
+            "EventControllerKey",
+            "connect_key_pressed",
+            "set_propagation_phase",
+        ] {
+            assert!(!body.contains(named), "Ctrl+Z names {named}");
         }
     }
 

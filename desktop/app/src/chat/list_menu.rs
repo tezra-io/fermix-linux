@@ -1,6 +1,6 @@
 //! An item's menu in the Lists pane (M85 lists §3.6): Move to list, with the other lists by
-//! folder, then Move up and Move down. A right-click, a touch long press, the Menu key or
-//! Shift+F10 opens it over the item, as GTK's GtkPopoverBin opens a context menu
+//! folder, then Move up and Move down, then Remove. A right-click, a touch long press, the Menu
+//! key or Shift+F10 opens it over the item, as GTK's GtkPopoverBin opens a context menu
 //! (gtkpopoverbin.c:640-656); a popover bin cannot hold the item itself, which is its list's own
 //! row. The menu acts through an action group of its own, inserted on its popover, which GTK does
 //! not export (§4.2). A list's name in a menu item has each `_` doubled, as a menu item reads `_`
@@ -9,7 +9,7 @@
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::ListEntry;
 use fermix_client::checklists::index::Folders;
-use fermix_client::checklists::words::{self, MOVE_DOWN, MOVE_TO_LIST, MOVE_UP};
+use fermix_client::checklists::words::{self, MOVE_DOWN, MOVE_TO_LIST, MOVE_UP, REMOVE};
 use gtk::{gdk, gio, glib};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -25,7 +25,7 @@ pub struct ItemOffers {
 }
 
 /// The item menu: Move to list ▸ the other lists, each folder's under its name and the lists in
-/// no folder last; then Move up and Move down.
+/// no folder last; then Move up and Move down; then Remove, in a section of its own.
 pub fn item_menu(others: &Folders) -> gio::Menu {
     let lists = gio::Menu::new();
     for folder in &others.folders {
@@ -40,6 +40,9 @@ pub fn item_menu(others: &Folders) -> gio::Menu {
     menu.append_item(&move_to);
     menu.append(Some(MOVE_UP), Some("item.up"));
     menu.append(Some(MOVE_DOWN), Some("item.down"));
+    let remove = gio::Menu::new();
+    remove.append(Some(REMOVE), Some("item.remove"));
+    menu.append_section(None, &remove);
     menu
 }
 
@@ -56,12 +59,14 @@ fn list_items(lists: &[ListEntry]) -> gio::Menu {
 
 /// The item menu's actions. `lists` only turns Move to list on while there is another list: a
 /// submenu's item is as sensitive as its action. `to-list` moves the item to the list it names,
-/// and `up` and `down` step it, each on while the item steps that way. Each takes effect at the
-/// next idle, once the menu that activated it has closed: it can draw the item's row again.
+/// `up` and `down` step it, each on while the item steps that way, and `remove` removes it, always
+/// on. Each takes effect at the next idle, once the menu that activated it has closed: it can draw
+/// the item's row again.
 pub fn item_actions(
     offers: &ItemOffers,
     to_list: impl Fn(&str) + 'static,
     step: impl Fn(bool) + 'static,
+    remove: impl Fn() + 'static,
 ) -> gio::SimpleActionGroup {
     let group = gio::SimpleActionGroup::new();
     let lists = gio::SimpleAction::new("lists", None);
@@ -89,6 +94,13 @@ pub fn item_actions(
         });
         group.add_action(action);
     }
+    let removing = gio::SimpleAction::new("remove", None);
+    let remove = Rc::new(remove);
+    removing.connect_activate(move |_, _| {
+        let remove = remove.clone();
+        at_idle(move || remove());
+    });
+    group.add_action(&removing);
     group
 }
 
@@ -247,9 +259,9 @@ mod tests {
 
     /// Move to list holds the other lists by folder, the lists in no folder last; a list's `_` is
     /// doubled in its item, as a menu item reads `_` as a mnemonic, and a folder's heading keeps
-    /// it (M85 lists §3.6). Move up and Move down follow.
+    /// it (M85 lists §3.6). Move up and Move down follow, then Remove in a section of its own.
     #[test]
-    fn move_to_list_names_the_other_lists_by_folder_then_move_up_and_move_down() {
+    fn move_to_list_names_the_other_lists_by_folder_then_move_up_move_down_and_remove() {
         let others = Folders::of(&[
             entry("ck_a", "to_do", Some("Home_work")),
             entry("ck_b", "Groceries", None),
@@ -263,8 +275,13 @@ mod tests {
                 triple("Move to list", "item.lists", ""),
                 triple("Move up", "item.up", ""),
                 triple("Move down", "item.down", ""),
+                triple("", "", ""),
             ]
         );
+        // GMenu reads past its items unchecked.
+        let remove = (menu.n_items() > 3).then(|| menu.item_link(3, "section"));
+        let remove = remove.flatten().expect("Remove's section");
+        assert_eq!(items(&remove), [triple("Remove", "item.remove", "")]);
         let lists = menu
             .item_link(0, "submenu")
             .expect("Move to list opens the lists");
@@ -286,7 +303,7 @@ mod tests {
     }
 
     /// Move to list is off while there is no other list, and Move up and Move down while the item
-    /// does not step that way.
+    /// does not step that way. Remove is always on.
     #[test]
     fn move_to_list_is_off_with_no_other_list_and_a_step_off_where_none_is_said() {
         let offers = ItemOffers {
@@ -294,11 +311,12 @@ mod tests {
             up: false,
             down: true,
         };
-        let actions = item_actions(&offers, |_| {}, |_| {});
+        let actions = item_actions(&offers, |_| {}, |_| {}, || {});
         assert!(!actions.is_action_enabled("lists"));
         assert!(!actions.is_action_enabled("up"));
         assert!(actions.is_action_enabled("down"));
         assert!(actions.is_action_enabled("to-list"));
+        assert!(actions.is_action_enabled("remove"));
         assert_eq!(
             actions.action_parameter_type("to-list").as_deref(),
             Some(glib::VariantTy::STRING)
@@ -315,10 +333,11 @@ mod tests {
             up: true,
             down: false,
         };
-        let actions = item_actions(&offers, |_| {}, |_| {});
+        let actions = item_actions(&offers, |_| {}, |_| {}, || {});
         assert!(actions.is_action_enabled("lists"));
         assert!(actions.is_action_enabled("up"));
         assert!(!actions.is_action_enabled("down"));
+        assert!(actions.is_action_enabled("remove"));
     }
 
     /// Runs `test` with a main context of its own as this thread's default: no other test's idles
@@ -342,15 +361,17 @@ mod tests {
                 up: true,
                 down: true,
             };
-            let (moved, stepped) = (calls.clone(), calls.clone());
+            let (moved, stepped, removed) = (calls.clone(), calls.clone(), calls.clone());
             let actions = item_actions(
                 &offers,
                 move |to| moved.borrow_mut().push(format!("to:{to}")),
                 move |up| stepped.borrow_mut().push(format!("up:{up}")),
+                move || removed.borrow_mut().push("remove".into()),
             );
             actions.activate_action("to-list", Some(&"ck_b".to_variant()));
             actions.activate_action("up", None);
             actions.activate_action("down", None);
+            actions.activate_action("remove", None);
             assert!(
                 calls.borrow().is_empty(),
                 "{:?} ran at once",
@@ -362,7 +383,10 @@ mod tests {
                 }
                 context.iteration(false);
             }
-            assert_eq!(*calls.borrow(), ["to:ck_b", "up:true", "up:false"]);
+            assert_eq!(
+                *calls.borrow(),
+                ["to:ck_b", "up:true", "up:false", "remove"]
+            );
         });
     }
 }

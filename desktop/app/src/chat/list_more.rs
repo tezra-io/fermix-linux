@@ -1,15 +1,15 @@
 //! The list's menu in the Lists pane (M85 lists §3.6), behind More, between the picker and Hide
 //! lists: Rename list; Move to folder ▸ each folder then No folder, the list's own checked, then
-//! New folder; Copy as text; Clear done. More makes the menu each time it opens, from what the
-//! pane draws then, and the menu acts through an action group of its own, inserted on More, which
-//! GTK does not export (§4.2). A folder's name in a menu item has each `_` doubled, as a menu item
-//! reads `_` as a mnemonic.
+//! New folder; Copy as text; Clear done; Remove list. More makes the menu each time it opens, from
+//! what the pane draws then, and the menu acts through an action group of its own, inserted on
+//! More, which GTK does not export (§4.2). A folder's name in a menu item has each `_` doubled, as
+//! a menu item reads `_` as a mnemonic.
 
 use super::list_menu::at_idle;
 use adw::prelude::*;
 use fermix_client::checklists::pane::ListOffers;
 use fermix_client::checklists::words::{
-    self, CLEAR_DONE, COPY_AS_TEXT, MOVE_TO_FOLDER, NEW_FOLDER, NO_FOLDER, RENAME_LIST,
+    self, CLEAR_DONE, COPY_AS_TEXT, MOVE_TO_FOLDER, NEW_FOLDER, NO_FOLDER, REMOVE_LIST, RENAME_LIST,
 };
 use gtk::{gio, glib};
 use std::rc::Rc;
@@ -29,6 +29,8 @@ pub struct ListActs {
     pub new_folder: Rc<dyn Fn()>,
     pub copy: Rc<dyn Fn()>,
     pub clear_done: Rc<dyn Fn()>,
+    /// Remove list, with no confirmation: a toast offers Undo (§3.7, §10).
+    pub remove_list: Rc<dyn Fn()>,
 }
 
 /// More: a flat button that opens the list's menu, hidden until the pane draws a list.
@@ -45,7 +47,7 @@ pub fn more_button() -> gtk::MenuButton {
 
 /// The list's menu: Rename list; Move to folder ▸ each folder in picker order, then No folder,
 /// each a radio item on the folder the list is in, then New folder in a section of its own; then
-/// Copy as text and Clear done.
+/// Copy as text and Clear done; then Remove list, last, in a section of its own.
 pub fn list_menu(offers: &ListOffers) -> gio::Menu {
     let folders = gio::Menu::new();
     for name in offers.folders.iter().map(String::as_str).chain([""]) {
@@ -65,14 +67,17 @@ pub fn list_menu(offers: &ListOffers) -> gio::Menu {
     menu.append_submenu(Some(MOVE_TO_FOLDER), &folders);
     menu.append(Some(COPY_AS_TEXT), Some("list.copy"));
     menu.append(Some(CLEAR_DONE), Some("list.clear-done"));
+    let remove = gio::Menu::new();
+    remove.append(Some(REMOVE_LIST), Some("list.remove-list"));
+    menu.append_section(None, &remove);
     menu
 }
 
 /// The list menu's actions. `folder` holds the list's folder as its state, which checks that
-/// item, and moves the list to the folder it names. `rename` and `new-folder` are always on, as
-/// More shows only over a list drawn that is not removed; `copy` and `clear-done` are on as
-/// `offers` says. Each action takes effect at the next idle, once the menu has closed; a folder
-/// picked with Space closes it too.
+/// item, and moves the list to the folder it names. `rename`, `new-folder` and `remove-list` are
+/// always on, as More shows only over a list drawn that is not removed; `copy` and `clear-done`
+/// are on as `offers` says. Each action takes effect at the next idle, once the menu has closed; a
+/// folder picked with Space closes it too.
 pub fn list_actions(offers: &ListOffers, acts: ListActs) -> gio::SimpleActionGroup {
     let group = gio::SimpleActionGroup::new();
     let state = offers.folder.to_variant();
@@ -90,11 +95,13 @@ pub fn list_actions(offers: &ListOffers, acts: ListActs) -> gio::SimpleActionGro
     let new_folder = gio::SimpleAction::new("new-folder", None);
     let copy = gio::SimpleAction::new("copy", None);
     let clear_done = gio::SimpleAction::new("clear-done", None);
+    let remove_list = gio::SimpleAction::new("remove-list", None);
     for (action, on, act) in [
         (&rename, true, acts.rename),
         (&new_folder, true, acts.new_folder),
         (&copy, offers.copy, acts.copy),
         (&clear_done, offers.clear_done, acts.clear_done),
+        (&remove_list, true, acts.remove_list),
     ] {
         action.set_enabled(on);
         action.connect_activate(move |_, _| {
@@ -183,6 +190,7 @@ mod tests {
             new_folder: Rc::new(|| {}),
             copy: Rc::new(|| {}),
             clear_done: Rc::new(|| {}),
+            remove_list: Rc::new(|| {}),
         }
     }
 
@@ -226,11 +234,12 @@ mod tests {
         );
     }
 
-    /// Rename list leads the menu, then Move to folder, Copy as text and Clear done; New folder
-    /// ends Move to folder, after No folder, in a section of its own. Both are on whatever the list
-    /// offers, as More shows only over a list drawn that is not removed (§3.6, §10).
+    /// Rename list leads the menu, then Move to folder, Copy as text and Clear done, and Remove
+    /// list ends it, in a section of its own; New folder ends Move to folder, after No folder, in a
+    /// section of its own. The three are on whatever the list offers, as More shows only over a
+    /// list drawn that is not removed (§3.6, §10).
     #[test]
-    fn rename_list_leads_the_menu_and_new_folder_ends_move_to_folder_both_on() {
+    fn rename_list_leads_the_menu_new_folder_ends_move_to_folder_and_remove_list_the_menu() {
         let offered = offers(&["Home"], "Home", false, false);
         let menu: gio::MenuModel = list_menu(&offered).upcast();
         assert_eq!(
@@ -240,7 +249,13 @@ mod tests {
                 triple("Move to folder", "", ""),
                 triple("Copy as text", "list.copy", ""),
                 triple("Clear done", "list.clear-done", ""),
+                triple("", "", ""),
             ]
+        );
+        let remove = linked(&menu, 4, "section").expect("Remove list's section");
+        assert_eq!(
+            items(&remove),
+            [triple("Remove list", "list.remove-list", "")]
         );
         let folders = submenu(&menu, MOVE_TO_FOLDER).expect("the folders");
         assert_eq!(folders.n_items(), 3, "Home, No folder, then a section");
@@ -252,6 +267,7 @@ mod tests {
         let actions = list_actions(&offered, acts());
         assert!(actions.is_action_enabled("rename"));
         assert!(actions.is_action_enabled("new-folder"));
+        assert!(actions.is_action_enabled("remove-list"));
     }
 
     /// Copy as text and Clear done are on as offered; a list in no folder checks No folder.
@@ -277,13 +293,14 @@ mod tests {
     /// Acts that write each call into `calls`, a folder's as "folder:" and its name.
     fn recording(calls: &Rc<RefCell<Vec<String>>>) -> ListActs {
         let (rename, folder, new_folder) = (calls.clone(), calls.clone(), calls.clone());
-        let (copy, clear_done) = (calls.clone(), calls.clone());
+        let (copy, clear_done, remove_list) = (calls.clone(), calls.clone(), calls.clone());
         ListActs {
             rename: Rc::new(move || rename.borrow_mut().push("rename".into())),
             folder: Rc::new(move |picked| folder.borrow_mut().push(format!("folder:{picked}"))),
             new_folder: Rc::new(move || new_folder.borrow_mut().push("new_folder".into())),
             copy: Rc::new(move || copy.borrow_mut().push("copy".into())),
             clear_done: Rc::new(move || clear_done.borrow_mut().push("clear_done".into())),
+            remove_list: Rc::new(move || remove_list.borrow_mut().push("remove_list".into())),
         }
     }
 
@@ -313,6 +330,7 @@ mod tests {
             actions.activate_action("folder", Some(&"Home_work".to_variant()));
             actions.activate_action("new-folder", None);
             actions.activate_action("folder", Some(&"".to_variant()));
+            actions.activate_action("remove-list", None);
             assert!(
                 calls.borrow().is_empty(),
                 "{:?} ran at once",
@@ -332,7 +350,8 @@ mod tests {
                     "clear_done",
                     "folder:Home_work",
                     "new_folder",
-                    "folder:"
+                    "folder:",
+                    "remove_list"
                 ]
             );
         });

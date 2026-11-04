@@ -3,19 +3,20 @@
 //! split below 600sp, where the pane lies over the chat and shows only when asked. Its head picks
 //! the list or New list, names a list or a folder in the picker's place (`list_naming`), opens the
 //! list's menu behind More (`list_more`), and gives its folder and counts, and the sentence for a
-//! new list refused; its list draws the lines `checklists::panel` gives, spliced where they
-//! changed, an item being reworded as its two entries, each item with its menu (`list_menu`) and
-//! its moves; Add an item sits at its foot. Whether it shows is the owner's last open or close
-//! (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets, markup off before
-//! any text, and no list edit is an exported action: the pane hands each to the session through
-//! `Lister`.
+//! new list or a list's Undo refused; its list draws the lines `checklists::panel` gives, spliced
+//! where they changed, an item being reworded as its two entries, each item with its menu
+//! (`list_menu`), its moves and Delete; Add an item sits at its foot. Ctrl+Z outside a text field
+//! takes back the newest removal made here, and a removed list's page offers Undo (§3.7). Whether
+//! it shows is the owner's last open or close (`checklists::pane::PaneOpen`), which the session
+//! keeps. Only stock widgets, markup off before any text, and no list edit is an exported action:
+//! the pane hands each to the session through `Lister`.
 
 use super::entries::copy_text;
 use super::list_menu::{self, at_idle, ItemOffers};
 use super::list_more::{self, ListActs};
 use super::list_naming::Namer;
 use super::list_reword::Reworder;
-use super::list_rows::{self, moves_on, on_click_or_key, rewords_on};
+use super::list_rows::{self, moves_on, on_click_or_key, removes_on, rewords_on};
 use super::lists::{act, ListAct, Lister, PANE_MARK};
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{List, ListEntry, ListOp, ListRow};
@@ -28,11 +29,12 @@ use fermix_client::checklists::pane::{
     PaneDrawing, PaneList, PaneOpen,
 };
 use fermix_client::checklists::panel::{self, add_place, rewords, splice, Line, Splice, Steps};
+use fermix_client::checklists::removals::Removal;
 use fermix_client::checklists::words::{
-    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NEW_LIST, NO_LISTS, RECENTLY_REMOVED,
+    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NEW_LIST, NO_LISTS, RECENTLY_REMOVED, UNDO,
 };
-use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
+use gtk::{gdk, gio};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
@@ -68,6 +70,8 @@ pub struct ListsPane {
     column: gtk::Box,
     head: Head,
     body: gtk::Stack,
+    /// The Undo on the page a removed list shows.
+    undo_removed: gtk::Button,
     list: gtk::ListBox,
     lines: gio::ListStore,
     foot: Foot,
@@ -152,7 +156,12 @@ impl ListsPane {
             .margin_bottom(6)
             .build();
         let foot = Foot::new();
-        let body = body_stack(&list);
+        let undo_removed = gtk::Button::builder()
+            .label(UNDO)
+            .halign(gtk::Align::Center)
+            .css_classes(["pill"])
+            .build();
+        let body = body_stack(&list, &undo_removed);
         let column = column(&head, &body, &foot);
         let (widget, split) = split_around(chat, &column);
         let pane = Rc::new(ListsPane {
@@ -161,6 +170,7 @@ impl ListsPane {
             column,
             head,
             body,
+            undo_removed,
             list,
             lines: gio::ListStore::new::<BoxedAnyObject>(),
             foot,
@@ -225,6 +235,13 @@ impl ListsPane {
         });
         let pane = Rc::downgrade(self);
         list_more::menu_on(&self.head.more, move || pane.upgrade()?.list_menu());
+        let pane = Rc::downgrade(self);
+        self.undo_removed.connect_clicked(move |_| {
+            if let Some(pane) = pane.upgrade() {
+                pane.undo_removed();
+            }
+        });
+        undo_on(&self.column, &self.lister);
         self.wire_picks();
     }
 
@@ -785,8 +802,8 @@ impl ListsPane {
 
     /// An item with its note, whose tick the session sends; a double-click, Return or F2 rewords
     /// its words and note; a right-click, a touch long press, Menu or Shift+F10 opens its menu
-    /// (§3.6), and Alt+Up and Alt+Down move it (§6.1). A row still being sent is insensitive, so
-    /// it takes none of these.
+    /// (§3.6), Alt+Up and Alt+Down move it, and Delete removes it (§6.1). A row still being sent is
+    /// insensitive, so it takes none of these.
     fn item_row(self: &Rc<Self>, list_id: &str, row: &ListRow) -> adw::ActionRow {
         let item = list_rows::item_row(row, true, list_id, &self.lister, &self.settling);
         let (pane, list, words) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
@@ -795,10 +812,16 @@ impl ListsPane {
                 pane.reword(&list, &words);
             }
         });
-        let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row.row_id.clone());
+        let (pane, list, words) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
         list_menu::menu_on(&item, move |item, at| {
             if let Some(pane) = pane.upgrade() {
-                pane.item_menu(item, &list, &id, at);
+                pane.item_menu(item, &list, &words, at);
+            }
+        });
+        let (pane, list, words) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
+        removes_on(&item, move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.remove(&list, Some(&words.row_id), &words.text);
             }
         });
         let (pane, list, id) = (Rc::downgrade(self), list_id.to_owned(), row.row_id.clone());
@@ -810,17 +833,17 @@ impl ListsPane {
         item
     }
 
-    /// The menu of the item `row_id` of `list_id`, over `item`, pointing at (x, y) after a
-    /// pointer or a touch: Move to list with the other lists, and Move up and Move down where the
-    /// item steps that way. A rewording going on is saved first, as a click on another row saves
-    /// it.
+    /// The menu of the item `row` of `list_id`, over `item`, pointing at (x, y) after a pointer or
+    /// a touch: Move to list with the other lists, Move up and Move down where the item steps that
+    /// way, and Remove. A rewording going on is saved first, as a click on another row saves it.
     fn item_menu(
         self: &Rc<Self>,
         item: &adw::ActionRow,
         list_id: &str,
-        row_id: &str,
+        row: &ListRow,
         at: Option<(f64, f64)>,
     ) {
+        let row_id = row.row_id.as_str();
         self.reworder.save_going();
         let steps = self.steps_of(list_id, row_id).unwrap_or_default();
         let offers = ItemOffers {
@@ -840,7 +863,13 @@ impl ListsPane {
                 pane.step(&list, &id, up);
             }
         };
-        let actions = list_menu::item_actions(&offers, to_list, step);
+        let (pane, list, words) = (Rc::downgrade(self), list_id.to_owned(), row.clone());
+        let remove = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.remove(&list, Some(&words.row_id), &words.text);
+            }
+        };
+        let actions = list_menu::item_actions(&offers, to_list, step, remove);
         list_menu::pop_up(item, &list_menu::item_menu(&offers.others), &actions, at);
     }
 
@@ -942,10 +971,16 @@ impl ListsPane {
                 pane.copy(&list);
             }
         };
-        let (pane, list) = (Rc::downgrade(self), list_id);
+        let (pane, list) = (Rc::downgrade(self), list_id.clone());
         let clear_done = move || {
             if let Some(pane) = pane.upgrade() {
                 pane.clear_done(&list);
+            }
+        };
+        let (pane, list) = (Rc::downgrade(self), list_id);
+        let remove_list = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.remove_list(&list);
             }
         };
         let acts = ListActs {
@@ -954,6 +989,7 @@ impl ListsPane {
             new_folder: Rc::new(new_folder),
             copy: Rc::new(copy),
             clear_done: Rc::new(clear_done),
+            remove_list: Rc::new(remove_list),
         };
         Some((offers, acts))
     }
@@ -984,6 +1020,46 @@ impl ListsPane {
         let list_id = list_id.to_owned();
         let op = ListOp::ClearDone;
         act(&self.lister, ListAct::Edit { list_id, op });
+    }
+
+    /// Removes the item `row_id` of `list_id`, drawn at once, or the list itself with none, drawn
+    /// on its push; a toast names it by `text` and offers Undo (§3.7).
+    fn remove(&self, list_id: &str, row_id: Option<&str>, text: &str) {
+        let removing = ListAct::Remove {
+            list_id: list_id.to_owned(),
+            row_id: row_id.map(str::to_owned),
+            text: text.to_owned(),
+        };
+        act(&self.lister, removing);
+    }
+
+    /// Remove list, with no confirmation (§10), named in its toast by its title as drawn, while
+    /// the pane still draws `list_id` and not as removed: More's acts run at the next idle, and a
+    /// push may have shown the list removed since.
+    fn remove_list(&self, list_id: &str) {
+        let title = match self.drawn.borrow().as_ref() {
+            Some(PaneDrawing::List(list))
+                if list.list_id == list_id && list.body != PaneBody::Removed =>
+            {
+                list.title.clone()
+            }
+            _ => return glib::g_warning!("fermix", "Remove list found its list gone or removed"),
+        };
+        self.remove(list_id, None, &title);
+    }
+
+    /// The Undo on a removed list's page: brings the list drawn back, as its toast's Undo would.
+    fn undo_removed(&self) {
+        let list_id = match self.drawn.borrow().as_ref() {
+            Some(PaneDrawing::List(list)) if list.body == PaneBody::Removed => list.list_id.clone(),
+            _ => return glib::g_warning!("fermix", "Undo found no removed list drawn"),
+        };
+        act(&self.lister, ListAct::UndoList { list_id });
+    }
+
+    /// Undo took `removal` back: a list's is the list the pane asks for (§10).
+    pub fn taken_back(&self, removal: &Removal) {
+        self.asked.borrow_mut().taken_back(removal);
     }
 
     /// Rewords `row`, keeping its selection for when its row is back. A rewording going on is
@@ -1398,14 +1474,16 @@ fn pick_header(folder: Option<String>, before: Option<Option<String>>) -> Option
 }
 
 /// What the pane says, by what it shows: before the index answers, no lists, a list waiting
-/// for its pull, a removed list, and the list.
-fn body_stack(list: &gtk::ListBox) -> gtk::Stack {
+/// for its pull, a removed list with its `undo`, and the list.
+fn body_stack(list: &gtk::ListBox, undo: &gtk::Button) -> gtk::Stack {
     let body = gtk::Stack::new();
     body.set_vexpand(true);
     let waiting = gtk::Box::new(gtk::Orientation::Vertical, 0);
     body.add_named(&waiting, Some("waiting"));
     body.add_named(&status(NO_LISTS), Some("none"));
-    body.add_named(&status(LIST_REMOVED), Some("removed"));
+    let removed = status(LIST_REMOVED);
+    removed.set_child(Some(undo));
+    body.add_named(&removed, Some("removed"));
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
@@ -1421,6 +1499,22 @@ fn status(title: &str) -> adw::StatusPage {
     page.set_title(title);
     page.add_css_class("compact");
     page
+}
+
+/// Ctrl+Z in `column`, the pane, takes back the newest removal made here (§3.7, §6.1). It is a
+/// shortcut, which matches the Z key by its keycode too, so it holds on a layout whose Z key types
+/// another letter. In a text field Ctrl+Z is the field's: GtkText takes it, even with nothing to
+/// undo, before it bubbles up to the column.
+fn undo_on(column: &gtk::Box, lister: &Lister) {
+    let lister = lister.clone();
+    let action = gtk::CallbackAction::new(move |_, _| {
+        act(&lister, ListAct::TakeBack(None));
+        glib::Propagation::Stop
+    });
+    let trigger = gtk::KeyvalTrigger::new(gdk::Key::z, gdk::ModifierType::CONTROL_MASK);
+    let keys = gtk::ShortcutController::new();
+    keys.add_shortcut(gtk::Shortcut::new(Some(trigger), Some(action)));
+    column.add_controller(keys);
 }
 
 /// The pane: a group labelled "Lists" holding the head, the list and the foot. The picker's place

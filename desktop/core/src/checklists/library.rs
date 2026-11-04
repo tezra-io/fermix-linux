@@ -120,16 +120,65 @@ impl Library {
     /// One edit of a list: drawn at once and sent. Words the engine would trim to nothing are no
     /// edit, and neither is an op naming a row added here that the engine has not named yet: it
     /// has no id the engine knows. Past 64 edits waiting, the edit is not drawn, and the list says
-    /// why. Every edit passes here.
+    /// why, or the index for a list's own restore or a list it no longer names. Every edit passes
+    /// here.
     pub fn edit(&mut self, list_id: &str, op: ListOp, client_msg_id: String) -> Vec<ClientEvent> {
-        let names_local = draft::named_rows(&op).into_iter().any(draft::is_local);
-        if !draft::sendable(&op) || names_local {
+        if !self.takes(list_id, &op) {
             return Vec::new();
         }
-        if self.unanswered.len() >= MAX_WAITING {
-            self.state_mut(list_id).refuse(TOO_MANY.to_owned());
-            return Vec::new();
+        self.send_edit(list_id, op, client_msg_id)
+    }
+
+    /// Remove (M85 lists §3.7), of the row `row_id` of `list_id`, or Remove list with none: an edit
+    /// as any other, a row's drawn at once and a list's when the engine pushes it. `None` when it
+    /// is no edit: a row added here that the engine has not named yet, or 64 edits already
+    /// waiting, which the list says.
+    pub fn remove(
+        &mut self,
+        list_id: &str,
+        row_id: Option<&str>,
+        client_msg_id: String,
+    ) -> Option<Vec<ClientEvent>> {
+        let op = match row_id {
+            Some(row_id) => ListOp::Remove {
+                row_id: row_id.to_owned(),
+            },
+            None => ListOp::RemoveList,
+        };
+        if !self.takes(list_id, &op) {
+            return None;
         }
+        Some(self.send_edit(list_id, op, client_msg_id))
+    }
+
+    /// Whether `op` is an edit of `list_id` to draw and send, as `edit` says; past 64 waiting it
+    /// is not, and the sentence says why.
+    fn takes(&mut self, list_id: &str, op: &ListOp) -> bool {
+        let names_local = draft::named_rows(op).into_iter().any(draft::is_local);
+        if !draft::sendable(op) || names_local {
+            return false;
+        }
+        if self.unanswered.len() < MAX_WAITING {
+            return true;
+        }
+        self.say_refused(list_id, op, TOO_MANY.to_owned());
+        false
+    }
+
+    /// The sentence for an edit of `list_id` this app would not send: the index's for the list's
+    /// own restore, which the pane shows under its head while the list is removed (§10), and for
+    /// any edit of a list the index no longer names, which the pane cannot draw; else the list's,
+    /// until its next edit.
+    fn say_refused(&mut self, list_id: &str, op: &ListOp, sentence: String) {
+        match op {
+            ListOp::Restore { row_id: None, .. } => self.index.refuse(Some(sentence)),
+            _ if self.index.lacks(list_id) => self.index.refuse(Some(sentence)),
+            _ => self.state_mut(list_id).refuse(sentence),
+        }
+    }
+
+    /// An edit `edit` takes: drawn at once, sent, and kept until the engine answers it.
+    fn send_edit(&mut self, list_id: &str, op: ListOp, client_msg_id: String) -> Vec<ClientEvent> {
         self.state_mut(list_id)
             .edit(op.clone(), client_msg_id.clone());
         let mut out = self.draw(list_id, false);
@@ -296,7 +345,8 @@ impl Library {
 
     /// The edit `client_msg_id` was refused, in `sentence`: it stops being drawn, the list shows
     /// the sentence, and a held list is pulled again (PROTOCOL.md "Lists", Refusals). A refused
-    /// create's sentence is the index's. `None` when the id names no edit sent here.
+    /// create's sentence is the index's, and so is a refused restore of a list and any edit
+    /// refused for a list the index no longer names. `None` when the id names no edit sent here.
     pub fn refused(&mut self, client_msg_id: &str, sentence: String) -> Option<Vec<ClientEvent>> {
         let at = self.position(client_msg_id)?;
         let sent = self.unanswered.remove(at);
@@ -304,7 +354,14 @@ impl Library {
             self.index.refuse(Some(sentence));
             return Some(Vec::new());
         };
-        self.state_mut(&list_id).refused(client_msg_id, sentence);
+        let headed =
+            matches!(sent.op, ListOp::Restore { row_id: None, .. }) || self.index.lacks(&list_id);
+        if headed {
+            self.state_mut(&list_id).dropped(client_msg_id);
+            self.index.refuse(Some(sentence));
+        } else {
+            self.state_mut(&list_id).refused(client_msg_id, sentence);
+        }
         if !self.holds(&list_id) {
             return Some(Vec::new());
         }

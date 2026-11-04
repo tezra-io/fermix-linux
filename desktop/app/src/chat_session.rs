@@ -2,12 +2,14 @@
 //! sends into the timeline (`fermix_client::chat_wire::timeline`) and the owner's lists into the
 //! lists' library (`fermix_client::checklists::library`), sends what each answers, and reconnects
 //! after the session's backoff. The page draws `chat::view` of it, with the lists cards and the
-//! Lists pane, whose owner's open or close it keeps in `$XDG_STATE_HOME` (M85 lists §3.2).
+//! Lists pane, whose owner's open or close it keeps in `$XDG_STATE_HOME` (M85 lists §3.2). It keeps
+//! the removals made in the pane for Undo while the app runs, and the toast that offers it (§3.7).
 
 use crate::app::App;
 use crate::chat::{Decision, ListAct};
 use crate::chat_link::{self, Link, LinkError};
 use crate::daemon::fermix_home;
+use crate::shell::plain_toast;
 use adw::prelude::*;
 use fermix_client::chat_wire::protocol::{
     loggable_id, Attachments, ClientEvent, Decision as Word, LineTooLong, Proposal, Reply, Row,
@@ -19,7 +21,9 @@ use fermix_client::chat_wire::session::{
 use fermix_client::chat_wire::timeline::{self, Chat};
 use fermix_client::checklists::library::Library;
 use fermix_client::checklists::pane;
+use fermix_client::checklists::removals::{self, Removal, Removals};
 use fermix_client::checklists::routing::lists_event;
+use fermix_client::checklists::words::{self, UNDO};
 use fermix_client::phone::unix_seconds;
 use gtk::{gio, glib};
 use std::path::PathBuf;
@@ -28,12 +32,18 @@ use std::time::Duration;
 
 /// Events read while waiting for `server_hello` before the attempt is given up.
 const HANDSHAKE_READ_CAP: usize = 16;
+/// How long a removal's toast offers Undo, in seconds (M85 lists §3.7).
+const UNDO_SECONDS: u32 = 6;
 
 #[derive(Default)]
 pub struct ChatWire {
     pub chat: Chat,
     /// The owner's lists this connection draws, and the edits made here.
     pub lists: Library,
+    /// The removals made here that Undo can still take back, kept while the app runs.
+    pub removals: Removals,
+    /// The toast offering Undo of the newest removal, by its token, until another replaces it.
+    pub undo_toast: Option<(u64, adw::Toast)>,
     /// A handshake has served lists since the app started: the Lists toggle shows on Chat from
     /// then on.
     pub lists_served: bool,
@@ -469,10 +479,11 @@ impl App {
     }
 
     /// What a lists card or the Lists pane asks: lists pulled as they come on screen, an edit or a
-    /// rewording drawn at once and sent, a new list sent, the lists drawn again, the pane opened at
-    /// a card's list, or the pane shown or hidden. A pull draws nothing: the page asks it while it
-    /// holds its entries, and the list's arrival draws. A new list with a blank title sends
-    /// nothing, nor one past 64 edits waiting, whose sentence the index then holds.
+    /// rewording drawn at once and sent, a new list sent, a removal or its Undo, the lists drawn
+    /// again, the pane opened at a card's list, or the pane shown or hidden. A pull draws nothing:
+    /// the page asks it while it holds its entries, and the list's arrival draws. A new list with a
+    /// blank title sends nothing, nor one past 64 edits waiting, whose sentence the index then
+    /// holds.
     fn chat_list(self: &Rc<Self>, asked: ListAct) {
         let events = match asked {
             ListAct::Drawn(ids) => {
@@ -500,6 +511,13 @@ impl App {
                 let lists = &mut self.wire.borrow_mut().lists;
                 lists.reword(&list_id, &began, &words, note.as_deref(), message_id())
             }
+            ListAct::Remove {
+                list_id,
+                row_id,
+                text,
+            } => return self.list_remove(&list_id, row_id.as_deref(), &text),
+            ListAct::TakeBack(token) => return self.take_back(token),
+            ListAct::UndoList { list_id } => return self.undo_list(&list_id),
             ListAct::Redraw => Vec::new(),
             ListAct::Open { list_id, by_key } => {
                 self.chat.lists.open_at(Some(&list_id), by_key);
@@ -509,6 +527,91 @@ impl App {
         };
         self.chat_send(events);
         self.render();
+    }
+
+    /// Remove, of the row `row_id` of `list_id` or of the list itself: drawn and sent as any edit,
+    /// and a toast offers Undo (§3.7). Nothing is kept and no toast shows for a row the engine has
+    /// not named yet, nor past 64 edits waiting, whose sentence the list then says.
+    fn list_remove(self: &Rc<Self>, list_id: &str, row_id: Option<&str>, text: &str) {
+        let made = {
+            let wire = &mut *self.wire.borrow_mut();
+            let (removals, lists) = (&mut wire.removals, &mut wire.lists);
+            removals::remove(removals, lists, list_id, row_id, text, message_id())
+        };
+        let Some((token, events)) = made else {
+            return self.render();
+        };
+        self.chat_send(events);
+        self.render();
+        self.undo_toast(token, text);
+    }
+
+    /// The toast offering Undo of the removal `token`, "Removed Lemons." with `text` as written,
+    /// for 6 s at high priority, replacing the last Undo toast (§10). Its button takes the removal
+    /// back by its own closure, not through `win.toast`, which carries only text.
+    fn undo_toast(self: &Rc<Self>, token: u64, text: &str) {
+        let toast = plain_toast(&words::removed(text));
+        toast.set_button_label(Some(UNDO));
+        toast.set_timeout(UNDO_SECONDS);
+        toast.set_priority(adw::ToastPriority::High);
+        let app = Rc::downgrade(self);
+        toast.connect_button_clicked(move |_| {
+            if let Some(app) = app.upgrade() {
+                app.chat_list(ListAct::TakeBack(Some(token)));
+            }
+        });
+        let last = self
+            .wire
+            .borrow_mut()
+            .undo_toast
+            .replace((token, toast.clone()));
+        if let Some((_, last)) = last {
+            last.dismiss();
+        }
+        self.shell.toasts.add_toast(toast);
+    }
+
+    /// Undo of the removal `token` names, a toast's, or with none the newest still kept, Ctrl+Z's:
+    /// its restore is sent once, whichever asks first, and drawn when the engine pushes it.
+    fn take_back(self: &Rc<Self>, token: Option<u64>) {
+        let undone = {
+            let wire = &mut *self.wire.borrow_mut();
+            removals::undo(&mut wire.removals, &mut wire.lists, token, message_id())
+        };
+        let Some((removal, events)) = undone else {
+            return;
+        };
+        self.taken_back(&removal);
+        self.chat_send(events);
+        self.render();
+    }
+
+    /// The Undo on a removed list's page: the list's restore is sent, and its removal made here,
+    /// if Undo can still take it back, is taken back with it.
+    fn undo_list(self: &Rc<Self>, list_id: &str) {
+        let (taken, events) = {
+            let wire = &mut *self.wire.borrow_mut();
+            removals::undo_list(&mut wire.removals, &mut wire.lists, list_id, message_id())
+        };
+        if let Some(removal) = taken {
+            self.taken_back(&removal);
+        }
+        self.chat_send(events);
+        self.render();
+    }
+
+    /// A removal taken back: a list's turns the pane to it (§10), and its toast, if it still
+    /// shows, is dismissed.
+    fn taken_back(&self, removal: &Removal) {
+        self.chat.lists.taken_back(removal);
+        let mut wire = self.wire.borrow_mut();
+        let shown = wire
+            .undo_toast
+            .take_if(|(token, _)| *token == removal.token);
+        drop(wire);
+        if let Some((_, toast)) = shown {
+            toast.dismiss();
+        }
     }
 
     /// `win.lists`, from the toggle or Ctrl+Shift+L: on Chat it shows or hides the pane, and

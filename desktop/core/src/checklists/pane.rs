@@ -2,9 +2,10 @@
 //! last open or close kept in `lists.json` (§3.2, L4); and what it draws now: the list asked for
 //! while the index holds it, a new list made here turned to once, its head and lines, each list's
 //! own folds, an item being reworded, or the state before the index answers or with no list, and
-//! the sentence for a new list refused (§3.3, §3.4, §3.5, §3.8); what the list's menu offers for
-//! it, and the op Move to folder sends (§3.6); the op a name typed in the head makes (§3.3); and
-//! what a screen reader is told as it is drawn again (§6.3).
+//! the sentence for a new list or a list's Undo refused (§3.3, §3.4, §3.5, §3.8, §10); a list
+//! taken back turned to (§3.7); what the list's menu offers for it, and the op Move to folder
+//! sends (§3.6); the op a name typed in the head makes (§3.3); and what a screen reader is told as
+//! it is drawn again (§6.3).
 //!
 //! The picker counts each list from the index, as a folded card does. The head under it counts
 //! the list as drawn, its edits waiting included, once it is held. While an edit waits for the
@@ -14,6 +15,7 @@
 use super::index::{Folders, Index};
 use super::library::Library;
 use super::panel::{self, Line, View};
+use super::removals::Removal;
 use super::state::PendingEdit;
 use super::words;
 use crate::chat_wire::protocol::ListOp;
@@ -168,16 +170,16 @@ pub fn save(path: &Path, open: bool) -> io::Result<()> {
 pub enum PaneDrawing {
     /// Before the index answers: the head reads "Lists" and nothing is under it.
     Waiting,
-    /// The index names no list: "No lists yet.", under the index's sentence for a new list
-    /// refused, if one was.
+    /// The index names no list: "No lists yet.", under the index's sentence for a new list or a
+    /// list's Undo refused, if one was.
     NoLists { refusal: Option<String> },
     /// One list: the one asked for while the index holds it, else the first in picker order.
     List(Box<PaneList>),
 }
 
 impl PaneDrawing {
-    /// The index's sentence under the head: why the last new list made here did not stand, until
-    /// the next index or new list (§3.8).
+    /// The index's sentence under the head: why the last new list made here, or a list's Undo, did
+    /// not stand, until the next index or new list (§3.8, §10).
     pub fn index_refusal(&self) -> Option<&str> {
         match self {
             PaneDrawing::Waiting => None,
@@ -206,7 +208,7 @@ pub struct PaneList {
     pub body: PaneBody,
     /// The engine's sentence for the edit it refused last, over Add an item, until the next edit.
     pub refusal: Option<String>,
-    /// The index's sentence for the last new list refused, under the head.
+    /// The index's sentence for the last new list or list's Undo refused, under the head.
     pub index_refusal: Option<String>,
 }
 
@@ -304,7 +306,8 @@ pub fn drawing(
     }))
 }
 
-/// The list the pane was last asked for (§3.3): by a card, the picker, or a new list made here.
+/// The list the pane was last asked for (§3.3, §3.7): by a card, the picker, a new list made here,
+/// or Undo of a list.
 /// The pane turns to a new list once, when the index first holds the list its create made, as its
 /// push or the index names it; until then it stays on the list it showed, and a list picked after
 /// the turn stays shown.
@@ -319,6 +322,14 @@ impl Asked {
     /// A card or the picker asks for `list_id`.
     pub fn ask(&mut self, list_id: &str) {
         self.list_id = Some(list_id.to_owned());
+    }
+
+    /// Undo took `removal` back (§10): a list taken back is asked for, and the pane shows it once
+    /// the index names it again. An item taken back leaves the pane on the list it shows.
+    pub fn taken_back(&mut self, removal: &Removal) {
+        if removal.row_id.is_none() {
+            self.ask(&removal.list_id);
+        }
     }
 
     /// The list asked for now: the one the newest create made here, when `index` names what it
@@ -441,12 +452,12 @@ pub fn rewording(drawing: PaneDrawing, row_id: Option<&str>) -> PaneDrawing {
 }
 
 /// What a screen reader is told as the pane is drawn again (§3.8, §5.3, §6.3), since focus is
-/// elsewhere, while the pane is on screen. The index's sentence for a new list refused is told
-/// when it comes under the head, with lists or with none. A refused edit's sentence stays on its
-/// list until the list's next edit, and the pane tells it only when it first shows it: when it
-/// comes over Add an item of the list the pane already showed. Turned to a list with a sentence on
-/// it, the pane says nothing of that older refusal. "This list was removed." is told when the list
-/// it shows turns removed, or it turns to a removed list.
+/// elsewhere, while the pane is on screen. The index's sentence for a new list or a list's Undo
+/// refused is told when it comes under the head, with lists or with none. A refused edit's
+/// sentence stays on its list until the list's next edit, and the pane tells it only when it first
+/// shows it: when it comes over Add an item of the list the pane already showed. Turned to a list
+/// with a sentence on it, the pane says nothing of that older refusal. "This list was removed." is
+/// told when the list it shows turns removed, or it turns to a removed list.
 pub fn news<'a>(was: Option<&PaneDrawing>, now: &'a PaneDrawing, on_screen: bool) -> Vec<&'a str> {
     if !on_screen {
         return Vec::new();

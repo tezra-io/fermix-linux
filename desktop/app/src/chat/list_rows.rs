@@ -1,7 +1,7 @@
 //! The rows both lists surfaces draw (M85 lists §4.1): an item, as a reply's card and the Lists
 //! pane draw it, with its settle after a tick, what starts its rewording, and the keys that move
-//! it in the pane; and a row or button row that acts on a single click or Return in a list that
-//! activates its rows on a double-click.
+//! or remove it in the pane; and a row or button row that acts on a single click or Return in a
+//! list that activates its rows on a double-click.
 //! Markup off before any text, and no list edit is an exported action: a tick is the check
 //! button's own closure, which hands it to the session through `Lister`.
 
@@ -172,6 +172,21 @@ pub fn moves_on(item: &adw::ActionRow, step: impl Fn(bool) + 'static) {
             return glib::Propagation::Proceed;
         }
         step(up);
+        glib::Propagation::Stop
+    });
+    item.add_controller(keys);
+}
+
+/// An item that Delete removes (M85 lists §3.7, §6.1), with no modifier held.
+pub fn removes_on(item: &adw::ActionRow, remove: impl Fn() + 'static) {
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let plain = (state & gtk::accelerator_get_default_mod_mask()).is_empty();
+        let delete = matches!(key, gtk::gdk::Key::Delete | gtk::gdk::Key::KP_Delete);
+        if !plain || !delete {
+            return glib::Propagation::Proceed;
+        }
+        remove();
         glib::Propagation::Stop
     });
     item.add_controller(keys);
