@@ -23,6 +23,13 @@ These four files are the engine's companion chat contract, copied byte for byte:
   one and cannot answer one in its chat: the owner's Telegram, Signal, WhatsApp or iMessage chat
   still can. An engine whose window starts at 4 would refuse this app with its Update the app
   sentence.
+- Not moved with the Always On provisioning cut (engine `6d60af55`, 2026-11-04, whose last change
+  to `priv/companion` is `63207f61`): the engine's companion contract there is protocol 7, daemon
+  window 6..7, and its `PROTOCOL.md` changed again in the watch passage. These four files stay
+  together at v0.16.0's protocol 3, the version this app speaks, since a `PROTOCOL.md` copied
+  alone would describe a protocol the schema and fixtures beside it do not; moving them is the
+  app's companion work. An engine whose window starts above 3 refuses this app's chat with its
+  Update the app sentence until then.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format. The digests match the
   macOS app 0.6.0's pin (`Sources/FermixAppCore/Resources/Contracts/CHECKSUMS.txt`, `companion/`
   rows).

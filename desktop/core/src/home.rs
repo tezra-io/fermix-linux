@@ -5,10 +5,9 @@
 //! with. Decoding and the two calls only; what a screen shows of it is `always_on.rs`'s.
 
 use crate::management::{CallError, Management};
-use crate::provision::Pick;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::fmt;
 
 pub const PASSPHRASE_MISMATCH: &str = "The two passphrases are not the same.";
@@ -28,7 +27,6 @@ pub struct HomeStatus {
 pub enum SummaryState {
     Off,
     Connect,
-    Choose,
     Creating,
     Ready,
     Moving,
@@ -42,31 +40,23 @@ pub enum SummaryState {
     Unknown,
 }
 
-/// What one summary action is. Every one is a step `home.act` runs, but the three the surface
+/// What one summary action is. Every one is a step `home.act` runs, but the two the surface
 /// opens itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionId {
-    CreateServer,
     Cancel,
     MoveNow,
     TryAgain,
     LearnMore,
-    TurnOn,
-    RestartServer,
-    StartAgain,
-    CreateIn,
-    OpenConsole,
-    PasteToken,
     Update,
     BackUpNow,
-    ReplaceServer,
     CheckAgain,
     OwnServer,
-    DeleteServer,
     /// On a computer the home moved from: the server gives the home back to it.
     MoveBack,
-    /// Where the server Fermix created is gone: deleted first, then this computer's copy restored.
+    /// Where the server went silent: this computer's copy restored, once the owner says the
+    /// server is deleted or stopped.
     RestoreHere,
     /// An action a newer engine offers that this app has no button for.
     #[serde(other)]
@@ -74,13 +64,9 @@ pub enum ActionId {
 }
 
 impl ActionId {
-    /// Learn more and Open console open their `url`, and Update is the app's own updater:
-    /// `home.act` refuses all three.
+    /// Learn more opens its `url`, and Update is the app's own updater: `home.act` refuses both.
     pub fn opened_here(self) -> bool {
-        matches!(
-            self,
-            ActionId::LearnMore | ActionId::OpenConsole | ActionId::Update
-        )
+        matches!(self, ActionId::LearnMore | ActionId::Update)
     }
 }
 
@@ -88,14 +74,10 @@ impl ActionId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Need {
-    /// The provider's token, from the token screens `detail.providers` lists.
-    Token,
     /// The recovery passphrase set before: typed once, and the engine checks it.
     RecoveryPassphrase,
     /// None is set yet: typed twice and compared here.
     NewRecoveryPassphrase,
-    /// The size and place, from `home.provision.options`; the recommendation by default.
-    Choice,
     /// A need a newer engine asks for that this app has no way to ask.
     #[serde(other)]
     Unknown,
@@ -121,22 +103,6 @@ pub struct Line {
     pub value: String,
 }
 
-/// One provider's token screen, in the engine's words: `id` is what a token is given for.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Provider {
-    pub id: String,
-    pub name: String,
-    /// The token field's label.
-    pub token_label: String,
-    /// What the token screen says.
-    pub sentence: String,
-    /// The "How to get one" steps.
-    pub steps: Vec<String>,
-    pub console_url: String,
-    /// The Always On docs page at this provider's part.
-    pub docs_url: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemStatus {
@@ -158,14 +124,12 @@ pub struct ReadinessItem {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Detail {
-    pub providers: Vec<Provider>,
     pub lines: Vec<Line>,
     /// The sentence of the step in hand, while a step's job runs.
     pub progress: Option<String>,
     pub alternatives: Vec<Action>,
     /// `on`'s other actions.
     pub actions: Vec<Action>,
-    pub billing: Option<String>,
     pub readiness: Vec<ReadinessItem>,
     /// What lives on the server, on `on`.
     pub data: Option<String>,
@@ -209,26 +173,6 @@ impl Summary {
 
 // ---- What a step carries ------------------------------------------------------------------------
 
-/// A provider's API token as it was pasted, trimmed. It goes out on the wire and nowhere else: no
-/// print of it spells it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Token(String);
-
-impl Token {
-    /// The pasted text without the space around it; None when nothing but space was pasted. How
-    /// a token must look is the daemon's rule, and its refusal says so.
-    pub fn pasted(text: &str) -> Option<Token> {
-        let trimmed = text.trim();
-        (!trimmed.is_empty()).then(|| Token(trimmed.to_owned()))
-    }
-}
-
-impl fmt::Debug for Token {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Token(withheld)")
-    }
-}
-
 /// The recovery passphrase, held only between its entry and the act that carries it. No print
 /// of it spells it.
 #[derive(Clone, PartialEq, Eq)]
@@ -260,15 +204,11 @@ pub fn passphrase(first: &str, second: &str) -> Result<Passphrase, Option<&'stat
     Ok(Passphrase(first.to_owned()))
 }
 
-/// What one act carries, as the action's `needs` asked: a token (naming its provider where the
-/// engine lists several), a recovery passphrase, or the size and place the owner was shown.
-/// No print of it spells the token or the passphrase.
+/// What one act carries, as the action's `needs` asked: the recovery passphrase, or nothing. No
+/// print of it spells the passphrase.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Input {
-    token: Option<Token>,
-    provider: Option<String>,
     passphrase: Option<Passphrase>,
-    choice: Option<Pick>,
 }
 
 impl Input {
@@ -277,65 +217,23 @@ impl Input {
         Input::default()
     }
 
-    pub fn token(token: Token, provider: Option<&str>) -> Input {
-        assert!(
-            provider.is_none_or(|p| !p.is_empty()),
-            "a provider is named by its id"
-        );
-        Input {
-            token: Some(token),
-            provider: provider.map(str::to_owned),
-            ..Input::default()
-        }
-    }
-
     pub fn passphrase(passphrase: Passphrase) -> Input {
         Input {
             passphrase: Some(passphrase),
-            ..Input::default()
-        }
-    }
-
-    /// The row the owner chose, the recommended one by default: the engine makes no choice
-    /// itself, so what it creates is what was shown.
-    pub fn choice(pick: Pick) -> Input {
-        assert!(
-            !pick.size.is_empty() && !pick.location.is_empty(),
-            "a choice is a size and a place"
-        );
-        Input {
-            choice: Some(pick),
-            ..Input::default()
         }
     }
 
     /// `home.act`'s `input`, or none when the act carries nothing.
     fn params(&self) -> Option<Value> {
-        let mut input = Map::new();
-        if let Some(token) = &self.token {
-            input.insert("token".into(), json!(token.0));
-        }
-        if let Some(provider) = &self.provider {
-            input.insert("provider".into(), json!(provider));
-        }
-        if let Some(passphrase) = &self.passphrase {
-            input.insert("recovery_passphrase".into(), json!(passphrase.0));
-        }
-        if let Some(pick) = &self.choice {
-            input.insert("type".into(), json!(pick.size));
-            input.insert("location".into(), json!(pick.location));
-        }
-        (!input.is_empty()).then_some(Value::Object(input))
+        let passphrase = self.passphrase.as_ref()?;
+        Some(json!({ "recovery_passphrase": passphrase.0 }))
     }
 }
 
 impl fmt::Debug for Input {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Input")
-            .field("token", &self.token)
-            .field("provider", &self.provider)
             .field("passphrase", &self.passphrase)
-            .field("choice", &self.choice)
             .finish()
     }
 }

@@ -1,29 +1,26 @@
 //! The Always On pane as a renderer of the engine's summary (Always On setup §3, §8.4): each
 //! screen is the summary as the engine words it, every press is one `home.act` with the key it
 //! was drawn with and what the action `needs`, its `confirm` is asked first, the answer is drawn,
-//! and the app keeps only how it asks for a secret, how it draws a choice, and that it restarts
-//! after its own Move now. The summaries are the engine's own goldens, and the token screens the
-//! summaries its handoff generated from the code.
+//! and the app keeps only how it asks for the recovery passphrase and that it restarts after its
+//! own Move now. The summaries are the engine's own goldens, and the screens no golden holds are
+//! built as the engine builds them, in its words for a Linux computer.
 
-use fermix_client::always_on::model::{Act, Dialog, Model, Press, Read};
+use fermix_client::always_on::model::{Act, Dialog, Model, Press};
 use fermix_client::always_on::notices::{notices_file, Posted, POSTED};
 use fermix_client::always_on::{
-    by_city, destructive, listed, offered, screen, served as served_by, token_target, Fact, Page,
-    TokenTarget, LINK_FAILED, NEEDED, RESTARTING,
+    destructive, listed, offered, screen, served as served_by, Fact, Page, LINK_FAILED, NEEDED,
+    RESTARTING,
 };
 use fermix_client::home::{
-    Acted, Action, ActionId, HomeStatus, Input, Line, Notice, Passphrase, Provider, Summary,
-    SummaryState, Token, PASSPHRASE_MISMATCH,
+    Acted, Action, ActionId, HomeStatus, Input, Line, Notice, Passphrase, Summary, SummaryState,
+    PASSPHRASE_MISMATCH,
 };
 use fermix_client::management::{CallError, Refusal};
-use fermix_client::provision::{Options, Pick};
 use fermix_client::view::DaemonProblem;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
-/// The one provider the goldens name.
-const PROVIDER: &str = "hetzner";
 const CHANGED: &str = "Always On changed since this was shown, so look at it again.";
 
 fn result(name: &str) -> Value {
@@ -67,79 +64,39 @@ fn served() -> Vec<String> {
         .collect()
 }
 
-fn options() -> Options {
-    decoded(result("home_provision_options"))
-}
-
-/// The row the engine recommends: the golden's.
-fn recommended() -> Pick {
-    Pick {
-        size: "cpx22".into(),
-        location: "fsn1".into(),
-    }
-}
-
 fn record(id: &str, label: &str, needs: Value, confirm: Value, key: &str) -> Value {
     json!({"id": id, "label": label, "needs": needs, "confirm": confirm, "url": null, "key": key})
 }
 
-fn hetzner() -> Value {
-    json!({"console_url": "https://console.hetzner.cloud/",
-        "docs_url": "https://fermix.ai/docs/always-on/#hetzner", "id": "hetzner",
-        "name": "Hetzner", "sentence": "Paste a Hetzner API token to let Fermix create your server.",
-        "steps": ["Sign in to Hetzner's console and turn on two-factor sign-in for your account.",
-            "Make a new project for Fermix alone, so the token reaches nothing else.",
-            "In that project, open Security, then API Tokens, and generate a token with Read & Write permission.",
-            "Paste the token here: Fermix checks it at once."],
-        "token_label": "Hetzner API token"})
-}
-
-/// A second provider, invented: nothing in the app may name it.
-fn nimbus() -> Value {
-    json!({"console_url": "https://console.nimbus.invalid/",
-        "docs_url": "https://fermix.ai/docs/always-on/#nimbus", "id": "nimbus", "name": "Nimbus",
-        "sentence": "Paste a Nimbus access key to let Fermix create your server.",
-        "steps": ["Make a Nimbus account for Fermix alone."], "token_label": "Nimbus access key"})
-}
-
-const SET_UP_KEY: &str = "ypJXbXCwrSQSdVK8_tXftA";
+/// The key the engine draws Use my own Linux server with, on `off` and `connect` alike.
 const OWN_KEY: &str = "Mx_U6542oONDPqGb3qliTQ";
+/// Cancel the code's key, as the request fixture sends it.
+const CANCEL_CODE_KEY: &str = "PGFKmgUa3i48MJgwQSKf-g";
+/// The command `own_server` answers: the installer at this engine's own version.
+const COMMAND: &str = "curl -fsSL https://fermix.ai/always-on | sudo sh -s -- --version 1.2.3";
 
-/// `off`, as the engine words it (the summary handoff's appendix).
-fn off_with(providers: Value) -> Value {
-    json!({"action": record("paste_token", "Set up", json!(["token"]), Value::Null, SET_UP_KEY),
-        "detail": {"alternatives": [record("own_server", "Use my own Linux server", json!([]),
-            Value::Null, OWN_KEY)], "providers": providers},
-        "key": "WwwCtpM5-2otfTa1t5s38A", "notice": null,
-        "sentence": "Keep Fermix running when this Mac sleeps. It moves to a server you own.",
-        "state": "off"})
-}
-
+/// `off`, as the engine answers Cancel the code: its one action a server of the owner's own.
 fn off() -> Value {
-    off_with(json!([hetzner()]))
+    result("home_act")["summary"].clone()
 }
 
-/// `connect` while a code for a server of the owner's own is open.
+/// `connect` while a code for a server of the owner's own is open, as the engine builds it:
+/// nothing to press while the server uses the code, and a new code or Cancel the code beside it.
 fn connect() -> Value {
-    json!({"action": record("paste_token", "Set up", json!(["token"]), Value::Null, SET_UP_KEY),
+    json!({"action": null,
         "detail": {"alternatives": [
             record("own_server", "Use my own Linux server", json!([]), Value::Null, OWN_KEY),
-            record("cancel", "Cancel the code", json!([]), Value::Null, "PGFKmgUa3i48MJgwQSKf-g")],
-            "providers": [hetzner()]},
-        "key": "1beYgzYKYRJoEBvPpLz31A", "notice": null,
-        "sentence": "Paste a Hetzner API token to let Fermix create your server.",
+            record("cancel", "Cancel the code", json!([]), Value::Null, CANCEL_CODE_KEY)]},
+        "key": "1beYgzYKYRJoEBvPpLz31A", "notice": null, "outcome": "waiting",
+        "sentence": "Waiting for your server: run the command on it and paste the code when it asks.",
         "state": "connect"})
-}
-
-fn choose() -> Value {
-    result("home_act")["summary"].clone()
 }
 
 /// A model that read `summary` with the pane shown, every read answered.
 fn model_on(summary: Value) -> Model {
     let mut model = Model::default();
     model.pane_shown();
-    assert_eq!(model.next_read(), Some(Read::Status));
+    assert!(model.take_read());
     model.served(served());
     model.answered(answering(summary));
     model
@@ -154,10 +111,6 @@ fn screen_of(model: &Model) -> fermix_client::always_on::Screen {
 
 fn ids(actions: &[Action]) -> Vec<ActionId> {
     actions.iter().map(|a| a.id).collect()
-}
-
-fn token(text: &str) -> Token {
-    Token::pasted(text).expect("a token")
 }
 
 fn typed(text: &str) -> Passphrase {
@@ -216,65 +169,98 @@ fn every_golden_draws_its_sentence_and_its_one_action_in_the_engines_words() {
 
 #[test]
 fn details_are_the_engines_lines_and_sentences_in_its_order() {
-    let creating = screen(&summary("home_status_creating"));
-    assert!(creating.shows_progress);
+    let ready = screen(&summary("home_status_ready"));
+    let labels: Vec<&str> = ready
+        .details
+        .iter()
+        .map(|fact| match fact {
+            Fact::Line(line) => line.label.as_str(),
+            Fact::Sentence(said) => said.as_str(),
+        })
+        .collect();
+    assert_eq!(labels, ["Server", "System", "Version", "Waits until"]);
+    let on = screen(&summary("home_status_on"));
+    assert_eq!(on.details.len(), 6, "five lines and what lives there");
     assert_eq!(
-        creating.details.first(),
+        on.details.first(),
         Some(&Fact::Line(Line {
             label: "Server".into(),
             value: "fermix-general-a3f9".into()
         }))
     );
-    assert_eq!(
-        creating.details.last(),
-        Some(&Fact::Line(Line {
-            label: "Costs".into(),
-            value: "€8.33 a month, billed by the hour until deleted".into()
-        }))
-    );
-    assert_eq!(creating.details.len(), 6);
-    let on = screen(&summary("home_status_on"));
-    assert_eq!(on.details.len(), 9, "eight lines and what lives there");
     let Some(Fact::Sentence(data)) = on.details.last() else {
         panic!("what lives on the server, last")
     };
     assert!(data.starts_with("Your conversations and memories"));
-    let choose = screen(&decoded(choose()));
-    assert_eq!(
-        choose.details,
-        [Fact::Sentence(
-            "Hetzner bills by the hour until the server is deleted.".into()
-        )]
-    );
-    for quiet in ["home_status_candidate", "home_status_server", "home_status"] {
+    assert!(data.contains("whoever hosts it"), "{data}");
+    for quiet in [
+        "home_status_creating",
+        "home_status_candidate",
+        "home_status_server",
+        "home_status",
+    ] {
         assert!(screen(&summary(quiet)).details.is_empty(), "{quiet}");
     }
 }
 
+/// The owner's server connecting and a restore running each show the bar, with the step in hand
+/// where the engine names one; nothing is pressed meanwhile.
 #[test]
 fn a_running_step_shows_the_bar_and_the_engines_progress() {
-    let step = json!({"action": record("cancel", "Cancel", json!([]),
-            json!("Cancel and delete your server? Everything Fermix created for it is deleted."),
-            "G5z__UAdjaH9J2d38M3Zuw"),
-        "detail": {"progress": "Checking that Hetzner has the server in stock."},
-        "key": "aVo_EyPSBtR07awKKf2KNA", "notice": null,
-        "sentence": "Starting your server…", "state": "creating"});
-    let shown = screen(&decoded(step));
-    assert!(shown.shows_progress);
+    let connecting = screen(&summary("home_status_creating"));
+    assert_eq!(connecting.sentence, "Connecting your server…");
+    assert!(connecting.shows_progress && connecting.action.is_none());
+    assert!(connecting.others.is_empty());
+    let restoring = screen(&decoded(restore_moving()));
+    assert!(restoring.shows_progress && restoring.action.is_none());
     assert_eq!(
-        shown.progress.as_deref(),
-        Some("Checking that Hetzner has the server in stock.")
+        restoring.progress.as_deref(),
+        Some("Restoring Fermix from the backup on this computer…")
     );
     let ready = screen(&summary("home_status_ready"));
     assert!(!ready.shows_progress && ready.progress.is_none());
-    let moving = json!({"action": null, "detail": {}, "key": "DXMsAJ5oa8GcFfqMnPOUWQ",
-        "notice": null, "state": "moving",
-        "sentence": "Moving. This Mac restarts and reconnects to your server. Messages wait until it is done."});
-    assert!(screen(&decoded(moving)).shows_progress);
+}
+
+/// Always On off offers one thing, a Linux server of the owner's own; while its code is open the
+/// screen waits for that server with nothing to press, a new code or Cancel the code beside it.
+#[test]
+fn off_offers_a_server_of_the_owners_own_and_connect_waits_for_it_with_nothing_to_press() {
+    let off = screen(&decoded(off()));
+    assert_eq!(off.state, SummaryState::Off);
+    assert_eq!(
+        off.sentence,
+        "Keep Fermix running when this Mac sleeps. It moves to a server you own."
+    );
+    let own = off.action.expect("Use my own Linux server");
+    assert_eq!(
+        (own.id, own.label.as_str(), own.key.as_str()),
+        (ActionId::OwnServer, "Use my own Linux server", OWN_KEY)
+    );
+    assert!(own.needs.is_empty() && own.confirm.is_none());
+    assert!(off.others.is_empty() && off.details.is_empty());
+    let mut model = model_on(connect());
+    let waiting = screen_of(&model);
+    assert_eq!(waiting.state, SummaryState::Connect);
+    assert_eq!(
+        waiting.sentence,
+        "Waiting for your server: run the command on it and paste the code when it asks."
+    );
+    assert!(waiting.action.is_none(), "nothing to press while it waits");
+    assert!(!waiting.shows_progress);
+    assert_eq!(
+        ids(&waiting.others),
+        [ActionId::OwnServer, ActionId::Cancel]
+    );
+    let cancel = waiting.others[1].clone();
+    assert_eq!(
+        model.press(&cancel),
+        act(ActionId::Cancel, CANCEL_CODE_KEY, Input::none()),
+        "Cancel the code asks nothing first"
+    );
 }
 
 #[test]
-fn ready_lists_the_reviews_items_and_on_and_off_offer_their_other_actions() {
+fn ready_lists_the_reviews_items_and_on_offers_its_other_actions() {
     let ready = screen(&summary("home_status_ready"));
     let items: Vec<&str> = ready
         .readiness
@@ -285,54 +271,50 @@ fn ready_lists_the_reviews_items_and_on_and_off_offer_their_other_actions() {
         items,
         ["iMessage, voice calls and meetings stop after the move: neither this Mac nor fermix-general-a3f9 runs them."]
     );
-    assert_eq!(
-        ids(&ready.others),
-        [ActionId::DeleteServer],
-        "a server waiting for its move can be deleted"
+    assert!(
+        ready.others.is_empty(),
+        "a server waiting for its move offers Move now alone"
     );
     let on = screen(&summary("home_status_on"));
     assert!(on.action.is_none(), "all is well: no main action");
-    assert_eq!(
-        ids(&on.others),
-        [
-            ActionId::BackUpNow,
-            ActionId::ReplaceServer,
-            ActionId::MoveBack
-        ]
-    );
-    let off = screen(&decoded(off()));
-    assert_eq!(ids(&off.others), [ActionId::OwnServer]);
-    let connect = screen(&decoded(connect()));
-    assert_eq!(
-        ids(&connect.others),
-        [ActionId::OwnServer, ActionId::Cancel]
-    );
+    assert_eq!(ids(&on.others), [ActionId::BackUpNow, ActionId::MoveBack]);
 }
 
+/// A server out of reach offers Learn more, Restore here beside it and the copy's date; a restore
+/// that stopped offers Restore here again and says why in the engine's note.
 #[test]
 fn a_problem_draws_its_action_its_alternatives_and_its_note() {
-    let failed = json!({"action": record("turn_on", "Turn it on", json!([]), Value::Null,
-            "-2-qM4YNTcvtEyU-7v1z6A"),
-        "detail": {"alternatives": [record("delete_server", "Delete your server", json!([]),
-                json!("Delete your server? Everything on it is deleted."), "c1yXdvadZiiMCMzJaPBJhg")],
-            "kind": "power_failed",
-            "lines": [{"label": "Server", "value": "fermix-general-a3f9"}],
-            "note": "Your server costs its monthly price until it is deleted.",
-            "seen_at": "2031-05-04T11:30:00Z"},
-        "key": "LcluSnDHlygipjnerXKhpw", "notice": null,
-        "sentence": "Fermix could not reach Hetzner, so check this computer's connection and try again.",
-        "state": "problem"});
-    let shown = screen(&decoded(failed));
-    assert_eq!(shown.state, SummaryState::Problem);
-    assert_eq!(shown.action.as_ref().map(|a| a.id), Some(ActionId::TurnOn));
-    assert_eq!(ids(&shown.others), [ActionId::DeleteServer]);
+    let away = screen(&summary("home_status_problem"));
+    assert_eq!(away.state, SummaryState::Problem);
     assert_eq!(
-        shown.details,
+        away.action.as_ref().map(|a| a.id),
+        Some(ActionId::LearnMore)
+    );
+    assert_eq!(ids(&away.others), [ActionId::RestoreHere]);
+    assert_eq!(
+        away.details,
+        [Fact::Line(Line {
+            label: "Backup on this Mac".into(),
+            value: "Sunday, May 4, 2031 at 12:00 PM CEST".into()
+        })]
+    );
+    let stopped = screen(&decoded(restore_failed()));
+    assert_eq!(
+        stopped.sentence,
+        "Fermix could not restore its backup on this computer."
+    );
+    assert_eq!(
+        stopped.action.as_ref().map(|a| a.id),
+        Some(ActionId::RestoreHere)
+    );
+    assert!(stopped.others.is_empty());
+    assert_eq!(
+        stopped.details,
         [
-            Fact::Sentence("Your server costs its monthly price until it is deleted.".into()),
+            Fact::Sentence(RESTORE_STOPPED.into()),
             Fact::Line(Line {
-                label: "Server".into(),
-                value: "fermix-general-a3f9".into()
+                label: "Backup on this computer".into(),
+                value: "Sunday, May 4, 2031 at 12:00 PM CEST".into()
             }),
         ]
     );
@@ -346,12 +328,12 @@ fn an_action_this_app_cannot_ask_for_draws_nothing() {
         decoded::<Action>(record(id, "Later", needs, Value::Null, "k-later"))
     };
     assert!(!offered(&later("fly_away", json!([]))));
-    assert!(!offered(&later("create_server", json!(["fingerprint"]))));
+    assert!(!offered(&later("move_now", json!(["fingerprint"]))));
     assert!(!offered(&later(
-        "create_server",
-        json!(["token", "choice"])
+        "move_now",
+        json!(["recovery_passphrase", "new_recovery_passphrase"])
     )));
-    assert!(offered(&later("create_server", json!(["choice"]))));
+    assert!(offered(&later("move_now", json!(["recovery_passphrase"]))));
     let mut on = summary("home_status_on");
     on.detail.actions.push(later("fly_away", json!([])));
     on.action = Some(later("fly_away", json!([])));
@@ -359,11 +341,7 @@ fn an_action_this_app_cannot_ask_for_draws_nothing() {
     assert!(shown.action.is_none());
     assert_eq!(
         ids(&shown.others),
-        [
-            ActionId::BackUpNow,
-            ActionId::ReplaceServer,
-            ActionId::MoveBack
-        ]
+        [ActionId::BackUpNow, ActionId::MoveBack]
     );
 }
 
@@ -376,7 +354,7 @@ fn every_state_the_engine_answers_draws_its_sentence() {
         .as_array()
         .expect("the states")
         .clone();
-    assert_eq!(states.len(), 12);
+    assert_eq!(states.len(), 11);
     for state in states {
         let shown = screen(&decoded(
             json!({"state": state, "sentence": "Where it stands.",
@@ -413,12 +391,13 @@ fn fermix_down_keeps_the_last_screen_and_adds_its_sentence() {
     fresh.unanswered(DaemonProblem::NotRunning);
     assert_eq!(fresh.page(), Page::Unreadable(DaemonProblem::NotRunning));
     assert_eq!(fresh.read_note(), None);
-    let mut model = model_on(choose());
+    let ready = result("home_status_ready")["summary"].clone();
+    let mut model = model_on(ready.clone());
     model.unanswered(DaemonProblem::NotRunning);
     let kept = screen_of(&model);
-    assert_eq!(kept.state, SummaryState::Choose);
+    assert_eq!(kept.state, SummaryState::Ready);
     assert_eq!(model.read_note().as_deref(), Some("Fermix is not running."));
-    model.answered(answering(choose()));
+    model.answered(answering(ready));
     assert_eq!(model.read_note(), None);
 }
 
@@ -427,147 +406,24 @@ fn fermix_down_keeps_the_last_screen_and_adds_its_sentence() {
 #[test]
 fn nothing_is_read_until_told_and_each_notice_is_one_read() {
     let mut model = Model::default();
-    assert_eq!(model.next_read(), None, "nothing at launch");
+    assert!(!model.take_read(), "nothing at launch");
     model.home_status_changed();
     model.home_status_changed();
-    assert_eq!(model.next_read(), Some(Read::Status));
-    assert_eq!(
-        model.next_read(),
-        None,
-        "two notices meanwhile are one read"
-    );
+    assert!(model.take_read());
+    assert!(!model.take_read(), "two notices meanwhile are one read");
     model.engine_restarted();
-    assert_eq!(
-        model.next_read(),
-        None,
-        "a new engine is read only while shown"
-    );
+    assert!(!model.take_read(), "a new engine is read only while shown");
     model.pane_shown();
-    assert_eq!(model.next_read(), Some(Read::Status));
+    assert!(model.take_read());
     model.served(served());
     model.answered(answering(off()));
-    assert_eq!(model.next_read(), None, "off reads nothing more");
+    assert!(!model.take_read(), "off reads nothing more");
     model.engine_restarted();
-    assert_eq!(model.next_read(), Some(Read::Status));
-    assert_eq!(model.next_read(), None);
-}
-
-#[test]
-fn a_choice_reads_the_offers_of_the_provider_in_use_once_while_the_pane_shows() {
-    let mut model = model_on(choose());
-    assert!(screen_of(&model).choice);
-    assert_eq!(
-        model.next_read(),
-        Some(Read::Options),
-        "nothing remembered: the engine answers for the provider in use"
-    );
-    model.options_read(Ok(options()));
-    assert_eq!(model.next_read(), None, "read once while the pane shows");
-    assert_eq!(model.loaded_options(), Some(&options()));
-    model.pane_hidden();
-    assert_eq!(model.loaded_options(), None);
-    model.pane_shown();
-    assert_eq!(model.next_read(), Some(Read::Status));
-    model.answered(answering(choose()));
-    assert_eq!(
-        model.next_read(),
-        Some(Read::Options),
-        "read again as it shows again"
-    );
-    let mut off = model_on(off());
-    assert_eq!(off.next_read(), None, "no choice shows, so no offers");
-    off.pick_provider("hetzner");
-    assert_eq!(off.next_read(), None);
+    assert!(model.take_read());
+    assert!(!model.take_read());
 }
 
 // ---- Every press is one home.act --------------------------------------------------------------
-
-/// Each offer is drawn as the engine words it, its label and its price, grouped by the city of
-/// its place; the app words no size and no price.
-#[test]
-fn the_offers_are_the_engines_label_and_price_grouped_by_city() {
-    let offers = options();
-    assert_eq!(offers.provider.name, "Hetzner");
-    let first = &offers.offers[0];
-    assert_eq!(first.label, "CPX22: 2 cores, 4 GB memory, 80 GB disk");
-    assert_eq!(
-        first.price,
-        "€20.09 a month, billed by the hour until deleted"
-    );
-    assert_eq!(offers.city(&first.location), Some("Falkenstein"));
-    let grouped = by_city(&offers);
-    let cities: Vec<&str> = grouped.iter().map(|(city, _)| *city).collect();
-    assert_eq!(cities, ["Falkenstein", "Nuremberg", "Helsinki"]);
-    assert!(grouped.iter().all(|(_, rows)| !rows.is_empty()));
-    let (_, helsinki) = &grouped[2];
-    assert!(helsinki.iter().all(|o| o.location == "hel1"));
-    assert_eq!(
-        grouped.iter().map(|(_, rows)| rows.len()).sum::<usize>(),
-        offers.offers.len()
-    );
-}
-
-/// A choice is sent as the row it is: before the offers are read a press only reads them, and
-/// where the engine recommends none the owner picks one first, told why in the engine's words.
-#[test]
-fn a_choice_waits_for_the_offers_and_sends_the_row_the_owner_was_shown() {
-    let mut model = model_on(choose());
-    let create = screen_of(&model).action.expect("Create server");
-    assert_eq!(model.press(&create), Press::Read, "the offers first");
-    assert_eq!(model.dialog(), None);
-    assert_eq!(model.working, None);
-    assert_eq!(model.next_read(), Some(Read::Options));
-    let mut none_in_stock = options();
-    none_in_stock.recommended = None;
-    none_in_stock.sentence =
-        "Hetzner has no server type with 4 GB in stock in Falkenstein right now.".into();
-    model.options_read(Ok(none_in_stock));
-    assert_eq!(model.press(&create), Press::Drawn);
-    assert_eq!(model.dialog(), None, "nothing to send yet");
-    assert_eq!(
-        model.refusal.as_deref(),
-        Some("Hetzner has no server type with 4 GB in stock in Falkenstein right now.")
-    );
-    let helsinki = Pick {
-        size: "cpx22".into(),
-        location: "hel1".into(),
-    };
-    model.choose(helsinki.clone());
-    model.press(&create);
-    assert_eq!(
-        model.confirmed(),
-        act(ActionId::CreateServer, &create.key, Input::choice(helsinki))
-    );
-}
-
-/// Start again needs a choice where the server it creates again kept no size and place: the
-/// same choice as a create, then the row.
-#[test]
-fn start_again_that_needs_a_choice_draws_it_and_sends_the_row() {
-    let stopped = json!({"action": record("start_again", "Start again", json!(["choice"]),
-            json!("Delete what Fermix created and start again? Hetzner bills the new server by the hour until it is deleted."),
-            "k-start-again"),
-        "detail": {"alternatives": [], "kind": "create_failed", "note": null,
-            "seen_at": "2031-05-04T11:30:00Z"},
-        "key": "k-summary", "notice": null, "outcome": "failed",
-        "sentence": "Fermix stopped before your server was created, so start again.",
-        "state": "problem"});
-    let mut model = model_on(stopped);
-    assert!(screen_of(&model).choice);
-    assert_eq!(model.next_read(), Some(Read::Options));
-    model.options_read(Ok(options()));
-    let again = screen_of(&model).action.expect("Start again");
-    model.press(&again);
-    assert_eq!(model.dialog(), Some(Dialog::Confirm(again.clone())));
-    assert_eq!(
-        model.confirmed(),
-        act(
-            ActionId::StartAgain,
-            "k-start-again",
-            Input::choice(recommended())
-        )
-    );
-}
 
 /// The engine serves Always On where `hello` lists `home.act`: a release build lists none of its
 /// methods, and the pane is not listed there.
@@ -576,7 +432,7 @@ fn always_on_is_listed_only_where_the_engine_serves_home_act() {
     assert!(served_by(&served()));
     let release: Vec<String> = served()
         .into_iter()
-        .filter(|m| !["home.status", "home.act", "home.provision.options"].contains(&m.as_str()))
+        .filter(|m| !["home.status", "home.act"].contains(&m.as_str()))
         .collect();
     assert!(!served_by(&release));
     let panes = vec!["providers", "always_on", "secrets"];
@@ -598,17 +454,19 @@ fn a_press_with_nothing_to_ask_acts_at_once_with_the_key_it_was_drawn_with() {
     let answered = acted(result("home_status_on")["summary"].clone(), Value::Null);
     model.acted(Ok(answered));
     assert_eq!(model.working, None);
-    assert_eq!(
-        model.next_read(),
-        Some(Read::Status),
-        "read again after the act"
-    );
+    assert!(model.take_read(), "read again after the act");
 }
 
+/// The contract lets any action carry a confirm, asked before anything is sent: one that needs
+/// nothing is asked in a dialog of its own, and declining it sends nothing.
 #[test]
 fn a_confirm_is_asked_first_and_declining_it_sends_nothing() {
-    let mut model = model_on(result("home_status_creating")["summary"].clone());
-    let cancel = screen_of(&model).action.expect("Cancel");
+    let mut asked = connect();
+    asked["detail"]["alternatives"][1]["confirm"] =
+        json!("Cancel the code? Your server cannot use it after this.");
+    let mut model = model_on(asked);
+    let cancel = screen_of(&model).others[1].clone();
+    assert_eq!(cancel.id, ActionId::Cancel);
     assert_eq!(model.press(&cancel), Press::Drawn);
     assert_eq!(model.dialog(), Some(Dialog::Confirm(cancel.clone())));
     model.dismissed();
@@ -617,204 +475,28 @@ fn a_confirm_is_asked_first_and_declining_it_sends_nothing() {
     model.press(&cancel);
     assert_eq!(
         model.confirmed(),
-        act(ActionId::Cancel, "lW7Sx3Zz1dpg_Diwa6TmhA", Input::none())
+        act(ActionId::Cancel, CANCEL_CODE_KEY, Input::none())
     );
     assert_eq!(model.dialog(), None);
 }
 
+/// Restore here alone loses something for good, all that came after the copy it puts back, so
+/// it alone never takes Return for yes and its answer is drawn as one that deletes; Cancel
+/// deletes no server any more.
 #[test]
-fn deleting_steps_never_take_return_for_yes() {
+fn restore_here_alone_never_takes_return_for_yes() {
+    assert!(destructive(ActionId::RestoreHere));
     for id in [
-        ActionId::DeleteServer,
         ActionId::Cancel,
-        ActionId::StartAgain,
-        ActionId::RestoreHere,
-    ] {
-        assert!(destructive(id), "{id:?}");
-    }
-    for id in [
-        ActionId::CreateServer,
-        ActionId::RestartServer,
         ActionId::MoveNow,
-        ActionId::ReplaceServer,
-        ActionId::CreateIn,
-        ActionId::MoveBack,
         ActionId::TryAgain,
+        ActionId::BackUpNow,
+        ActionId::CheckAgain,
+        ActionId::OwnServer,
+        ActionId::MoveBack,
     ] {
         assert!(!destructive(id), "{id:?}");
     }
-}
-
-#[test]
-fn set_up_asks_for_the_token_in_place_of_the_action_and_sends_it() {
-    let mut model = model_on(off());
-    let set_up = screen_of(&model).action.expect("Set up");
-    assert_eq!(model.press(&set_up), Press::Drawn);
-    let asking = screen_of(&model);
-    assert!(asking.asks_token && asking.action.is_none());
-    let Some(TokenTarget::Provider(provider)) = model.token_target() else {
-        panic!("the one provider listed")
-    };
-    assert_eq!(provider.token_label, "Hetzner API token");
-    assert_eq!(
-        provider.docs_url,
-        "https://fermix.ai/docs/always-on/#hetzner"
-    );
-    assert_eq!(model.token_entered("   \n"), Press::Ignored);
-    let sent = model.token_entered(" invented-hetzner-token-6d1f0c9a2b7e4f3a\n");
-    let one = Input::token(token("invented-hetzner-token-6d1f0c9a2b7e4f3a"), None);
-    assert_eq!(sent, act(ActionId::PasteToken, SET_UP_KEY, one));
-    assert_eq!(
-        model.token_entered("invented-other-token-0042"),
-        Press::Ignored,
-        "one check at a time"
-    );
-    let refused = "Hetzner does not accept this token, so paste a Read & Write API token from the Hetzner project you made for Fermix.";
-    model.acted(Err(refusal("invalid_params", refused)));
-    assert_eq!(model.token_refusal.as_deref(), Some(refused));
-    assert!(
-        screen_of(&model).asks_token,
-        "the field stays for another paste"
-    );
-    model.token_entered("invented-hetzner-token-77aa0c9a2b7e4f3a");
-    model.acted(Ok(acted(choose(), Value::Null)));
-    let chosen = screen_of(&model);
-    assert_eq!(chosen.state, SummaryState::Choose);
-    assert!(!chosen.asks_token);
-    assert_eq!(model.token_refusal, None);
-}
-
-#[test]
-fn with_several_providers_the_owner_picks_one_and_the_token_names_it() {
-    let mut model = model_on(off_with(json!([hetzner(), nimbus()])));
-    let set_up = screen_of(&model).action.expect("Set up");
-    model.press(&set_up);
-    let Some(TokenTarget::Pick(listed)) = model.token_target() else {
-        panic!("a pick first")
-    };
-    let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["Hetzner", "Nimbus"], "in the engine's order");
-    assert_eq!(
-        model.token_entered("invented-nimbus-key-0001"),
-        Press::Ignored
-    );
-    model.pick_provider("nimbus");
-    let picked = Input::token(token("invented-nimbus-key-0001"), Some("nimbus"));
-    assert_eq!(
-        model.token_entered("invented-nimbus-key-0001"),
-        act(ActionId::PasteToken, SET_UP_KEY, picked)
-    );
-    let one: Vec<Provider> = decoded(json!([hetzner()]));
-    assert!(matches!(
-        token_target(&one, Some("nimbus")),
-        Some(TokenTarget::Provider(p)) if p.id == PROVIDER
-    ));
-    assert_eq!(token_target(&[], None), None);
-}
-
-#[test]
-fn create_server_sends_the_recommended_row_unless_the_owner_changed_it() {
-    let mut model = model_on(choose());
-    model.next_read();
-    model.options_read(Ok(options()));
-    let create = screen_of(&model).action.expect("Create server");
-    model.press(&create);
-    assert_eq!(model.dialog(), Some(Dialog::Confirm(create.clone())));
-    assert_eq!(
-        model.confirmed(),
-        act(
-            ActionId::CreateServer,
-            "F09RF8MofBF6hdXN7NWtuA",
-            Input::choice(recommended())
-        ),
-        "the row the owner was shown, never left to the engine"
-    );
-    model.acted(Err(refusal(
-        "unavailable",
-        "Fermix is already working on your server, so try again once that is done.",
-    )));
-    assert_eq!(
-        model.refusal.as_deref(),
-        Some("Fermix is already working on your server, so try again once that is done.")
-    );
-    let roomier = Pick {
-        size: "cpx32".into(),
-        location: "hel1".into(),
-    };
-    model.choose(roomier.clone());
-    assert_eq!(model.chosen(), Some(&roomier));
-    model.press(&create);
-    assert_eq!(
-        model.confirmed(),
-        act(
-            ActionId::CreateServer,
-            "F09RF8MofBF6hdXN7NWtuA",
-            Input::choice(roomier)
-        )
-    );
-}
-
-#[test]
-fn replace_asks_its_choice_in_a_dialog_that_shows_its_confirm() {
-    let mut model = model_on(result("home_status_on")["summary"].clone());
-    let replace = screen_of(&model).others[1].clone();
-    assert_eq!(model.press(&replace), Press::Read);
-    assert_eq!(model.dialog(), None, "the offers are read first");
-    assert_eq!(model.next_read(), Some(Read::Options));
-    model.options_read(Ok(options()));
-    assert_eq!(model.dialog(), Some(Dialog::Choice(replace.clone())));
-    assert_eq!(
-        model.choice_answered(),
-        act(
-            ActionId::ReplaceServer,
-            "ysD6fueqfNRZpiywBU6HPA",
-            Input::choice(recommended())
-        ),
-        "accepting the dialog accepts its confirm: no second question"
-    );
-    assert_eq!(model.dialog(), None);
-    model.acted(Ok(acted(
-        result("home_status_on")["summary"].clone(),
-        Value::Null,
-    )));
-    model.press(&replace);
-    let elsewhere = Pick {
-        size: "cpx32".into(),
-        location: "nbg1".into(),
-    };
-    model.choose(elsewhere.clone());
-    assert_eq!(
-        model.choice_answered(),
-        act(
-            ActionId::ReplaceServer,
-            "ysD6fueqfNRZpiywBU6HPA",
-            Input::choice(elsewhere)
-        )
-    );
-    model.acted(Ok(acted(
-        result("home_status_on")["summary"].clone(),
-        Value::Null,
-    )));
-    model.pane_hidden();
-    model.pane_shown();
-    model.next_read();
-    model.answered(answering(result("home_status_on")["summary"].clone()));
-    model.press(&replace);
-    model.next_read();
-    model.options_read(Err("Paste a Hetzner API token first.".into()));
-    assert_eq!(model.dialog(), None, "no dialog on a failed read");
-    assert_eq!(
-        model.refusal.as_deref(),
-        Some("Paste a Hetzner API token first.")
-    );
-    assert_eq!(
-        model.press(&replace),
-        Press::Read,
-        "a press reads them again"
-    );
-    assert_eq!(model.next_read(), Some(Read::Options));
-    model.options_read(Ok(options()));
-    assert_eq!(model.dialog(), Some(Dialog::Choice(replace)));
 }
 
 #[test]
@@ -919,38 +601,46 @@ fn a_move_that_says_where_it_stands_is_drawn_as_it_says() {
     let move_now = screen_of(&model).action.expect("Move now");
     model.press(&move_now);
     model.passphrase_entered("invented-harbor-juniper-lantern", None);
-    model.acted(Ok(acted(moving.clone(), json!({"move_id": "mv-replace"}))));
+    model.acted(Ok(acted(moving.clone(), json!({"move_id": "mv-0f1e2d3c"}))));
     assert_eq!(screen_of(&model).state, SummaryState::Moving);
     assert!(screen_of(&model).sentence.starts_with("Moving."));
 }
 
+/// A step refused `changed` says its sentence and reads again; what was asked for on a screen
+/// goes once the summary no longer offers its action under that key, and stays while it does.
 #[test]
 fn changed_says_its_sentence_and_drops_what_was_asked_for_on_the_older_screen() {
-    let mut model = model_on(off());
-    let set_up = screen_of(&model).action.expect("Set up");
-    model.press(&set_up);
-    model.token_entered("invented-hetzner-token-6d1f0c9a2b7e4f3a");
+    let ready = result("home_status_ready")["summary"].clone();
+    let mut model = model_on(ready.clone());
+    let move_now = screen_of(&model).action.expect("Move now");
+    model.press(&move_now);
+    model.passphrase_entered("invented-harbor-juniper-lantern", None);
     model.acted(Err(refusal("changed", CHANGED)));
     assert_eq!(model.refusal.as_deref(), Some(CHANGED));
-    assert_eq!(model.token_refusal, None);
-    assert_eq!(model.next_read(), Some(Read::Status));
-    let mut newer = connect();
+    assert!(model.take_read());
+    model.press(&move_now);
+    assert!(model.dialog().is_some());
+    let mut newer = ready.clone();
     newer["action"]["key"] = json!("a-newer-key");
     model.answered(answering(newer));
-    assert!(
-        !screen_of(&model).asks_token,
-        "a field for a key no longer offered goes"
+    assert_eq!(
+        model.dialog(),
+        None,
+        "a dialog for a key no longer offered goes"
     );
-    let mut same = model_on(off());
-    same.press(&set_up);
-    same.answered(answering(off()));
-    assert!(screen_of(&same).asks_token, "the same screen keeps it");
+    let mut same = model_on(ready.clone());
+    same.press(&move_now);
+    same.answered(answering(ready));
+    assert!(same.dialog().is_some(), "the same screen keeps it");
 }
 
+/// Use my own Linux server answers the code once, with the command that installs Fermix at this
+/// engine's version; they show until the code is closed or the pane goes, and a new code from
+/// `connect` shows in its place.
 #[test]
 fn the_own_servers_code_shows_with_the_command_until_the_code_or_the_pane_goes() {
     let mut model = model_on(off());
-    let own = screen_of(&model).others[0].clone();
+    let own = screen_of(&model).action.expect("Use my own Linux server");
     assert_eq!(
         model.press(&own),
         act(ActionId::OwnServer, OWN_KEY, Input::none())
@@ -958,60 +648,51 @@ fn the_own_servers_code_shows_with_the_command_until_the_code_or_the_pane_goes()
     model.acted(Ok(acted(
         connect(),
         json!({"code": "fxenroll1.aW52ZW50ZWQtY29kZQ", "expires_at": "2031-05-04T12:30:00Z",
-            "command": "curl -fsSL https://fermix.ai/always-on | sudo sh"}),
+            "command": COMMAND}),
     )));
     let code = model.handout.clone().expect("the code, once");
     assert_eq!(code.code(), "fxenroll1.aW52ZW50ZWQtY29kZQ");
-    assert_eq!(
-        code.command,
-        "curl -fsSL https://fermix.ai/always-on | sudo sh"
-    );
+    assert_eq!(code.command, COMMAND);
     assert_eq!(code.expires_at, "2031-05-04T12:30:00Z");
+    assert!(screen_of(&model).action.is_none(), "connect waits");
     model.answered(answering(connect()));
     assert!(model.handout.is_some(), "while the code is open");
     model.pane_hidden();
     assert_eq!(model.handout, None, "the code goes with the pane");
     model.pane_shown();
-    model.next_read();
-    model.answered(answering(off()));
-    model.press(&own);
+    model.take_read();
+    model.answered(answering(connect()));
+    let again = screen_of(&model).others[0].clone();
+    assert_eq!(
+        model.press(&again),
+        act(ActionId::OwnServer, OWN_KEY, Input::none())
+    );
     model.acted(Ok(acted(
         connect(),
         json!({"code": "fxenroll1.YW5vdGhlci1jb2Rl", "expires_at": "2031-05-04T12:40:00Z",
-            "command": "curl -fsSL https://fermix.ai/always-on | sudo sh"}),
+            "command": COMMAND}),
     )));
-    assert!(model.handout.is_some());
+    assert_eq!(
+        model.handout.as_ref().map(|h| h.code()),
+        Some("fxenroll1.YW5vdGhlci1jb2Rl")
+    );
     model.answered(answering(off()));
     assert_eq!(model.handout, None, "the code was closed: off says so");
 }
 
 #[test]
-fn learn_more_and_open_console_open_their_page_and_update_is_the_apps_own() {
-    let retired = json!({"action": {"confirm": null, "id": "learn_more", "key": "AevTAJ1PC7bJ23Nb6779IQ",
-            "label": "Learn more", "needs": [], "url": "https://fermix.ai/docs/always-on/#hetzner"},
-        "detail": {}, "key": "pE4etWKyHkFBceL_axOMzw", "notice": null, "state": "retired",
-        "sentence": "Fermix moved to your server, and this Mac is no longer connected to it."});
-    let mut model = model_on(retired);
+fn learn_more_opens_its_page_and_update_is_the_apps_own() {
+    let mut model = model_on(result("home_status_problem")["summary"].clone());
     let learn = screen_of(&model).action.expect("Learn more");
     assert_eq!(
         model.press(&learn),
-        Press::Open("https://fermix.ai/docs/always-on/#hetzner".into())
+        Press::Open("https://fermix.ai/docs/always-on/".into())
     );
     assert_eq!(model.working, None, "nothing is sent");
-    let mut console: Action = decoded(record(
-        "open_console",
-        "Open the console",
-        json!([]),
-        Value::Null,
-        "k-console",
-    ));
-    assert_eq!(model.press(&console), Press::Drawn, "no page to open");
+    let mut nowhere = learn.clone();
+    nowhere.url = None;
+    assert_eq!(model.press(&nowhere), Press::Drawn, "no page to open");
     assert_eq!(model.refusal.as_deref(), Some(LINK_FAILED));
-    console.url = Some("https://console.hetzner.cloud/".into());
-    assert_eq!(
-        model.press(&console),
-        Press::Open("https://console.hetzner.cloud/".into())
-    );
     let update: Action = decoded(record(
         "update",
         "Update",
@@ -1024,10 +705,14 @@ fn learn_more_and_open_console_open_their_page_and_update_is_the_apps_own() {
 
 // ---- Moving back --------------------------------------------------------------------------------
 
-/// The move back's screens on a Linux computer, as the engine words them (its `Copy`).
+/// The move back's and the restore's screens on a Linux computer, as the engine words them (its
+/// `Copy`).
 const RETURN_CANCEL_KEY: &str = "k-return-cancel";
 const RETURN_MOVE_KEY: &str = "k-return-move";
-const DELETE_BACK_KEY: &str = "k-delete-back";
+const RESTORE_AGAIN_KEY: &str = "k-restore-again";
+/// What the engine notes when a restore stopped before its copy was in place.
+const RESTORE_STOPPED: &str =
+    "The backup on this computer could not be restored here; Fermix's log says why.";
 
 fn return_cancel() -> Value {
     record(
@@ -1041,7 +726,7 @@ fn return_cancel() -> Value {
 
 fn learn_more() -> Value {
     json!({"confirm": null, "id": "learn_more", "key": "k-learn", "label": "Learn more",
-        "needs": [], "url": "https://fermix.ai/docs/always-on/#hetzner"})
+        "needs": [], "url": "https://fermix.ai/docs/always-on/"})
 }
 
 fn connecting() -> Value {
@@ -1066,15 +751,15 @@ fn return_moving(progress: &str) -> Value {
         "sentence": "Moving Fermix back to this computer. Messages wait until it is done."})
 }
 
-fn server_retired() -> Value {
-    json!({"action": record("delete_server", "Delete your server", json!([]),
-            json!("Delete your server? Fermix no longer runs on it, and everything still on it is gone for good."),
-            DELETE_BACK_KEY),
-        "detail": {"alternatives": [learn_more()], "kind": "server_retired",
-            "lines": [{"label": "Server", "value": "fermix-general-a3f9"}],
-            "note": null, "seen_at": null},
-        "key": "k-back", "notice": null, "outcome": "failed", "state": "problem",
-        "sentence": "Fermix is back on this computer. Your server still runs and costs money until you delete it."})
+/// Back on this computer as the primary after a move back: Always On is off here, and the
+/// server's retired copy is told once.
+fn back() -> Value {
+    json!({"action": record("own_server", "Use my own Linux server", json!([]), Value::Null,
+            OWN_KEY),
+        "detail": {}, "key": "k-back", "outcome": "done", "state": "off",
+        "notice": {"id": "back:5",
+            "sentence": "Fermix is back on this computer. Your own server still runs its retired copy: turn it off or delete it."},
+        "sentence": "Keep Fermix running when this computer sleeps. It moves to a server you own."})
 }
 
 fn return_failed() -> Value {
@@ -1102,12 +787,31 @@ fn return_undone() -> Value {
         "sentence": "The move back was undone. Fermix still runs on your server."})
 }
 
+fn restore_moving() -> Value {
+    json!({"action": null,
+        "detail": {"progress": "Restoring Fermix from the backup on this computer…"},
+        "key": "k-restoring", "notice": null, "outcome": "running", "state": "moving",
+        "sentence": "Restoring Fermix on this computer from its backup. Messages wait until it is done."})
+}
+
+fn restore_failed() -> Value {
+    json!({"action": record("restore_here", "Restore on this computer",
+            json!(["recovery_passphrase"]),
+            json!("Restore Fermix on this computer from its backup? Confirm only once you deleted your server, or stopped it for good: if it runs again, two copies of Fermix answer the same channels. Messages, memory and jobs since that backup are gone, and Telegram keeps nothing older than 24 hours."),
+            RESTORE_AGAIN_KEY),
+        "detail": {"kind": "return_failed", "note": RESTORE_STOPPED, "seen_at": null,
+            "lines": [{"label": "Backup on this computer",
+                "value": "Sunday, May 4, 2031 at 12:00 PM CEST"}]},
+        "key": "k-restore-failed", "notice": null, "outcome": "failed", "state": "problem",
+        "sentence": "Fermix could not restore its backup on this computer."})
+}
+
 /// `on` offers Move back beside its other actions; its press is one act that asks nothing,
 /// and the screen it answers is the engine's: connecting, with Cancel.
 #[test]
 fn move_back_is_one_press_asked_nothing_and_its_connecting_screen_offers_cancel() {
     let mut model = model_on(result("home_status_on")["summary"].clone());
-    let move_back = screen_of(&model).others[2].clone();
+    let move_back = screen_of(&model).others[1].clone();
     assert_eq!(move_back.id, ActionId::MoveBack);
     assert_eq!(
         model.press(&move_back),
@@ -1130,7 +834,8 @@ fn move_back_is_one_press_asked_nothing_and_its_connecting_screen_offers_cancel(
 /// Move now on a move back asks the passphrase once and sends it; this computer does not
 /// restart at the press, so the engine's moving screen is drawn, never the app's restart line.
 /// When it restarts as the primary, the last screen stays with the sentence until the new
-/// engine answers, as for any restart, and then it is drawn as it says.
+/// engine answers, as for any restart, and then it is drawn as it says: Always On off here,
+/// with the server's retired copy told once.
 #[test]
 fn a_move_back_moves_with_the_passphrase_and_its_restart_is_read_as_any_other() {
     let mut model = model_on(return_ready());
@@ -1172,7 +877,7 @@ fn a_move_back_moves_with_the_passphrase_and_its_restart_is_read_as_any_other() 
         Some("Receiving your Fermix from the server…")
     );
     assert!(moving.shows_progress && moving.action.is_none());
-    assert_eq!(model.next_read(), Some(Read::Status));
+    assert!(model.take_read());
     model.answered(answering(return_moving(
         "Putting Fermix in place on this computer…",
     )));
@@ -1183,45 +888,42 @@ fn a_move_back_moves_with_the_passphrase_and_its_restart_is_read_as_any_other() 
         Some("Putting Fermix in place on this computer…")
     );
     assert_eq!(model.read_note().as_deref(), Some("Fermix is not running."));
-    assert_eq!(model.next_read(), None, "read on no timer");
+    assert!(!model.take_read(), "read on no timer");
     model.engine_restarted();
-    assert_eq!(model.next_read(), Some(Read::Status));
-    model.answered(answering(server_retired()));
-    let back = screen_of(&model);
-    assert_eq!(back.state, SummaryState::Problem);
-    assert_eq!(
-        back.sentence,
-        "Fermix is back on this computer. Your server still runs and costs money until you delete it."
-    );
+    assert!(model.take_read());
+    let told = model.answered(answering(back()));
+    let home = screen_of(&model);
+    assert_eq!(home.state, SummaryState::Off);
     assert_eq!(model.read_note(), None);
-    assert_eq!(ids(&back.others), [ActionId::LearnMore]);
-    let delete = back.action.expect("Delete your server");
-    model.press(&delete);
-    assert_eq!(model.dialog(), Some(Dialog::Confirm(delete.clone())));
     assert_eq!(
-        model.confirmed(),
-        act(ActionId::DeleteServer, DELETE_BACK_KEY, Input::none())
+        home.action.map(|a| a.id),
+        Some(ActionId::OwnServer),
+        "Always On is off here again"
     );
+    assert_eq!(told.map(|n| n.id).as_deref(), Some("back:5"));
 }
 
-/// Restore here deletes the server before it restores: it asks the passphrase once under its
-/// confirm and sends it with the key it was drawn with, beside the copy's date and when the
-/// server was last seen; a passphrase that opens no copy is said under the action.
+/// Restore here asks the passphrase once under the engine's confirm, which asks the owner's word
+/// that the server is deleted or stopped for good, and sends it with the key it was drawn with,
+/// beside the copy's date; a passphrase that opens no copy is said under the action, and the
+/// restore runs on the engine's moving screen, never the app's restart line.
 #[test]
 fn restore_here_asks_the_passphrase_once_under_its_confirm_and_sends_it() {
     let mut model = model_on(result("home_status_problem")["summary"].clone());
     let shown = screen_of(&model);
     assert_eq!(ids(&shown.others), [ActionId::RestoreHere]);
-    for label in ["Backup on this Mac", "Last seen"] {
-        assert!(
-            shown
-                .details
-                .iter()
-                .any(|f| matches!(f, Fact::Line(l) if l.label == label)),
-            "{label}"
-        );
-    }
+    assert!(shown
+        .details
+        .iter()
+        .any(|f| matches!(f, Fact::Line(l) if l.label == "Backup on this Mac")));
     let restore = shown.others[0].clone();
+    assert!(
+        restore.confirm.as_deref().is_some_and(|c| c.starts_with(
+            "Restore Fermix on this Mac from its backup? Confirm only once you deleted your \
+             server, or stopped it for good"
+        )),
+        "the confirm is the engine's"
+    );
     model.press(&restore);
     assert_eq!(
         model.dialog(),
@@ -1234,7 +936,7 @@ fn restore_here_asks_the_passphrase_once_under_its_confirm_and_sends_it() {
         model.passphrase_entered("invented-harbor-juniper-lantern", None),
         act(
             ActionId::RestoreHere,
-            "diwE8WEZ-oMI5gK-apOlFQ",
+            "iOYN-a75Nzr_s5renEJm6g",
             Input::passphrase(typed("invented-harbor-juniper-lantern"))
         ),
         "the dialog shows the confirm, so its answer accepts it"
@@ -1244,19 +946,22 @@ fn restore_here_asks_the_passphrase_once_under_its_confirm_and_sends_it() {
     assert_eq!(model.refusal.as_deref(), Some(wrong));
     model.press(&restore);
     model.passphrase_entered("invented-harbor-juniper-meadow", None);
-    let deleting = json!({"action": null, "detail": {}, "key": "k-restore", "notice": null,
-        "state": "creating",
-        "sentence": "Deleting your server, then restoring Fermix on this Mac from its backup…"});
-    model.acted(Ok(acted(deleting, Value::Null)));
+    model.acted(Ok(acted(restore_moving(), Value::Null)));
     let shown = screen_of(&model);
-    assert_eq!(shown.state, SummaryState::Creating);
+    assert_eq!(shown.state, SummaryState::Moving);
+    assert_ne!(shown.sentence, RESTARTING);
+    assert_eq!(
+        shown.sentence,
+        "Restoring Fermix on this computer from its backup. Messages wait until it is done."
+    );
     assert!(shown.shows_progress && shown.action.is_none());
     assert_eq!(model.refusal, None);
 }
 
-/// A move back that stopped, failed or was undone offers what the engine offers there.
+/// A move back that stopped, failed or was undone, and a restore that stopped, offer what the
+/// engine offers there.
 #[test]
-fn a_move_back_that_stopped_offers_what_the_engine_offers() {
+fn a_move_back_or_a_restore_that_stopped_offers_what_the_engine_offers() {
     let mut failed = model_on(return_failed());
     let shown = screen_of(&failed);
     assert_eq!(shown.state, SummaryState::Problem);
@@ -1284,10 +989,28 @@ fn a_move_back_that_stopped_offers_what_the_engine_offers() {
             twice: false
         })
     );
+    let mut restore = model_on(restore_failed());
+    let again = screen_of(&restore).action.expect("Restore here again");
+    restore.press(&again);
+    assert_eq!(
+        restore.dialog(),
+        Some(Dialog::Passphrase {
+            action: again,
+            twice: false
+        })
+    );
+    assert_eq!(
+        restore.passphrase_entered("invented-harbor-juniper-lantern", None),
+        act(
+            ActionId::RestoreHere,
+            RESTORE_AGAIN_KEY,
+            Input::passphrase(typed("invented-harbor-juniper-lantern"))
+        )
+    );
 }
 
-/// The app keys nothing on a problem's kind: every kind the engine publishes, the move back's
-/// two among them, draws its sentence and its actions as offered.
+/// The app keys nothing on a problem's kind: every kind the engine publishes draws its sentence
+/// and its actions as offered.
 #[test]
 fn every_problem_kind_draws_its_sentence_and_its_actions() {
     let schema: Value =
@@ -1297,21 +1020,27 @@ fn every_problem_kind_draws_its_sentence_and_its_actions() {
         .as_array()
         .expect("the kinds")
         .clone();
-    for new in ["server_retired", "return_failed"] {
-        assert!(kinds.contains(&json!(new)), "{new}");
+    assert_eq!(kinds.len(), 8);
+    for drawn in ["cannot_reach", "return_failed"] {
+        assert!(kinds.contains(&json!(drawn)), "{drawn}");
     }
     for kind in kinds {
-        let mut problem = server_retired();
+        let mut problem = result("home_status_problem")["summary"].clone();
         problem["detail"]["kind"] = kind.clone();
         let shown = screen(&decoded(problem));
         assert_eq!(shown.state, SummaryState::Problem, "{kind}");
-        assert!(shown.sentence.starts_with("Fermix is back"), "{kind}");
-        assert_eq!(
-            shown.action.map(|a| a.id),
-            Some(ActionId::DeleteServer),
+        assert!(
+            shown
+                .sentence
+                .starts_with("Fermix cannot reach your server"),
             "{kind}"
         );
-        assert_eq!(ids(&shown.others), [ActionId::LearnMore], "{kind}");
+        assert_eq!(
+            shown.action.map(|a| a.id),
+            Some(ActionId::LearnMore),
+            "{kind}"
+        );
+        assert_eq!(ids(&shown.others), [ActionId::RestoreHere], "{kind}");
     }
 }
 
@@ -1321,7 +1050,7 @@ fn every_problem_kind_draws_its_sentence_and_its_actions() {
 fn a_notice_is_raised_once_for_each_id_and_the_last_sixteen_are_kept() {
     let mut model = Model::default();
     model.pane_shown();
-    model.next_read();
+    model.take_read();
     model.served(served());
     let ready = model.answered(status("home_status_ready"));
     assert_eq!(
@@ -1341,9 +1070,12 @@ fn a_notice_is_raised_once_for_each_id_and_the_last_sixteen_are_kept() {
         .answered(status("home_status_problem"))
         .expect("a new id");
     assert_eq!(reach.id, "cannot_reach:2031-05-04T11:49:00Z");
-    let answer = acted(result("home_status_ready")["summary"].clone(), Value::Null);
-    model.press(&screen_of(&model).action.expect("Restart server"));
-    model.confirmed();
+    let answer = acted(
+        result("home_status_problem")["summary"].clone(),
+        Value::Null,
+    );
+    model.press(&screen_of(&model).others[0]);
+    model.passphrase_entered("invented-harbor-juniper-lantern", None);
     assert_eq!(model.acted(Ok(answer)), None, "an act's answer is seen too");
     assert_eq!(POSTED, 16);
     let mut posted = Posted::default();
@@ -1375,19 +1107,16 @@ fn fermix_back_from_a_server_of_the_owners_own_is_raised_once() {
         .as_str()
         .expect("the notice ids' pattern");
     assert!(pattern.contains("|back)"), "{pattern}");
-    let mut back = off();
-    back["notice"] = json!({"id": "back:3",
-        "sentence": "Fermix is back on this computer. Your own server still runs its retired copy: turn it off or delete it."});
     let mut model = Model::default();
     model.pane_shown();
-    model.next_read();
+    model.take_read();
     model.served(served());
-    let raised = model.answered(answering(back.clone())).expect("raised");
-    assert_eq!(raised.id, "back:3");
+    let raised = model.answered(answering(back())).expect("raised");
+    assert_eq!(raised.id, "back:5");
     assert!(raised
         .sentence
         .starts_with("Fermix is back on this computer."));
-    assert_eq!(model.answered(answering(back)), None, "raised once");
+    assert_eq!(model.answered(answering(back())), None, "raised once");
     assert_eq!(screen_of(&model).state, SummaryState::Off);
 }
 
@@ -1414,7 +1143,7 @@ fn the_raised_ids_outlive_the_app_and_stay_sixteen() {
     assert!(again.fresh(&notice(0)), "let go of before the save");
     let mut model = Model::with_posted(Posted::load(&file).expect("read back"));
     model.pane_shown();
-    model.next_read();
+    model.take_read();
     model.served(served());
     let ready = result("home_status_ready")["summary"]["notice"].clone();
     let mut raised = Posted::default();
@@ -1422,7 +1151,7 @@ fn the_raised_ids_outlive_the_app_and_stay_sixteen() {
     raised.save(&file).expect("saved");
     let mut model_after = Model::with_posted(Posted::load(&file).expect("read back"));
     model_after.pane_shown();
-    model_after.next_read();
+    model_after.take_read();
     model_after.served(served());
     assert_eq!(
         model_after.answered(status("home_status_ready")),
@@ -1468,7 +1197,7 @@ fn a_damaged_or_oversized_notices_file_is_an_error_and_a_long_one_keeps_its_last
 
 // ---- What the pane's source holds -------------------------------------------------------------
 
-const PANE_SOURCES: [(&str, &str); 7] = [
+const PANE_SOURCES: [(&str, &str); 6] = [
     ("core/src/always_on.rs", include_str!("../src/always_on.rs")),
     (
         "core/src/always_on/model.rs",
@@ -1478,7 +1207,6 @@ const PANE_SOURCES: [(&str, &str); 7] = [
         "core/src/always_on/notices.rs",
         include_str!("../src/always_on/notices.rs"),
     ),
-    ("core/src/provision.rs", include_str!("../src/provision.rs")),
     ("core/src/home.rs", include_str!("../src/home.rs")),
     (
         "core/src/management.rs",
@@ -1501,10 +1229,17 @@ fn no_provider_is_named_in_the_apps_own_words() {
     }
 }
 
-/// Every step is the engine's: the pane sends `home.act` and reads `home.status` and the offers,
-/// and calls none of the step methods the engine took over, nor follows a job.
+/// Every step is the engine's: the pane sends `home.act` and reads `home.status`, and calls none
+/// of the step methods the engine took over, nor follows a job; and nothing reads what a
+/// provider sells, since Fermix creates no server.
 #[test]
 fn the_pane_calls_no_step_of_its_own() {
+    for (path, source) in PANE_SOURCES {
+        assert!(
+            !source.contains("home.provision."),
+            "{path} reads a provider"
+        );
+    }
     let own = PANE_SOURCES
         .iter()
         .filter(|(path, _)| *path != "core/src/management.rs");
@@ -1513,12 +1248,6 @@ fn the_pane_calls_no_step_of_its_own() {
             "home.move.",
             "home.enroll.",
             "home.snapshots.",
-            "home.provision.connect",
-            "home.provision.create",
-            "home.provision.power",
-            "home.provision.resources",
-            "home.provision.delete",
-            "home.provision.providers",
             "job_get",
             "job_cancel",
             "job_list",
@@ -1531,7 +1260,7 @@ fn the_pane_calls_no_step_of_its_own() {
 /// The pane reads on no timer: the window's only timer is the bar that claims no percentage.
 #[test]
 fn the_pane_reads_on_no_timer() {
-    let (_, pane) = PANE_SOURCES[6];
+    let (_, pane) = PANE_SOURCES[5];
     let timers: Vec<&str> = pane
         .lines()
         .filter(|line| line.contains("timeout_add") || line.contains("timeout_future"))

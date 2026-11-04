@@ -1,17 +1,16 @@
 //! The home half of the vendored management contract (Always On setup §3): every `home.status`
 //! golden decodes its summary through the app's own types, every word the contract publishes is
-//! one the app knows, and each call the Always On pane makes, `home.status`, `home.act` and
-//! `home.provision.options`, is sent by the app's own client to a fake daemon answering with the
-//! golden, so the request it writes is held to the contract's request fixture too. A drift in the
-//! engine fails here rather than on a call.
+//! one the app knows, and each call the Always On pane makes, `home.status` and `home.act`, is
+//! sent by the app's own client to a fake daemon answering with the golden, so the request it
+//! writes is held to the contract's request fixture too. A drift in the engine fails here rather
+//! than on a call.
 
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::home::{
     passphrase, ActResult, Acted, ActionId, HomeStatus, Input, Need, Passphrase, SummaryState,
-    Token, PASSPHRASE_MISMATCH,
+    PASSPHRASE_MISMATCH,
 };
 use fermix_client::management::{CallError, Management};
-use fermix_client::provision::Pick;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -23,8 +22,6 @@ const SCHEMA: &str = include_str!("../contracts/management/protocol.schema.json"
 const REQUESTS: &str = include_str!("../contracts/management/fixtures/requests.jsonl");
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
-/// The one provider the goldens name.
-const PROVIDER: &str = "hetzner";
 
 /// The one line of `lines` named `name`.
 fn named(lines: &str, name: &str) -> Value {
@@ -117,11 +114,7 @@ fn every_status_golden_decodes_its_summary_with_each_action_one_record() {
             SummaryState::Undone,
             Some(ActionId::TryAgain),
         ),
-        (
-            "home_status_creating",
-            SummaryState::Creating,
-            Some(ActionId::Cancel),
-        ),
+        ("home_status_creating", SummaryState::Creating, None),
         (
             "home_status_ready",
             SummaryState::Ready,
@@ -138,7 +131,7 @@ fn every_status_golden_decodes_its_summary_with_each_action_one_record() {
         (
             "home_status_problem",
             SummaryState::Problem,
-            Some(ActionId::RestartServer),
+            Some(ActionId::LearnMore),
         ),
     ];
     for (name, state, action) in states {
@@ -170,9 +163,8 @@ fn every_status_golden_decodes_its_summary_with_each_action_one_record() {
         [Need::NewRecoveryPassphrase]
     );
     let on = decoded::<HomeStatus>("home_status_on").summary;
-    assert_eq!(on.detail.actions[1].needs, [Need::Choice]);
-    assert_eq!(on.detail.lines.len(), 8);
-    let move_back = &on.detail.actions[2];
+    assert_eq!(on.detail.lines.len(), 5);
+    let move_back = &on.detail.actions[1];
     assert_eq!(move_back.id, ActionId::MoveBack);
     assert_eq!(move_back.label, "Move back to this Mac");
     assert!(
@@ -180,13 +172,20 @@ fn every_status_golden_decodes_its_summary_with_each_action_one_record() {
         "one press, asked nothing"
     );
     let problem = decoded::<HomeStatus>("home_status_problem").summary;
+    let learn = problem.action.expect("Learn more");
+    assert_eq!(
+        learn.url.as_deref(),
+        Some("https://fermix.ai/docs/always-on/")
+    );
     let restore = &problem.detail.alternatives[0];
     assert_eq!(restore.id, ActionId::RestoreHere);
     assert_eq!(restore.needs, [Need::RecoveryPassphrase]);
-    assert!(restore
-        .confirm
-        .as_deref()
-        .is_some_and(|c| c.contains("Fermix deletes it before it restores here")));
+    assert!(
+        restore.confirm.as_deref().is_some_and(
+            |c| c.contains("Confirm only once you deleted your server, or stopped it for good")
+        ),
+        "the owner's word that the server is gone, in the engine's confirm"
+    );
 }
 
 /// Every state, action id and need the contract publishes decodes as one this app knows, so a
@@ -221,9 +220,7 @@ fn every_published_summary_word_is_one_this_app_knows() {
         .map(|id| id.as_str().expect("a word").to_owned())
         .collect();
     let opened_here: BTreeSet<String> = drawn.difference(&sent).cloned().collect();
-    let expected: BTreeSet<String> = ["learn_more", "open_console", "update"]
-        .map(str::to_owned)
-        .into();
+    let expected: BTreeSet<String> = ["learn_more", "update"].map(str::to_owned).into();
     assert_eq!(opened_here, expected);
     for id in opened_here {
         let id: ActionId = serde_json::from_value(json!(id)).expect("decodes");
@@ -252,34 +249,25 @@ fn the_status_is_asked_with_no_params() {
 }
 
 /// Each step is one `home.act` with the action's id, the key it was drawn with, and only what
-/// its `needs` asked for; the answer is the summary after the step.
+/// its `needs` asked for; the answer is the summary after the step: Cancel the code is `off`
+/// again, which offers a server of the owner's own.
 #[test]
 fn each_step_is_one_home_act_with_the_key_and_the_input_its_needs_asked_for() {
-    let token = Token::pasted("invented-hetzner-token-6d1f0c9a2b7e4f3a").expect("pasted");
     let params = act_params("home_act");
     exchange("home_act", "home_act", |m| {
         let answer = m
             .home_act(
                 act_id(&params),
                 params["key"].as_str().expect("a key"),
-                &Input::token(token, None),
+                &Input::none(),
             )
             .expect("decodes");
-        assert_eq!(answer.summary.state, SummaryState::Choose);
+        assert_eq!(answer.summary.state, SummaryState::Off);
+        assert_eq!(
+            answer.summary.action.map(|a| a.id),
+            Some(ActionId::OwnServer)
+        );
         assert_eq!(answer.result, None);
-    });
-    let params = act_params("home_act_create_server");
-    let pick = Pick {
-        size: "cpx22".into(),
-        location: "fsn1".into(),
-    };
-    exchange("home_act_create_server", "home_act", |m| {
-        m.home_act(
-            act_id(&params),
-            params["key"].as_str().expect("a key"),
-            &Input::choice(pick),
-        )
-        .expect("decodes");
     });
     let params = act_params("home_act_move_now");
     let typed = Passphrase::typed("invented-harbor-juniper-lantern").expect("typed");
@@ -302,48 +290,12 @@ fn each_step_is_one_home_act_with_the_key_and_the_input_its_needs_asked_for() {
     });
 }
 
-#[test]
-fn a_provider_is_named_only_where_the_engine_lists_several_and_a_choice_sends_its_row() {
-    let token = Token::pasted("invented-nimbus-key-0001").expect("pasted");
-    let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
-        m.home_act(
-            ActionId::PasteToken,
-            "k-token",
-            &Input::token(token, Some("nimbus")),
-        )
-        .expect("decodes");
-    });
-    assert_eq!(
-        sent["params"],
-        json!({"action": "paste_token", "key": "k-token",
-            "input": {"token": "invented-nimbus-key-0001", "provider": "nimbus"}})
-    );
-    let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
-        let recommended = Pick {
-            size: "cpx22".into(),
-            location: "fsn1".into(),
-        };
-        m.home_act(
-            ActionId::CreateServer,
-            "k-create",
-            &Input::choice(recommended),
-        )
-        .expect("decodes");
-    });
-    assert_eq!(
-        sent["params"],
-        json!({"action": "create_server", "key": "k-create",
-            "input": {"type": "cpx22", "location": "fsn1"}}),
-        "the recommendation is sent as the row it is"
-    );
-}
-
 /// Moving back is one `home.act` with nothing in it, and a restore here carries the passphrase
 /// the copy it restores was written for, each with the key its action was drawn with.
 #[test]
 fn moving_back_and_restoring_here_are_each_one_home_act() {
     let on = decoded::<HomeStatus>("home_status_on").summary;
-    let move_back = on.detail.actions[2].clone();
+    let move_back = on.detail.actions[1].clone();
     let sent = serve(named(SUCCESS, "home_act")["response"].clone(), |m| {
         m.home_act(move_back.id, &move_back.key, &Input::none())
             .expect("decodes");
@@ -361,7 +313,7 @@ fn moving_back_and_restoring_here_are_each_one_home_act() {
     });
     assert_eq!(
         sent["params"],
-        json!({"action": "restore_here", "key": "diwE8WEZ-oMI5gK-apOlFQ",
+        json!({"action": "restore_here", "key": "iOYN-a75Nzr_s5renEJm6g",
             "input": {"recovery_passphrase": "invented-harbor-juniper-lantern"}})
     );
 }
@@ -373,7 +325,7 @@ fn the_act_results_are_the_code_withheld_from_print_and_the_moves_id() {
     let summary = result("home_act")["summary"].clone();
     let code: Acted = serde_json::from_value(json!({"summary": summary,
         "result": {"code": "fxenroll1.aW52ZW50ZWQtY29kZQ", "expires_at": "2031-05-04T12:30:00Z",
-            "command": "curl -fsSL https://fermix.ai/always-on | sudo sh"}}))
+            "command": "curl -fsSL https://fermix.ai/always-on | sudo sh -s -- --version 1.2.3"}}))
     .expect("decodes");
     let Some(ActResult::OwnServer(own)) = &code.result else {
         panic!("the code")
@@ -410,44 +362,13 @@ fn an_odd_answer_to_an_act_is_never_quoted() {
     assert!(!detail.contains("fxenroll1."), "{detail}");
 }
 
-/// The offers take no params: the engine answers for the provider in use and names it, so a
-/// surface that restarted after the token step still reads them.
-#[test]
-fn the_offers_are_asked_with_no_params_for_the_provider_in_use() {
-    exchange("home_provision_options", "home_provision_options", |m| {
-        let options = m.provision_options().expect("decodes");
-        assert_eq!(options.provider.id, PROVIDER);
-        assert_eq!(options.provider.name, "Hetzner");
-        let recommended = options.recommended.clone().expect("a recommendation");
-        assert_eq!(
-            recommended,
-            Pick {
-                size: "cpx22".into(),
-                location: "fsn1".into()
-            }
-        );
-        let offer = options.offer(&recommended).expect("its offer");
-        assert_eq!(offer.label, "CPX22: 2 cores, 4 GB memory, 80 GB disk");
-        assert_eq!(
-            offer.price,
-            "€20.09 a month, billed by the hour until deleted"
-        );
-        assert_eq!(options.city("hel1"), Some("Helsinki"));
-        assert_eq!(options.city("invented-ash2"), None);
-        assert_eq!(
-            options.sentence,
-            "Recommended: CPX22 in Falkenstein, €20 a month."
-        );
-    });
-}
-
 /// The refusals of a step come back in the daemon's words, which the pane shows: `changed`
 /// with its sentence alone, the owner's decision, a lost start, an unreachable server, and a
 /// step this socket no longer takes.
 #[test]
 fn the_refusals_of_a_step_are_said_in_the_daemons_words() {
     let changed = refused_with("changed", |m| {
-        m.home_act(ActionId::CreateServer, "k-old", &Input::none())
+        m.home_act(ActionId::OwnServer, "k-old", &Input::none())
             .expect_err("refused")
     });
     assert_eq!(
@@ -455,7 +376,7 @@ fn the_refusals_of_a_step_are_said_in_the_daemons_words() {
         "Always On changed since this was shown, so look at it again."
     );
     let owner = refused_with("unavailable_home_owner_decision", |m| {
-        m.home_act(ActionId::CreateServer, "k-create", &Input::none())
+        m.home_act(ActionId::OwnServer, "k-own", &Input::none())
             .expect_err("refused")
     });
     assert_eq!(
@@ -477,7 +398,7 @@ fn the_refusals_of_a_step_are_said_in_the_daemons_words() {
         "The server fermix-vm is unreachable. Fermix keeps your message until it is back."
     );
     let release = refused_with("unavailable_always_on_unreleased", |m| {
-        m.home_act(ActionId::CreateServer, "k-create", &Input::none())
+        m.home_act(ActionId::OwnServer, "k-own", &Input::none())
             .expect_err("refused")
     });
     assert_eq!(
@@ -504,7 +425,6 @@ fn no_home_golden_goes_unread() {
         "home_status_server",
         "home_status_on",
         "home_status_problem",
-        "home_provision_options",
         "home_act",
     ]
     .into_iter()
@@ -539,17 +459,12 @@ fn no_home_golden_goes_unread() {
     assert_eq!(published.len(), read.len() + uncalled.len());
 }
 
-/// A step may check a token with its provider or review the move on the server first: the
-/// client gives it the 90 s the contract asks; the offers read the provider live; every other
-/// call keeps the client's own deadline, never a shorter one.
+/// A step may review the move on the server first: the client gives it the 90 s the contract
+/// asks; every other call keeps the client's own deadline, never a shorter one.
 #[test]
-fn the_long_calls_get_their_own_deadlines() {
+fn a_step_gets_its_own_deadline() {
     let client = Management::new("/nowhere/daemon.sock".into(), Duration::from_secs(10));
     assert_eq!(client.deadline_for("home.act"), Duration::from_secs(90));
-    assert_eq!(
-        client.deadline_for("home.provision.options"),
-        Duration::from_secs(35)
-    );
     for method in ["home.status", "job.get", "home.move.start"] {
         assert_eq!(
             client.deadline_for(method),
@@ -565,25 +480,15 @@ fn the_long_calls_get_their_own_deadlines() {
     );
 }
 
-/// The token and the passphrase go out on the wire and nowhere else: no print spells them.
+/// The passphrase goes out on the wire and nowhere else: no print spells it.
 #[test]
-fn the_secrets_are_never_printed() {
-    let token = Token::pasted(" invented-hetzner-token-6d1f0c9a2b7e4f3a\n").expect("pasted");
-    assert!(!format!("{token:?}").contains("invented-hetzner"));
-    assert!(Token::pasted("  \n").is_none());
+fn the_passphrase_is_never_printed() {
     let typed = passphrase(
         "invented-lighthouse-meridian",
         "invented-lighthouse-meridian",
     )
     .expect("the two agree");
     assert!(!format!("{typed:?}").contains("lighthouse"));
-    let input = Input::token(token, Some("hetzner"));
-    let shown = format!("{input:?}");
-    assert!(!shown.contains("invented-hetzner"), "{shown}");
-    assert!(
-        shown.contains("hetzner"),
-        "the provider is no secret: {shown}"
-    );
     let input = Input::passphrase(typed);
     assert!(!format!("{input:?}").contains("lighthouse"));
     assert_eq!(

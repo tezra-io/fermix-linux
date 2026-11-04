@@ -18,13 +18,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u64 = 2;
-/// One Always On step: a token checked with its provider takes up to about 45 s, and a review a
-/// desktop sends its server up to 60 s, so a client gives it 90 s, as the protocol asks.
+/// One Always On step: a review a desktop sends its server takes up to 60 s, so a client gives
+/// it 90 s, as the protocol asks.
 const STEP: &str = "home.act";
 const STEP_DEADLINE: Duration = Duration::from_secs(90);
-/// The provider's offers, read live: up to three calls of at most 10 s.
-const OFFERS: &str = "home.provision.options";
-const OFFERS_DEADLINE: Duration = Duration::from_secs(35);
 /// The most models one `providers.models.list` page holds; the app asks for one page.
 const MODEL_PAGE: u64 = 200;
 
@@ -91,15 +88,13 @@ impl Management {
         decode_response(&answer, &request_id)
     }
 
-    /// How long one exchange of `method` may take: an Always On step and the provider's offers
-    /// get their own deadlines, never shorter than this client's, which every other call keeps.
+    /// How long one exchange of `method` may take: an Always On step gets its own deadline,
+    /// never shorter than this client's, which every other call keeps.
     pub fn deadline_for(&self, method: &str) -> Duration {
-        let own = match method {
-            STEP => STEP_DEADLINE,
-            OFFERS => OFFERS_DEADLINE,
-            _ => return self.timeout,
-        };
-        self.timeout.max(own)
+        match method {
+            STEP => self.timeout.max(STEP_DEADLINE),
+            _ => self.timeout,
+        }
     }
 
     fn connect(&self, deadline: Duration) -> Result<UnixStream, CallError> {
