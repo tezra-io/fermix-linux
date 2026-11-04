@@ -1,15 +1,16 @@
 //! The list's menu in the Lists pane (M85 lists §3.6), behind More, between the picker and Hide
 //! lists: Rename list; Move to folder ▸ each folder then No folder, the list's own checked, then
-//! New folder; Copy as text; Clear done; Remove list. More makes the menu each time it opens, from
-//! what the pane draws then, and the menu acts through an action group of its own, inserted on
-//! More, which GTK does not export (§4.2). A folder's name in a menu item has each `_` doubled, as
-//! a menu item reads `_` as a mnemonic.
+//! New folder; Copy as text; Clear done; Recently removed, checked while shown; Remove list. More
+//! makes the menu each time it opens, from what the pane draws then, and the menu acts through an
+//! action group of its own, inserted on More, which GTK does not export (§4.2). A folder's name in
+//! a menu item has each `_` doubled, as a menu item reads `_` as a mnemonic.
 
 use super::list_menu::at_idle;
 use adw::prelude::*;
 use fermix_client::checklists::pane::ListOffers;
 use fermix_client::checklists::words::{
-    self, CLEAR_DONE, COPY_AS_TEXT, MOVE_TO_FOLDER, NEW_FOLDER, NO_FOLDER, REMOVE_LIST, RENAME_LIST,
+    self, CLEAR_DONE, COPY_AS_TEXT, MOVE_TO_FOLDER, NEW_FOLDER, NO_FOLDER, RECENTLY_REMOVED,
+    REMOVE_LIST, RENAME_LIST,
 };
 use gtk::{gio, glib};
 use std::rc::Rc;
@@ -29,6 +30,8 @@ pub struct ListActs {
     pub new_folder: Rc<dyn Fn()>,
     pub copy: Rc<dyn Fn()>,
     pub clear_done: Rc<dyn Fn()>,
+    /// Recently removed: shows the list's removed items, or hides them (§3.4, §10).
+    pub removed: Rc<dyn Fn()>,
     /// Remove list, with no confirmation: a toast offers Undo (§3.7, §10).
     pub remove_list: Rc<dyn Fn()>,
 }
@@ -47,7 +50,8 @@ pub fn more_button() -> gtk::MenuButton {
 
 /// The list's menu: Rename list; Move to folder ▸ each folder in picker order, then No folder,
 /// each a radio item on the folder the list is in, then New folder in a section of its own; then
-/// Copy as text and Clear done; then Remove list, last, in a section of its own.
+/// Copy as text, Clear done, and Recently removed, a check item; then Remove list, last, in a
+/// section of its own.
 pub fn list_menu(offers: &ListOffers) -> gio::Menu {
     let folders = gio::Menu::new();
     for name in offers.folders.iter().map(String::as_str).chain([""]) {
@@ -67,6 +71,7 @@ pub fn list_menu(offers: &ListOffers) -> gio::Menu {
     menu.append_submenu(Some(MOVE_TO_FOLDER), &folders);
     menu.append(Some(COPY_AS_TEXT), Some("list.copy"));
     menu.append(Some(CLEAR_DONE), Some("list.clear-done"));
+    menu.append(Some(RECENTLY_REMOVED), Some("list.removed"));
     let remove = gio::Menu::new();
     remove.append(Some(REMOVE_LIST), Some("list.remove-list"));
     menu.append_section(None, &remove);
@@ -74,10 +79,11 @@ pub fn list_menu(offers: &ListOffers) -> gio::Menu {
 }
 
 /// The list menu's actions. `folder` holds the list's folder as its state, which checks that
-/// item, and moves the list to the folder it names. `rename`, `new-folder` and `remove-list` are
-/// always on, as More shows only over a list drawn that is not removed; `copy` and `clear-done`
-/// are on as `offers` says. Each action takes effect at the next idle, once the menu has closed; a
-/// folder picked with Space closes it too.
+/// item, and moves the list to the folder it names. `removed` holds whether Recently removed is
+/// shown, which checks its item, and turns it the other way. `rename`, `new-folder`, `removed` and
+/// `remove-list` are always on, as More shows only over a list drawn that is not removed; `copy`
+/// and `clear-done` are on as `offers` says. Each action takes effect at the next idle, once the
+/// menu has closed; a folder picked with Space closes it too.
 pub fn list_actions(offers: &ListOffers, acts: ListActs) -> gio::SimpleActionGroup {
     let group = gio::SimpleActionGroup::new();
     let state = offers.folder.to_variant();
@@ -91,6 +97,7 @@ pub fn list_actions(offers: &ListOffers, acts: ListActs) -> gio::SimpleActionGro
         at_idle(move || to_folder(&picked));
     });
     group.add_action(&folder);
+    group.add_action(&removed_action(offers.removed_shown, acts.removed));
     let rename = gio::SimpleAction::new("rename", None);
     let new_folder = gio::SimpleAction::new("new-folder", None);
     let copy = gio::SimpleAction::new("copy", None);
@@ -111,6 +118,21 @@ pub fn list_actions(offers: &ListOffers, acts: ListActs) -> gio::SimpleActionGro
         group.add_action(action);
     }
     group
+}
+
+/// Recently removed, a check item: its state is whether it is shown, which each activation turns
+/// the other way at once, and through `act` at the next idle. Space keeps a check item's menu open
+/// (GtkModelButton), so the check turns while it shows, until the act's redraw changes the list's
+/// offers and the pane closes the menu as stale.
+fn removed_action(shown: bool, act: Rc<dyn Fn()>) -> gio::SimpleAction {
+    let removed = gio::SimpleAction::new_stateful("removed", None, &shown.to_variant());
+    removed.connect_activate(move |removed, _| {
+        let now = removed.state().and_then(|state| state.get::<bool>());
+        removed.set_state(&(!now.unwrap_or(shown)).to_variant());
+        let act = act.clone();
+        at_idle(move || act());
+    });
+    removed
 }
 
 /// Makes More's menu each time it opens from `open`: the list's offers and what its items do. With
@@ -190,6 +212,7 @@ mod tests {
             new_folder: Rc::new(|| {}),
             copy: Rc::new(|| {}),
             clear_done: Rc::new(|| {}),
+            removed: Rc::new(|| {}),
             remove_list: Rc::new(|| {}),
         }
     }
@@ -201,6 +224,7 @@ mod tests {
             moving_to: None,
             copy,
             clear_done,
+            removed_shown: false,
         }
     }
 
@@ -234,10 +258,10 @@ mod tests {
         );
     }
 
-    /// Rename list leads the menu, then Move to folder, Copy as text and Clear done, and Remove
-    /// list ends it, in a section of its own; New folder ends Move to folder, after No folder, in a
-    /// section of its own. The three are on whatever the list offers, as More shows only over a
-    /// list drawn that is not removed (§3.6, §10).
+    /// Rename list leads the menu, then Move to folder, Copy as text, Clear done and Recently
+    /// removed, and Remove list ends it, in a section of its own; New folder ends Move to folder,
+    /// after No folder, in a section of its own. The four are on whatever the list offers, as More
+    /// shows only over a list drawn that is not removed (§3.6, §10).
     #[test]
     fn rename_list_leads_the_menu_new_folder_ends_move_to_folder_and_remove_list_the_menu() {
         let offered = offers(&["Home"], "Home", false, false);
@@ -249,10 +273,11 @@ mod tests {
                 triple("Move to folder", "", ""),
                 triple("Copy as text", "list.copy", ""),
                 triple("Clear done", "list.clear-done", ""),
+                triple("Recently removed", "list.removed", ""),
                 triple("", "", ""),
             ]
         );
-        let remove = linked(&menu, 4, "section").expect("Remove list's section");
+        let remove = linked(&menu, 5, "section").expect("Remove list's section");
         assert_eq!(
             items(&remove),
             [triple("Remove list", "list.remove-list", "")]
@@ -267,7 +292,32 @@ mod tests {
         let actions = list_actions(&offered, acts());
         assert!(actions.is_action_enabled("rename"));
         assert!(actions.is_action_enabled("new-folder"));
+        assert!(actions.is_action_enabled("removed"));
         assert!(actions.is_action_enabled("remove-list"));
+    }
+
+    /// Recently removed is a check item, checked while it is shown: its action has a boolean state
+    /// and no parameter, and an activation turns the check at once, while its act waits for the
+    /// next idle (§3.6, §10).
+    #[test]
+    fn recently_removed_is_a_check_item_checked_while_shown() {
+        let removed = |actions: &gio::SimpleActionGroup| {
+            let state = actions.action_state("removed");
+            state.and_then(|state| state.get::<bool>())
+        };
+        let hidden = list_actions(&offers(&[], "", true, false), acts());
+        assert_eq!(removed(&hidden), Some(false));
+        assert_eq!(hidden.action_parameter_type("removed"), None);
+        let mut offered = offers(&[], "", true, false);
+        offered.removed_shown = true;
+        let shown = list_actions(&offered, acts());
+        assert_eq!(removed(&shown), Some(true));
+        on_own_loop(|_| {
+            shown.activate_action("removed", None);
+            assert_eq!(removed(&shown), Some(false), "the check turns at once");
+            shown.activate_action("removed", None);
+            assert_eq!(removed(&shown), Some(true));
+        });
     }
 
     /// Copy as text and Clear done are on as offered; a list in no folder checks No folder.
@@ -294,12 +344,14 @@ mod tests {
     fn recording(calls: &Rc<RefCell<Vec<String>>>) -> ListActs {
         let (rename, folder, new_folder) = (calls.clone(), calls.clone(), calls.clone());
         let (copy, clear_done, remove_list) = (calls.clone(), calls.clone(), calls.clone());
+        let removed = calls.clone();
         ListActs {
             rename: Rc::new(move || rename.borrow_mut().push("rename".into())),
             folder: Rc::new(move |picked| folder.borrow_mut().push(format!("folder:{picked}"))),
             new_folder: Rc::new(move || new_folder.borrow_mut().push("new_folder".into())),
             copy: Rc::new(move || copy.borrow_mut().push("copy".into())),
             clear_done: Rc::new(move || clear_done.borrow_mut().push("clear_done".into())),
+            removed: Rc::new(move || removed.borrow_mut().push("removed".into())),
             remove_list: Rc::new(move || remove_list.borrow_mut().push("remove_list".into())),
         }
     }
@@ -330,6 +382,7 @@ mod tests {
             actions.activate_action("folder", Some(&"Home_work".to_variant()));
             actions.activate_action("new-folder", None);
             actions.activate_action("folder", Some(&"".to_variant()));
+            actions.activate_action("removed", None);
             actions.activate_action("remove-list", None);
             assert!(
                 calls.borrow().is_empty(),
@@ -351,6 +404,7 @@ mod tests {
                     "folder:Home_work",
                     "new_folder",
                     "folder:",
+                    "removed",
                     "remove_list"
                 ]
             );

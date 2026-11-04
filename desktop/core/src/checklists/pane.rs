@@ -1,11 +1,12 @@
 //! The Lists pane (M85 lists §3), as values: whether it is open, wide or narrow, and the owner's
 //! last open or close kept in `lists.json` (§3.2, L4); and what it draws now: the list asked for
 //! while the index holds it, a new list made here turned to once, its head and lines, each list's
-//! own folds, an item being reworded, or the state before the index answers or with no list, and
-//! the sentence for a new list or a list's Undo refused (§3.3, §3.4, §3.5, §3.8, §10); a list
-//! taken back turned to (§3.7); what the list's menu offers for it, and the op Move to folder
-//! sends (§3.6); the op a name typed in the head makes (§3.3); and what a screen reader is told as
-//! it is drawn again (§6.3).
+//! own folds and its own Recently removed, an item being reworded, or the state before the index
+//! answers or with no list, and the sentence for a new list or a list's Undo refused (§3.3, §3.4,
+//! §3.5, §3.8, §10); which Restore, and whether the removed list's Undo, waits for its restore
+//! (§10); a list taken back turned to (§3.7); what the list's menu offers for it, and the op Move
+//! to folder sends (§3.6); the op a name typed in the head makes (§3.3); and what a screen reader
+//! is told as it is drawn again (§6.3).
 //!
 //! The picker counts each list from the index, as a folded card does. The head under it counts
 //! the list as drawn, its edits waiting included, once it is held. While an edit waits for the
@@ -206,6 +207,11 @@ pub struct PaneList {
     pub head: String,
     pub spoken_head: String,
     pub body: PaneBody,
+    /// Recently removed is shown for it (§3.4, §7): More's menu checks it.
+    pub removed_shown: bool,
+    /// A restore of the list itself waits, until the engine pushes the list or refuses the
+    /// restore: the Undo of its removed page is off meanwhile (§10).
+    pub restoring: bool,
     /// The engine's sentence for the edit it refused last, over Add an item, until the next edit.
     pub refusal: Option<String>,
     /// The index's sentence for the last new list or list's Undo refused, under the head.
@@ -221,9 +227,9 @@ pub enum PaneBody {
     Lines(Vec<Line>),
 }
 
-/// The pane's folds (§3.4): each list's own folded sections and its own Done, by list id and
-/// heading id, kept while the app runs. A section or Done opened in one list stays as it was in
-/// every other.
+/// The pane's folds (§3.4, §7): each list's own folded sections, its own Done and its own Recently
+/// removed, by list id and heading id, kept while the app runs and off at start. A section, Done
+/// or Recently removed opened in one list stays as it was in every other.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folds {
     lists: BTreeMap<String, View>,
@@ -250,6 +256,19 @@ impl Folds {
     pub fn open_done(&mut self, list_id: &str) {
         let view = self.lists.entry(list_id.to_owned()).or_default();
         view.done_open = !view.done_open;
+    }
+
+    /// Shows Recently removed in `list_id`, or hides it: More's check item, or its heading.
+    pub fn show_removed(&mut self, list_id: &str) {
+        let view = self.lists.entry(list_id.to_owned()).or_default();
+        view.removed_shown = !view.removed_shown;
+    }
+
+    /// Whether Recently removed is shown in `list_id`: its pull then asks for the removed rows.
+    pub fn removed_shown(&self, list_id: &str) -> bool {
+        self.lists
+            .get(list_id)
+            .is_some_and(|view| view.removed_shown)
     }
 }
 
@@ -280,12 +299,13 @@ pub fn drawing(
         None => (count(entry.open), count(entry.done)),
     };
     let folder = entry.folder.as_deref();
-    let moving_to = library
-        .state(id)
-        .and_then(|state| moving_to(state.pending()));
+    let pending = library.state(id).map_or(&[][..], |state| state.pending());
+    let mut view = folds.view(id, settling);
+    let (rows_restoring, restoring) = restores(pending);
+    view.restoring = rows_restoring;
     let body = match &held {
         _ if removed => PaneBody::Removed,
-        Some(list) => PaneBody::Lines(panel::lines(list, &folds.view(id, settling))),
+        Some(list) => PaneBody::Lines(panel::lines(list, &view)),
         None => PaneBody::Waiting,
     };
     PaneDrawing::List(Box::new(PaneList {
@@ -293,11 +313,13 @@ pub fn drawing(
         list_id: id.clone(),
         title: held.map_or_else(|| entry.title.clone(), |list| list.title),
         folder: folder.map(str::to_owned),
-        moving_to,
+        moving_to: moving_to(pending),
         done,
         head: words::head_line(folder, open, done),
         spoken_head: words::spoken_head_line(folder, open, done),
         body,
+        removed_shown: view.removed_shown,
+        restoring,
         refusal: library
             .state(id)
             .and_then(|state| state.refusal())
@@ -347,6 +369,24 @@ impl Asked {
     }
 }
 
+/// What the restores in `pending` bring back: the removed rows, and whether the list itself
+/// (§10).
+fn restores(pending: &[PendingEdit]) -> (BTreeSet<String>, bool) {
+    let restored: Vec<Option<&str>> = pending
+        .iter()
+        .filter_map(|edit| match &edit.op {
+            ListOp::Restore { row_id, .. } => Some(row_id.as_deref()),
+            _ => None,
+        })
+        .collect();
+    let rows = restored
+        .iter()
+        .flatten()
+        .map(|id| (*id).to_owned())
+        .collect();
+    (rows, restored.contains(&None))
+}
+
 /// The folder the newest folder edit in `pending` moves the list to, empty for none.
 fn moving_to(pending: &[PendingEdit]) -> Option<String> {
     pending.iter().rev().find_map(|edit| match &edit.op {
@@ -369,6 +409,9 @@ pub struct ListOffers {
     /// Clear done, once the list's pull is answered and while an item drawn is done, a tick
     /// waiting or settling included.
     pub clear_done: bool,
+    /// Recently removed is shown, which checks its item; with nothing removed it draws nothing and
+    /// stays checked (§10).
+    pub removed_shown: bool,
 }
 
 /// The list's menu for `list`, or none while the list is removed: More is hidden then.
@@ -390,6 +433,7 @@ pub fn list_offers(list: &PaneList) -> Option<ListOffers> {
         moving_to: list.moving_to.clone(),
         copy: held,
         clear_done: held && list.done > 0,
+        removed_shown: list.removed_shown,
     })
 }
 

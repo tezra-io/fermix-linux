@@ -5,11 +5,13 @@
 //! list's menu behind More (`list_more`), and gives its folder and counts, and the sentence for a
 //! new list or a list's Undo refused; its list draws the lines `checklists::panel` gives, spliced
 //! where they changed, an item being reworded as its two entries, each item with its menu
-//! (`list_menu`), its moves and Delete; Add an item sits at its foot. Ctrl+Z outside a text field
-//! takes back the newest removal made here, and a removed list's page offers Undo (§3.7). Whether
-//! it shows is the owner's last open or close (`checklists::pane::PaneOpen`), which the session
-//! keeps. Only stock widgets, markup off before any text, and no list edit is an exported action:
-//! the pane hands each to the session through `Lister`.
+//! (`list_menu`), its moves and Delete, and, while More turns it on, Recently removed with a
+//! Restore on each removed item; Add an item sits at its foot. Ctrl+Z outside a text field takes
+//! back the newest removal made here, and a removed list's page offers Undo (§3.7); Restore and
+//! that Undo are off while their restore waits (§10). Whether it shows is the owner's last open or
+//! close (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets, markup off
+//! before any text, and no list edit is an exported action: the pane hands each to the session
+//! through `Lister`.
 
 use super::entries::copy_text;
 use super::list_menu::{self, at_idle, ItemOffers};
@@ -31,7 +33,8 @@ use fermix_client::checklists::pane::{
 use fermix_client::checklists::panel::{self, add_place, rewords, splice, Line, Splice, Steps};
 use fermix_client::checklists::removals::Removal;
 use fermix_client::checklists::words::{
-    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NEW_LIST, NO_LISTS, RECENTLY_REMOVED, UNDO,
+    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NEW_LIST, NO_LISTS, RECENTLY_REMOVED, RESTORE,
+    UNDO,
 };
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::{gdk, gio};
@@ -545,10 +548,21 @@ impl ListsPane {
             PaneBody::Removed => "removed",
             PaneBody::Lines(_) => "list",
         };
+        self.page_undo_on(!list.restoring);
         self.body.set_visible_child_name(page);
         let lines = matches!(list.body, PaneBody::Lines(_));
         self.foot.draw(lines, list.refusal.as_deref());
         self.tell(was, now);
+    }
+
+    /// The removed page's Undo, off while the list's restore waits (§10). Holding the focus as it
+    /// turns off, it gives the focus to Hide lists first, as More does when it hides: GTK would
+    /// leave the window with none.
+    fn page_undo_on(&self, on: bool) {
+        if !on && self.undo_removed.has_focus() {
+            self.head.hide.grab_focus();
+        }
+        self.undo_removed.set_sensitive(on);
     }
 
     /// Tells a screen reader what core's `news` says is new in the pane, while it is on screen.
@@ -673,8 +687,9 @@ impl ListsPane {
         Some(line)
     }
 
-    /// Asks the session, at the next idle, to pull the list the pane shows while it is shown: it
-    /// pulls only one the app does not hold.
+    /// Asks the session, at the next idle, to pull the list the pane shows while it is shown, with
+    /// its removed rows while its Recently removed is on: it pulls only one the app does not hold
+    /// so.
     fn pull_shown(self: &Rc<Self>) {
         if !self.shown() || self.pulling.get() {
             return;
@@ -691,7 +706,12 @@ impl ListsPane {
                 return;
             };
             pane.pulling.set(false);
-            act(&pane.lister, ListAct::Drawn(vec![list_id]));
+            let removed = pane.folds.borrow().removed_shown(&list_id);
+            let drawn = ListAct::Drawn {
+                list_ids: vec![list_id],
+                removed,
+            };
+            act(&pane.lister, drawn);
         });
     }
 
@@ -788,11 +808,9 @@ impl ListsPane {
             Line::DoneHeading { count, open } => {
                 self.done_row(&line.list_id, *count, *open).upcast()
             }
-            Line::RemovedHeading => plain_row(RECENTLY_REMOVED).upcast(),
-            Line::Removed(row) => {
-                let removed = plain_row(&row.text);
-                removed.add_css_class("dimmed");
-                removed.upcast()
+            Line::RemovedHeading => self.removed_heading(&line.list_id).upcast(),
+            Line::Removed { row, restoring } => {
+                self.removed_row(&line.list_id, row, *restoring).upcast()
             }
             Line::Words(row_id) => self.entry_row(self.reworder.words_of(row_id)),
             Line::Note(row_id) => self.entry_row(self.reworder.note_of(row_id)),
@@ -947,6 +965,12 @@ impl ListsPane {
         };
         let made = Some((list_id.clone(), offers.clone()));
         self.head.menu_of.replace(made);
+        let acts = self.list_acts(list_id, &offers);
+        Some((offers, acts))
+    }
+
+    /// What each item of the list's menu does to `list_id`, with what the menu `offers`.
+    fn list_acts(self: &Rc<Self>, list_id: String, offers: &ListOffers) -> ListActs {
         let (pane, list) = (Rc::downgrade(self), list_id.clone());
         let rename = move || {
             if let Some(pane) = pane.upgrade() {
@@ -977,21 +1001,27 @@ impl ListsPane {
                 pane.clear_done(&list);
             }
         };
+        let (pane, list) = (Rc::downgrade(self), list_id.clone());
+        let removed = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.show_removed(&list);
+            }
+        };
         let (pane, list) = (Rc::downgrade(self), list_id);
         let remove_list = move || {
             if let Some(pane) = pane.upgrade() {
                 pane.remove_list(&list);
             }
         };
-        let acts = ListActs {
+        ListActs {
             rename: Rc::new(rename),
             folder: Rc::new(folder),
             new_folder: Rc::new(new_folder),
             copy: Rc::new(copy),
             clear_done: Rc::new(clear_done),
+            removed: Rc::new(removed),
             remove_list: Rc::new(remove_list),
-        };
-        Some((offers, acts))
+        }
     }
 
     /// Closes More's menu, which a folder picked with Space leaves open, then moves `list_id` to
@@ -1049,12 +1079,45 @@ impl ListsPane {
     }
 
     /// The Undo on a removed list's page: brings the list drawn back, as its toast's Undo would.
+    /// It is off while the list's restore waits (§10).
     fn undo_removed(&self) {
         let list_id = match self.drawn.borrow().as_ref() {
             Some(PaneDrawing::List(list)) if list.body == PaneBody::Removed => list.list_id.clone(),
             _ => return glib::g_warning!("fermix", "Undo found no removed list drawn"),
         };
-        act(&self.lister, ListAct::UndoList { list_id });
+        act(
+            &self.lister,
+            ListAct::Restore {
+                list_id,
+                row_id: None,
+            },
+        );
+    }
+
+    /// Recently removed in `list_id`, shown or hidden (§3.4, §7), while the pane still draws that
+    /// list: More's acts run at the next idle. Shown, the list is pulled with its removed rows;
+    /// hidden, nothing is pulled.
+    fn show_removed(&self, list_id: &str) {
+        let drawn = matches!(
+            self.drawn.borrow().as_ref(),
+            Some(PaneDrawing::List(list)) if list.list_id == list_id
+        );
+        if !drawn {
+            return glib::g_warning!("fermix", "Recently removed found its list no longer drawn");
+        }
+        self.reworder.save_going();
+        self.folds.borrow_mut().show_removed(list_id);
+        act(&self.lister, ListAct::Redraw);
+    }
+
+    /// Restore of the removed row `row_id` of `list_id`, from Recently removed: drawn when the
+    /// engine pushes it, its Restore off meanwhile (§10).
+    fn restore(&self, list_id: &str, row_id: &str) {
+        let restoring = ListAct::Restore {
+            list_id: list_id.to_owned(),
+            row_id: Some(row_id.to_owned()),
+        };
+        act(&self.lister, restoring);
     }
 
     /// Undo took `removal` back: a list's is the list the pane asks for (§10).
@@ -1098,6 +1161,51 @@ impl ListsPane {
             }
         });
         heading
+    }
+
+    /// "Recently removed" in `list_id`, shown open: a single click, Return or Space hides it, which
+    /// pulls nothing (§10). A rewording going on is saved first.
+    fn removed_heading(self: &Rc<Self>, list_id: &str) -> adw::ActionRow {
+        let heading = fold_row(RECENTLY_REMOVED, RECENTLY_REMOVED, true);
+        let (pane, list_id) = (Rc::downgrade(self), list_id.to_owned());
+        on_click_or_key(&heading, move |_| {
+            if let Some(pane) = pane.upgrade() {
+                pane.show_removed(&list_id);
+            }
+        });
+        heading
+    }
+
+    /// A removed item of `list_id` in Recently removed (§3.4, §4.1): its words dimmed, not the
+    /// row, and a flat Restore, which Return, Space or a double-click on the row presses too, off
+    /// while `restoring`. AdwActionRow labels the widget it presses by the row's title, so that
+    /// label is reset: a screen reader names Restore by its own word. It takes no tick, rewording,
+    /// menu, move or Delete (§10).
+    fn removed_row(
+        self: &Rc<Self>,
+        list_id: &str,
+        row: &ListRow,
+        restoring: bool,
+    ) -> adw::ActionRow {
+        let removed = plain_row(&row.text);
+        match title_label(&removed) {
+            Some(words) => words.add_css_class("dimmed"),
+            None => glib::g_warning!("fermix", "A removed item's row has no title to dim"),
+        }
+        let restore = gtk::Button::with_label(RESTORE);
+        restore.add_css_class("flat");
+        restore.set_valign(gtk::Align::Center);
+        restore.set_sensitive(!restoring);
+        let (pane, list_id, row_id) = (Rc::downgrade(self), list_id.to_owned(), row.row_id.clone());
+        restore.connect_clicked(move |_| {
+            if let Some(pane) = pane.upgrade() {
+                pane.restore(&list_id, &row_id);
+            }
+        });
+        removed.add_suffix(&restore);
+        removed.set_activatable_widget(Some(&restore));
+        restore.reset_relation(gtk::AccessibleRelation::LabelledBy);
+        removed
     }
 
     /// "Done · 2" in `list_id`: a single click, Return or Space opens or closes the done items. A
@@ -1228,6 +1336,8 @@ impl Head {
 
     /// Closes More's menu while it shows when `list_id` or its `offers` are not what the menu was
     /// made for, as an item's menu closes when its row goes: its items would act on what was drawn.
+    /// So Recently removed turned by Space, which keeps a check item's menu open, closes the menu
+    /// at the redraw after its act, as its check is then the list's new offer.
     fn close_stale_menu(&self, list_id: &str, offers: Option<&ListOffers>) {
         let stale = self
             .menu_of
@@ -1352,6 +1462,25 @@ fn plain_row(text: &str) -> adw::ActionRow {
     row.set_use_markup(false);
     row.set_title(text);
     row
+}
+
+/// The style classes of the CSS nodes AdwActionRow documents from the row down to the label
+/// drawing its title: box.header, holding box.title, holding label.title.
+const TITLE_NODES: [&str; 3] = ["header", "title", "title"];
+
+/// The label drawing `row`'s title, reached through `TITLE_NODES`.
+fn title_label(row: &adw::ActionRow) -> Option<gtk::Label> {
+    let mut node: gtk::Widget = row.clone().upcast();
+    for class in TITLE_NODES {
+        node = child_with_class(&node, class)?;
+    }
+    node.downcast().ok()
+}
+
+/// The first child of `parent` with the style class `class`.
+fn child_with_class(parent: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    std::iter::successors(parent.first_child(), |child| child.next_sibling())
+        .find(|child| child.has_css_class(class))
 }
 
 /// A list in the picker: its title, its open count, and a check while it is the one shown.
@@ -1594,4 +1723,110 @@ fn focused_at(list: &gtk::ListBox) -> Option<i32> {
 
 fn index(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gio, TITLE_NODES};
+    use adw::prelude::*;
+
+    /// An object of a GtkBuilder file: its class, its style classes, and whether its label is the
+    /// row's title.
+    #[derive(Clone)]
+    struct Node {
+        class: String,
+        styles: Vec<String>,
+        titled: bool,
+    }
+
+    /// A tag of a GtkBuilder file, as the scan reads it.
+    enum Tag {
+        Open(String),
+        Close,
+        Style(String),
+        Titled,
+        Other,
+    }
+
+    fn tag(text: &str) -> Tag {
+        let quoted = |start: &str| Some(text.strip_prefix(start)?.split('"').next()?.to_owned());
+        if text == "/object" {
+            return Tag::Close;
+        }
+        if text.starts_with(
+            r#"property name="label" bind-source="AdwActionRow" bind-property="title""#,
+        ) {
+            return Tag::Titled;
+        }
+        let open = quoted("object class=\"").map(Tag::Open);
+        open.or_else(|| quoted("class name=\"").map(Tag::Style))
+            .unwrap_or(Tag::Other)
+    }
+
+    /// Reads one tag into the objects open, and keeps them as a path when the innermost, ending,
+    /// is a label bound to the row's title under the style classes of `TITLE_NODES`.
+    fn read(open: &mut Vec<Node>, paths: &mut Vec<Vec<Node>>, tag: Tag) {
+        match tag {
+            Tag::Open(class) => open.push(Node {
+                class,
+                styles: Vec::new(),
+                titled: false,
+            }),
+            Tag::Style(style) => {
+                if let Some(node) = open.last_mut() {
+                    node.styles.push(style);
+                }
+            }
+            Tag::Titled => {
+                if let Some(node) = open.last_mut() {
+                    node.titled = true;
+                }
+            }
+            Tag::Close => {
+                let styled = open.len() == TITLE_NODES.len()
+                    && open
+                        .iter()
+                        .zip(TITLE_NODES)
+                        .all(|(n, class)| n.styles.iter().any(|s| s == class));
+                let label = open
+                    .last()
+                    .is_some_and(|n| n.class == "GtkLabel" && n.titled);
+                if styled && label {
+                    paths.push(open.clone());
+                }
+                open.pop();
+            }
+            Tag::Other => {}
+        }
+    }
+
+    /// The template of AdwActionRow in the libadwaita this build links nests, from the row's
+    /// child down, the nodes `title_label` walks to the label drawing the row's title, once. A
+    /// libadwaita that moves them fails here, rather than drawing removed items undimmed. Naming
+    /// AdwActionRow's type links libadwaita into the test, which registers its resources as it
+    /// loads: no display or init is needed.
+    #[test]
+    fn title_label_walks_to_where_libadwaita_draws_a_rows_title() {
+        assert!(adw::ActionRow::static_type().is_valid());
+        let ui = gio::resources_lookup_data(
+            "/org/gnome/Adwaita/ui/adw-action-row.ui",
+            gio::ResourceLookupFlags::NONE,
+        )
+        .expect("libadwaita's AdwActionRow template");
+        let ui = std::str::from_utf8(&ui).expect("a UTF-8 template");
+        let (mut open, mut paths) = (Vec::new(), Vec::new());
+        for text in ui
+            .split('<')
+            .skip(1)
+            .filter_map(|rest| rest.split('>').next())
+        {
+            read(&mut open, &mut paths, tag(text));
+        }
+        assert!(open.is_empty(), "every object the scan read was closed");
+        assert_eq!(
+            paths.len(),
+            1,
+            "one label is the row's title, under {TITLE_NODES:?}"
+        );
+    }
 }

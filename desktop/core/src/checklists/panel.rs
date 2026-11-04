@@ -26,7 +26,12 @@ pub enum Line {
     Done(ListRow),
     /// Recently removed, with each removed item under it.
     RemovedHeading,
-    Removed(ListRow),
+    /// A removed item, and whether a restore of it waits: its Restore is off until the engine
+    /// pushes the list or refuses the restore.
+    Removed {
+        row: ListRow,
+        restoring: bool,
+    },
     /// The entry for the words of the item being reworded, in its place, by its id alone: a push
     /// that changes the item leaves the line, and what is typed in it, as it is.
     Words(String),
@@ -42,7 +47,7 @@ impl Line {
             Line::Item(row) | Line::Done(row) => row.row_id.clone(),
             Line::DoneHeading { .. } => "done".to_owned(),
             Line::RemovedHeading => "removed".to_owned(),
-            Line::Removed(row) => format!("removed:{}", row.row_id),
+            Line::Removed { row, .. } => format!("removed:{}", row.row_id),
             Line::Words(row_id) => format!("words:{row_id}"),
             Line::Note(row_id) => format!("note:{row_id}"),
         }
@@ -58,18 +63,20 @@ impl Line {
 }
 
 /// How the pane draws its list now: the sections folded, whether Done is open, the rows ticked a
-/// moment ago, and whether Recently removed is shown.
+/// moment ago, whether Recently removed is shown, and the removed rows whose restore waits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
     pub folded: BTreeSet<String>,
     pub done_open: bool,
     pub settling: BTreeSet<String>,
     pub removed_shown: bool,
+    pub restoring: BTreeSet<String>,
 }
 
 /// The pane's lines: each section under its heading with its open items, or none while it is
 /// folded; then every done item, under a Done fold closed until opened; then, when shown, Recently
-/// removed with its items. A row ticked a moment ago keeps its place while it settles.
+/// removed with its items, each restoring while its restore waits. A row ticked a moment ago keeps
+/// its place while it settles.
 pub fn lines(list: &List, view: &View) -> Vec<Line> {
     let mut lines = Vec::new();
     for section in sections(&list.rows) {
@@ -109,18 +116,25 @@ fn done_lines(list: &List, view: &View) -> Vec<Line> {
         .collect()
 }
 
+/// Recently removed while it is shown: its heading and each removed item, or nothing when no item
+/// was removed, as when only a section was (§10).
 fn removed_lines(list: &List, view: &View) -> Vec<Line> {
-    if !view.removed_shown || list.removed.is_empty() {
+    if !view.removed_shown {
         return Vec::new();
     }
     let items = list.removed.iter().map(|removed| &removed.row);
+    let removed: Vec<Line> = items
+        .filter(|row| row.is_item())
+        .map(|row| Line::Removed {
+            row: row.clone(),
+            restoring: view.restoring.contains(&row.row_id),
+        })
+        .collect();
+    if removed.is_empty() {
+        return Vec::new();
+    }
     std::iter::once(Line::RemovedHeading)
-        .chain(
-            items
-                .filter(|row| row.is_item())
-                .cloned()
-                .map(Line::Removed),
-        )
+        .chain(removed)
         .collect()
 }
 

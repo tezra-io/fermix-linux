@@ -29,10 +29,14 @@ pub const PANE_MARK: &str = "sidebar-show-right-symbolic";
 /// What a reply's lists card and the Lists pane ask of the session.
 pub enum ListAct {
     /// A live card came on screen, or the pane shows a list: each list is pulled unless the app
-    /// holds it. The page asks this while it holds its entries, so the answer draws nothing: a
-    /// pull changes no card until its list arrives, and that arrival draws. A card asks once each
-    /// time it comes on screen, not at every look.
-    Drawn(Vec<String>),
+    /// holds it, with its removed rows when `removed` asks, as the pane does while the list's
+    /// Recently removed is on. The page asks this while it holds its entries, so the answer draws
+    /// nothing: a pull changes no card until its list arrives, and that arrival draws. A card asks
+    /// once each time it comes on screen, not at every look.
+    Drawn {
+        list_ids: Vec<String>,
+        removed: bool,
+    },
     /// An edit of one list, from a tick, Add an item, a menu or a name typed in the pane's head.
     Edit { list_id: String, op: ListOp },
     /// A new list, from New list in the pane's head, in `folder` when one is named. It is drawn
@@ -59,11 +63,15 @@ pub enum ListAct {
     /// Undo: takes back the removal a toast's token names, or with none the newest still kept
     /// (Ctrl+Z in the pane).
     TakeBack(Option<u64>),
-    /// The Undo on a removed list's page: brings that list back.
-    UndoList { list_id: String },
+    /// Restore of the removed row `row_id` of `list_id` from Recently removed, or with none the
+    /// Undo on a removed list's page, which brings that list back.
+    Restore {
+        list_id: String,
+        row_id: Option<String>,
+    },
     /// A card's or the pane's own state changed (grown, folded back, a section or Done folded or
-    /// opened, a list picked, a ticked row settled, or a rewording begun or left by Escape): the
-    /// lists are drawn again.
+    /// opened, Recently removed shown or hidden, a list picked, a ticked row settled, or a
+    /// rewording begun or left by Escape): the lists are drawn again.
     Redraw,
     /// A card opens the pane at its list. By a key (Return on its row), focus moves to the
     /// pane's picker.
@@ -181,7 +189,11 @@ impl ListsView {
         };
         let pulls: Vec<String> = card.pulls().iter().map(|l| l.list_id.clone()).collect();
         if !pulls.is_empty() {
-            act(&self.lister, ListAct::Drawn(pulls));
+            let drawn = ListAct::Drawn {
+                list_ids: pulls,
+                removed: false,
+            };
+            act(&self.lister, drawn);
         }
     }
 
@@ -687,6 +699,23 @@ mod tests {
         ] {
             assert!(!body.contains(named), "the Undo toast names {named}");
         }
+    }
+
+    /// Restore on a removed item is named by its own word: AdwActionRow labels the widget its row
+    /// presses by the row's title, which a screen reader would hear instead, so the pane resets
+    /// that label right after setting the widget (M85 lists §6.3).
+    #[test]
+    fn restore_is_named_by_its_own_word() {
+        let pane = shipped(include_str!("lists_pane.rs"));
+        let start = pane
+            .find("fn removed_row(")
+            .expect("the pane draws removed items");
+        let rest = &pane[start..];
+        let body = squeezed(&rest[..rest.find("\n    }\n").expect("its end")]);
+        assert!(body.contains(concat!(
+            "removed.set_activatable_widget(Some(&restore));",
+            "restore.reset_relation(gtk::AccessibleRelation::LabelledBy);"
+        )));
     }
 
     /// Ctrl+Z on the pane is a shortcut on the Z key with Control, which GTK matches by the key's

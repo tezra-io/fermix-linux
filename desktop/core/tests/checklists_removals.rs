@@ -148,14 +148,21 @@ fn the_toast_and_ctrl_z_take_a_removal_back_once_between_them() {
     assert_eq!(toast, None, "the toast's Undo after Ctrl+Z");
 
     let list = removed(&mut removals, &mut lists, GROCERIES, None, "linux-7");
-    let (taken, out) = removals::undo_list(&mut removals, &mut lists, GROCERIES, "linux-8".into());
+    let (taken, out) =
+        removals::restore(&mut removals, &mut lists, GROCERIES, None, "linux-8".into());
     assert_eq!(taken.map(|removal| removal.token), Some(list));
     sent.extend(out);
     for (token, id) in [(Some(list), "linux-9"), (None, "linux-10")] {
         let again = removals::undo(&mut removals, &mut lists, token, id.into());
         assert_eq!(again, None, "after the page's Undo");
     }
-    let (none, out) = removals::undo_list(&mut removals, &mut lists, GROCERIES, "linux-11".into());
+    let (none, out) = removals::restore(
+        &mut removals,
+        &mut lists,
+        GROCERIES,
+        None,
+        "linux-11".into(),
+    );
     assert_eq!(none, None, "a second page Undo takes nothing back");
     assert_eq!(
         restores(&out),
@@ -342,7 +349,8 @@ fn a_lists_undo_refused_says_its_sentence_under_the_head_until_the_next_index() 
     removed(&mut removals, &mut lists, GROCERIES, None, "linux-1");
     receive(&mut lists, accepted("linux-1"));
     receive(&mut lists, groceries(8, Some(REMOVED_AT)));
-    let (taken, _) = removals::undo_list(&mut removals, &mut lists, GROCERIES, "linux-2".into());
+    let (taken, _) =
+        removals::restore(&mut removals, &mut lists, GROCERIES, None, "linux-2".into());
     assert!(taken.is_some(), "the page's Undo takes the removal back");
 
     receive(&mut lists, refused(TAKEN, "linux-2"));

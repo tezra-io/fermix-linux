@@ -486,10 +486,13 @@ impl App {
     /// holds.
     fn chat_list(self: &Rc<Self>, asked: ListAct) {
         let events = match asked {
-            ListAct::Drawn(ids) => {
+            ListAct::Drawn { list_ids, removed } => {
                 let pulls = {
                     let lists = &mut self.wire.borrow_mut().lists;
-                    ids.iter().flat_map(|id| lists.draw(id, false)).collect()
+                    list_ids
+                        .iter()
+                        .flat_map(|id| lists.draw(id, removed))
+                        .collect()
                 };
                 return self.chat_send(pulls);
             }
@@ -517,7 +520,9 @@ impl App {
                 text,
             } => return self.list_remove(&list_id, row_id.as_deref(), &text),
             ListAct::TakeBack(token) => return self.take_back(token),
-            ListAct::UndoList { list_id } => return self.undo_list(&list_id),
+            ListAct::Restore { list_id, row_id } => {
+                return self.list_restore(&list_id, row_id.as_deref())
+            }
             ListAct::Redraw => Vec::new(),
             ListAct::Open { list_id, by_key } => {
                 self.chat.lists.open_at(Some(&list_id), by_key);
@@ -586,12 +591,14 @@ impl App {
         self.render();
     }
 
-    /// The Undo on a removed list's page: the list's restore is sent, and its removal made here,
-    /// if Undo can still take it back, is taken back with it.
-    fn undo_list(self: &Rc<Self>, list_id: &str) {
+    /// Restore of the removed row `row_id` of `list_id` from Recently removed, or of the list
+    /// itself by the Undo on its removed page: its restore is sent, drawn when the engine pushes
+    /// it, and its removal made here, if Undo can still take it back, is taken back with it.
+    fn list_restore(self: &Rc<Self>, list_id: &str, row_id: Option<&str>) {
         let (taken, events) = {
             let wire = &mut *self.wire.borrow_mut();
-            removals::undo_list(&mut wire.removals, &mut wire.lists, list_id, message_id())
+            let (removals, lists) = (&mut wire.removals, &mut wire.lists);
+            removals::restore(removals, lists, list_id, row_id, message_id())
         };
         if let Some(removal) = taken {
             self.taken_back(&removal);

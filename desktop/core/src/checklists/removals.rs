@@ -2,7 +2,8 @@
 //! list's, each under a token its toast's Undo names. Ctrl+Z takes back the newest still kept, and
 //! the one before it when pressed again, up to 20 back across lists while the app runs; past 20
 //! the oldest goes. Each is taken back once, by Undo or by Ctrl+Z, whichever comes first: the
-//! second sends nothing. A removal and its restore are edits the library sends as any other.
+//! second sends nothing, and so does either after Restore or the removed page's Undo brought the
+//! same row or list back. A removal and its restore are edits the library sends as any other.
 
 use super::library::Library;
 use crate::chat_wire::protocol::{ClientEvent, ListOp};
@@ -104,24 +105,25 @@ pub fn undo(
     Some((removal, sent))
 }
 
-/// The Undo of the page a removed list shows: brings `list_id` back, whoever removed it. Its
-/// newest removal made here still kept is taken back with it, and answered, so neither its
-/// toast's Undo nor Ctrl+Z sends a second restore.
-pub fn undo_list(
+/// Restore, of the removed row `row_id` of `list_id` from Recently removed, or of the list itself
+/// with none, by the Undo of the page a removed list shows (§3.7, §10): sent through `library` as
+/// any edit is, whoever removed it. Its removal made here, if one is still kept, is taken back
+/// with it and answered, so neither its toast's Undo nor Ctrl+Z sends a second restore.
+pub fn restore(
     removals: &mut Removals,
     library: &mut Library,
     list_id: &str,
+    row_id: Option<&str>,
     client_msg_id: String,
 ) -> (Option<Removal>, Vec<ClientEvent>) {
     let own = removals
         .kept
         .iter()
-        .rev()
-        .find(|removal| removal.list_id == list_id && removal.row_id.is_none())
+        .find(|removal| removal.list_id == list_id && removal.row_id.as_deref() == row_id)
         .map(|removal| removal.token);
     let taken = own.and_then(|token| removals.take_back(token));
     let restore = ListOp::Restore {
-        row_id: None,
+        row_id: row_id.map(str::to_owned),
         title: None,
     };
     (taken, library.edit(list_id, restore, client_msg_id))

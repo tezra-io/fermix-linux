@@ -397,6 +397,7 @@ fn the_list_menu_offers_copy_once_pulled_and_clear_done_while_an_item_drawn_is_d
         moving_to: None,
         copy: false,
         clear_done: false,
+        removed_shown: false,
     };
     assert_eq!(offers(&lists), Some(waiting), "its pull waits");
     lists.draw(PACKING, false);
@@ -434,6 +435,7 @@ fn in_folder(folder: &str, moving_to: Option<&str>) -> ListOffers {
         moving_to: moving_to.map(str::to_owned),
         copy: true,
         clear_done: false,
+        removed_shown: false,
     }
 }
 
