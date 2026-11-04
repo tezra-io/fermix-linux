@@ -11,13 +11,16 @@ use serde_json::Value;
 
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
-/// The engine's Linux probe golden, ahead of the vendored contract, and hand answers in its shape.
+/// The answers the engine says a client owes an older daemon.
+const COMPATIBILITY: &str = include_str!("../contracts/management/fixtures/compatibility.jsonl");
+/// Hand answers in the shape of the engine's Linux probe golden, for sessions it does not show.
 const PROBES: &str = include_str!("fixtures/computer-use/permissions.jsonl");
 
 fn fixture(name: &str) -> Value {
     let found: Vec<Value> = SUCCESS
         .lines()
         .chain(ERRORS.lines())
+        .chain(COMPATIBILITY.lines())
         .map(|line| serde_json::from_str::<Value>(line).expect("fixture line is JSON"))
         .filter(|v| v["name"] == name)
         .collect();
@@ -128,7 +131,7 @@ fn probe(name: &str) -> ComputerPermissions {
 
 #[test]
 fn a_linux_probe_carries_its_platform_display_server_and_rows() {
-    let linux = probe("computer_use_permissions_get_linux");
+    let linux: ComputerPermissions = decode("computer_use_permissions_get_linux");
     assert!(linux.installed && !linux.screen_capture && linux.input_control);
     assert_eq!(linux.platform.as_deref(), Some("linux"));
     assert_eq!(linux.display_server.as_deref(), Some("wayland"));
@@ -163,7 +166,7 @@ fn a_macos_probe_carries_only_its_platform() {
 
 #[test]
 fn an_older_daemons_probe_has_no_platform_or_rows() {
-    let older: ComputerPermissions = decode("computer_use_permissions_get");
+    let older: ComputerPermissions = decode("computer_use_permissions_without_platform");
     assert!(older.installed && older.screen_capture && !older.input_control);
     assert_eq!(older.platform, None);
     assert_eq!(older.display_server, None);

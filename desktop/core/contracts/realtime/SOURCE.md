@@ -10,9 +10,9 @@ These four files are the engine's realtime voice contract, copied byte for byte:
 | `fixtures/server_events.jsonl` | `apps/fermix_core/priv/realtime/fixtures/server_events.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`, the engine v0.17.0. The last commit to touch
-  `priv/realtime` is `178ed72551938a5e4a46c7dd429d88e1efb4e0a1` (2026-10-17, "feat(voice): Grok
-  Voice as an opt-in voice engine beside GPT-Live (M70)").
+- Commit: `9389f738a9a02dc12422fc04dc2b4fe3100b3bc9`, the engine v0.18.0 release tag. The last
+  commit to touch `priv/realtime` is `178ed72551938a5e4a46c7dd429d88e1efb4e0a1` (2026-10-17,
+  "feat(voice): Grok Voice as an opt-in voice engine beside GPT-Live (M70)").
 - Protocol version: 3, daemon window 1..3: Grok's `audio_delta.playback_id` and the app's
   `playback_progress`.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format. The digests match the

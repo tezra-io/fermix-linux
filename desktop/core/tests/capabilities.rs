@@ -13,12 +13,15 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
-/// The engine's Linux golden, ahead of the vendored contract, and hand answers in its shape.
+/// The answers the engine says a client owes an older daemon.
+const COMPATIBILITY: &str = include_str!("../contracts/management/fixtures/compatibility.jsonl");
+/// Hand answers in the shape of the engine's Linux golden, for sessions it does not show.
 const LINUX: &str = include_str!("fixtures/computer-use/permissions.jsonl");
 
 fn decode<T: DeserializeOwned>(name: &str) -> T {
     let found = SUCCESS
         .lines()
+        .chain(COMPATIBILITY.lines())
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
         .find(|v| v["name"] == name)
         .unwrap();
@@ -106,11 +109,15 @@ fn the_sign_in_says_it_opens_the_notetakers_own_browser() {
     assert!(MEETBOT_SIGN_IN_NOTE.contains("under that account's name"));
 }
 
+/// The engine's Linux golden, in the vendored contract.
 const GOLDEN: &str = "computer_use_permissions_get_linux";
 const PIXELS: &str = "Screenshots, pointer and keys";
 const WINDOW: &str = "Work inside one window";
 
 fn answer(name: &str) -> ComputerPermissions {
+    if name == GOLDEN {
+        return decode(GOLDEN);
+    }
     let found = LINUX
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
@@ -121,14 +128,17 @@ fn answer(name: &str) -> ComputerPermissions {
 
 /// Every answer in the fixtures, the engine's golden first.
 fn every_answer() -> Vec<(String, ComputerPermissions)> {
-    LINUX
-        .lines()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .map(|v| {
-            let name = v["name"].as_str().unwrap().to_owned();
-            (name, serde_json::from_value(v["result"].clone()).unwrap())
-        })
-        .collect()
+    let mut answers = vec![(GOLDEN.to_owned(), decode(GOLDEN))];
+    answers.extend(
+        LINUX
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .map(|v| {
+                let name = v["name"].as_str().unwrap().to_owned();
+                (name, serde_json::from_value(v["result"].clone()).unwrap())
+            }),
+    );
+    answers
 }
 
 fn drawn(name: &str) -> LinuxProbe {
@@ -650,7 +660,8 @@ fn unknown_rows_and_status_words_are_shown_as_given_and_asked_about() {
 fn macos_older_daemons_and_rowless_answers_keep_todays_rows() {
     assert_eq!(linux_probe(&answer("macos_platform_only")), None);
     assert_eq!(linux_probe(&answer("linux_without_rows")), None);
-    let older: ComputerPermissions = decode("computer_use_permissions_get");
+    let older: ComputerPermissions = decode("computer_use_permissions_without_platform");
+    assert_eq!(older.platform, None);
     assert_eq!(linux_probe(&older), None);
 }
 

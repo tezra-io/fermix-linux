@@ -49,6 +49,8 @@ pub const SECRET_UNSTORABLE: &str =
 pub const ONE_OF_PUBLISHED: &str = "This setting takes one of its published values.";
 /// The row naming the host a feed or stream source reads from (M60 cues §4.4).
 pub const ADDRESS_HOST: &str = "Address host";
+/// The row naming the accounts an X accounts source reads, its handles.
+pub const ACCOUNTS: &str = "Accounts";
 pub const COPY_URL: &str = "Copy URL";
 pub const ADDRESS_MADE: &str = "Made";
 pub const ADDRESS_NOT_MADE: &str = "Not made yet";
@@ -115,7 +117,7 @@ pub const SKILL_PATHS: &str = "Skill paths it writes";
 pub const PINNED_ARGUMENTS: &str = "Pinned arguments";
 
 /// Every fixed sentence the Cues pane shows, so a test can hold them to the copy rules.
-pub const STRINGS: [&str; 92] = [
+pub const STRINGS: [&str; 93] = [
     PANE_TITLE,
     SUBTITLE,
     LEARN_MORE,
@@ -149,6 +151,7 @@ pub const STRINGS: [&str; 92] = [
     SECRET_UNSTORABLE,
     ONE_OF_PUBLISHED,
     ADDRESS_HOST,
+    ACCOUNTS,
     COPY_URL,
     ADDRESS_MADE,
     ADDRESS_NOT_MADE,

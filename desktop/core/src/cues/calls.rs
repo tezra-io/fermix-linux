@@ -1,11 +1,12 @@
-//! The 24 `cues.*` methods as typed calls. Add, update, `token.new` and `url.get` never carry a
+//! The 25 `cues.*` methods as typed calls. Add, update, `token.new` and `url.get` never carry a
 //! secret: a typed secret goes through `secret.set` alone. An answer that hands a value out is
 //! never quoted in an error, since it holds that value.
 
 use super::wire::{
-    Address, CueStatus, Decision, MandateAnswer, MandateChoices, MandateList, MandateRemoved,
-    NewToken, ProposalAnswer, ProposalCardAnswer, ProposalFilter, ProposalList, SourceAdded,
-    SourceAnswer, SourceDetail, SourceForm, SourceList, SourceRemoved, WatcherAnswer, WatcherList,
+    Address, AlwaysAllowRevoked, CueStatus, Decision, MandateAnswer, MandateChoices, MandateList,
+    MandateRemoved, NewToken, ProposalAnswer, ProposalCardAnswer, ProposalFilter, ProposalList,
+    SourceAdded, SourceAnswer, SourceDetail, SourceForm, SourceList, SourceRemoved, WatcherAnswer,
+    WatcherList,
 };
 use crate::management::{CallError, Management};
 use serde::de::DeserializeOwned;
@@ -142,6 +143,15 @@ impl Management {
 
     pub fn cue_watcher(&self, name: &str) -> Result<WatcherAnswer, CallError> {
         self.by_name("cues.watchers.get", name)
+    }
+
+    /// Takes back the owner's Always allow of the watcher's follow-up, so each of its runs asks
+    /// first again on a card. Granting it is the owner's answer on a card alone.
+    pub fn cue_watcher_always_allow_revoke(
+        &self,
+        name: &str,
+    ) -> Result<AlwaysAllowRevoked, CallError> {
+        self.by_name("cues.watchers.always_allow.revoke", name)
     }
 
     pub fn cue_mandates(&self) -> Result<MandateList, CallError> {

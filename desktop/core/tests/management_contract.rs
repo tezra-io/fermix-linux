@@ -214,9 +214,12 @@ fn a_decision_and_a_cancel_answer_the_terminal_view() {
 
 #[test]
 fn the_paired_phones_and_a_forget_decode() {
+    let published = named(SUCCESS, "mobile_devices_list")["response"]["result"]["devices"]
+        .as_array()
+        .map_or(0, Vec::len);
     exchange("mobile_devices_list", "mobile_devices_list", |m| {
         let list = m.mobile_devices_list().expect("decodes");
-        assert_eq!(list.devices.len(), 1);
+        assert_eq!(list.devices.len(), published, "every paired device decodes");
         let phone = &list.devices[0];
         assert_eq!(phone.name, "Sam's phone");
         assert_eq!(phone.model, "Google Pixel 9 Pro");

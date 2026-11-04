@@ -1,16 +1,17 @@
 //! The cue methods against the vendored management contract (M60 cues §9, Contract): every cue
 //! golden decodes through the app's own types, each vocabulary is the schema's
-//! `x-cue-vocabulary`, and each of the 24 calls is sent by the app's own client to a fake daemon
+//! `x-cue-vocabulary`, and each of the 25 calls is sent by the app's own client to a fake daemon
 //! answering with the golden, so the request it writes is held to the request fixture too.
 
 use fermix_client::cues::calls::{FormChoice, SourceChoice};
 use fermix_client::cues::wire::{
-    ApprovalState, CueState, DecidedFrom, Decision, DoorState, MandateAction, MandateLoad,
-    MandateMode, ProposalFilter, ProposalState, ResultStatus, SecretField, SourceAction,
-    SourceKind, SourceState, WatcherFilter, WatcherState, Word,
+    ApprovalState, CueState, DecidedFrom, Decision, DoorState, FollowUpState, MandateAction,
+    MandateLoad, MandateMode, ProposalFilter, ProposalState, ResultStatus, SecretField,
+    SourceAction, SourceKind, SourceState, WatcherFilter, WatcherState, Word,
 };
 use fermix_client::frame::{read_frame, write_frame};
 use fermix_client::management::Management;
+use fermix_client::settings::Kind;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -204,6 +205,46 @@ fn a_handed_out_value_decodes_and_never_shows_in_debug() {
     });
 }
 
+/// The X accounts form is a feed preset's: it asks for the handles, in a list row.
+#[test]
+fn the_x_accounts_form_is_a_feeds_and_asks_for_the_handles() {
+    exchange(
+        "cues_sources_form_x_accounts",
+        "cues_sources_form_x_accounts",
+        |m| {
+            let choice = FormChoice {
+                preset: Some("x_accounts".into()),
+                ..FormChoice::default()
+            };
+            let form = m.cue_source_form(&choice).expect("decodes");
+            let preset = form.presets.iter().find(|p| p.id == "x_accounts");
+            assert_eq!(preset.map(|p| p.kind.as_str()), Some("feed"));
+            let handles = form.rows.iter().find(|r| r.key == "handles");
+            assert!(handles.is_some_and(|r| r.kind == Kind::List));
+        },
+    );
+}
+
+/// Taking back Always allow answers the watcher's row with its follow-up asking first again.
+#[test]
+fn always_allow_taken_back_leaves_the_follow_up_asking_first() {
+    exchange(
+        "cues_watchers_always_allow_revoke",
+        "cues_watchers_always_allow_revoke",
+        |m| {
+            let row = m
+                .cue_watcher_always_allow_revoke("release-watch")
+                .expect("decodes")
+                .watcher;
+            assert_eq!(row.name, "release-watch");
+            let follow_up = row.follow_up.expect("a follow-up");
+            assert!(!follow_up.always_allowed);
+            assert_eq!(follow_up.job_id, "deploy_check_3");
+            assert!(follow_up.state.is(FollowUpState::Ready));
+        },
+    );
+}
+
 #[test]
 fn a_watcher_reads_with_the_owners_own_words() {
     exchange("cues_watchers_get", "cues_watchers_get", |m| {
@@ -303,6 +344,7 @@ fn no_cue_golden_goes_unread() {
         "cues_sources_get",
         "cues_sources_form",
         "cues_sources_form_stream",
+        "cues_sources_form_x_accounts",
         "cues_sources_add",
         "cues_sources_add_local_push",
         "cues_sources_add_webhook",
@@ -314,6 +356,7 @@ fn no_cue_golden_goes_unread() {
         "cues_sources_url_get",
         "cues_watchers_list",
         "cues_watchers_get",
+        "cues_watchers_always_allow_revoke",
         "cues_mandates_list",
         "cues_mandates_choices",
         "cues_mandates_add",
@@ -342,20 +385,53 @@ fn no_cue_golden_goes_unread() {
     assert_eq!(published, read);
 }
 
-/// The webhook added without its secret waits for it, and its golden decodes as such.
+/// A webhook added without its secret waits for it and says which one. Fermix makes only a
+/// GitHub source's secret, so this is an Any webhook source: the webhook golden's row as it
+/// answers before its secret is stored.
 #[test]
 fn a_webhook_added_without_its_secret_says_which_one_it_waits_for() {
-    exchange("cues_sources_add", "cues_sources_add_webhook", |m| {
-        let choice = SourceChoice::Preset("rss".into());
-        let fields = values(json!({"url": "https://example.org/releases.atom"}));
-        let added = m
-            .cue_source_add("eng-blogs", &choice, fields)
-            .expect("decodes");
-        let source = added.source;
+    let mut answer = named(SUCCESS, "cues_sources_add_webhook")["response"].clone();
+    answer["result"]["secret"] = Value::Null;
+    let row = &mut answer["result"]["source"];
+    row["ref"] = json!("hooks");
+    row["preset"] = Value::Null;
+    row["label"] = json!("Webhook");
+    row["state"] = json!("needs_secret");
+    row["status_sentence"] = json!("Waiting for its signing secret.");
+    row["primary_action"] = json!("set_secret");
+    row["actions"] = json!(["disable", "set_secret", "get_url"]);
+    row["missing_secret"] = json!("secret");
+    row["secrets"][0]["present"] = json!(false);
+    let sent = serve(answer, |m| {
+        let choice = SourceChoice::Kind("webhook".into());
+        let fields = values(json!({"verify": "hmac"}));
+        let source = m
+            .cue_source_add("hooks", &choice, fields)
+            .expect("decodes")
+            .source;
         assert!(source.state.is(SourceState::NeedsSecret));
         assert!(source.primary_action == Some(Word::Known(SourceAction::SetSecret)));
         assert!(source.missing_secret == Some(Word::Known(SecretField::Secret)));
     });
+    assert_eq!(sent["params"]["kind"], "webhook");
+}
+
+/// Fermix makes a GitHub source's secret, so a GitHub source added is ready and waits for no
+/// secret.
+#[test]
+fn a_github_source_added_waits_for_no_secret() {
+    let answer = named(SUCCESS, "cues_sources_add_webhook")["response"].clone();
+    let sent = serve(answer, |m| {
+        let choice = SourceChoice::Preset("github".into());
+        let source = m
+            .cue_source_add("github", &choice, Map::new())
+            .expect("decodes")
+            .source;
+        assert!(source.state.is(SourceState::Idle));
+        assert!(source.primary_action == Some(Word::Known(SourceAction::GetUrl)));
+        assert_eq!(source.missing_secret, None);
+    });
+    assert_eq!(sent["params"]["preset"], "github");
 }
 
 fn wire<T: Serialize>(words: &[T]) -> Vec<String> {
@@ -425,6 +501,8 @@ fn each_cue_vocabulary_is_the_schemas() {
         WatcherState::Held,
     ];
     assert_eq!(wire(&watchers), published("watcher_states"));
+    let follow_ups = [FollowUpState::Ready, FollowUpState::Held];
+    assert_eq!(wire(&follow_ups), published("follow_up_states"));
     let mandate_actions = [
         MandateAction::Approve,
         MandateAction::Enable,

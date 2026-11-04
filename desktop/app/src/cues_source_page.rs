@@ -587,8 +587,8 @@ fn stored(present: bool) -> &'static str {
 }
 
 /// What the source is and did, as core reads it (`source_facts`): its kind, the host of the feed
-/// or stream it reads, never its address (M60 cues §4.4), its daily limit, its last day and the
-/// watchers listening.
+/// or stream it reads or an X accounts source's handles, never its address (M60 cues §4.4), its
+/// daily limit, its last day and the watchers listening.
 fn facts(source: &SourceRow) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     for (title, value) in source_facts(source) {

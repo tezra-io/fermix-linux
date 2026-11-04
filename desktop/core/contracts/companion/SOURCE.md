@@ -10,9 +10,9 @@ These four files are the engine's companion chat contract, copied byte for byte:
 | `fixtures/server_events.jsonl` | `apps/fermix_core/priv/companion/fixtures/server_events.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `35a2c5ed588b1c398029c69358983891d1210076`, on the engine's dev branch, not a release. It
-  is the last commit to touch `priv/companion` there (2026-11-02, "a reply's text_done carries
-  ts").
+- Commit: `9389f738a9a02dc12422fc04dc2b4fe3100b3bc9`, the engine v0.18.0 release tag. The last
+  commit to touch `priv/companion` is `35a2c5ed588b1c398029c69358983891d1210076` (2026-11-02, "a
+  reply's text_done carries ts").
 - Protocol version: 7, daemon window 6..7. A client below 6 is refused.
   - Version 5: a watcher's follow-up, a `proposal` whose card names `follow_up` in place of a
     mandate's call, and the `always_allow` answer.
@@ -22,10 +22,6 @@ These four files are the engine's companion chat contract, copied byte for byte:
   - Version 7: files the owner attaches (`attach_file`, `attach_status`, `msg.attach_ids`, and
     `server_hello.attachments`).
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
-
-`check_contracts.py` refuses a release until the engine pin moves to a release that serves 7 and
-all three contracts are copied again from its tag: until then this commit is not the pinned
-engine's.
 
 Never edit these files by hand. To take a new engine contract, copy the four files again from a
 committed engine, rewrite `CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json

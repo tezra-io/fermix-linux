@@ -214,13 +214,14 @@ pub fn offers_approve(mandate: &MandateRow) -> bool {
 }
 
 /// What a source's page says it is and did, each fact a title and its value, in order (M60 cues
-/// §4.4): its kind, the host of the feed or stream it reads (`location`, never its address, which
-/// can carry a credential), its daily limit, its last day and the watchers listening. A webhook
-/// and local push have no host, and no row for one.
+/// §4.4): its kind, the host of the feed or stream it reads or an X accounts source's handles
+/// (`location`, never its address, which can carry a credential), its daily limit, its last day
+/// and the watchers listening. A webhook and local push have no host, and no row for one.
 pub fn source_facts(source: &SourceRow) -> Vec<(&'static str, String)> {
     let mut facts = vec![(words::KIND, source.label.clone())];
-    if let Some(host) = source.location.as_deref().filter(|h| !h.is_empty()) {
-        facts.push((words::ADDRESS_HOST, host.to_owned()));
+    let location = source.location.as_deref().map(str::trim);
+    if let Some(location) = location.filter(|l| !l.is_empty()) {
+        facts.push((location_title(source), location.to_owned()));
     }
     let counts = &source.counts;
     facts.push((words::ITEMS_A_DAY, words::items_a_day(source.daily_budget)));
@@ -230,6 +231,15 @@ pub fn source_facts(source: &SourceRow) -> Vec<(&'static str, String)> {
     ));
     facts.push((words::LISTENING, words::list(&source.listening)));
     facts
+}
+
+/// The title of a source's `location` row: an X accounts source's location is its handles.
+fn location_title(source: &SourceRow) -> &'static str {
+    if source.preset.as_deref() == Some("x_accounts") {
+        words::ACCOUNTS
+    } else {
+        words::ADDRESS_HOST
+    }
 }
 
 /// Where a source row opens its page: at the secret the daemon says it waits for, where its

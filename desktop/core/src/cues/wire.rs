@@ -147,6 +147,16 @@ pub enum WatcherState {
     Held,
 }
 
+/// Whether a watcher's follow-up can run now. Published for logs and support: the row draws its
+/// sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowUpState {
+    Ready,
+    /// It cannot run: watchers may not act, or a tool or channel it needs is not set up.
+    Held,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatcherFilter {
@@ -287,9 +297,10 @@ pub struct SourceRow {
     pub primary_action: Option<Word<SourceAction>>,
     #[serde(default)]
     pub actions: Vec<Word<SourceAction>>,
-    /// A feed's or stream's host, all a source's page draws of its address. The address itself
-    /// (`url`) is never decoded: it can carry a credential, in its user, its path or its query
-    /// (M60 cues §4.4). The owner edits it through the form's values.
+    /// A feed's or stream's host, all a source's page draws of its address, or an X accounts
+    /// source's handles. A row never decodes the address itself (`url`): it can carry a
+    /// credential, in its user, its path or its query (M60 cues §4.4). The owner edits it through
+    /// the form's values.
     #[serde(default)]
     pub location: Option<String>,
     /// Items a UTC day; 0 is no limit.
@@ -431,6 +442,21 @@ pub struct WatcherTask {
     pub paused: bool,
 }
 
+/// The job a passing item sets off, handed nothing from the item. It is made in chat; only its
+/// Always allow is taken back here.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FollowUp {
+    pub job_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Whether the owner's Always allow lets it run with no card. A daemon older than Always allow
+    /// sends none, which reads as asking first.
+    #[serde(default)]
+    pub always_allowed: bool,
+    pub state: Word<FollowUpState>,
+    pub status_sentence: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct WatcherCounts {
     /// Every item its words to listen for let through, kept or not.
@@ -458,6 +484,9 @@ pub struct WatcherRow {
     #[serde(default)]
     pub sources: Vec<String>,
     pub task: WatcherTask,
+    /// None for a watcher with none, and from a daemon older than follow-ups.
+    #[serde(default)]
+    pub follow_up: Option<FollowUp>,
     pub task_notes: bool,
     /// 0 is none.
     pub daily_cap: u64,
@@ -506,6 +535,12 @@ pub struct WatcherDetail {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WatcherAnswer {
     pub watcher: WatcherDetail,
+}
+
+/// `cues.watchers.always_allow.revoke`: the watcher's row once its follow-up asks first again.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AlwaysAllowRevoked {
+    pub watcher: WatcherRow,
 }
 
 // ---- mandates ----

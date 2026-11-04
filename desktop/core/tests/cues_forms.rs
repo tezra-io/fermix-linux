@@ -10,6 +10,7 @@ use fermix_client::cues::wire::{
     MandateChoices, MandateList, MandateRow, PinValue, SecretField, SourceDetail, SourceForm,
 };
 use fermix_client::cues::words;
+use fermix_client::settings::Kind;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -28,13 +29,17 @@ fn decode<T: DeserializeOwned>(value: Value) -> T {
     serde_json::from_value(value).expect("decodes")
 }
 
-/// The webhook form the golden answers (GitHub preset), and the stream form.
+/// The webhook form the golden answers (GitHub preset), the stream form and the X accounts form.
 fn webhook_form() -> SourceForm {
     decode(result("cues_sources_form"))
 }
 
 fn stream_form() -> SourceForm {
     decode(result("cues_sources_form_stream"))
+}
+
+fn x_accounts_form() -> SourceForm {
+    decode(result("cues_sources_form_x_accounts"))
 }
 
 fn choice(kind: Option<&str>, preset: Option<&str>, verify: Option<&str>) -> FormChoice {
@@ -75,7 +80,29 @@ fn the_first_answer_opens_on_the_first_kind_and_its_first_preset() {
     );
     assert_eq!(form.request(), choice(None, Some("rss"), None));
     let presets: Vec<&str> = form.kind_presets().iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(presets, ["rss"]);
+    let answer = webhook_form();
+    let feeds: Vec<&str> = answer
+        .presets
+        .iter()
+        .filter(|p| p.kind == "feed")
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(presets, feeds, "the feed's presets, in the answer's order");
+}
+
+#[test]
+fn x_accounts_is_a_feed_preset_asked_for_by_its_preset() {
+    let mut form = SourceFormState::default();
+    form.take(&x_accounts_form(), &FormChoice::default());
+    form.choose_preset(Some("x_accounts"));
+    assert_eq!(form.kind(), Some("feed"));
+    assert_eq!(form.request(), choice(None, Some("x_accounts"), None));
+    form.take(&x_accounts_form(), &form.request());
+    let handles = form.rows().iter().find(|r| r.key == "handles");
+    assert!(
+        handles.is_some_and(|r| r.kind == Kind::List),
+        "the handles are a list"
+    );
 }
 
 #[test]
@@ -88,14 +115,18 @@ fn rows_come_only_from_the_answer_to_the_choice_held_now() {
     assert!(form.rows().is_empty(), "the feed's answer came late");
     form.take(&webhook_form(), &form.request());
     assert_eq!(form.rows()[0].key, NAME_KEY);
+    let answer = webhook_form();
+    assert!(answer.consent_sentence.is_some(), "a consent line");
+    let lines: Vec<String> = answer
+        .consent_sentence
+        .into_iter()
+        .chain(answer.notes)
+        .collect();
+    assert!(lines.len() > 2, "a consent line and notes");
     assert_eq!(
-        form.about().as_deref(),
-        Some(
-            "A service that has this source's address and its secret can send it items.\n\n\
-             The door listens on this Mac only. A service outside reaches it through a tunnel \
-             you run.\n\nIn GitHub's webhook form, choose `application/json` as the content type."
-        ),
-        "the consent line leads, then the notes"
+        form.about(),
+        Some(lines.join("\n\n")),
+        "the consent line leads, then the notes, in order"
     );
 }
 
@@ -151,10 +182,15 @@ fn what_was_set_for_a_field_the_new_form_lacks_goes_with_it() {
     assert_eq!(form.name(), "gh-hooks", "the name is on every form");
     assert!(!form.changed_values().contains_key("header"));
     let held: Vec<SecretField> = form.typed_secrets().iter().map(|s| s.field).collect();
-    assert_eq!(
-        held,
-        [SecretField::Secret],
-        "the stream has a secret row too"
+    assert_eq!(held, [SecretField::Secret], "the stream has a secret row");
+    form.hold_secret("secret", "typed-stream-secret");
+    form.choose_kind("webhook");
+    form.take(&webhook_form(), &form.request());
+    form.choose_kind("stream");
+    form.take(&stream_form(), &form.request());
+    assert!(
+        form.typed_secrets().is_empty(),
+        "GitHub's form has no secret row, so the secret went with it"
     );
 }
 
@@ -205,15 +241,16 @@ fn a_typed_secret_is_held_in_row_order_and_never_sent_with_the_source() {
 
 #[test]
 fn a_secret_this_build_cannot_store_is_refused_under_its_row_and_nothing_is_sent() {
-    let mut answer = webhook_form();
-    let mut extra = answer.rows.last().expect("a secret row").clone();
+    let mut answer = stream_form();
+    let secret_row = answer.rows.iter().find(|r| r.kind == Kind::Secret);
+    let mut extra = secret_row.expect("a secret row").clone();
     extra.key = "token".into();
     answer.rows.push(extra);
     let mut form = SourceFormState::default();
     form.take(&answer, &FormChoice::default());
-    form.choose_kind("webhook");
+    form.choose_kind("stream");
     form.take(&answer, &form.request());
-    form.set(NAME_KEY, json!("gh-hooks"));
+    form.set(NAME_KEY, json!("news"));
     form.hold_secret("token", "pasted");
     assert!(form.prepare_add().is_none());
     assert_eq!(form.refusal_for("token"), Some(words::SECRET_UNSTORABLE));

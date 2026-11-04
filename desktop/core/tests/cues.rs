@@ -11,8 +11,8 @@ use fermix_client::cues::view::{
     FilterDraft, Question, Tone,
 };
 use fermix_client::cues::wire::{
-    CueStatus, MandateRow, ProposalList, SecretField, SourceList, SourceRow, WatcherDetail,
-    WatcherRow,
+    CueStatus, FollowUpState, MandateRow, ProposalList, SecretField, SourceList, SourceRow,
+    WatcherDetail, WatcherRow,
 };
 use fermix_client::cues::words::{self, STRINGS};
 use fermix_client::management::{decode_response, CallError};
@@ -211,7 +211,6 @@ fn every_list_golden_decodes_and_nulls_read_as_absent_keys() {
         "preset",
         "primary_action",
         "location",
-        "url",
         "missing_secret",
         "last_good_at",
     ];
@@ -328,6 +327,29 @@ fn a_watcher_row_carries_its_name_its_sources_and_the_daemons_sentence_only() {
     let paused = watcher(json!({"task": {"job_id": "j", "name": null, "paused": true}}));
     assert_eq!(watcher_line(&paused).tone, Tone::Quiet);
     assert_eq!(watcher_task(&paused), "j · keeps no notes · paused");
+}
+
+/// A watcher's follow-up decodes with whether it is always allowed; a daemon older than
+/// follow-ups sends none, and one older than Always allow sends `mode` and `approved` in its place,
+/// which reads as asking first.
+#[test]
+fn a_watchers_follow_up_decodes_and_an_older_daemons_reads_as_none_or_asking_first() {
+    let row = watcher(json!({}));
+    let follow_up = row.follow_up.expect("the golden's watcher has a follow-up");
+    assert!(follow_up.always_allowed);
+    assert_eq!(follow_up.name.as_deref(), Some("Deploy check"));
+    assert!(follow_up.state.is(FollowUpState::Ready));
+    assert_eq!(watcher(json!({"follow_up": null})).follow_up, None);
+    let mut older = result("cues_watchers_list")["watchers"][0].clone();
+    older.as_object_mut().expect("a row").remove("follow_up");
+    assert_eq!(decode::<WatcherRow>(older).follow_up, None);
+    let mut before = result("cues_watchers_list")["watchers"][0]["follow_up"].clone();
+    let fields = before.as_object_mut().expect("a follow-up");
+    fields.remove("always_allowed");
+    fields.insert("mode".into(), json!("auto"));
+    fields.insert("approved".into(), json!(true));
+    let before = watcher(json!({ "follow_up": before }));
+    assert!(!before.follow_up.expect("a follow-up").always_allowed);
 }
 
 #[test]
@@ -728,14 +750,37 @@ fn a_source_without_a_host_draws_no_address_row() {
             webhook_or_push.name
         );
     }
-    let blank = source("eng-blogs", json!({"location": ""}));
-    assert!(source_facts(&blank)
-        .iter()
-        .all(|(title, _)| *title != words::ADDRESS_HOST));
+    for location in ["", "   "] {
+        let blank = source("eng-blogs", json!({ "location": location }));
+        assert!(
+            source_facts(&blank)
+                .iter()
+                .all(|(title, _)| *title != words::ADDRESS_HOST),
+            "{location:?}"
+        );
+    }
+}
+
+/// An X accounts source's location is its handles, so its row is titled Accounts; a feed's is
+/// still its host.
+#[test]
+fn an_x_accounts_sources_location_row_is_its_accounts() {
+    let x = source(
+        "eng-blogs",
+        json!({"preset": "x_accounts", "label": "X accounts", "location": "@fermix, @tezra"}),
+    );
+    let facts = source_facts(&x);
+    assert_eq!(facts[1], (words::ACCOUNTS, "@fermix, @tezra".to_owned()));
+    assert!(facts.iter().all(|(title, _)| *title != words::ADDRESS_HOST));
+    let feed = source(
+        "eng-blogs",
+        json!({"preset": "rss", "location": "feeds.pinboard.in"}),
+    );
+    assert_eq!(source_facts(&feed)[1].0, words::ADDRESS_HOST);
 }
 
 /// The page is handed a row that does not hold the address at all, so no drawing of it can
-/// reach the address: it is never decoded.
+/// reach the address: a row never decodes it.
 #[test]
 fn a_source_row_never_holds_its_address() {
     let feed = source("eng-blogs", json!({"url": SECRET_ADDRESS}));
