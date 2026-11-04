@@ -1,17 +1,19 @@
 //! The Lists pane (M85 lists §3): one of the owner's lists at the chat's end, under the window's
 //! header. A split view around the chat's body holds it, in a breakpoint bin that collapses the
 //! split below 600sp, where the pane lies over the chat and shows only when asked. Its head picks
-//! the list, opens the list's menu behind More (`list_more`), and gives its folder and counts; its
-//! list draws the lines `checklists::panel` gives, spliced where they changed, an item being
-//! reworded as its two entries, each item with its menu (`list_menu`) and its moves; Add an item
-//! sits at its foot. Whether it shows is the owner's last open or close
+//! the list or New list, names a list or a folder in the picker's place (`list_naming`), opens the
+//! list's menu behind More (`list_more`), and gives its folder and counts, and the sentence for a
+//! new list refused; its list draws the lines `checklists::panel` gives, spliced where they
+//! changed, an item being reworded as its two entries, each item with its menu (`list_menu`) and
+//! its moves; Add an item sits at its foot. Whether it shows is the owner's last open or close
 //! (`checklists::pane::PaneOpen`), which the session keeps. Only stock widgets, markup off before
 //! any text, and no list edit is an exported action: the pane hands each to the session through
 //! `Lister`.
 
 use super::entries::copy_text;
-use super::list_menu::{self, ItemOffers};
+use super::list_menu::{self, at_idle, ItemOffers};
 use super::list_more::{self, ListActs};
+use super::list_naming::Namer;
 use super::list_reword::Reworder;
 use super::list_rows::{self, moves_on, on_click_or_key, rewords_on};
 use super::lists::{act, ListAct, Lister, PANE_MARK};
@@ -22,12 +24,12 @@ use fermix_client::checklists::draft::Place;
 use fermix_client::checklists::index::Folders;
 use fermix_client::checklists::library::Library;
 use fermix_client::checklists::pane::{
-    drawing, folder_op, list_offers, news, rewording, Folds, ListOffers, PaneBody, PaneDrawing,
-    PaneList, PaneOpen,
+    drawing, folder_op, list_offers, news, rewording, Asked, Folds, ListOffers, Naming, PaneBody,
+    PaneDrawing, PaneList, PaneOpen,
 };
 use fermix_client::checklists::panel::{self, add_place, rewords, splice, Line, Splice, Steps};
 use fermix_client::checklists::words::{
-    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NO_LISTS, RECENTLY_REMOVED,
+    self, ADD_ITEM, HIDE_LISTS, LISTS, LIST_REMOVED, NEW_LIST, NO_LISTS, RECENTLY_REMOVED,
 };
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
@@ -71,8 +73,8 @@ pub struct ListsPane {
     foot: Foot,
     lister: Lister,
     open: Cell<PaneOpen>,
-    /// The list last asked for, by a card or the picker.
-    asked: RefCell<Option<String>>,
+    /// The list last asked for, by a card, the picker or a new list made here.
+    asked: RefCell<Asked>,
     /// Each list's folded sections and whether its Done is open, kept while the pane lives.
     folds: RefCell<Folds>,
     /// The rows ticked a moment ago, which keep their place while they settle.
@@ -98,11 +100,17 @@ pub struct ListsPane {
     moving: RefCell<Option<String>>,
 }
 
-/// The head (§3.3): the picker, More and Hide lists, then the folder and counts.
+/// The head (§3.3): the picker, or a name typed in its place, More and Hide lists, then the folder
+/// and counts, then the sentence for a new list refused.
 struct Head {
     picker: gtk::MenuButton,
+    namer: Rc<Namer>,
     title: gtk::Label,
     picks: gtk::ListBox,
+    /// New list, under the scrolled picks and outside their scroller (§3.3).
+    new_list: gtk::ListBox,
+    /// The scrolled picks and the line under them, hidden while there is no list to pick.
+    scrolled_picks: gtk::Box,
     picked: Rc<RefCell<Vec<Pick>>>,
     /// The index's folders and the shown list the picks were drawn for: a tick or a push that
     /// changes neither leaves the picks, and an open picker, as they are.
@@ -114,6 +122,7 @@ struct Head {
     menu_of: RefCell<Option<(String, ListOffers)>>,
     hide: gtk::Button,
     counts: gtk::Label,
+    refusal: gtk::Label,
 }
 
 /// The foot (§3.5, §3.8): the engine's sentence for a refused edit, over Add an item.
@@ -131,7 +140,7 @@ impl ListsPane {
         chat: &impl IsA<gtk::Widget>,
         composer: &impl IsA<gtk::Widget>,
     ) -> Rc<ListsPane> {
-        let head = Head::new();
+        let head = Head::new(lister);
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .activate_on_single_click(false)
@@ -237,6 +246,13 @@ impl ListsPane {
                 pane.pick(row.index());
             }
         });
+        let pane = Rc::downgrade(self);
+        self.head.new_list.connect_row_activated(move |_, _| {
+            if let Some(pane) = pane.upgrade() {
+                pane.new_list();
+            }
+        });
+        down_to_new_list(&self.head.picks, &self.head.new_list, &self.head.picked);
     }
 
     /// The owner's last open or close, read at start.
@@ -254,7 +270,7 @@ impl ListsPane {
     pub fn open_at(self: &Rc<Self>, list_id: Option<&str>, by_key: bool) {
         if let Some(id) = list_id {
             self.reworder.save_going();
-            self.asked.replace(Some(id.to_owned()));
+            self.asked.borrow_mut().ask(id);
         }
         if !self.shown() {
             self.remember_focus();
@@ -279,12 +295,13 @@ impl ListsPane {
     }
 
     /// The owner opened or closed the pane: the split follows, and the session keeps the choice.
-    /// A close gives the focus back to the chat.
+    /// A close ends a naming going on, with nothing sent, and gives the focus back to the chat.
     fn choose(&self, open: bool) {
         let mut state = self.open.get();
         state.choose(open);
         self.open.set(state);
         if !open {
+            self.head.namer.cancel();
             self.give_focus_back();
         }
         self.split.set_show_sidebar(state.shown());
@@ -320,14 +337,18 @@ impl ListsPane {
     }
 
     /// The split showed or hid the pane. As asked, nothing changes; by Escape or a click on the
-    /// narrow chat, it is the owner's close. The split has moved the focus out of the pane by
-    /// then, to the chat's first control unless it saw where it was; it goes where it was.
+    /// narrow chat, it is the owner's close, which ends a naming going on with nothing sent. The
+    /// split has moved the focus out of the pane by then, to the chat's first control unless it
+    /// saw where it was; it goes where it was.
     fn sidebar_shown(&self, shown: bool) {
         let mut state = self.open.get();
         if !state.widget_shown(shown) {
             return;
         }
         self.open.set(state);
+        if !shown {
+            self.head.namer.cancel();
+        }
         if let Some(root) = self.column.root().filter(|_| !shown) {
             self.return_focus(&root);
         }
@@ -457,8 +478,9 @@ impl ListsPane {
         let reworded = self.reworder.row_id();
         let now = {
             let settling = self.settling.borrow().rows();
-            let asked = self.asked.borrow();
-            let drawn = drawing(library, asked.as_deref(), &self.folds.borrow(), &settling);
+            let mut asked = self.asked.borrow_mut();
+            let asked = asked.now(library.index());
+            let drawn = drawing(library, asked, &self.folds.borrow(), &settling);
             rewording(drawn, reworded.as_deref())
         };
         let lines = lines_of(&now).map(|(_, lines)| lines);
@@ -468,7 +490,7 @@ impl ListsPane {
         }
         let held = match &now {
             PaneDrawing::List(list) => library.shown(&list.list_id),
-            PaneDrawing::Waiting | PaneDrawing::NoLists => None,
+            PaneDrawing::Waiting | PaneDrawing::NoLists { .. } => None,
         };
         self.held.replace(held);
         if self.drawn.borrow().as_ref() != Some(&now) {
@@ -480,19 +502,27 @@ impl ListsPane {
     }
 
     fn draw(&self, was: Option<&PaneDrawing>, now: &PaneDrawing) {
-        let old = was.and_then(lines_of);
-        let PaneDrawing::List(list) = now else {
-            self.head.draw_none();
-            self.draw_lines(old, None);
-            self.foot.draw(false, None);
-            let page = match now {
-                PaneDrawing::NoLists => "none",
-                _ => "waiting",
-            };
-            return self.body.set_visible_child_name(page);
+        let page = match now {
+            PaneDrawing::List(list) => return self.draw_list(was, now, list),
+            PaneDrawing::NoLists { refusal } => {
+                self.head.draw_no_lists(refusal.as_deref());
+                "none"
+            }
+            PaneDrawing::Waiting => {
+                self.head.draw_waiting();
+                "waiting"
+            }
         };
+        self.draw_lines(was.and_then(lines_of), None);
+        self.foot.draw(false, None);
+        self.body.set_visible_child_name(page);
+        self.tell(was, now);
+    }
+
+    /// The drawing `now` of one list, `list`: its head, its lines, its page and its foot.
+    fn draw_list(&self, was: Option<&PaneDrawing>, now: &PaneDrawing, list: &PaneList) {
         self.head.draw(list);
-        self.draw_lines(old, lines_of(now));
+        self.draw_lines(was.and_then(lines_of), lines_of(now));
         let page = match list.body {
             PaneBody::Waiting => "waiting",
             PaneBody::Removed => "removed",
@@ -501,6 +531,11 @@ impl ListsPane {
         self.body.set_visible_child_name(page);
         let lines = matches!(list.body, PaneBody::Lines(_));
         self.foot.draw(lines, list.refusal.as_deref());
+        self.tell(was, now);
+    }
+
+    /// Tells a screen reader what core's `news` says is new in the pane, while it is on screen.
+    fn tell(&self, was: Option<&PaneDrawing>, now: &PaneDrawing) {
         for said in news(was, now, self.column.is_mapped()) {
             self.column
                 .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
@@ -649,9 +684,53 @@ impl ListsPane {
         let id = at.and_then(|at| Some(self.head.picked.borrow().get(at)?.list_id.clone()));
         self.head.picker.popdown();
         if let Some(id) = id {
-            self.asked.replace(Some(id));
+            self.asked.borrow_mut().ask(&id);
             act(&self.lister, ListAct::Redraw);
         }
+    }
+
+    /// New list: a new list is named in the picker's place, once the picker's popover has closed.
+    fn new_list(self: &Rc<Self>) {
+        self.head.picker.popdown();
+        let pane = Rc::downgrade(self);
+        at_idle(move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.name(Naming::NewList, None, "");
+            }
+        });
+    }
+
+    /// Names `naming` in the picker's place, for `list_id` unless it names a new list, the field
+    /// starting with `text`. A rewording going on is saved first.
+    fn name(&self, naming: Naming, list_id: Option<&str>, text: &str) {
+        self.reworder.save_going();
+        self.head.namer.start(naming, list_id, text);
+    }
+
+    /// Rename list: the title of `list_id`, as drawn, in the picker's place, selected.
+    fn rename(&self, list_id: &str) {
+        let title = match self.drawn.borrow().as_ref() {
+            Some(PaneDrawing::List(list)) if list.list_id == list_id => list.title.clone(),
+            _ => return glib::g_warning!("fermix", "Rename list found its list no longer drawn"),
+        };
+        let naming = Naming::Rename {
+            title: title.clone(),
+        };
+        self.name(naming, Some(list_id), &title);
+    }
+
+    /// New folder for `list_id`, with what its menu `offered`, named in the picker's place, while
+    /// the pane still draws that list: More's acts run at the next idle, after which the pane may
+    /// show another list.
+    fn new_folder(&self, list_id: &str, offered: &ListOffers) {
+        let drawn = matches!(
+            self.drawn.borrow().as_ref(),
+            Some(PaneDrawing::List(list)) if list.list_id == list_id
+        );
+        if !drawn {
+            return glib::g_warning!("fermix", "New folder found its list no longer drawn");
+        }
+        self.name(Naming::NewFolder(offered.clone()), Some(list_id), "");
     }
 
     /// Return in Add an item: the words go to the selected item's section, or the first group,
@@ -839,10 +918,22 @@ impl ListsPane {
         };
         let made = Some((list_id.clone(), offers.clone()));
         self.head.menu_of.replace(made);
+        let (pane, list) = (Rc::downgrade(self), list_id.clone());
+        let rename = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.rename(&list);
+            }
+        };
         let (pane, list, offered) = (Rc::downgrade(self), list_id.clone(), offers.clone());
         let folder = move |picked: &str| {
             if let Some(pane) = pane.upgrade() {
                 pane.to_folder(&list, &offered, picked);
+            }
+        };
+        let (pane, list, offered) = (Rc::downgrade(self), list_id.clone(), offers.clone());
+        let new_folder = move || {
+            if let Some(pane) = pane.upgrade() {
+                pane.new_folder(&list, &offered);
             }
         };
         let (pane, list) = (Rc::downgrade(self), list_id.clone());
@@ -858,7 +949,9 @@ impl ListsPane {
             }
         };
         let acts = ListActs {
+            rename: Rc::new(rename),
             folder: Rc::new(folder),
+            new_folder: Rc::new(new_folder),
             copy: Rc::new(copy),
             clear_done: Rc::new(clear_done),
         };
@@ -949,7 +1042,7 @@ impl ListsPane {
 }
 
 impl Head {
-    fn new() -> Head {
+    fn new(lister: &Lister) -> Head {
         let title = gtk::Label::new(None);
         title.set_use_markup(false);
         title.set_text(LISTS);
@@ -958,14 +1051,11 @@ impl Head {
         let picks = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .build();
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .propagate_natural_width(true)
-            .max_content_height(PICKS_HEIGHT)
-            .child(&picks)
+        let new_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
             .build();
-        let popover = gtk::Popover::builder().child(&scroller).build();
+        new_list.append(&new_list_row());
+        let (popover, scrolled_picks) = picker_popover(&picks, &new_list);
         let picker = gtk::MenuButton::builder()
             .popover(&popover)
             .always_show_arrow(true)
@@ -988,27 +1078,45 @@ impl Head {
         counts.set_margin_end(18);
         counts.set_visible(false);
         Head {
+            namer: Namer::new(&picker, lister),
             picker,
             title,
             picks,
+            new_list,
+            scrolled_picks,
             picked: Rc::default(),
             picks_of: RefCell::default(),
             more: list_more::more_button(),
             menu_of: RefCell::default(),
             hide,
             counts,
+            refusal: refusal_label(),
         }
     }
 
-    /// Before the index answers, and with no lists: "Lists", with nothing to pick.
-    fn draw_none(&self) {
+    /// Before the index answers: "Lists", with nothing to pick.
+    fn draw_waiting(&self) {
         self.title.set_text(LISTS);
         self.picker.set_sensitive(false);
         self.show_more(false);
         self.counts.set_visible(false);
+        self.draw_refusal(None);
         self.picked.borrow_mut().clear();
         self.picks_of.replace(None);
         self.picks.remove_all();
+        self.scrolled_picks.set_visible(false);
+    }
+
+    /// No lists: "Lists", the picker holding New list alone, and the index's sentence for a new
+    /// list refused. A rename or a new folder being named ends.
+    fn draw_no_lists(&self, refusal: Option<&str>) {
+        self.title.set_text(LISTS);
+        self.picker.set_sensitive(true);
+        self.show_more(false);
+        self.counts.set_visible(false);
+        self.draw_refusal(refusal);
+        self.namer.shows(None);
+        self.draw_picks_of(&Folders::default(), "");
     }
 
     fn draw(&self, list: &PaneList) {
@@ -1021,9 +1129,23 @@ impl Head {
         let spoken = gtk::accessible::Property::Label(&list.spoken_head);
         self.counts.update_property(&[spoken]);
         self.counts.set_visible(true);
-        let picks_of = Some((list.folders.clone(), list.list_id.clone()));
+        self.draw_refusal(list.index_refusal.as_deref());
+        self.namer.shows(Some(&list.list_id));
+        self.draw_picks_of(&list.folders, &list.list_id);
+    }
+
+    /// The index's sentence for a new list refused, under the head, as written.
+    fn draw_refusal(&self, refusal: Option<&str>) {
+        self.refusal.set_text(refusal.unwrap_or_default());
+        self.refusal.set_visible(refusal.is_some());
+    }
+
+    /// The picks for `folders` with `shown` checked, drawn again only when either changed: a tick
+    /// or a push that changes neither leaves the picks, and an open picker, as they are.
+    fn draw_picks_of(&self, folders: &Folders, shown: &str) {
+        let picks_of = Some((folders.clone(), shown.to_owned()));
         if *self.picks_of.borrow() != picks_of {
-            self.draw_picks(&list.folders, &list.list_id);
+            self.draw_picks(folders, shown);
             self.picks_of.replace(picks_of);
         }
     }
@@ -1058,7 +1180,8 @@ impl Head {
     }
 
     /// The picker's lists: each folder's in the index's order, then those in no folder, each
-    /// with its open count and a check on the one shown.
+    /// with its open count and a check on the one shown, over a line and New list; with none,
+    /// New list alone.
     fn draw_picks(&self, folders: &Folders, shown: &str) {
         let in_folders = folders
             .folders
@@ -1071,6 +1194,7 @@ impl Head {
         });
         self.picked.replace(picks.collect());
         self.picks.remove_all();
+        self.scrolled_picks.set_visible(!entries.is_empty());
         for entry in entries {
             self.picks.append(&pick_row(entry, entry.list_id == shown));
         }
@@ -1175,6 +1299,83 @@ fn pick_row(entry: &ListEntry, shown: bool) -> adw::ActionRow {
     row
 }
 
+/// The picker's popover: the picks, scrolled past `PICKS_HEIGHT`, and a line under them; then,
+/// outside the scroller so it shows however many lists there are, New list (§3.3). The scrolled
+/// picks and their line come back with it, hidden until there is a list to pick, so that with
+/// none the focus goes straight to New list.
+fn picker_popover(picks: &gtk::ListBox, new_list: &gtk::ListBox) -> (gtk::Popover, gtk::Box) {
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .propagate_natural_width(true)
+        .max_content_height(PICKS_HEIGHT)
+        .child(picks)
+        .build();
+    let scrolled = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    scrolled.append(&scroller);
+    scrolled.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    scrolled.set_visible(false);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&scrolled);
+    content.append(new_list);
+    (gtk::Popover::builder().child(&content).build(), scrolled)
+}
+
+/// Down from the last list goes on to New list, and Up from New list back to the last of the
+/// `picked` lists, as within one list. Elsewhere a list's own keys stay as GtkListBox has them.
+/// The last list is found by its index: a list box's headers are its last children.
+fn down_to_new_list(
+    picks: &gtk::ListBox,
+    new_list: &gtk::ListBox,
+    picked: &Rc<RefCell<Vec<Pick>>>,
+) {
+    let below = new_list.downgrade();
+    picks.connect_keynav_failed(move |_, direction| {
+        let row = below.upgrade().and_then(|below| below.row_at_index(0));
+        let moved =
+            direction == gtk::DirectionType::Down && row.is_some_and(|row| row.grab_focus());
+        match moved {
+            true => glib::Propagation::Stop,
+            false => glib::Propagation::Proceed,
+        }
+    });
+    let (above, picked) = (picks.downgrade(), picked.clone());
+    new_list.connect_keynav_failed(move |_, direction| {
+        let last = picked.borrow().len().checked_sub(1);
+        let last = last.and_then(|at| i32::try_from(at).ok());
+        let row = above.upgrade().zip(last);
+        let row = row.and_then(|(above, at)| above.row_at_index(at));
+        let moved = direction == gtk::DirectionType::Up && row.is_some_and(|row| row.grab_focus());
+        match moved {
+            true => glib::Propagation::Stop,
+            false => glib::Propagation::Proceed,
+        }
+    });
+}
+
+/// The index's sentence for a new list refused, under the head; hidden until there is one.
+fn refusal_label() -> gtk::Label {
+    let refusal = gtk::Label::new(None);
+    refusal.set_use_markup(false);
+    refusal.set_wrap(true);
+    refusal.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    refusal.set_xalign(0.0);
+    refusal.set_margin_start(18);
+    refusal.set_margin_end(18);
+    refusal.set_visible(false);
+    refusal
+}
+
+/// The picker's last row, New list, which names a new list in the picker's place.
+fn new_list_row() -> adw::ActionRow {
+    let row = plain_row(NEW_LIST);
+    row.set_activatable(true);
+    let mark = gtk::Image::from_icon_name("list-add-symbolic");
+    mark.set_accessible_role(gtk::AccessibleRole::Presentation);
+    row.add_prefix(&mark);
+    row
+}
+
 /// A folder's heading over its first list, and a separator over the first list in no folder
 /// after the folders.
 fn pick_header(folder: Option<String>, before: Option<Option<String>>) -> Option<gtk::Widget> {
@@ -1222,7 +1423,8 @@ fn status(title: &str) -> adw::StatusPage {
     page
 }
 
-/// The pane: a group labelled "Lists" holding the head, the list and the foot.
+/// The pane: a group labelled "Lists" holding the head, the list and the foot. The picker's place
+/// holds a name typed in it while one is.
 fn column(head: &Head, body: &gtk::Stack, foot: &Foot) -> gtk::Box {
     let column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -1235,11 +1437,12 @@ fn column(head: &Head, body: &gtk::Stack, foot: &Foot) -> gtk::Box {
         .margin_end(6)
         .margin_top(6)
         .build();
-    bar.append(&head.picker);
+    bar.append(&head.namer.widget);
     bar.append(&head.more);
     bar.append(&head.hide);
     column.append(&bar);
     column.append(&head.counts);
+    column.append(&head.refusal);
     column.append(body);
     column.append(&foot.widget);
     column

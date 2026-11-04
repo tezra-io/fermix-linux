@@ -8,8 +8,8 @@ use fermix_client::chat_wire::protocol::{read_line, ClientEvent, ListOp, ServerE
 use fermix_client::checklists::draft::{self, is_local, Place};
 use fermix_client::checklists::library::{Library, MAX_WAITING};
 use fermix_client::checklists::pane::{
-    self, drawing, lists_path, Folds, ListOffers, NotLoaded, PaneBody, PaneDrawing, PaneList,
-    PaneOpen,
+    self, drawing, lists_path, Asked, Folds, ListOffers, Naming, NotLoaded, PaneBody, PaneDrawing,
+    PaneList, PaneOpen,
 };
 use fermix_client::checklists::panel::{self, add_place, splice, Line};
 use fermix_client::checklists::routing::lists_event;
@@ -298,7 +298,7 @@ fn before_the_index_answers_the_pane_draws_its_head_alone_and_with_none_it_has_n
     );
     assert_eq!(
         drawing(&lists, Some(PACKING), &Folds::default(), &BTreeSet::new()),
-        PaneDrawing::NoLists
+        PaneDrawing::NoLists { refusal: None }
     );
 }
 
@@ -891,4 +891,219 @@ fn the_pane_tells_a_removed_list_once_as_it_shows_it() {
         pane::news(Some(&drawn), &removed, false).is_empty(),
         "off screen"
     );
+}
+
+/// The engine's sentence for a title another live list holds, case-blind.
+const TAKEN: &str = "A list named \"packing\" already exists; name another, or change that one.";
+/// Its sentence for a title past 80 characters.
+const OVER: &str = "The title is over 80 characters.";
+
+fn rename(title: &str) -> ListOp {
+    ListOp::Rename { text: title.into() }
+}
+
+/// A name typed in the head is trimmed at its ends, as the engine trims what it stores. A blank
+/// one is no edit for any naming, so a blank New folder never takes a list out of its folder; a
+/// rename to the title the list had as the naming began is none either, and a change of case
+/// alone is a rename (M85 lists §3.3, §10).
+#[test]
+fn a_name_is_trimmed_and_a_blank_one_or_a_rename_to_the_same_title_is_no_edit() {
+    let packing = Naming::Rename {
+        title: "Packing".into(),
+    };
+    assert_eq!(
+        pane::named(&packing, "  Trip packing \t"),
+        Some(rename("Trip packing"))
+    );
+    assert_eq!(pane::named(&packing, " Packing "), None, "the same title");
+    assert_eq!(
+        pane::named(&packing, "packing"),
+        Some(rename("packing")),
+        "a change of case alone"
+    );
+    let namings = [
+        Naming::NewList,
+        packing,
+        Naming::NewFolder(in_folder("Home", None)),
+    ];
+    for naming in &namings {
+        for blank in ["", "   ", "\t "] {
+            assert_eq!(pane::named(naming, blank), None, "{naming:?} {blank:?}");
+        }
+    }
+}
+
+/// New list makes a list in no folder, though the list shown is in one; New folder is the op Move
+/// to folder makes, so none for the folder the list will be in once its edits land (§3.6, §10).
+#[test]
+fn a_new_list_is_made_in_no_folder_and_a_new_folder_moves_the_list_as_move_to_folder_does() {
+    let lists = indexed();
+    let packing = pane::list_offers(&shown_list(&lists, Some(PACKING), &Folds::default()));
+    let packing = packing.expect("a menu");
+    assert_eq!(packing.folder, "Home");
+    let create = ListOp::Create {
+        title: "Trips".into(),
+        folder: None,
+    };
+    assert_eq!(pane::named(&Naming::NewList, " Trips "), Some(create));
+    let new_folder = Naming::NewFolder(packing);
+    assert_eq!(
+        pane::named(&new_folder, " Errands "),
+        Some(to_folder("Errands"))
+    );
+    assert_eq!(
+        pane::named(&new_folder, "Home"),
+        None,
+        "the folder it is in"
+    );
+    let moving = Naming::NewFolder(in_folder("Home", Some("Work")));
+    assert_eq!(
+        pane::named(&moving, "Home"),
+        Some(to_folder("Home")),
+        "back, while a move away waits"
+    );
+}
+
+/// Packing shown and the index answered, with a new list "packing" refused as `sentence`.
+fn refused_create(lists: &mut Library, client_msg_id: &str, sentence: &str) {
+    let sent = lists.create("packing", None, client_msg_id.into());
+    assert!(
+        sent.is_some_and(|sent| sent.len() == 1),
+        "the create is sent"
+    );
+    let refused = json!({"type": "error", "reason": "request_failed", "message": sentence,
+        "client_msg_id": client_msg_id});
+    assert!(receive(lists, refused).is_empty(), "a create pulls nothing");
+}
+
+/// A new list refused says the index's sentence under the head (§3.8): over a list, apart from that
+/// list's own refusal, and on No lists yet; until the next index. Before the index answers there is
+/// no head to say it under.
+#[test]
+fn a_refused_new_list_says_the_indexs_sentence_under_the_head_with_lists_and_with_none() {
+    let mut lists = indexed();
+    refused_create(&mut lists, "linux-c1", TAKEN);
+    let shown = shown_list(&lists, Some(PACKING), &Folds::default());
+    assert_eq!(shown.index_refusal.as_deref(), Some(TAKEN));
+    assert_eq!(shown.refusal, None, "no edit of Packing was refused");
+    let errands = drawing(&lists, Some(ERRANDS), &Folds::default(), &BTreeSet::new());
+    assert_eq!(
+        errands.index_refusal(),
+        Some(TAKEN),
+        "whichever list is shown"
+    );
+    receive(&mut lists, index());
+    let shown = shown_list(&lists, Some(PACKING), &Folds::default());
+    assert_eq!(shown.index_refusal, None, "until the next index");
+
+    let mut none = Library::default();
+    none.negotiated(7);
+    assert_eq!(PaneDrawing::Waiting.index_refusal(), None);
+    receive(
+        &mut none,
+        json!({"type": "checklists", "profile_id": "main", "lists": []}),
+    );
+    refused_create(&mut none, "linux-c2", OVER);
+    let drawn = drawing(&none, None, &Folds::default(), &BTreeSet::new());
+    let refusal = Some(OVER.to_owned());
+    assert_eq!(drawn, PaneDrawing::NoLists { refusal });
+    assert_eq!(drawn.index_refusal(), Some(OVER));
+}
+
+/// The index's sentence is told as it comes under the head, on screen, over a list or on No lists
+/// yet; not again, not for another list picked under it, not at the first draw (§3.8, §6.3).
+#[test]
+fn the_pane_tells_a_refused_new_list_once_as_it_comes_under_the_head() {
+    let mut lists = indexed();
+    let (folds, none) = (Folds::default(), BTreeSet::new());
+    let before = drawing(&lists, Some(PACKING), &folds, &none);
+    refused_create(&mut lists, "linux-c1", TAKEN);
+    let refused = drawing(&lists, Some(PACKING), &folds, &none);
+    assert_eq!(pane::news(Some(&before), &refused, true), [TAKEN]);
+    let errands = drawing(&lists, Some(ERRANDS), &folds, &none);
+    for (was, now, why) in [
+        (Some(&refused), &refused, "told already"),
+        (Some(&refused), &errands, "Errands picked under it"),
+        (None, &refused, "first drawn"),
+    ] {
+        assert!(pane::news(was, now, true).is_empty(), "{why}");
+    }
+    assert!(
+        pane::news(Some(&before), &refused, false).is_empty(),
+        "off screen"
+    );
+
+    let mut empty = Library::default();
+    empty.negotiated(7);
+    receive(
+        &mut empty,
+        json!({"type": "checklists", "profile_id": "main", "lists": []}),
+    );
+    let no_lists = drawing(&empty, None, &folds, &none);
+    refused_create(&mut empty, "linux-c2", OVER);
+    let refused = drawing(&empty, None, &folds, &none);
+    assert_eq!(pane::news(Some(&no_lists), &refused, true), [OVER]);
+}
+
+/// The list `list_id`, titled `title`, pushed with `made` naming it as what `client_msg_id` made.
+fn made(list_id: &str, title: &str, client_msg_id: &str) -> Value {
+    json!({"type": "checklist", "profile_id": "main", "made": {client_msg_id: list_id},
+        "list": {"list_id": list_id, "title": title, "rev": 1, "rows": []}})
+}
+
+/// The index with `extra` lists after the usual ones, each empty.
+fn index_with(extra: &[(&str, &str)]) -> Value {
+    let mut entries = index();
+    for (list_id, title) in extra {
+        entries["lists"]
+            .as_array_mut()
+            .expect("lists")
+            .push(json!({"list_id": list_id, "title": title, "open": 0, "done": 0, "rev": 1}));
+    }
+    entries
+}
+
+/// A new list made here turns the pane to it once, when the index first holds what its create
+/// made: not at the push naming it, which lands while the index lacks the list, so the pane stays
+/// on the list it showed. A list picked after the turn stays, and the next new list turns the pane
+/// again (§3.3).
+#[test]
+fn a_new_list_made_here_turns_the_pane_to_it_once() {
+    let (trips, work) = ("ck_5h6j7k8m9n", "ck_3c4v5b6n7m");
+    let mut lists = indexed();
+    let mut asked = Asked::default();
+    asked.ask(PACKING);
+    lists.create("Trips", None, "linux-c1".into());
+    assert!(lists.accepted("linux-c1", false));
+    assert_eq!(asked.now(lists.index()), Some(PACKING), "nothing made yet");
+    receive(&mut lists, made(trips, "Trips", "linux-c1"));
+    assert_eq!(
+        asked.now(lists.index()),
+        Some(PACKING),
+        "the pane stays until the index holds Trips"
+    );
+    let still = shown_list(&lists, asked.now(lists.index()), &Folds::default());
+    assert_eq!(still.list_id, PACKING);
+    receive(&mut lists, index_with(&[(trips, "Trips")]));
+    assert_eq!(asked.now(lists.index()), Some(trips), "turned at the index");
+    let shown = shown_list(&lists, asked.now(lists.index()), &Folds::default());
+    assert_eq!(shown.list_id, trips);
+    asked.ask(ERRANDS);
+    for _ in 0..2 {
+        assert_eq!(
+            asked.now(lists.index()),
+            Some(ERRANDS),
+            "a pick after the turn"
+        );
+    }
+    lists.create("Work", None, "linux-c2".into());
+    assert!(lists.accepted("linux-c2", false));
+    receive(&mut lists, made(work, "Work", "linux-c2"));
+    assert_eq!(
+        asked.now(lists.index()),
+        Some(ERRANDS),
+        "not at Work's push"
+    );
+    receive(&mut lists, index_with(&[(trips, "Trips"), (work, "Work")]));
+    assert_eq!(asked.now(lists.index()), Some(work), "the next new list");
 }

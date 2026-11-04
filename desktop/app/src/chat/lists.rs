@@ -33,8 +33,14 @@ pub enum ListAct {
     /// pull changes no card until its list arrives, and that arrival draws. A card asks once each
     /// time it comes on screen, not at every look.
     Drawn(Vec<String>),
-    /// An edit of one list, from a tick or Add an item.
+    /// An edit of one list, from a tick, Add an item, a menu or a name typed in the pane's head.
     Edit { list_id: String, op: ListOp },
+    /// A new list, from New list in the pane's head, in `folder` when one is named. It is drawn
+    /// once the engine has made it, and the pane turns to it.
+    Create {
+        title: String,
+        folder: Option<String>,
+    },
     /// A rewording of `began` saved with what its entries hold: the words, and the note where the
     /// pane rewords it. The library sends what changed from `began`.
     Reword {
@@ -557,6 +563,7 @@ mod tests {
             ("list_rows.rs", shipped(include_str!("list_rows.rs"))),
             ("lists_pane.rs", shipped(include_str!("lists_pane.rs"))),
             ("list_reword.rs", shipped(include_str!("list_reword.rs"))),
+            ("list_naming.rs", shipped(include_str!("list_naming.rs"))),
         ];
         let read: String = surfaces.iter().map(|(_, source)| *source).collect();
         assert!(

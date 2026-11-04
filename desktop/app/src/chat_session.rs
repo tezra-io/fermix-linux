@@ -469,9 +469,10 @@ impl App {
     }
 
     /// What a lists card or the Lists pane asks: lists pulled as they come on screen, an edit or a
-    /// rewording drawn at once and sent, the lists drawn again, the pane opened at a card's list,
-    /// or the pane shown or hidden. A pull draws nothing: the page asks it while it holds its
-    /// entries, and the list's arrival draws.
+    /// rewording drawn at once and sent, a new list sent, the lists drawn again, the pane opened at
+    /// a card's list, or the pane shown or hidden. A pull draws nothing: the page asks it while it
+    /// holds its entries, and the list's arrival draws. A new list with a blank title sends
+    /// nothing, nor one past 64 edits waiting, whose sentence the index then holds.
     fn chat_list(self: &Rc<Self>, asked: ListAct) {
         let events = match asked {
             ListAct::Drawn(ids) => {
@@ -484,6 +485,11 @@ impl App {
             ListAct::Edit { list_id, op } => {
                 let lists = &mut self.wire.borrow_mut().lists;
                 lists.edit(&list_id, op, message_id())
+            }
+            ListAct::Create { title, folder } => {
+                let lists = &mut self.wire.borrow_mut().lists;
+                let made = lists.create(&title, folder.as_deref(), message_id());
+                made.unwrap_or_default()
             }
             ListAct::Reword {
                 list_id,

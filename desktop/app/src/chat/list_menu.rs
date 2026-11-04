@@ -74,7 +74,7 @@ pub fn item_actions(
             return glib::g_warning!("fermix", "Move to list named no list");
         };
         let to_list = to_list.clone();
-        glib::idle_add_local_once(move || to_list(&list_id));
+        at_idle(move || to_list(&list_id));
     });
     group.add_action(&to);
     let step = Rc::new(step);
@@ -85,11 +85,18 @@ pub fn item_actions(
         let step = step.clone();
         action.connect_activate(move |_, _| {
             let step = step.clone();
-            glib::idle_add_local_once(move || step(upward));
+            at_idle(move || step(upward));
         });
         group.add_action(action);
     }
     group
+}
+
+/// Runs `act` once, at the next idle of this thread's default main context: the app's own on its
+/// main thread, and a test's own where the test runs one.
+pub fn at_idle(act: impl FnOnce() + 'static) {
+    let context = glib::MainContext::ref_thread_default();
+    context.spawn_local_with_priority(glib::Priority::DEFAULT_IDLE, async move { act() });
 }
 
 /// Opens `menu` acting through `actions` over `row`: pointing at (x, y) in it after a pointer or
@@ -123,7 +130,7 @@ pub fn pop_up(
     let row = row.downgrade();
     popover.connect_closed(move |popover| {
         let (popover, row, with_row) = (popover.clone(), row.clone(), with_row.take());
-        glib::idle_add_local_once(move || {
+        at_idle(move || {
             if let (Some(row), Some(handler)) = (row.upgrade(), with_row) {
                 row.disconnect(handler);
             }
@@ -204,6 +211,7 @@ pub fn menu_on(row: &adw::ActionRow, open: impl Fn(&adw::ActionRow, Option<(f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     fn entry(list_id: &str, title: &str, folder: Option<&str>) -> ListEntry {
         ListEntry {
@@ -311,5 +319,50 @@ mod tests {
         assert!(actions.is_action_enabled("lists"));
         assert!(actions.is_action_enabled("up"));
         assert!(!actions.is_action_enabled("down"));
+    }
+
+    /// Runs `test` with a main context of its own as this thread's default: no other test's idles
+    /// run in it, and none of its run in theirs.
+    fn on_own_loop(test: impl FnOnce(&glib::MainContext)) {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| test(&context))
+            .expect("a new context is free to acquire");
+    }
+
+    /// Each action does its own act, and only at the next idle of the thread's default main
+    /// context: nothing has run when it is activated, and after at most ten turns of the context,
+    /// each has run once, in order.
+    #[test]
+    fn each_action_does_its_own_act_at_the_next_idle() {
+        on_own_loop(|context| {
+            let calls: Rc<RefCell<Vec<String>>> = Rc::default();
+            let offers = ItemOffers {
+                others: Folders::of(&[entry("ck_b", "Groceries", None)]),
+                up: true,
+                down: true,
+            };
+            let (moved, stepped) = (calls.clone(), calls.clone());
+            let actions = item_actions(
+                &offers,
+                move |to| moved.borrow_mut().push(format!("to:{to}")),
+                move |up| stepped.borrow_mut().push(format!("up:{up}")),
+            );
+            actions.activate_action("to-list", Some(&"ck_b".to_variant()));
+            actions.activate_action("up", None);
+            actions.activate_action("down", None);
+            assert!(
+                calls.borrow().is_empty(),
+                "{:?} ran at once",
+                calls.borrow()
+            );
+            for _ in 0..10 {
+                if !context.pending() {
+                    break;
+                }
+                context.iteration(false);
+            }
+            assert_eq!(*calls.borrow(), ["to:ck_b", "up:true", "up:false"]);
+        });
     }
 }
