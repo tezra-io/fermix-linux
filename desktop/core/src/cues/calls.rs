@@ -69,22 +69,25 @@ impl Management {
         decoded("cues.sources.form", answer)
     }
 
-    /// Saves a new source. `values` are the non-secret fields that differ from the form's; a
-    /// new local push source's first token comes back once, in the answer.
+    /// Saves a new source under `name`, or with None under a name the daemon makes. `values` are
+    /// the non-secret fields that differ from the form's. The answer names the source as it was
+    /// saved, and carries what Fermix made for it once: a local push token or a GitHub secret.
     pub fn cue_source_add(
         &self,
-        name: &str,
+        name: Option<&str>,
         choice: &SourceChoice,
         values: Map<String, Value>,
     ) -> Result<SourceAdded, CallError> {
-        named("cues.sources.add", name);
         let (key, id) = match choice {
             SourceChoice::Preset(id) => ("preset", id),
             SourceChoice::Kind(id) => ("kind", id),
         };
         assert!(!id.is_empty(), "a new source names its {key}");
         let mut params = Map::new();
-        params.insert("ref".into(), json!(name));
+        if let Some(name) = name {
+            named("cues.sources.add", name);
+            params.insert("ref".into(), json!(name));
+        }
         params.insert(key.into(), json!(id));
         params.insert("values".into(), Value::Object(values));
         let answer = self.call("cues.sources.add", Value::Object(params))?;

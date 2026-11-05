@@ -7,7 +7,8 @@ use fermix_client::cues::calls::{FormChoice, SourceChoice};
 use fermix_client::cues::form::{secret_id, SourceFormState, NAME_KEY, VERIFY_KEY};
 use fermix_client::cues::mandate::{MandateForm, PinDraft};
 use fermix_client::cues::wire::{
-    MandateChoices, MandateList, MandateRow, PinValue, SecretField, SourceDetail, SourceForm,
+    MandateChoices, MandateList, MandateRow, PinValue, RequirementState, SecretField, SourceDetail,
+    SourceForm,
 };
 use fermix_client::cues::words;
 use fermix_client::settings::Kind;
@@ -88,6 +89,84 @@ fn the_first_answer_opens_on_the_first_kind_and_its_first_preset() {
         .map(|p| p.id.as_str())
         .collect();
     assert_eq!(presets, feeds, "the feed's presets, in the answer's order");
+}
+
+/// The X accounts form, chosen and answered.
+fn x_accounts() -> SourceFormState {
+    let mut form = SourceFormState::default();
+    form.take(&x_accounts_form(), &FormChoice::default());
+    assert_eq!(form.requirement(), None, "an answer to another choice");
+    form.choose_preset(Some("x_accounts"));
+    form.take(&x_accounts_form(), &form.request());
+    form
+}
+
+/// The X accounts form says what it reads with, in the daemon's words, from the answer to the
+/// choice held now; it never stops Add, named or not.
+#[test]
+fn the_x_accounts_requirement_is_said_and_never_stops_add() {
+    let mut form = x_accounts();
+    let requirement = form
+        .requirement()
+        .expect("X accounts read with the X sign-in");
+    assert_eq!(requirement.sentence, "Connect X to read these accounts.");
+    assert!(requirement.state.is(RequirementState::NeedsSignIn));
+    let (spec, _) = form.prepare_add().expect("Add goes, with no name");
+    assert_eq!(spec.choice, SourceChoice::Preset("x_accounts".into()));
+    form.set(NAME_KEY, json!("x-fermix"));
+    assert!(form.prepare_add().is_some(), "and named");
+}
+
+/// The requirement is the choice's: choosing another kind or preset drops it at once, before
+/// that choice's form comes, and the stream's own answer has none.
+#[test]
+fn choosing_another_kind_or_preset_drops_the_requirement() {
+    let mut form = x_accounts();
+    form.choose_preset(Some("rss"));
+    assert_eq!(form.requirement(), None, "another preset");
+    let mut form = x_accounts();
+    form.choose_kind("stream");
+    assert_eq!(form.requirement(), None, "another kind");
+    form.take(&stream_form(), &form.request());
+    assert_eq!(form.requirement(), None, "the stream's own answer");
+}
+
+/// A requirement in a state this build does not know, with no plugin named, still decodes and
+/// keeps its sentence, and is not taken as met.
+#[test]
+fn a_requirement_in_an_unknown_state_keeps_its_sentence() {
+    let mut answer = result("cues_sources_form_x_accounts");
+    answer["requirement"] = json!({"state": "signing_in", "sentence": "Signing in to X."});
+    let form: SourceForm = decode(answer);
+    let mut state = SourceFormState::default();
+    state.take(&form, &FormChoice::default());
+    state.choose_preset(Some("x_accounts"));
+    state.take(&form, &state.request());
+    let requirement = state.requirement().expect("the form decodes with it");
+    assert_eq!(requirement.sentence, "Signing in to X.");
+    assert!(!requirement.state.is(RequirementState::Ready));
+    assert!(!requirement.state.is(RequirementState::NeedsSignIn));
+}
+
+/// Add waits in the pause after a choice until that choice's form has come, since the rows
+/// held until then are another choice's.
+#[test]
+fn add_waits_for_the_form_of_the_choice_held_now() {
+    let mut form = SourceFormState::default();
+    assert_eq!(form.spec(), None, "no form yet");
+    form.take(&x_accounts_form(), &FormChoice::default());
+    assert_eq!(form.spec(), None, "the first answer was to no choice");
+    form.choose_preset(Some("x_accounts"));
+    assert_eq!(form.spec(), None, "X accounts chosen, its form not come");
+    assert!(form.prepare_add().is_none());
+    form.take(&x_accounts_form(), &form.request());
+    assert!(form.spec().is_some(), "X accounts answered");
+    form.choose_kind("stream");
+    assert_eq!(form.spec(), None, "the stream chosen, its form not come");
+    form.take(&x_accounts_form(), &choice(None, Some("x_accounts"), None));
+    assert_eq!(form.spec(), None, "a late answer to the old choice");
+    form.take(&stream_form(), &form.request());
+    assert!(form.spec().is_some(), "the stream answered");
 }
 
 #[test]
@@ -197,12 +276,24 @@ fn what_was_set_for_a_field_the_new_form_lacks_goes_with_it() {
 #[test]
 fn add_sends_the_name_the_choice_and_the_changed_values_only() {
     let mut form = github();
-    assert_eq!(form.spec(), None, "no name yet");
+    let unnamed = form.spec().expect("a choice is enough");
+    assert_eq!(
+        unnamed.name, None,
+        "no name typed: the daemon names the source"
+    );
+    form.set(NAME_KEY, json!("   "));
+    let spaces = form.spec().expect("a name of only spaces");
+    assert_eq!(spaces.name, None, "is no name");
+    assert_eq!(
+        spaces.values.get(NAME_KEY),
+        None,
+        "and is not sent as a value"
+    );
     form.set(NAME_KEY, json!("  gh-hooks "));
     form.set("header", json!("X-Signature"));
     form.set("algorithm", json!("sha256"));
     let spec = form.spec().expect("a name and a choice");
-    assert_eq!(spec.name, "gh-hooks");
+    assert_eq!(spec.name.as_deref(), Some("gh-hooks"));
     assert_eq!(spec.choice, SourceChoice::Preset("github".into()));
     assert_eq!(
         Value::Object(spec.values),

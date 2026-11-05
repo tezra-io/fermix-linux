@@ -85,6 +85,13 @@ fn sentence_of(e: &CallError) -> String {
     }
 }
 
+/// The add golden's answer as the daemon gives it for a source added under `name`.
+fn added_as(name: &str) -> Value {
+    let mut answer = golden("cues_sources_add");
+    answer["result"]["source"]["ref"] = json!(name);
+    answer
+}
+
 /// A stream source named `news` with both its secrets typed, the secret first.
 fn typed_stream() -> SourceFormState {
     let form = serde_json::from_value(golden("cues_sources_form_stream")["result"].clone())
@@ -104,9 +111,9 @@ fn add(daemon: &FakeDaemon, state: &mut SourceFormState) -> Arrival {
     let (spec, secrets) = state.prepare_add().expect("ready to add");
     let client = daemon.client();
     let added = client
-        .cue_source_add(&spec.name, &spec.choice, spec.values)
+        .cue_source_add(spec.name.as_deref(), &spec.choice, spec.values)
         .expect("the source is added");
-    let mut flow = AddFlow::added(&spec.name, added.token, secrets);
+    let mut flow = AddFlow::added(added, secrets);
     for _ in 0..8 {
         let Some((id, value)) = flow.next_secret() else {
             return flow.arrival();
@@ -120,7 +127,7 @@ fn add(daemon: &FakeDaemon, state: &mut SourceFormState) -> Arrival {
 #[test]
 fn an_add_sends_the_source_then_stores_each_typed_secret_in_row_order() {
     let daemon = FakeDaemon::start(vec![
-        golden("cues_sources_add"),
+        added_as("news"),
         golden("secret_set"),
         golden("secret_set"),
     ]);
@@ -153,7 +160,7 @@ fn an_add_sends_the_source_then_stores_each_typed_secret_in_row_order() {
 fn the_first_secret_refused_ends_the_add_and_the_page_opens_at_it() {
     let locked = "Your keyring is locked. Unlock it and try again.";
     let daemon = FakeDaemon::start(vec![
-        golden("cues_sources_add"),
+        added_as("news"),
         refusal("secret_store_unavailable", "id", locked),
     ]);
     let arrival = add(&daemon, &mut typed_stream());
@@ -172,6 +179,72 @@ fn the_first_secret_refused_ends_the_add_and_the_page_opens_at_it() {
     assert_eq!(requests[1]["params"]["id"], "cue_source:news:key");
 }
 
+/// With no name typed, no `ref` goes with the source, and each typed secret is stored under the
+/// name the daemon gave it.
+#[test]
+fn an_unnamed_add_stores_its_secrets_under_the_name_the_daemon_gave() {
+    let daemon = FakeDaemon::start(vec![
+        added_as("ycombinator"),
+        golden("secret_set"),
+        golden("secret_set"),
+    ]);
+    let mut state = typed_stream();
+    state.set(NAME_KEY, json!(""));
+    let arrival = add(&daemon, &mut state);
+    assert!(arrival.unstored.is_none());
+    let requests = daemon.requests();
+    assert_eq!(requests[0]["params"].get("ref"), None, "no name is sent");
+    let ids: Vec<&str> = requests[1..]
+        .iter()
+        .map(|r| r["params"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "cue_source:ycombinator:key",
+            "cue_source:ycombinator:secret"
+        ]
+    );
+}
+
+/// A name of only spaces is no name: no `ref` goes with the source.
+#[test]
+fn a_name_of_only_spaces_sends_no_ref() {
+    let daemon = FakeDaemon::start(vec![
+        added_as("ycombinator"),
+        golden("secret_set"),
+        golden("secret_set"),
+    ]);
+    let mut state = typed_stream();
+    state.set(NAME_KEY, json!("   "));
+    add(&daemon, &mut state);
+    let requests = daemon.requests();
+    assert_eq!(requests[0]["method"], "cues.sources.add");
+    assert_eq!(requests[0]["params"].get("ref"), None, "no name is sent");
+    assert_eq!(requests[1]["params"]["id"], "cue_source:ycombinator:key");
+}
+
+/// A GitHub source added with no name hands the secret Fermix made to its page, once.
+#[test]
+fn a_github_add_hands_the_secret_fermix_made_to_the_page() {
+    let daemon = FakeDaemon::start(vec![golden("cues_sources_add_webhook")]);
+    let mut state = SourceFormState::default();
+    let form = serde_json::from_value(golden("cues_sources_form")["result"].clone())
+        .expect("the form decodes");
+    state.take(&form, &FormChoice::default());
+    state.choose_kind("webhook");
+    state.take(&form, &state.request());
+    let arrival = add(&daemon, &mut state);
+    assert!(arrival.secret.is_some(), "shown once on the page");
+    assert!(arrival.token.is_none());
+    let requests = daemon.requests();
+    assert_eq!(requests.len(), 1, "no secret was typed");
+    assert_eq!(
+        requests[0]["params"],
+        json!({"preset": "github", "values": {}})
+    );
+}
+
 #[test]
 fn a_local_push_add_hands_its_token_to_the_page() {
     let daemon = FakeDaemon::start(vec![golden("cues_sources_add_local_push")]);
@@ -179,10 +252,14 @@ fn a_local_push_add_hands_its_token_to_the_page() {
     let form = serde_json::from_value(golden("cues_sources_form")["result"].clone())
         .expect("the form decodes");
     state.take(&form, &FormChoice::default());
+    state.choose_kind("local_push");
+    state.take(&form, &state.request());
     state.set(NAME_KEY, json!("home-alerts"));
     let arrival = add(&daemon, &mut state);
     assert!(arrival.token.is_some(), "shown once on the page");
-    assert_eq!(daemon.requests().len(), 1, "no secret was typed");
+    let requests = daemon.requests();
+    assert_eq!(requests.len(), 1, "no secret was typed");
+    assert_eq!(requests[0]["params"]["kind"], "local_push");
 }
 
 #[test]

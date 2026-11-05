@@ -1,7 +1,8 @@
 //! A source's page (M60 cues §4.4): its line and switch, its secrets first (the one its row's
-//! action points at leading), a token shown once, its facts, what it refused or missed, and Edit
-//! and Remove source…, which asks in place. A webhook's address is never drawn: Copy URL asks for
-//! it on each press and copies its path. A token is dropped from the page when the page turns.
+//! action points at leading), a token or a secret Fermix made shown once, its facts, what it
+//! refused or missed, and Edit and Remove source…, which asks in place. A webhook's address is
+//! never drawn: Copy URL asks for it on each press and copies its path. A token or a made secret
+//! is dropped from the page when the page turns.
 
 use crate::clipboard::SecretCopy;
 use crate::cues_dialog::{alone, named_button, nav_page, reading};
@@ -39,6 +40,8 @@ pub struct SourcePage {
     unstored: RefCell<Option<(SecretField, String)>>,
     /// A token handed out on this page, shown once; it goes when the page turns.
     token: RefCell<Option<HandedOut>>,
+    /// The secret Fermix made when the source was added, shown once; it goes when the page turns.
+    made_secret: RefCell<Option<HandedOut>>,
     copies: SecretCopy,
     live: RefCell<Live>,
 }
@@ -65,6 +68,7 @@ impl SourcePage {
             asking: RefCell::default(),
             unstored: RefCell::new(arrival.unstored),
             token: RefCell::new(arrival.token),
+            made_secret: RefCell::new(arrival.secret),
             copies: SecretCopy::default(),
             live: RefCell::new(Rc::new(Cell::new(true))),
         });
@@ -74,13 +78,14 @@ impl SourcePage {
         page
     }
 
-    /// The page reads its source again as it comes back into view, and lets go of a token and a
-    /// copy as it turns.
+    /// The page reads its source again as it comes back into view, and lets go of a token, a made
+    /// secret and a copy as it turns.
     fn follow(self: &Rc<Self>, page: &adw::NavigationPage) {
         let weak = Rc::downgrade(self);
         page.connect_hidden(move |_| {
             let Some(source) = weak.upgrade() else { return };
             source.token.replace(None);
+            source.made_secret.replace(None);
             source.copies.take_back();
             source.asking.borrow_mut().withdraw();
             source.render();
@@ -141,7 +146,10 @@ impl SourcePage {
             page.add(&self.secrets(source));
         }
         if let Some(token) = self.token.borrow().clone() {
-            page.add(&self.shown_once(token));
+            page.add(&self.token_once(token));
+        }
+        if let Some(secret) = self.made_secret.borrow().clone() {
+            page.add(&self.secret_once(secret));
         }
         page.add(&facts(source));
         if let Some(missed) = missed(detail) {
@@ -417,7 +425,11 @@ impl SourcePage {
     fn store(self: &Rc<Self>, entry: &gtk::PasswordEntry, id: String, value: String) {
         let (source, entry) = (self.clone(), entry.clone());
         glib::spawn_future_local(async move {
-            let answer = set_secret(&source.dialog.deps.daemon, &entry, id, value).await;
+            let daemon = &source.dialog.deps.daemon;
+            let answer = set_secret(daemon, &entry, id.clone(), value).await;
+            if answer.is_ok() {
+                source.written(&id);
+            }
             let refusal = answer
                 .err()
                 .map(|e| refusal_of(&e, "secret.set for a source").1);
@@ -428,7 +440,7 @@ impl SourcePage {
     }
 
     fn clear(self: &Rc<Self>, id: String) {
-        let source = self.clone();
+        let (source, cleared) = (self.clone(), id.clone());
         glib::spawn_future_local(async move {
             let answer = source
                 .dialog
@@ -436,12 +448,26 @@ impl SourcePage {
                 .daemon
                 .call(move |m| m.secret_clear(&id))
                 .await;
+            if answer.is_ok() {
+                source.written(&cleared);
+            }
             let refusal = answer
                 .err()
                 .map(|e| refusal_of(&e, "secret.clear for a source").1);
             source.note(refusal);
             source.changed();
         });
+    }
+
+    /// A secret stored or cleared on this page. Once the signing secret is replaced or removed,
+    /// the secret Fermix made is not the one deliveries are checked against, so it goes from the
+    /// page, and its copy from the clipboard.
+    fn written(&self, id: &str) {
+        if id != secret_id(&self.name, SecretField::Secret) {
+            return;
+        }
+        self.made_secret.replace(None);
+        self.copies.take_back();
     }
 
     /// A fresh token, shown once on this page.
@@ -519,36 +545,18 @@ impl SourcePage {
         None
     }
 
-    // ---- a token shown once ----
+    // ---- a token or a made secret shown once ----
 
-    /// `token`, shown once: unselectable and off the accessibility tree, its row read to a
-    /// screen reader as what it is and never as its value, with Copy token and the push example
-    /// once the door's port is known. Built at each render, so the example comes when the port
-    /// does.
-    fn shown_once(self: &Rc<Self>, token: HandedOut) -> adw::PreferencesGroup {
+    /// `token`, shown once, with Copy token and the push example once the door's port is known.
+    /// Built at each render, so the example comes when the port does.
+    fn token_once(self: &Rc<Self>, token: HandedOut) -> adw::PreferencesGroup {
         let group = adw::PreferencesGroup::new();
-        let shown = gtk::Label::builder()
-            .label(token.reveal())
-            .selectable(false)
-            .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::Char)
-            .xalign(0.0)
-            .css_classes(["monospace"])
-            .margin_top(12)
-            .margin_bottom(12)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        shown.update_state(&[gtk::accessible::State::Hidden(true)]);
-        let row = adw::PreferencesRow::builder()
-            .child(&shown)
-            .activatable(false)
-            .build();
-        let spoken = words::token_label(&self.name);
-        row.upcast_ref::<gtk::Widget>()
-            .update_property(&[gtk::accessible::Property::Label(&spoken)]);
-        group.add(&row);
-        group.add(&self.copy_token_row(token));
+        group.add(&shown_once(&token, &words::token_label(&self.name)));
+        let copy = Once {
+            label: words::COPY_TOKEN,
+            what: "a source's push credential",
+        };
+        group.add(&self.copy_once_row(token, copy));
         if let Some(port) = (self.dialog.deps.port)() {
             let example = fact_row("", &words::push_example(port, &self.name));
             example.add_css_class("monospace");
@@ -557,25 +565,70 @@ impl SourcePage {
         group
     }
 
-    fn copy_token_row(self: &Rc<Self>, token: HandedOut) -> adw::ActionRow {
+    /// The secret Fermix made for a new GitHub source, shown once, with Copy secret.
+    fn secret_once(self: &Rc<Self>, secret: HandedOut) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.add(&shown_once(&secret, &words::secret_label(&self.name)));
+        let copy = Once {
+            label: words::COPY_SECRET,
+            what: "a source's signing secret",
+        };
+        group.add(&self.copy_once_row(secret, copy));
+        group
+    }
+
+    /// TOKEN_ONCE, with the button that copies `value`.
+    fn copy_once_row(self: &Rc<Self>, value: HandedOut, copy: Once) -> adw::ActionRow {
         let row = adw::ActionRow::builder()
             .title(words::TOKEN_ONCE)
             .activatable(false)
             .build();
         row.set_title_lines(0);
-        let copy = named_button(words::COPY_TOKEN, &self.name);
+        let button = named_button(copy.label, &self.name);
         let weak = Rc::downgrade(self);
-        copy.connect_clicked(move |button| {
+        button.connect_clicked(move |button| {
             let Some(source) = weak.upgrade() else { return };
-            let refusal = source.copy(button, token.reveal(), "a source's push credential");
+            let refusal = source.copy(button, value.reveal(), copy.what);
             if refusal.is_some() {
                 source.note(refusal);
                 source.render();
             }
         });
-        row.add_suffix(&copy);
+        row.add_suffix(&button);
         row
     }
+}
+
+/// A Copy button for a value shown once: its label, and what it copies, for the log.
+#[derive(Clone, Copy)]
+struct Once {
+    label: &'static str,
+    what: &'static str,
+}
+
+/// `value`, shown once: unselectable and off the accessibility tree, its row read to a screen
+/// reader as `spoken`, what it is, and never as its value.
+fn shown_once(value: &HandedOut, spoken: &str) -> adw::PreferencesRow {
+    let shown = gtk::Label::builder()
+        .label(value.reveal())
+        .selectable(false)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::Char)
+        .xalign(0.0)
+        .css_classes(["monospace"])
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    shown.update_state(&[gtk::accessible::State::Hidden(true)]);
+    let row = adw::PreferencesRow::builder()
+        .child(&shown)
+        .activatable(false)
+        .build();
+    row.upcast_ref::<gtk::Widget>()
+        .update_property(&[gtk::accessible::Property::Label(spoken)]);
+    row
 }
 
 fn stored(present: bool) -> &'static str {

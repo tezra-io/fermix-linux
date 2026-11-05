@@ -151,7 +151,7 @@ fn the_source_writes_send_the_contracts_requests() {
         let choice = SourceChoice::Preset("rss".into());
         let fields = values(json!({"url": "https://example.org/releases.atom"}));
         let added = m
-            .cue_source_add("eng-blogs", &choice, fields)
+            .cue_source_add(Some("eng-blogs"), &choice, fields)
             .expect("decodes");
         assert_eq!(added.token, None);
     });
@@ -186,7 +186,7 @@ fn a_handed_out_value_decodes_and_never_shows_in_debug() {
         let choice = SourceChoice::Preset("rss".into());
         let fields = values(json!({"url": "https://example.org/releases.atom"}));
         let added = m
-            .cue_source_add("eng-blogs", &choice, fields)
+            .cue_source_add(Some("eng-blogs"), &choice, fields)
             .expect("decodes");
         let token = added.token.clone().expect("a first token");
         assert!(!token.reveal().is_empty());
@@ -406,7 +406,7 @@ fn a_webhook_added_without_its_secret_says_which_one_it_waits_for() {
         let choice = SourceChoice::Kind("webhook".into());
         let fields = values(json!({"verify": "hmac"}));
         let source = m
-            .cue_source_add("hooks", &choice, fields)
+            .cue_source_add(Some("hooks"), &choice, fields)
             .expect("decodes")
             .source;
         assert!(source.state.is(SourceState::NeedsSecret));
@@ -416,22 +416,28 @@ fn a_webhook_added_without_its_secret_says_which_one_it_waits_for() {
     assert_eq!(sent["params"]["kind"], "webhook");
 }
 
-/// Fermix makes a GitHub source's secret, so a GitHub source added is ready and waits for no
-/// secret.
+/// A GitHub source added with no name sends no `ref`, and the daemon names it. Fermix makes its
+/// secret, so it is ready, waits for no secret, and hands that secret out once, never shown by a
+/// `Debug` that could reach a log.
 #[test]
-fn a_github_source_added_waits_for_no_secret() {
-    let answer = named(SUCCESS, "cues_sources_add_webhook")["response"].clone();
-    let sent = serve(answer, |m| {
-        let choice = SourceChoice::Preset("github".into());
-        let source = m
-            .cue_source_add("github", &choice, Map::new())
-            .expect("decodes")
-            .source;
-        assert!(source.state.is(SourceState::Idle));
-        assert!(source.primary_action == Some(Word::Known(SourceAction::GetUrl)));
-        assert_eq!(source.missing_secret, None);
-    });
-    assert_eq!(sent["params"]["preset"], "github");
+fn an_unnamed_github_add_is_named_by_the_daemon_and_hands_out_the_secret_fermix_made() {
+    exchange(
+        "cues_sources_add_webhook",
+        "cues_sources_add_webhook",
+        |m| {
+            let choice = SourceChoice::Preset("github".into());
+            let added = m
+                .cue_source_add(None, &choice, Map::new())
+                .expect("decodes");
+            assert_eq!(added.source.name, "github");
+            assert!(added.source.state.is(SourceState::Idle));
+            assert!(added.source.primary_action == Some(Word::Known(SourceAction::GetUrl)));
+            assert_eq!(added.source.missing_secret, None);
+            let secret = added.secret.clone().expect("the secret Fermix made");
+            assert!(!secret.reveal().is_empty());
+            assert!(!format!("{added:?}").contains(secret.reveal()));
+        },
+    );
 }
 
 fn wire<T: Serialize>(words: &[T]) -> Vec<String> {

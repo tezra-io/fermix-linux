@@ -3,8 +3,9 @@
 //! every closed vocabulary decodes to a `Word`, so a word this build does not know is kept as
 //! the daemon wrote it rather than refused.
 //!
-//! No row carries cue text. The two values Fermix hands out, a local push token and a webhook's
-//! address, decode as `HandedOut`, whose `Debug` never shows them.
+//! No row carries cue text. The values Fermix hands out, a local push token, the secret it makes
+//! for a GitHub source and a webhook's address, decode as `HandedOut`, whose `Debug` never shows
+//! them.
 
 use crate::settings::Row;
 use serde::{Deserialize, Serialize};
@@ -380,14 +381,37 @@ pub struct SourceForm {
     pub consent_sentence: Option<String>,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// What the choice reads with (X accounts: the X sign-in), ready or not, in the daemon's
+    /// words. None for every other choice, and from a daemon older than v0.18.
+    #[serde(default)]
+    pub requirement: Option<Requirement>,
 }
 
-/// `cues.sources.add`: the new row, and a new local push source's first token, handed out once.
+/// Whether what a choice reads with is set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementState {
+    Ready,
+    NeedsSignIn,
+}
+
+/// A form's requirement: the daemon's sentence, drawn as written, and whether it is met; a state
+/// this build does not know is drawn as not met. It never stops the add.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Requirement {
+    pub state: Word<RequirementState>,
+    pub sentence: String,
+}
+
+/// `cues.sources.add`: the new row under the name in force, and what Fermix made for it, each
+/// handed out once: a new local push source's first token, or a new GitHub source's secret.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SourceAdded {
     pub source: SourceRow,
     #[serde(default)]
     pub token: Option<HandedOut>,
+    #[serde(default)]
+    pub secret: Option<HandedOut>,
 }
 
 /// The answer of `cues.sources.update`, `.enable` and `.disable`.

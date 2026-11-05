@@ -5,14 +5,17 @@
 //! A typed secret stays here until Add and is never sent with the source.
 
 use super::calls::{FormChoice, SourceChoice};
-use super::wire::{FormKind, FormPreset, HandedOut, SecretField, SourceDetail, SourceForm};
+use super::wire::{
+    FormKind, FormPreset, HandedOut, Requirement, SecretField, SourceAdded, SourceDetail,
+    SourceForm,
+};
 use super::words;
 use crate::settings::{Kind, Row};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
-/// The name row's key, which Add sends as the source's `ref`.
+/// The name row's key, which Add sends as the source's `ref` when one is typed.
 pub const NAME_KEY: &str = "ref";
 /// The check row, whose change asks for the form again.
 pub const VERIFY_KEY: &str = "verify";
@@ -45,10 +48,11 @@ pub struct TypedSecret {
     pub value: Held,
 }
 
-/// What Add sends: the name, the preset or the kind, and the values the owner changed.
+/// What Add sends: the name typed, if any (else the daemon makes one), the preset or the kind,
+/// and the values the owner changed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddSpec {
-    pub name: String,
+    pub name: Option<String>,
     pub choice: SourceChoice,
     pub values: Map<String, Value>,
 }
@@ -62,11 +66,12 @@ pub fn secret_id(source: &str, field: SecretField) -> String {
     format!("cue_source:{source}:{}", field.wire())
 }
 
-/// What an add leaves for the source's page: a token handed out once, and the typed secret the
-/// daemon would not store, with its sentence.
+/// What an add leaves for the source's page: a token or a secret Fermix made, each handed out
+/// once, and the typed secret the daemon would not store, with its sentence.
 #[derive(Debug, Default)]
 pub struct Arrival {
     pub token: Option<HandedOut>,
+    pub secret: Option<HandedOut>,
     pub unstored: Option<(SecretField, String)>,
 }
 
@@ -77,8 +82,9 @@ impl Arrival {
     }
 }
 
-/// An add once the daemon took the source: each typed secret is stored after it, one at a time
-/// in the form's row order, and the first the daemon refuses ends it there, the rest unsent.
+/// An add once the daemon took the source: each typed secret is stored after it, under the name
+/// the daemon saved it under, one at a time in the form's row order, and the first the daemon
+/// refuses ends it there, the rest unsent.
 #[derive(Debug)]
 pub struct AddFlow {
     name: String,
@@ -90,18 +96,26 @@ pub struct AddFlow {
 }
 
 impl AddFlow {
-    /// The source `name` was added, handing out `token`; `secrets` are what `prepare_add` held.
-    pub fn added(name: &str, token: Option<HandedOut>, secrets: Vec<TypedSecret>) -> AddFlow {
+    /// The daemon's answer to Add, which names the source as saved; `secrets` are what
+    /// `prepare_add` held.
+    pub fn added(added: SourceAdded, secrets: Vec<TypedSecret>) -> AddFlow {
+        let name = added.source.name;
         assert!(!name.is_empty(), "an added source is named");
         AddFlow {
-            name: name.to_owned(),
+            name,
             pending: secrets.into(),
             storing: None,
             arrival: Arrival {
-                token,
+                token: added.token,
+                secret: added.secret,
                 unstored: None,
             },
         }
+    }
+
+    /// The name the source was saved under: its page's, and its stored secrets'.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The next secret to store, with the id it goes under; None once each is stored or one
@@ -165,6 +179,10 @@ pub struct SourceFormState {
     rows: Vec<Row>,
     consent: Option<String>,
     notes: Vec<String>,
+    requirement: Option<Requirement>,
+    /// The choice the rows, notes and requirement are the answer to; Add waits until it is the
+    /// choice held now.
+    answered: Option<FormChoice>,
     /// What the owner set, by row key. Never a secret.
     values: BTreeMap<String, Value>,
     /// What the owner typed into a secret row, by row key, until Add.
@@ -257,6 +275,8 @@ impl SourceFormState {
         self.rows = form.rows.clone();
         self.consent = form.consent_sentence.clone();
         self.notes = form.notes.clone();
+        self.requirement = form.requirement.clone();
+        self.answered = Some(asked.clone());
         let keys: Vec<&str> = form.rows.iter().map(|r| r.key.as_str()).collect();
         self.values.retain(|key, _| keys.contains(&key.as_str()));
         self.secrets.retain(|key, _| keys.contains(&key.as_str()));
@@ -272,13 +292,16 @@ impl SourceFormState {
         self.preset = self.first_preset();
         self.values.remove(VERIFY_KEY);
         self.refusal = None;
+        self.requirement = None;
         self.default_check();
     }
 
+    /// A preset chosen, or None: no check of another's, and no requirement of another's.
     pub fn choose_preset(&mut self, preset: Option<&str>) {
         self.preset = preset.map(str::to_owned);
         self.values.remove(VERIFY_KEY);
         self.refusal = None;
+        self.requirement = None;
         self.default_check();
     }
 
@@ -338,12 +361,13 @@ impl SourceFormState {
             .unwrap_or_default()
     }
 
-    /// What Add sends, or None while there is nothing to add: an edit, no name yet, or no form.
+    /// What Add sends, or None while there is nothing to add: an edit, or no answer yet to the
+    /// choice held now. With no name typed, the daemon names the source.
     pub fn spec(&self) -> Option<AddSpec> {
-        let name = self.name();
-        if self.editing.is_some() || name.is_empty() {
+        if self.editing.is_some() || self.answered.as_ref() != Some(&self.request()) {
             return None;
         }
+        let name = Some(self.name()).filter(|n| !n.is_empty());
         let choice = match (&self.preset, &self.kind) {
             (Some(preset), _) => SourceChoice::Preset(preset.clone()),
             (None, Some(kind)) => SourceChoice::Kind(kind.clone()),
@@ -421,6 +445,13 @@ impl SourceFormState {
             .filter(|l| !l.is_empty())
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n\n"))
+    }
+
+    /// What the choice reads with (X accounts: the X sign-in), ready or not, in the daemon's
+    /// words, from the answer to the choice held now. It is said in the form and never stops
+    /// Add.
+    pub fn requirement(&self) -> Option<&Requirement> {
+        self.requirement.as_ref()
     }
 
     /// The daemon refused, about `field` where it named one.

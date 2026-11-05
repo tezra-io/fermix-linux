@@ -5,6 +5,7 @@
 //! source exists, never with it.
 
 use crate::cues_dialog::{first_page, hidden_line, nav_page, page_dialog, show_line, Soon};
+use crate::cues_rows::{note_row, set_class};
 use crate::cues_source_page::SourcePage;
 use crate::daemon::Daemon;
 use crate::descriptor::{info_button, Drawn, FormSink, SectionView};
@@ -15,7 +16,7 @@ use fermix_client::cues::calls::FormChoice;
 use fermix_client::cues::form::{
     AddFlow, AddSpec, Arrival, SourceFormState, TypedSecret, VERIFY_KEY,
 };
-use fermix_client::cues::wire::{SecretField, SourceDetail, SourceForm};
+use fermix_client::cues::wire::{RequirementState, SecretField, SourceDetail, SourceForm};
 use fermix_client::cues::words;
 use fermix_client::management::CallError;
 use fermix_client::settings::{Kind, SectionRows};
@@ -227,6 +228,9 @@ struct AddForm {
     preset: adw::ComboRow,
     /// The preset each combo item stands for; None is "None".
     preset_ids: RefCell<Vec<Option<String>>>,
+    /// What the choice reads with (X accounts: the X sign-in), ready or not, in the daemon's
+    /// words.
+    requirement: adw::ActionRow,
     pickers_note: adw::ActionRow,
     add: gtk::Button,
     /// The latest choice's ticket: a request superseded during the pause is not sent.
@@ -252,6 +256,7 @@ impl AddForm {
             about: RefCell::default(),
             preset: adw::ComboRow::builder().title(words::PRESET).build(),
             preset_ids: RefCell::default(),
+            requirement: note_row("", false, false),
             pickers_note: hidden_line(),
             add,
             ticket: Cell::new(0),
@@ -259,6 +264,7 @@ impl AddForm {
             sending: Cell::new(false),
         });
         form.kind_line.set_title_lines(0);
+        form.requirement.set_visible(false);
         form.wire();
         form
     }
@@ -270,6 +276,7 @@ impl AddForm {
         let pickers = adw::PreferencesGroup::new();
         pickers.add(&self.kind_line);
         pickers.add(&self.preset);
+        pickers.add(&self.requirement);
         pickers.add(&self.pickers_note);
         let under = adw::PreferencesGroup::new();
         under.add(&self.core.under);
@@ -377,12 +384,25 @@ impl AddForm {
         let picked = state.refusal_for("kind").or(state.refusal_for("preset"));
         show_line(&self.pickers_note, picked);
         drop(state);
+        self.draw_requirement();
         self.draw_add();
     }
 
+    /// The requirement's sentence as the daemon wrote it, marked while it is not met.
+    fn draw_requirement(&self) {
+        let state = self.core.state.borrow();
+        let requirement = state.requirement();
+        show_line(&self.requirement, requirement.map(|r| r.sentence.as_str()));
+        let unmet = requirement.is_some_and(|r| !r.state.is(RequirementState::Ready));
+        set_class(&self.requirement, "warning", unmet);
+        set_class(&self.requirement, "dimmed", !unmet);
+    }
+
+    /// Add goes once the form for the choice held now has come, a name typed or not: with none,
+    /// the daemon names the source. A requirement never stops it.
     fn draw_add(&self) {
-        let named = !self.core.state.borrow().name().is_empty();
-        self.add.set_sensitive(named && !self.sending.get());
+        let ready = self.core.state.borrow().spec().is_some();
+        self.add.set_sensitive(ready && !self.sending.get());
     }
 
     /// The kinds as toggles, the chosen kind's line, and the consent line and notes behind (i).
@@ -462,9 +482,9 @@ impl AddForm {
 
     async fn add(self: &Rc<Self>, spec: AddSpec, secrets: Vec<TypedSecret>) {
         let daemon = self.dialog.deps.daemon.clone();
-        let (name, choice, values) = (spec.name.clone(), spec.choice.clone(), spec.values);
+        let (name, choice, values) = (spec.name, spec.choice, spec.values);
         let answer = daemon
-            .call(move |m| m.cue_source_add(&name, &choice, values))
+            .call(move |m| m.cue_source_add(name.as_deref(), &choice, values))
             .await;
         let added = match answer {
             Ok(added) => added,
@@ -476,8 +496,9 @@ impl AddForm {
                 return self.draw();
             }
         };
-        // The flow gives out one secret at a time and none after a refusal.
-        let mut flow = AddFlow::added(&spec.name, added.token, secrets);
+        // The flow gives out one secret at a time and none after a refusal, each under the name
+        // the daemon saved the source under.
+        let mut flow = AddFlow::added(added, secrets);
         while let Some((id, value)) = flow.next_secret() {
             let (daemon, parent) = (&self.dialog.deps.daemon, &self.dialog.dialog);
             let answer = set_secret(daemon, parent, id, value.reveal().to_owned()).await;
@@ -488,7 +509,8 @@ impl AddForm {
             );
         }
         (self.dialog.deps.changed)();
-        self.dialog.turn_to_source(&spec.name, flow.arrival());
+        let name = flow.name().to_owned();
+        self.dialog.turn_to_source(&name, flow.arrival());
     }
 }
 

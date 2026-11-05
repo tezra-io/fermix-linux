@@ -58,6 +58,7 @@ pub const ADDRESS_INFO: &str = "Give the service your tunnel's address followed 
 pub const NEW_TOKEN: &str = "New token…";
 pub const MAKE_TOKEN: &str = "Make token";
 pub const COPY_TOKEN: &str = "Copy token";
+pub const COPY_SECRET: &str = "Copy secret";
 pub const TOKEN_ONCE: &str = "Copy it now. Fermix shows it only once.";
 pub const NOT_COPIED: &str = "Nothing was copied.";
 pub const STORED: &str = "Stored";
@@ -117,7 +118,7 @@ pub const SKILL_PATHS: &str = "Skill paths it writes";
 pub const PINNED_ARGUMENTS: &str = "Pinned arguments";
 
 /// Every fixed sentence the Cues pane shows, so a test can hold them to the copy rules.
-pub const STRINGS: [&str; 93] = [
+pub const STRINGS: [&str; 94] = [
     PANE_TITLE,
     SUBTITLE,
     LEARN_MORE,
@@ -159,6 +160,7 @@ pub const STRINGS: [&str; 93] = [
     NEW_TOKEN,
     MAKE_TOKEN,
     COPY_TOKEN,
+    COPY_SECRET,
     TOKEN_ONCE,
     NOT_COPIED,
     STORED,
@@ -261,6 +263,11 @@ pub fn switch_label(name: &str) -> String {
 /// What a screen reader hears for a token shown once: never the token.
 pub fn token_label(name: &str) -> String {
     format!("Token for {name}, shown once")
+}
+
+/// What a screen reader hears for a secret Fermix made, shown once: never the secret.
+pub fn secret_label(name: &str) -> String {
+    format!("Secret for {name}, shown once")
 }
 
 /// The push example under a token: the door's port, the source, and the token left as a
