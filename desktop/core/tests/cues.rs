@@ -5,10 +5,10 @@
 
 use fermix_client::chat::{written_time, LocalTime};
 use fermix_client::cues::view::{
-    approval_line, available, door_in_the_open, failure, mandate_line, model_shown,
+    approval_line, available, door_in_the_open, failure, follow_up_line, mandate_line, model_shown,
     model_suggestions, opening, secrets_first, shows_model_row, shut, source_facts, source_line,
-    status_tone, waiting_lines, watcher_filter, watcher_line, watcher_task, Asking, Failure,
-    FilterDraft, Question, Tone,
+    status_tone, waiting_lines, watcher_filter, watcher_line, watcher_task, AskFirstAgain, Asking,
+    Failure, FilterDraft, FollowUpLine, Question, Tone,
 };
 use fermix_client::cues::wire::{
     CueStatus, FollowUpState, MandateRow, ProposalList, SecretField, SourceList, SourceRow,
@@ -350,6 +350,69 @@ fn a_watchers_follow_up_decodes_and_an_older_daemons_reads_as_none_or_asking_fir
     fields.insert("approved".into(), json!(true));
     let before = watcher(json!({ "follow_up": before }));
     assert!(!before.follow_up.expect("a follow-up").always_allowed);
+}
+
+/// The page draws a follow-up by its name, else its job, in the daemon's words, held in the
+/// warning tone, and offers Ask first again only while it is always allowed: never for one that
+/// asks first, nor for an older daemon's, which reads as asking first.
+#[test]
+fn a_follow_up_is_drawn_in_the_daemons_words_with_ask_first_again_only_while_always_allowed() {
+    let golden = follow_up_line(&watcher(json!({}))).expect("the golden's watcher has one");
+    assert_eq!(
+        golden,
+        FollowUpLine {
+            name: "Deploy check".into(),
+            sentence: "Always allowed: it runs on each passing item with no card.".into(),
+            held: false,
+            ask_first_again: true,
+        }
+    );
+    let revoked = result("cues_watchers_always_allow_revoke")["watcher"].clone();
+    let asks_first = follow_up_line(&decode(revoked)).expect("a follow-up");
+    assert!(!asks_first.ask_first_again, "it asks first already");
+    assert!(asks_first.sentence.starts_with("Asks first"));
+    let held = json!({"job_id": "deploy_check_3", "name": null, "always_allowed": false,
+        "state": "held", "status_sentence": "Held: turn on Let watchers act in Cues."});
+    let held = follow_up_line(&watcher(json!({ "follow_up": held }))).expect("a follow-up");
+    assert_eq!(held.name, "deploy_check_3", "no name: its job");
+    assert!(held.held && !held.ask_first_again);
+    assert_eq!(held.sentence, "Held: turn on Let watchers act in Cues.");
+    let unknown = json!({"job_id": "j", "name": "Later", "always_allowed": true,
+        "state": "pausing", "status_sentence": "Pausing."});
+    let unknown = follow_up_line(&watcher(json!({ "follow_up": unknown }))).expect("decodes");
+    assert!(
+        !unknown.held && unknown.ask_first_again,
+        "an unknown state is not held"
+    );
+    assert_eq!(follow_up_line(&watcher(json!({"follow_up": null}))), None);
+    let mut older = result("cues_watchers_list")["watchers"][0]["follow_up"].clone();
+    let fields = older.as_object_mut().expect("a follow-up");
+    fields.remove("always_allowed");
+    fields.insert("mode".into(), json!("auto"));
+    fields.insert("approved".into(), json!(true));
+    let older = follow_up_line(&watcher(json!({ "follow_up": older }))).expect("a follow-up");
+    assert!(
+        !older.ask_first_again,
+        "an older daemon's reads as asking first"
+    );
+}
+
+/// Ask first again sends one revoke at a time; the daemon's refusal is said until the next
+/// press, and an answer takes the button's wait away.
+#[test]
+fn ask_first_again_sends_one_revoke_at_a_time_and_keeps_a_refusal_until_the_next_press() {
+    let mut ask = AskFirstAgain::default();
+    assert!(!ask.sending());
+    assert!(ask.press(), "the first press sends");
+    assert!(ask.sending(), "the button is off while it is out");
+    assert!(!ask.press(), "no second revoke while one is out");
+    ask.answered(Some("This watcher has no follow-up.".into()));
+    assert!(!ask.sending());
+    assert_eq!(ask.refusal(), Some("This watcher has no follow-up."));
+    assert!(ask.press(), "a press after a refusal sends again");
+    assert_eq!(ask.refusal(), None, "and takes the refusal away");
+    ask.answered(None);
+    assert_eq!((ask.sending(), ask.refusal()), (false, None));
 }
 
 #[test]

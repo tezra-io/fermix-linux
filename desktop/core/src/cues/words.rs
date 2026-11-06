@@ -81,6 +81,8 @@ pub const FILTER_MAIN_MODEL: &str = "Your main model";
 pub const FILTER_NONE: &str = "No filter";
 pub const SOURCES: &str = "Sources";
 pub const TASK: &str = "Task";
+pub const FOLLOW_UP: &str = "Follow-up";
+pub const ASK_FIRST_AGAIN: &str = "Ask first again";
 pub const KEEPS_NOTES: &str = "keeps notes";
 pub const KEEPS_NO_NOTES: &str = "keeps no notes";
 pub const PAUSED: &str = "paused";
@@ -118,7 +120,7 @@ pub const SKILL_PATHS: &str = "Skill paths it writes";
 pub const PINNED_ARGUMENTS: &str = "Pinned arguments";
 
 /// Every fixed sentence the Cues pane shows, so a test can hold them to the copy rules.
-pub const STRINGS: [&str; 94] = [
+pub const STRINGS: [&str; 96] = [
     PANE_TITLE,
     SUBTITLE,
     LEARN_MORE,
@@ -181,6 +183,8 @@ pub const STRINGS: [&str; 94] = [
     FILTER_NONE,
     SOURCES,
     TASK,
+    FOLLOW_UP,
+    ASK_FIRST_AGAIN,
     KEEPS_NOTES,
     KEEPS_NO_NOTES,
     PAUSED,

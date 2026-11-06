@@ -130,6 +130,52 @@ fn a_refusal_without_a_specific_sentence_falls_back_to_the_message() {
     assert_eq!(refusal.sentence, "Another sign-in is already running.");
 }
 
+/// A blank `details.sentence` says nothing, so the message stands in for it; one of spaces
+/// alone is blank too.
+#[test]
+fn a_blank_specific_sentence_falls_back_to_the_message() {
+    for blank in ["", "   "] {
+        let daemon = FakeDaemon::start(vec![Reply::Envelope(
+            json!({"request_id": "$id", "error": {
+            "code": "invalid_params", "message": "Request parameters are invalid.",
+            "details": {"field": "name", "sentence": blank}}}),
+        )]);
+        let CallError::Refused(refusal) = daemon
+            .client()
+            .call("cues.watchers.always_allow.revoke", json!({"name": "w"}))
+            .unwrap_err()
+        else {
+            panic!("expected a refusal")
+        };
+        assert_eq!(
+            refusal.sentence, "Request parameters are invalid.",
+            "{blank:?}"
+        );
+        assert_eq!(refusal.field.as_deref(), Some("name"));
+    }
+}
+
+/// A refusal whose sentence and message are both blank says nothing a page could show: the
+/// answer breaks the protocol.
+#[test]
+fn a_refusal_that_says_nothing_is_a_protocol_error() {
+    for (sentence, message) in [("", ""), ("  ", " "), ("", "\t")] {
+        let daemon = FakeDaemon::start(vec![Reply::Envelope(
+            json!({"request_id": "$id", "error": {
+            "code": "invalid_params", "message": message,
+            "details": {"field": "name", "sentence": sentence}}}),
+        )]);
+        let err = daemon
+            .client()
+            .call("cues.watchers.always_allow.revoke", json!({"name": "w"}))
+            .unwrap_err();
+        assert!(
+            matches!(&err, CallError::Protocol(why) if why == "a refusal must say why"),
+            "{sentence:?} {message:?}: {err:?}"
+        );
+    }
+}
+
 #[test]
 fn a_missing_socket_means_the_daemon_is_down() {
     let dir = tempfile::tempdir().unwrap();

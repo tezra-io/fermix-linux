@@ -4,7 +4,9 @@
 
 use fermix_client::cues::calls::FormChoice;
 use fermix_client::cues::form::{AddFlow, Arrival, SourceFormState, NAME_KEY};
-use fermix_client::cues::view::{failure, read_failure, Asking, Failure};
+use fermix_client::cues::view::{
+    failure, follow_up_line, read_failure, AskFirstAgain, Asking, Failure,
+};
 use fermix_client::cues::wire::SecretField;
 use fermix_client::cues::words;
 use fermix_client::frame::{read_frame, write_frame};
@@ -322,4 +324,42 @@ fn a_page_whose_row_went_says_so_and_an_older_daemon_says_it_is_older() {
         "Fermix is not running."
     );
     daemon.requests();
+}
+
+/// Ask first again on a watcher's page: one press sends the revoke for the watcher, and the
+/// answer's row, asking first, offers the button no more.
+#[test]
+fn ask_first_again_sends_the_revoke_and_the_answer_takes_the_button_away() {
+    let daemon = FakeDaemon::start(vec![golden("cues_watchers_always_allow_revoke")]);
+    let client = daemon.client();
+    let mut ask = AskFirstAgain::default();
+    assert!(ask.press());
+    let revoked = client
+        .cue_watcher_always_allow_revoke("release-watch")
+        .expect("the follow-up asks first again");
+    ask.answered(None);
+    let line = follow_up_line(&revoked.watcher).expect("a follow-up");
+    assert!(!line.ask_first_again, "no button after the answer");
+    assert_eq!(ask.refusal(), None);
+    let requests = daemon.requests();
+    assert_eq!(requests.len(), 1, "one press, one revoke");
+    assert_eq!(requests[0]["method"], "cues.watchers.always_allow.revoke");
+    assert_eq!(requests[0]["params"], json!({"name": "release-watch"}));
+}
+
+/// A refused Ask first again says the daemon's sentence, and the button comes back.
+#[test]
+fn a_refused_ask_first_again_says_the_daemons_sentence() {
+    let sentence = "release-watch has no follow-up.";
+    let daemon = FakeDaemon::start(vec![refusal("invalid_params", "name", sentence)]);
+    let client = daemon.client();
+    let mut ask = AskFirstAgain::default();
+    assert!(ask.press());
+    let refused = match client.cue_watcher_always_allow_revoke("release-watch") {
+        Err(CallError::Refused(refusal)) => refusal.sentence,
+        other => panic!("refused, not {other:?}"),
+    };
+    ask.answered(Some(refused));
+    assert_eq!(ask.refusal(), Some(sentence));
+    assert!(!ask.sending(), "the button is on again");
 }

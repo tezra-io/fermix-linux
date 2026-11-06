@@ -4,9 +4,9 @@
 //! words; a state is read only for a tone, which moves no control.
 
 use super::wire::{
-    CueState, CueStatus, DoorState, MandateAction, MandateMode, MandateRow, ProposalList,
-    SecretField, SecretSlot, SourceAction, SourceKind, SourceRow, WatcherFilter, WatcherRow,
-    WatcherState, Word,
+    CueState, CueStatus, DoorState, FollowUpState, MandateAction, MandateMode, MandateRow,
+    ProposalList, SecretField, SecretSlot, SourceAction, SourceKind, SourceRow, WatcherFilter,
+    WatcherRow, WatcherState, Word,
 };
 use super::words;
 use crate::management::CallError;
@@ -436,6 +436,73 @@ pub fn watcher_task(watcher: &WatcherRow) -> String {
         parts.push(words::PAUSED.to_owned());
     }
     words::middot(&parts)
+}
+
+// ---- a watcher's follow-up ----
+
+/// A watcher's follow-up as its page draws it: its name, else its job; the daemon's sentence,
+/// which says in words what holds it; whether it is held, drawn in the warning tone; and whether
+/// Ask first again is offered, only while Always allow is on. Granting is a card's alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowUpLine {
+    pub name: String,
+    pub sentence: String,
+    pub held: bool,
+    pub ask_first_again: bool,
+}
+
+/// None for a watcher with no follow-up, and from a daemon older than follow-ups. A state this
+/// build does not know is drawn as the daemon's sentence alone, not held.
+pub fn follow_up_line(watcher: &WatcherRow) -> Option<FollowUpLine> {
+    let follow_up = watcher.follow_up.as_ref()?;
+    let name = follow_up
+        .name
+        .clone()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| follow_up.job_id.clone());
+    Some(FollowUpLine {
+        name,
+        sentence: follow_up.status_sentence.clone(),
+        held: follow_up.state.is(FollowUpState::Held),
+        ask_first_again: follow_up.always_allowed,
+    })
+}
+
+/// Ask first again on a watcher's page: one revoke out at a time, its button off while it is,
+/// and the daemon's refusal said until the next press.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AskFirstAgain {
+    sending: bool,
+    refusal: Option<String>,
+}
+
+impl AskFirstAgain {
+    /// A press: whether a revoke goes now. None goes while one is out. It takes the last
+    /// refusal away.
+    pub fn press(&mut self) -> bool {
+        if self.sending {
+            return false;
+        }
+        self.sending = true;
+        self.refusal = None;
+        true
+    }
+
+    /// The daemon answered the revoke; a refusal is said until the next press.
+    pub fn answered(&mut self, refusal: Option<String>) {
+        assert!(self.sending, "an answer comes to a press");
+        assert!(refusal.as_deref() != Some(""), "a refusal says why");
+        self.sending = false;
+        self.refusal = refusal;
+    }
+
+    pub fn sending(&self) -> bool {
+        self.sending
+    }
+
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
+    }
 }
 
 // ---- the filter model (§4.3) ----
