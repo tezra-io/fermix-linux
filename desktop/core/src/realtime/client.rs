@@ -8,7 +8,7 @@
 //! frame this client refuses, a control frame not written within 5 s, 8 s without write
 //! progress, `Outbox::close`, or the last `Outbox` being dropped.
 
-use crate::realtime::playback::rms;
+use crate::realtime::playback::{rms, voiced};
 use crate::realtime::protocol::{
     decode_line, ClientEvent, DecodeError, Direction, LineBuffer, ServerError, ServerEvent,
     MAX_CHUNK_BYTES, PROTOCOL_VERSION,
@@ -80,10 +80,12 @@ pub struct Closed;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Incoming {
     Event(ServerEvent),
-    /// An `audio_delta` of `bytes` bytes went to `on_audio`; `rms` is its level, unsmoothed.
+    /// An `audio_delta` of `bytes` bytes went to `on_audio`; `rms` is its level, unsmoothed, and
+    /// `voiced` whether it carries voice (`playback::voiced`) rather than Live's padding.
     Audio {
         bytes: usize,
         rms: f32,
+        voiced: bool,
     },
     /// Always the last message.
     Closed(CloseReason),
@@ -470,8 +472,9 @@ fn deliver_all(
         .try_for_each(|line| deliver(line, events, on_audio))
 }
 
-/// Decodes one line and hands it on. Audio goes to `on_audio` first, then its size and level
-/// to the `Inbox`. A dropped `Inbox` means nobody is listening, so the connection ends.
+/// Decodes one line and hands it on. Audio goes to `on_audio` first, then its size, its level
+/// and whether it is voice to the `Inbox`. A dropped `Inbox` means nobody is listening, so the
+/// connection ends.
 fn deliver(
     line: &[u8],
     events: &Sender<Incoming>,
@@ -483,6 +486,7 @@ fn deliver(
             Incoming::Audio {
                 bytes: audio.len(),
                 rms: rms(&audio),
+                voiced: voiced(&audio),
             }
         }
         event => Incoming::Event(event),

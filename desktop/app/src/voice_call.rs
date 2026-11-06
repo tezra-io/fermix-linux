@@ -25,10 +25,10 @@ use std::time::Duration;
 /// answer at once. The reducer's longest chain is two; past this it is a loop.
 const MAX_STEPS: usize = 8;
 
-/// How long playback must stay empty before it counts as the end of a reply
-/// (macOS `AudioOwner.drainGrace`). A reply arrives faster than it plays, but a
-/// network pause can empty the queue between two of its chunks, and that is not
-/// its end: the pet would turn from speaking to listening and back.
+/// How long playback must stay without voice before it counts as the end of a
+/// reply (macOS `AudioOwner.drainGrace`). A reply arrives faster than it plays,
+/// but a network pause can play out its voice between two of its chunks, and
+/// that is not its end: the pet would turn from speaking to listening and back.
 const DRAIN_GRACE: Duration = Duration::from_millis(350);
 
 /// Everything one voice connection owns.
@@ -329,24 +329,26 @@ fn send(outbox: Option<&Outbox>, event: ClientEvent) {
     }
 }
 
-/// Reports the end of a reply once playback has stayed empty for `DRAIN_GRACE`.
-/// A later drain supersedes a pending one, and audio still queued at the
-/// deadline means the emptying was a gap, not the end. What has played of each
-/// playback id goes out at once, so a reply's last id is reported drained when
-/// it drains; one that hands over to the next id inside the queue goes out on
-/// the next tick.
-fn drain_reporter(app: &Rc<App>, queue: Arc<Mutex<PlaybackQueue>>) -> Box<dyn Fn()> {
+/// Reports the end of a reply once playback has stayed without voice for
+/// `DRAIN_GRACE`, with or without Live's padding still queued. A later drain of
+/// voice supersedes a pending one, and voice queued at the deadline means the
+/// drain was a gap, not the end. What has played of each playback id goes out
+/// at once on either notice, so a reply's last id is reported drained when the
+/// queue runs dry; one that hands over to the next id inside the queue goes out
+/// on the next tick.
+fn drain_reporter(app: &Rc<App>, queue: Arc<Mutex<PlaybackQueue>>) -> Box<dyn Fn(bool)> {
     let weak = Rc::downgrade(app);
     let drains = Rc::new(Cell::new(0_u64));
-    Box::new(move || {
+    Box::new(move |voice| {
         if let Some(app) = weak.upgrade() {
             app.call.borrow().report_playback();
         }
-        let drain = drains.get() + 1;
-        drains.set(drain);
+        let Some(drain) = number_drain(&drains, voice) else {
+            return;
+        };
         let (weak, queue, drains) = (weak.clone(), Arc::clone(&queue), Rc::clone(&drains));
         glib::timeout_add_local_once(DRAIN_GRACE, move || {
-            if drains.get() != drain || !lock(&queue).is_empty() {
+            if !reply_ended(&drains, drain, &queue) {
                 return;
             }
             if let Some(app) = weak.upgrade() {
@@ -356,6 +358,23 @@ fn drain_reporter(app: &Rc<App>, queue: Arc<Mutex<PlaybackQueue>>) -> Box<dyn Fn
     })
 }
 
+/// Numbers a drain of voice, the newest of `drains`. The queue running dry with
+/// no voice ending is no drain of a reply, and supersedes none.
+fn number_drain(drains: &Cell<u64>, voice: bool) -> Option<u64> {
+    if !voice {
+        return None;
+    }
+    drains.set(drains.get() + 1);
+    Some(drains.get())
+}
+
+/// At `drain`'s deadline: the reply has ended if no later drain of voice came
+/// and nothing up to the end of the last voiced chunk is still queued. Padding
+/// after that chunk does not hold the reply open.
+fn reply_ended(drains: &Cell<u64>, drain: u64, queue: &Mutex<PlaybackQueue>) -> bool {
+    drains.get() == drain && !lock(queue).voice_queued()
+}
+
 /// The playback queue's lock. A panic while holding it already ended the call's
 /// sound; the queue itself is still whole, so carry on with it.
 fn lock(queue: &Mutex<PlaybackQueue>) -> std::sync::MutexGuard<'_, PlaybackQueue> {
@@ -363,4 +382,67 @@ fn lock(queue: &Mutex<PlaybackQueue>) -> std::sync::MutexGuard<'_, PlaybackQueue
         glib::g_warning!("fermix", "the playback queue was poisoned");
         poisoned.into_inner()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 100 ms of Live's padding, digital silence.
+    const PADDING: [u8; 4_800] = [0; 4_800];
+
+    /// 100 ms of voice, at int16 RMS 2,000.
+    fn voice() -> Vec<u8> {
+        2_000_i16.to_le_bytes().repeat(2_400)
+    }
+
+    fn pulled(queue: &Mutex<PlaybackQueue>, samples: usize) {
+        lock(queue).pull(&mut vec![0; samples]);
+    }
+
+    #[test]
+    fn only_a_drain_of_voice_is_numbered() {
+        let drains = Cell::new(0);
+        assert_eq!(number_drain(&drains, true), Some(1));
+        assert_eq!(number_drain(&drains, false), None, "the queue ran dry");
+        assert_eq!(number_drain(&drains, true), Some(2));
+    }
+
+    /// Live's padding keeps the queue full for the whole call, so the deadline asks whether
+    /// voice is queued, not whether anything is.
+    #[test]
+    fn a_reply_has_ended_at_its_deadline_with_padding_still_queued() {
+        let queue = Mutex::new(PlaybackQueue::new());
+        let drains = Cell::new(0);
+        lock(&queue).push_pcm16(&voice(), None);
+        lock(&queue).push_pcm16(&PADDING, None);
+        let drain = number_drain(&drains, true).expect("a drain of voice");
+        assert!(
+            !reply_ended(&drains, drain, &queue),
+            "the voice is still queued"
+        );
+        pulled(&queue, 2_400);
+        assert!(reply_ended(&drains, drain, &queue));
+        assert!(!lock(&queue).is_empty(), "the padding is still queued");
+    }
+
+    #[test]
+    fn a_later_drain_or_more_voice_holds_the_reply_open() {
+        let queue = Mutex::new(PlaybackQueue::new());
+        let drains = Cell::new(0);
+        let first = number_drain(&drains, true).expect("a drain of voice");
+        number_drain(&drains, false);
+        assert!(
+            reply_ended(&drains, first, &queue),
+            "the queue running dry supersedes nothing"
+        );
+        let second = number_drain(&drains, true).expect("a drain of voice");
+        assert!(!reply_ended(&drains, first, &queue), "superseded");
+        lock(&queue).push_pcm16(&PADDING, None);
+        lock(&queue).push_pcm16(&voice(), None);
+        assert!(
+            !reply_ended(&drains, second, &queue),
+            "voice came in the gap"
+        );
+    }
 }

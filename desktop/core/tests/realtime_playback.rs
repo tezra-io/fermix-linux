@@ -1,13 +1,39 @@
 //! The playback queue between the socket's reader thread and GStreamer's streaming thread,
-//! and the level and timing maths beside it.
+//! and the level, voice and timing maths beside it.
 
 use fermix_client::realtime::playback::{
-    played_ms, rms, smooth, PlaybackQueue, MAX_QUEUED_SAMPLES, SAMPLE_RATE,
+    played_ms, rms, smooth, voiced, PlaybackQueue, Pull, MAX_QUEUED_SAMPLES, SAMPLE_RATE,
+    VOICED_RMS,
 };
-use fermix_client::realtime::protocol::PlaybackProgress;
+use fermix_client::realtime::protocol::{decode_line, PlaybackProgress, ServerEvent};
+
+const SERVER: &str = include_str!("../contracts/realtime/fixtures/server_events.jsonl");
+/// 100 ms at 24 kHz: one Live chunk.
+const CHUNK: usize = 2_400;
+/// 20 ms: one pull of the pipeline's.
+const BLOCK: usize = 480;
 
 fn pcm(samples: &[i16]) -> Vec<u8> {
     samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+}
+
+/// `samples` of a steady `level`: its int16 RMS is `level`.
+fn steady(level: i16, samples: usize) -> Vec<u8> {
+    pcm(&vec![level; samples])
+}
+
+/// 100 ms of voice, at int16 RMS 2,000.
+fn voice() -> Vec<u8> {
+    steady(2_000, CHUNK)
+}
+
+/// 100 ms of Live's padding, digital silence.
+fn padding() -> Vec<u8> {
+    steady(0, CHUNK)
+}
+
+fn pull(queue: &mut PlaybackQueue, samples: usize) -> Pull {
+    queue.pull(&mut vec![0; samples])
 }
 
 #[test]
@@ -42,26 +68,50 @@ fn a_pull_past_the_end_is_filled_with_silence() {
 }
 
 #[test]
-fn drained_is_the_edge_from_audio_to_none_and_fires_once() {
+fn emptied_is_the_edge_from_audio_to_none_and_fires_once() {
+    let mut queue = PlaybackQueue::new();
+    let mut out = [0i16; 2];
+    assert!(
+        !queue.pull(&mut out).emptied,
+        "an empty queue never empties"
+    );
+
+    queue.push_pcm16(&pcm(&[1, 2, 3]), None);
+    assert!(!queue.pull(&mut out).emptied, "one sample is still queued");
+    assert!(queue.pull(&mut out).emptied, "the last sample went out");
+    assert!(!queue.pull(&mut out).emptied, "already empty");
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn drained_is_the_edge_from_voice_to_none_and_fires_once() {
     let mut queue = PlaybackQueue::new();
     let mut out = [0i16; 2];
     assert!(!queue.pull(&mut out).drained, "an empty queue never drains");
 
-    queue.push_pcm16(&pcm(&[1, 2, 3]), None);
-    assert!(!queue.pull(&mut out).drained, "one sample is still queued");
-    assert!(queue.pull(&mut out).drained, "the last sample went out");
-    assert!(!queue.pull(&mut out).drained, "already empty");
-    assert!(queue.is_empty());
+    queue.push_pcm16(&pcm(&[1_000, -1_000, 1_000]), None);
+    assert!(queue.voice_queued());
+    assert!(
+        !queue.pull(&mut out).drained,
+        "one voiced sample is still queued"
+    );
+    assert!(
+        queue.pull(&mut out).drained,
+        "the last voiced sample went out"
+    );
+    assert!(!queue.pull(&mut out).drained, "already drained");
+    assert!(!queue.voice_queued());
 }
 
 #[test]
 fn a_pull_that_empties_the_queue_exactly_is_drained() {
     let mut queue = PlaybackQueue::new();
-    queue.push_pcm16(&pcm(&[1, 2]), None);
+    queue.push_pcm16(&pcm(&[1_000, -1_000]), None);
     let mut out = [0i16; 2];
     let pull = queue.pull(&mut out);
     assert_eq!(pull.real, 2);
     assert!(pull.drained);
+    assert!(pull.emptied);
 }
 
 #[test]
@@ -160,15 +210,17 @@ fn samples_dropped_at_capacity_come_off_the_tail_first() {
 #[test]
 fn clear_empties_the_queue_and_resets_the_anchor() {
     let mut queue = PlaybackQueue::new();
-    queue.push_pcm16(&pcm(&[1; 50]), None);
+    queue.push_pcm16(&steady(1_000, 50), None);
     let mut out = [0i16; 20];
     queue.pull(&mut out);
     queue.clear();
     assert!(queue.is_empty());
+    assert!(!queue.voice_queued());
     assert_eq!(queue.played_since_anchor(), 0);
     let pull = queue.pull(&mut out);
     assert_eq!(pull.real, 0);
     assert!(!pull.drained, "a flush is not a drain");
+    assert!(!pull.emptied, "nor the queue running dry");
 }
 
 #[test]
@@ -292,4 +344,231 @@ fn a_new_call_forgets_the_last_calls_ids() {
         vec![progress("p1", 0, false)],
         "a reused id starts at nothing played"
     );
+}
+
+// Voice and Live's padding
+
+/// The engine's line and the macOS app's: int16 RMS 100, exactly, on whole samples.
+#[test]
+fn a_chunk_is_voice_from_int16_rms_100() {
+    assert_eq!(VOICED_RMS, 100);
+    assert!(!voiced(&steady(99, CHUNK)));
+    assert!(voiced(&steady(100, CHUNK)));
+    assert!(voiced(&steady(101, CHUNK)));
+    assert!(voiced(&steady(-100, CHUNK)), "the sign does not matter");
+    assert!(voiced(&pcm(&[100, -100, 100, -100])));
+    // Mean squares of 9,900.5 and 10,001: RMS 99.5 and 100.005.
+    assert!(!voiced(&pcm(&[100, 99])));
+    assert!(voiced(&pcm(&[101, 99])));
+    assert!(voiced(&pcm(&[i16::MIN; 4])), "full scale");
+}
+
+#[test]
+fn a_chunk_with_no_whole_sample_is_not_voice_and_an_odd_byte_is_ignored() {
+    assert!(!voiced(&[]));
+    assert!(!voiced(&[0x7f]));
+    let mut loud = steady(100, 3);
+    loud.push(0x00);
+    assert!(voiced(&loud), "100, 100, 100 and an odd byte");
+    let mut quiet = steady(99, 3);
+    quiet.push(0x7f);
+    assert!(!voiced(&quiet), "the odd byte is not a loud sample");
+}
+
+/// The contract's own `audio_delta` is digital silence, Live's padding; Live's padding measured
+/// up to 49 and its quietest voice 244.
+#[test]
+fn the_contracts_padding_and_lives_measured_padding_are_not_voice() {
+    let line = SERVER.lines().nth(2).expect("the fixture's audio_delta");
+    let ServerEvent::AudioDelta { audio, playback_id } =
+        decode_line(line.as_bytes()).expect("a golden server line decodes")
+    else {
+        panic!("line 3 is an audio_delta: {line}");
+    };
+    assert_eq!(playback_id, None, "an OpenAI call's audio");
+    assert!(!voiced(&audio));
+    assert!(!voiced(&padding()));
+    assert!(!voiced(&steady(49, CHUNK)));
+    assert!(voiced(&steady(244, CHUNK)));
+}
+
+/// Live pads its output: the reply has played when its last voiced chunk has, with the padding
+/// still queued behind it.
+#[test]
+fn the_drain_lands_at_the_end_of_the_last_voiced_chunk_with_padding_behind_it() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&padding(), None);
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&padding(), None);
+    queue.push_pcm16(&padding(), None);
+    for block in 1..15 {
+        let pull = pull(&mut queue, BLOCK);
+        assert!(
+            !pull.drained,
+            "block {block}: the second chunk of voice is still queued"
+        );
+    }
+    assert!(queue.voice_queued());
+    let at_end = pull(&mut queue, BLOCK);
+    assert!(at_end.drained, "the last voiced sample went out");
+    assert!(!at_end.emptied);
+    assert!(!queue.voice_queued());
+    assert_eq!(queue.played_since_anchor() as usize, 3 * CHUNK);
+    for _ in 0..10 {
+        let pull = pull(&mut queue, BLOCK);
+        assert!(!pull.drained, "padding drains no voice");
+    }
+    assert!(queue.is_empty());
+}
+
+/// A drain lands on the pull that takes the voice's last sample, inside the block.
+#[test]
+fn the_drain_lands_inside_the_pull_that_takes_the_last_voiced_sample() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&steady(2_000, 1_000), None);
+    queue.push_pcm16(&padding(), None);
+    assert!(!pull(&mut queue, 999).drained);
+    let pull = pull(&mut queue, BLOCK);
+    assert!(pull.drained);
+    assert_eq!(pull.real, BLOCK, "the block also carried padding");
+}
+
+#[test]
+fn padding_alone_never_drains_and_voice_after_it_drains_at_its_own_end() {
+    let mut queue = PlaybackQueue::new();
+    for _ in 0..3 {
+        queue.push_pcm16(&padding(), None);
+        assert!(!queue.voice_queued());
+        for _ in 0..5 {
+            assert!(!pull(&mut queue, BLOCK).drained);
+        }
+    }
+    queue.push_pcm16(&padding(), None);
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&padding(), None);
+    assert!(!pull(&mut queue, CHUNK).drained, "the padding before it");
+    assert!(!pull(&mut queue, CHUNK - 1).drained);
+    assert!(pull(&mut queue, 1).drained);
+    assert!(!pull(&mut queue, CHUNK).drained);
+}
+
+/// At the bound the oldest samples drop, voice or not: the voice's end moves with them, and
+/// voice dropped whole counts as played, so the next pull reports its drain.
+#[test]
+fn a_drop_at_the_bound_moves_the_voices_end_and_voice_dropped_whole_still_drains() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&steady(0, MAX_QUEUED_SAMPLES - CHUNK), None);
+    assert_eq!(queue.push_pcm16(&steady(0, 1_000), None), 1_000);
+    assert!(!pull(&mut queue, CHUNK - 1_000 - 1).drained);
+    assert!(
+        pull(&mut queue, 1).drained,
+        "1,000 of its 2,400 samples dropped"
+    );
+
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&voice(), None);
+    assert_eq!(
+        queue.push_pcm16(&steady(0, MAX_QUEUED_SAMPLES), None),
+        CHUNK
+    );
+    assert!(!queue.voice_queued(), "dropped whole");
+    let pull_after = pull(&mut queue, BLOCK);
+    assert!(pull_after.drained, "the dropped voice counts as played");
+    assert!(!pull(&mut queue, BLOCK).drained, "once");
+}
+
+#[test]
+fn a_flush_is_not_a_drain_and_forgets_the_voice() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&padding(), None);
+    pull(&mut queue, BLOCK);
+    queue.clear();
+    assert!(!queue.voice_queued());
+    queue.push_pcm16(&padding(), None);
+    for _ in 0..6 {
+        assert!(
+            !pull(&mut queue, BLOCK).drained,
+            "the flushed voice never drains"
+        );
+    }
+
+    queue.push_pcm16(&voice(), None);
+    queue.start_call();
+    queue.push_pcm16(&padding(), None);
+    for _ in 0..6 {
+        assert!(
+            !pull(&mut queue, BLOCK).drained,
+            "nor a call's voice in the next call"
+        );
+    }
+}
+
+/// The anchor is about what `interrupt` reports; the voice's end does not move with it.
+#[test]
+fn a_new_anchor_keeps_the_voices_end() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&voice(), None);
+    queue.push_pcm16(&padding(), None);
+    pull(&mut queue, BLOCK);
+    queue.reset_anchor();
+    assert!(!pull(&mut queue, CHUNK - BLOCK - 1).drained);
+    assert!(pull(&mut queue, 1).drained);
+}
+
+/// Padding plays: it counts as played since the anchor, and under its playback id, as all
+/// audio does.
+#[test]
+fn padding_counts_as_played_as_any_audio_does() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&steady(2_000, 480), Some("p1"));
+    queue.push_pcm16(&steady(0, 480), Some("p1"));
+    pull(&mut queue, 960);
+    assert_eq!(queue.played_since_anchor(), 960);
+    assert_eq!(queue.take_progress(), vec![progress("p1", 40, true)]);
+}
+
+/// The Realtime and Grok engines send no padding: a reply whose every chunk is voice drains as
+/// its queue runs dry, on the same pull, as before Live's padding was told apart.
+#[test]
+fn a_reply_without_padding_drains_as_its_queue_runs_dry_as_before() {
+    let mut queue = PlaybackQueue::new();
+    for level in [3_667, 244, 1_500] {
+        queue.push_pcm16(&steady(level, 1_200), None);
+    }
+    let mut pulls = Vec::new();
+    while !queue.is_empty() {
+        assert_eq!(queue.voice_queued(), !queue.is_empty());
+        pulls.push(pull(&mut queue, BLOCK));
+    }
+    let edges: Vec<(bool, bool)> = pulls.iter().map(|p| (p.drained, p.emptied)).collect();
+    let mut expected = vec![(false, false); 7];
+    expected.push((true, true));
+    assert_eq!(edges, expected, "3,600 samples in 480-sample pulls");
+}
+
+/// The one change for engines that send no padding, and on purpose: a reply whose last chunk is
+/// under the voiced line drains at its last voiced chunk, not at the queue's end. That quiet
+/// chunk still plays and still counts under its playback id, but the reply's voice is over, so
+/// nothing waits on it. The macOS app does the same: `AudioController` counts only voiced
+/// buffers into `pendingVoiceBuffers`, and reports the drain when the last of them has played.
+#[test]
+fn a_reply_without_padding_drains_at_its_last_voiced_chunk_before_a_quiet_last_chunk() {
+    let mut queue = PlaybackQueue::new();
+    queue.push_pcm16(&steady(1_500, 1_200), Some("p1"));
+    queue.push_pcm16(&steady(1_500, 1_200), Some("p1"));
+    queue.push_pcm16(&steady(60, 480), Some("p1")); // int16 RMS 60: under the line
+    let edges: Vec<(bool, bool)> = (0..6)
+        .map(|_| pull(&mut queue, BLOCK))
+        .map(|p| (p.drained, p.emptied))
+        .collect();
+    let mut expected = vec![(false, false); 4];
+    expected.extend([(true, false), (false, true)]);
+    assert_eq!(
+        edges, expected,
+        "the drain at 2,400 samples, the queue's end at 2,880"
+    );
+    assert_eq!(queue.take_progress(), vec![progress("p1", 120, true)]);
 }

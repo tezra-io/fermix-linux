@@ -4,6 +4,7 @@
 //! gate-then-`call_stop` order, the reason → sentence table).
 
 use fermix_client::realtime::client::{CloseReason, ConnectError, Incoming};
+use fermix_client::realtime::playback::{rms, voiced, PlaybackQueue};
 use fermix_client::realtime::protocol::{
     decode_line, CallReady, Caption, ClientEvent, DecodeError, Direction, ServerError, ServerEvent,
     Speaker, Task, TaskStatus, ToolStatus, TurnState, Usage,
@@ -22,8 +23,22 @@ fn state(session: &mut Session, state: TurnState) -> Vec<Effect> {
     event(session, ServerEvent::State { state })
 }
 
+/// A chunk of voice at the linear level `rms`.
 fn audio(session: &mut Session, rms: f32) -> Vec<Effect> {
-    session.apply(Input::Wire(Incoming::Audio { bytes: 4_800, rms }))
+    session.apply(Input::Wire(Incoming::Audio {
+        bytes: 4_800,
+        rms,
+        voiced: true,
+    }))
+}
+
+/// A chunk under the voiced line, at the linear level `rms`: Live's padding.
+fn unvoiced(session: &mut Session, rms: f32) -> Vec<Effect> {
+    session.apply(Input::Wire(Incoming::Audio {
+        bytes: 4_800,
+        rms,
+        voiced: false,
+    }))
 }
 
 fn closed(session: &mut Session, reason: CloseReason) -> Vec<Effect> {
@@ -434,6 +449,341 @@ fn audio_outside_a_call_does_not_fake_speaking() {
     audio(&mut session, 0.9);
     assert_eq!(session.visual_mode(), Mode::Idle);
     assert!(!session.speaking_tail());
+}
+
+/// As on macOS, where every chunk played feeds the pet's pulse: a chunk under the voiced line
+/// moves the level, so a pause in the voice closes the mouth, but it never starts speaking nor
+/// holds it.
+#[test]
+fn a_chunk_under_the_voiced_line_moves_the_level_but_never_shows_speaking() {
+    let mut session = listening();
+    assert!(unvoiced(&mut session, 0.001).is_empty());
+    assert_eq!(session.visual_mode(), Mode::Listening);
+    assert!(!session.speaking_tail());
+    assert!((session.level() - 0.000_35).abs() < 1e-7);
+
+    audio(&mut session, 1.0);
+    let voiced_level = session.level();
+    unvoiced(&mut session, 0.0);
+    assert!((session.level() - 0.65 * voiced_level).abs() < 1e-6);
+    assert_eq!(
+        session.visual_mode(),
+        Mode::Speaking,
+        "the voice is still playing"
+    );
+    session.apply(Input::Drained);
+    unvoiced(&mut session, 0.0);
+    assert_eq!(session.visual_mode(), Mode::Listening);
+    assert_eq!(session.level(), 0.0);
+}
+
+// A call's reply audio, as the app plays it
+
+const SERVER: &str = include_str!("../contracts/realtime/fixtures/server_events.jsonl");
+/// How long after a drain of voice the app reports it, unless voice is queued again by then
+/// (the app's `DRAIN_GRACE`).
+const GRACE_MS: u64 = 350;
+
+/// One line of the contract's golden server events, as the daemon sends it.
+fn golden(index: usize) -> Input {
+    let line = SERVER
+        .lines()
+        .nth(index)
+        .expect("the fixture has this line");
+    let event = decode_line(line.as_bytes()).expect("a golden server line decodes");
+    Input::Wire(Incoming::Event(event))
+}
+
+/// The contract's Live `call_ready` and Grok `call_ready`.
+const LIVE_READY: usize = 9;
+const GROK_READY: usize = 10;
+/// The contract's `audio_delta`: digital silence, Live's padding.
+const PADDING_DELTA: usize = 2;
+
+/// `samples` of a steady `level`: its int16 RMS is `level`.
+fn steady(level: i16, samples: usize) -> Vec<u8> {
+    level.to_le_bytes().repeat(samples)
+}
+
+/// 100 ms of voice, at int16 RMS 2,000.
+fn voice() -> Vec<u8> {
+    steady(2_000, 2_400)
+}
+
+/// 100 ms of Live's padding, digital silence.
+fn padding() -> Vec<u8> {
+    steady(0, 2_400)
+}
+
+/// A call's reply audio as the app plays it. Each chunk goes to the playback queue and to the
+/// session as the client hands it on, the speaker pulls 20 ms at a time, the queue's effects are
+/// performed, and a drain of voice is reported `GRACE_MS` after it unless voice is queued again
+/// by then, as the app's drain reporter does.
+struct Played {
+    session: Session,
+    queue: PlaybackQueue,
+    now_ms: u64,
+    /// When the newest drain of voice is due to be reported.
+    report_at: Option<u64>,
+    /// Each pull that drained voice or emptied the queue: when, and which.
+    edges: Vec<(u64, bool, bool)>,
+}
+
+impl Played {
+    fn new(session: Session) -> Played {
+        Played {
+            session,
+            queue: PlaybackQueue::new(),
+            now_ms: 0,
+            report_at: None,
+            edges: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, input: Input) {
+        for effect in self.session.apply(input) {
+            match effect {
+                Effect::FlushPlayback => self.queue.clear(),
+                Effect::ResetAnchor => self.queue.reset_anchor(),
+                Effect::NewPlayback => self.queue.start_call(),
+                _ => {}
+            }
+        }
+    }
+
+    fn state(&mut self, state: TurnState) {
+        self.apply(Input::Wire(Incoming::Event(ServerEvent::State { state })));
+    }
+
+    /// One `audio_delta`, as the client hands it on.
+    fn arrive(&mut self, pcm: &[u8], playback_id: Option<&str>) {
+        self.queue.push_pcm16(pcm, playback_id);
+        self.apply(Input::Wire(Incoming::Audio {
+            bytes: pcm.len(),
+            rms: rms(pcm),
+            voiced: voiced(pcm),
+        }));
+    }
+
+    /// Plays `ms`, 20 ms a pull.
+    fn play(&mut self, ms: u64) {
+        for _ in 0..ms / 20 {
+            let pull = self.queue.pull(&mut [0; 480]);
+            self.now_ms += 20;
+            if pull.drained || pull.emptied {
+                self.edges.push((self.now_ms, pull.drained, pull.emptied));
+            }
+            if pull.drained {
+                self.report_at = Some(self.now_ms + GRACE_MS);
+            }
+            if self.report_at.is_some_and(|at| self.now_ms >= at) {
+                self.report_at = None;
+                if !self.queue.voice_queued() {
+                    self.apply(Input::Drained);
+                }
+            }
+        }
+    }
+
+    /// One chunk arriving, then 100 ms played: Live's pace, one chunk every 100 ms.
+    fn chunk(&mut self, pcm: &[u8]) {
+        self.arrive(pcm, None);
+        self.play(100);
+    }
+
+    fn shows(&self) -> Mode {
+        self.session.visual_mode()
+    }
+}
+
+/// The contract's Live call sequence: `listening`, `call_ready`, then audio every 100 ms for
+/// the whole call, padding before a reply's voice and after it.
+#[test]
+fn a_live_reply_shows_speaking_through_its_voice_and_listening_once_it_has_played() {
+    let mut call = Played::new(calling());
+    call.apply(golden(1));
+    call.apply(golden(LIVE_READY));
+    assert_eq!(call.session.engine(), Some("openai_live"));
+    for _ in 0..5 {
+        call.chunk(&padding());
+        assert_eq!(call.shows(), Mode::Listening, "padding before the reply");
+    }
+    for chunk in 1..=5 {
+        call.chunk(&voice());
+        assert_eq!(call.shows(), Mode::Speaking, "voice chunk {chunk}");
+    }
+    // The network runs a chunk ahead: padding stays queued from here on.
+    call.arrive(&padding(), None);
+    call.chunk(&padding());
+    assert_eq!(
+        call.shows(),
+        Mode::Speaking,
+        "the voice has only just played"
+    );
+    for _ in 0..3 {
+        call.chunk(&padding());
+    }
+    assert_eq!(call.shows(), Mode::Listening);
+    assert_eq!(call.session.mode(), Mode::Listening);
+    assert!(!call.session.speaking_tail());
+    assert!(!call.queue.is_empty(), "with padding still queued");
+    for _ in 0..20 {
+        call.chunk(&padding());
+        assert_eq!(call.shows(), Mode::Listening, "padding after the reply");
+    }
+    assert_eq!(call.session.level(), 0.0, "digital silence");
+    let drains: Vec<u64> = call.edges.iter().filter(|e| e.1).map(|e| e.0).collect();
+    assert_eq!(
+        drains,
+        [600, 700, 800, 900, 1_000],
+        "each voice chunk's end"
+    );
+}
+
+#[test]
+fn a_live_reply_over_running_work_returns_to_that_work_with_padding_still_arriving() {
+    let mut call = Played::new(listening());
+    call.apply(golden(LIVE_READY));
+    call.apply(Input::Wire(Incoming::Event(ServerEvent::Task(task(
+        1,
+        TaskStatus::Running,
+    )))));
+    call.chunk(&padding());
+    assert_eq!(call.shows(), Mode::ToolUse);
+    for _ in 0..3 {
+        call.chunk(&voice());
+        assert_eq!(call.shows(), Mode::Speaking);
+    }
+    for _ in 0..6 {
+        call.chunk(&padding());
+    }
+    assert_eq!(call.shows(), Mode::ToolUse, "the drain returns to the work");
+    call.apply(Input::Wire(Incoming::Event(ServerEvent::Task(task(
+        1,
+        TaskStatus::Completed,
+    )))));
+    call.chunk(&padding());
+    assert_eq!(call.shows(), Mode::Listening);
+}
+
+/// Live's padding, measured at int16 RMS 0 to 49, runs from the call's first second to its
+/// last. Alone it is no reply: the pet never speaks for it, and it takes the turn from no state
+/// the daemon set.
+#[test]
+fn lives_padding_alone_never_shows_speaking() {
+    let mut call = Played::new(listening());
+    call.apply(golden(LIVE_READY));
+    for level in [0, 49, 12, 49, 0] {
+        call.chunk(&steady(level, 2_400));
+        assert_eq!(call.shows(), Mode::Listening, "padding at {level}");
+        assert!(!call.session.speaking_tail());
+    }
+    call.apply(golden(PADDING_DELTA));
+    assert_eq!(call.shows(), Mode::Listening, "the contract's own padding");
+    call.state(TurnState::Thinking);
+    for _ in 0..10 {
+        call.chunk(&padding());
+    }
+    assert_eq!(call.shows(), Mode::Thinking);
+    assert!(call.edges.iter().all(|edge| !edge.1), "no drain of voice");
+}
+
+#[test]
+fn the_daemons_state_still_moves_the_pet_while_padding_arrives() {
+    let mut call = Played::new(listening());
+    call.apply(golden(LIVE_READY));
+    call.state(TurnState::Speaking);
+    call.chunk(&padding());
+    assert_eq!(call.shows(), Mode::Speaking, "the daemon said speaking");
+    call.state(TurnState::Listening);
+    call.chunk(&padding());
+    assert_eq!(
+        call.shows(),
+        Mode::Listening,
+        "padding holds no speaking look"
+    );
+    call.state(TurnState::Thinking);
+    call.chunk(&padding());
+    assert_eq!(call.shows(), Mode::Thinking);
+
+    call.arrive(&voice(), None);
+    call.arrive(&voice(), None);
+    call.state(TurnState::Listening);
+    call.chunk(&padding());
+    assert_eq!(
+        call.shows(),
+        Mode::Speaking,
+        "the voice outlasts the daemon's listening"
+    );
+    for _ in 0..6 {
+        call.chunk(&padding());
+    }
+    assert_eq!(call.shows(), Mode::Listening);
+    call.state(TurnState::Muted);
+    call.chunk(&padding());
+    assert_eq!(call.shows(), Mode::Muted);
+}
+
+/// The Grok call sequence sends no padding: when every chunk of a reply is voice, its voice ends
+/// where its audio does, so the pet behaves as it did before padding was told apart, and its
+/// playback id drains with it.
+#[test]
+fn a_reply_without_padding_shows_speaking_until_its_audio_has_played_as_before() {
+    let mut call = Played::new(listening());
+    call.apply(golden(GROK_READY));
+    call.state(TurnState::Speaking);
+    for level in [3_667, 244, 1_500] {
+        call.arrive(&steady(level, 2_400), Some("p1"));
+    }
+    call.state(TurnState::Listening);
+    call.play(280);
+    assert_eq!(call.shows(), Mode::Speaking);
+    call.play(20);
+    assert_eq!(
+        call.edges,
+        [(300, true, true)],
+        "the drain is the queue's end"
+    );
+    // Reported at the first pull past 300 + GRACE_MS: 660.
+    call.play(340);
+    assert_eq!(call.shows(), Mode::Speaking, "within the grace");
+    call.play(20);
+    assert_eq!(call.shows(), Mode::Listening);
+    let report = call.queue.take_progress();
+    assert_eq!(report.len(), 1);
+    assert_eq!((report[0].played_ms, report[0].drained), (300, true));
+}
+
+/// The one change for engines that send no padding, and on purpose: a reply whose last chunks
+/// are under the voiced line has played its voice before they have played. The pet leaves
+/// speaking once the drain of its last voiced chunk has stood for the grace, while the quiet
+/// tail still plays, as on macOS, where only voiced buffers keep a reply speaking.
+#[test]
+fn a_reply_without_padding_leaves_speaking_while_its_quiet_last_chunks_still_play() {
+    let mut call = Played::new(listening());
+    call.apply(golden(GROK_READY));
+    call.state(TurnState::Speaking);
+    for _ in 0..2 {
+        call.arrive(&voice(), Some("p1"));
+    }
+    for _ in 0..5 {
+        call.arrive(&steady(60, 2_400), Some("p1")); // int16 RMS 60: under the line
+    }
+    call.state(TurnState::Listening);
+    call.play(200);
+    assert_eq!(
+        call.edges,
+        [(200, true, false)],
+        "the voice's end, the tail queued"
+    );
+    // Reported at the first pull past 200 + GRACE_MS: 560.
+    call.play(340);
+    assert_eq!(call.shows(), Mode::Speaking, "within the grace");
+    call.play(20);
+    assert_eq!(call.shows(), Mode::Listening);
+    assert!(!call.queue.is_empty(), "the quiet tail still plays");
+    call.play(140);
+    assert_eq!(call.edges, [(200, true, false), (700, false, true)]);
 }
 
 // Tools and tasks

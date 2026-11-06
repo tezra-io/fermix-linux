@@ -215,13 +215,15 @@ fn a_daemon_that_hangs_up_during_the_handshake_is_an_io_error() {
 }
 
 #[test]
-fn audio_goes_to_on_audio_with_its_playback_id_and_the_inbox_hears_only_its_size_and_level() {
+fn audio_goes_to_on_audio_with_its_playback_id_and_the_inbox_hears_only_its_size_level_and_voice() {
     let daemon = FakeDaemon::start(|mut peer| {
         peer.greet();
         let audio = STANDARD.encode([0x00, 0x40, 0x00, 0xc0]);
         peer.send(&format!(
             r#"{{"type":"audio_delta","playback_id":"p1","audio":"{audio}"}}"#
         ));
+        // Live's padding, as the contract's own fixture carries it: digital silence.
+        peer.send(r#"{"type":"audio_delta","audio":"AAAA"}"#);
         peer.send(r#"{"type":"state","state":"speaking"}"#);
         peer.read();
     });
@@ -231,15 +233,26 @@ fn audio_goes_to_on_audio_with_its_playback_id_and_the_inbox_hears_only_its_size
     });
     let (outbox, inbox) = connect(&daemon.socket, on_audio).unwrap();
 
-    let Incoming::Audio { bytes, rms } = inbox.recv() else {
+    let Incoming::Audio { bytes, rms, voiced } = inbox.recv() else {
         panic!("audio first")
     };
     assert_eq!(bytes, 4);
     assert!((rms - 0.5).abs() < 1e-3, "{rms}");
+    assert!(voiced, "int16 RMS 16,384");
     assert_eq!(
         audio.try_recv().unwrap(),
         (vec![0x00, 0x40, 0x00, 0xc0], Some("p1".to_owned()))
     );
+    assert_eq!(
+        inbox.recv(),
+        Incoming::Audio {
+            bytes: 3,
+            rms: 0.0,
+            voiced: false
+        },
+        "padding is told apart, and still goes to on_audio to play"
+    );
+    assert_eq!(audio.try_recv().unwrap(), (vec![0, 0, 0], None));
     assert_eq!(
         inbox.recv(),
         Incoming::Event(ServerEvent::State {

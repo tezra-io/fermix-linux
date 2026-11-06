@@ -8,7 +8,7 @@
 //!   the playback queue *before* applying: the flush resets its anchor), `CancelTask`;
 //! - from the socket: `Connected` or `ConnectFailed` (the answer to `Effect::Connect`), then
 //!   every `Incoming` from the `Inbox` as `Wire`;
-//! - from the audio pipeline: `Drained` (playback ran dry), `AudioFailed(sentence)`,
+//! - from the audio pipeline: `Drained` (the reply's voice has played), `AudioFailed(sentence)`,
 //!   `MicLevel(rms)` (a block the microphone sent);
 //! - from the timer: `CallDeadline(n)`, `CALL_START_DEADLINE` after `Effect::WatchCallStart(n)`.
 //!
@@ -32,12 +32,14 @@
 //! - Ending a call shuts the gate and stops the pipeline *before* `call_stop` goes out: audio
 //!   after `call_stop` is `not_connected` to the daemon, which then hangs up.
 //! - The daemon's `muted` and `idle` are authoritative about mute.
-//! - The speaking look outlasts the daemon's `speaking` until playback drains.
+//! - The speaking look outlasts the daemon's `speaking` until the reply's voice has played.
+//! - Only voice shows speaking. Live pads its output with digital silence for the whole call;
+//!   that padding plays, but it neither starts the speaking look nor keeps it.
 //! - Any error frame or close tears the audio down; `End` keeps the connection.
 //! - A stop reports what played before `interrupt` goes out: a Grok call cuts the reply there.
 
 use crate::realtime::client::{CloseReason, ConnectError, Incoming};
-use crate::realtime::playback::{rms, smooth};
+use crate::realtime::playback::{rms, smooth, voiced};
 use crate::realtime::protocol::{
     Caption, ClientEvent, Direction, ServerError, ServerEvent, Speaker, Task, TaskStatus,
     ToolStatus, TurnState, Usage,
@@ -181,7 +183,7 @@ pub struct Session {
     muted: bool,
     /// Streaming armed: the daemon said `listening` during this call.
     armed: bool,
-    /// Reply audio is still playing out.
+    /// The reply's voice is still playing out.
     tail: bool,
     level: f32,
     /// The microphone meter, 0 to 1: the last block sent, on its decibel scale.
@@ -213,7 +215,7 @@ impl Session {
             Input::Connected => self.connected(),
             Input::ConnectFailed(error) => self.connect_failed(&error),
             Input::Wire(Incoming::Event(event)) => self.event(event),
-            Input::Wire(Incoming::Audio { rms, .. }) => self.audio(rms),
+            Input::Wire(Incoming::Audio { rms, voiced, .. }) => self.audio(rms, voiced),
             Input::Wire(Incoming::Closed(reason)) => self.closed(&reason),
             Input::Drained => self.drained(),
             Input::AudioFailed(sentence) => self.fail_call(sentence),
@@ -226,7 +228,8 @@ impl Session {
         self.mode
     }
 
-    /// The mode the pet shows: speaking while reply audio still plays, whatever the daemon says.
+    /// The mode the pet shows: speaking while the reply's voice still plays, whatever the daemon
+    /// says.
     pub fn visual_mode(&self) -> Mode {
         if self.in_call && self.tail {
             Mode::Speaking
@@ -550,10 +553,11 @@ impl Session {
         effects
     }
 
-    /// The reply's audio has finished playing. Speaking was this session's own reading of
-    /// arriving audio, so its end is too: the Live engine publishes no end of a reply, and the
-    /// pet would keep its speaking face until the user next spoke (macOS 2ee3413). It returns
-    /// to backend work still running, or to the microphone. The daemon's next state still wins.
+    /// The reply's voice has finished playing, whatever padding still plays behind it. Speaking
+    /// was this session's own reading of arriving voice, so its end is too: the Live engine
+    /// publishes no end of a reply, and the pet would keep its speaking face until the user next
+    /// spoke (macOS 2ee3413). It returns to backend work still running, or to the microphone.
+    /// The daemon's next state still wins.
     fn drained(&mut self) -> Vec<Effect> {
         self.tail = false;
         self.level = 0.0;
@@ -579,7 +583,7 @@ impl Session {
     fn event(&mut self, event: ServerEvent) -> Vec<Effect> {
         match event {
             ServerEvent::State { state } => self.turn_state(&state),
-            ServerEvent::AudioDelta { audio, .. } => self.audio(rms(&audio)),
+            ServerEvent::AudioDelta { audio, .. } => self.audio(rms(&audio), voiced(&audio)),
             ServerEvent::PlaybackStop => self.playback_stop(),
             ServerEvent::ToolEvent { status, reason, .. } => self.tool_event(&status, reason),
             ServerEvent::Error(error) => self.server_error(&error),
@@ -648,13 +652,18 @@ impl Session {
         }
     }
 
-    fn audio(&mut self, rms: f32) -> Vec<Effect> {
+    /// One chunk of the reply. Every chunk moves the level, padding too, as on macOS, where each
+    /// chunk played feeds the pet's pulse: a pause in the voice closes the mouth. Only voice
+    /// shows speaking and holds it until it has played.
+    fn audio(&mut self, rms: f32, voiced: bool) -> Vec<Effect> {
         if !self.in_call {
             return Vec::new();
         }
-        self.mode = Mode::Speaking;
-        self.tail = true;
         self.level = smooth(self.level, rms);
+        if voiced {
+            self.mode = Mode::Speaking;
+            self.tail = true;
+        }
         Vec::new()
     }
 
