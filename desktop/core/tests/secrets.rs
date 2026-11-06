@@ -29,6 +29,7 @@ fn refusal(code: &str, reason: Option<&str>) -> Refusal {
         sentence: "The secret could not be stored.".into(),
         field: None,
         reason: reason.map(str::to_owned),
+        requires: None,
     }
 }
 

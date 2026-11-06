@@ -26,6 +26,8 @@ pub const WIDEST_VALUE_CHARS: i32 = 64;
 const _: () = assert!(FIELD_CHARS <= KEPT_VALUE_CHARS && KEPT_VALUE_CHARS < WIDEST_VALUE_CHARS);
 
 pub const NOT_SET: &str = "Not set";
+/// The title of the field that adds an entry to a list row with no example of its own.
+pub const LIST_ADD: &str = "Add";
 /// Under a model row whose provider could not list its models. The listing's
 /// refusal is never more specific than "unavailable".
 pub const MODELS_UNLISTED: &str =
@@ -39,9 +41,11 @@ pub struct Pane {
     pub slug: &'static str,
     pub title: &'static str,
     pub icon: &'static str,
+    /// More words search finds the pane by, beside its title and its rows.
+    pub keywords: &'static str,
 }
 
-pub const PANES: [Pane; 15] = [
+pub const PANES: [Pane; 16] = [
     pane_of("providers", "Providers", "dialog-password-symbolic"),
     pane_of("personality", "Personality", "avatar-default-symbolic"),
     pane_of("memory", "Memory", "document-open-recent-symbolic"),
@@ -51,6 +55,13 @@ pub const PANES: [Pane; 15] = [
         "Integrations",
         "application-x-addon-symbolic",
     ),
+    // Shown only where the daemon serves cues (M60 cues §4.1, `cues::view::available`).
+    Pane {
+        slug: crate::cues::view::PANE,
+        title: crate::cues::words::PANE_TITLE,
+        icon: "network-transmit-receive-symbolic",
+        keywords: crate::cues::words::KEYWORDS,
+    },
     pane_of("voice", "Voice", "audio-input-microphone-symbolic"),
     pane_of("meetings", "Meetings", "x-office-calendar-symbolic"),
     pane_of("computer", "Computer", "video-display-symbolic"),
@@ -65,12 +76,17 @@ pub const PANES: [Pane; 15] = [
 ];
 
 const fn pane_of(slug: &'static str, title: &'static str, icon: &'static str) -> Pane {
-    Pane { slug, title, icon }
+    Pane {
+        slug,
+        title,
+        icon,
+        keywords: "",
+    }
 }
 
 pub const GROUPS: [(&str, &[&str]); 4] = [
     ("Assistant", &["providers", "personality", "memory"]),
-    ("Connections", &["channels", "integrations"]),
+    ("Connections", &["channels", "integrations", "cues"]),
     (
         "Capabilities",
         &[
@@ -124,6 +140,10 @@ pub struct Row {
     pub footer: Option<String>,
     #[serde(default)]
     pub info: Option<String>,
+    /// A sample value an empty field shows in place of the app's own empty prompt. Never a
+    /// default and never sent. An engine without the key means none.
+    #[serde(default)]
+    pub example: Option<String>,
     /// A row most people never change, drawn after the section's others under one closed
     /// disclosure. An engine without the key means false.
     #[serde(default)]
@@ -384,12 +404,25 @@ pub fn with_listing(section: &SectionRows, listing: &Listing) -> SectionRows {
     drawn
 }
 
-/// What an empty field says: the label of the row's inherit option, else "Not set".
+/// What an empty field says: the row's example, else the label of its inherit option, else
+/// "Not set".
 pub fn placeholder(row: &Row) -> String {
+    if let Some(example) = row.example.as_deref().filter(|e| !e.is_empty()) {
+        return example.to_owned();
+    }
     row.options
         .iter()
         .find(|o| o.value.is_empty())
         .map_or_else(|| NOT_SET.to_owned(), |o| o.label.clone())
+}
+
+/// What a list row's empty new-entry field says: the row's example, else "Add".
+pub fn list_prompt(row: &Row) -> String {
+    row.example
+        .as_deref()
+        .filter(|e| !e.is_empty())
+        .unwrap_or(LIST_ADD)
+        .to_owned()
 }
 
 pub fn text_value(row: &Row) -> String {
@@ -459,19 +492,23 @@ pub fn list_without(items: &[String], gone: &str) -> Vec<String> {
     items.iter().filter(|i| *i != gone).cloned().collect()
 }
 
-/// Panes whose title, section titles or already-read row labels hold `query`.
-/// A blank query matches every pane. Footers are not searched, and nothing is read for it.
+/// Panes whose title, keywords, section titles or already-read row labels hold `query`, less
+/// the `hidden` ones. A blank query matches every pane shown. Footers are not searched, and
+/// nothing is read for it.
 pub fn matching_panes(
     query: &str,
     sections: &[Section],
     loaded: &HashMap<String, SectionRows>,
+    hidden: &[&str],
 ) -> Vec<&'static str> {
     let query = query.trim().to_lowercase();
     let holds = |text: &str| text.to_lowercase().contains(&query);
     PANES
         .iter()
+        .filter(|p| !hidden.contains(&p.slug))
         .filter(|p| {
             holds(p.title)
+                || holds(p.keywords)
                 || sections_for(p.slug, sections).iter().any(|s| {
                     holds(&s.title)
                         || loaded

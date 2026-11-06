@@ -7,7 +7,9 @@
 //! daemon that cannot speak this build's version ends that, until chat is asked for again
 //! (macOS `CompanionSession`).
 
-use crate::chat_wire::protocol::{Direction, ServerEvent, PROTOCOL_VERSION};
+use crate::chat_wire::protocol::{
+    loggable_id, Direction, ServerError, ServerEvent, Unreadable, PROTOCOL_VERSION,
+};
 use std::time::Duration;
 
 /// How long each consecutive failure waits; the last delay repeats.
@@ -16,7 +18,7 @@ pub const RECONNECT_DELAYS_S: [u64; 6] = [1, 2, 4, 8, 16, 30];
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The error reasons after which the daemon closes the connection (PROTOCOL.md "Errors").
-const CLOSING_REASONS: [&str; 15] = [
+const CLOSING_REASONS: [&str; 20] = [
     "invalid_json",
     "invalid_event",
     "missing_type",
@@ -32,15 +34,28 @@ const CLOSING_REASONS: [&str; 15] = [
     "unsupported_protocol_version",
     "max_clients_reached",
     "unidentified_client",
+    "stale_primary",
+    "primary_epoch_unavailable",
+    "unattended_client",
+    "primary_unreachable",
+    "desktop_revoked",
 ];
 
 // The macOS app's ProductStrings wording (`companion.connection.*`), "this Mac" made "this computer".
 const UPDATE_APP: &str =
     "This app is older than the Fermix engine it talks to. Update the app to chat.";
 const UPDATE_FERMIX: &str = "The Fermix engine is older than this app. Update the engine to chat.";
+/// What the page says for a version refusal in a direction this build does not know. No macOS
+/// string: the macOS app shows the daemon's word.
+pub const UPDATE_BOTH: &str =
+    "Fermix refused this app's version in a way this app cannot read. Update the app and the engine to chat.";
 /// What the page says for `Shown::NoChat`.
 pub const NO_CHAT: &str = "The Fermix engine on this computer has no chat yet";
-const RECONNECTING: &str = "Chat cannot reach Fermix right now and is trying again";
+/// What the page says while it tries again after any other loss.
+pub const RECONNECTING: &str = "Chat cannot reach Fermix right now and is trying again";
+/// What the page says while it tries again after giving up on a history it could not read:
+/// Fermix answered, and only its history could not be read. No macOS string.
+pub const HISTORY_UNREAD: &str = "Chat cannot read Fermix's history right now and is trying again";
 
 /// Whether the daemon closes the connection after an error with this reason.
 pub fn closes(reason: &str) -> bool {
@@ -66,17 +81,25 @@ pub enum Handshake {
     Ignore,
 }
 
-/// The handshake outcome of `event`, for this build's `PROTOCOL_VERSION`.
+/// The handshake outcome of `event`, for this build's `PROTOCOL_VERSION`. A `server_hello` or
+/// an `error` that cannot be read ends the attempt: what it said is unknown. A lost one's detail
+/// is the event as the log names it (`logged`).
 pub fn handshake(event: &ServerEvent) -> Handshake {
     match event {
         ServerEvent::ServerHello {
             min_version,
             max_version,
+            ..
         } => window(*min_version, *max_version),
         ServerEvent::Error(error) => match &error.direction {
             Some(direction) => Handshake::Refused(refusal(direction)),
-            None => Handshake::Lost(error.reason.clone()),
+            None => Handshake::Lost(logged(event)),
         },
+        ServerEvent::Unreadable(Unreadable { kind, .. })
+            if kind == "server_hello" || kind == "error" =>
+        {
+            Handshake::Lost(format!("the daemon's {kind} could not be read"))
+        }
         _ => Handshake::Ignore,
     }
 }
@@ -91,15 +114,41 @@ fn window(min: u64, max: u64) -> Handshake {
     Handshake::Ok
 }
 
-/// The sentence for a version refusal. A direction this build does not know names both sides.
+/// The sentence for a version refusal, in this app's words. A direction this build does not know
+/// says to update both sides, and never shows the daemon's word.
 pub fn refusal(direction: &Direction) -> String {
     match direction {
         Direction::ClientTooOld => UPDATE_APP.into(),
         Direction::ClientTooNew => UPDATE_FERMIX.into(),
-        Direction::Other(word) => {
-            format!("The daemon reported: {word}")
-        }
+        Direction::Other(_) => UPDATE_BOTH.into(),
     }
+}
+
+/// A handshake event as the log names it: its type, a `server_hello`'s version window, and an
+/// `error`'s reason and direction as code words (`loggable_id`). Never the daemon's sentence, nor
+/// a word outside the contract's alphabet.
+pub fn logged(event: &ServerEvent) -> String {
+    if let ServerEvent::ServerHello {
+        min_version,
+        max_version,
+        ..
+    } = event
+    {
+        return format!("server_hello, versions {min_version} to {max_version}");
+    }
+    let ServerEvent::Error(ServerError {
+        reason, direction, ..
+    }) = event
+    else {
+        return event.kind().to_owned();
+    };
+    let direction = match direction {
+        None => "none",
+        Some(Direction::ClientTooOld) => "client_too_old",
+        Some(Direction::ClientTooNew) => "client_too_new",
+        Some(Direction::Other(word)) => loggable_id(word),
+    };
+    format!("error {}, direction {direction}", loggable_id(reason))
 }
 
 /// Why a connection ended or never began.
@@ -107,6 +156,10 @@ pub fn refusal(direction: &Direction) -> String {
 pub enum Lost {
     /// No `companion.sock` file: an engine that predates chat.
     NoSocket,
+    /// The history could not be read, page after page (`timeline::history_unreadable`). Its
+    /// backoff goes on past every later handshake, whatever other loss comes between, while the
+    /// history stays unreadable, until a page reads (`Session::history_read`).
+    History,
     /// Anything else; the detail is for the log.
     Broken(String),
 }
@@ -136,6 +189,14 @@ pub enum Shown {
     Refused(String),
 }
 
+/// Whether `event` is a page of the history that read: the one event after which a backoff kept
+/// for an unreadable history ends (`Session::history_read`). A page that could not be read is no
+/// read. A page that reads never leaves the history given up (`timeline::history_unreadable`):
+/// it counts the unreadable pages from zero.
+pub fn page_read(event: &ServerEvent) -> bool {
+    matches!(event, ServerEvent::HistoryPage(_))
+}
+
 /// The connection's phase and its run of failures.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Session {
@@ -143,6 +204,9 @@ pub struct Session {
     failures: u32,
     /// Why the last attempt failed, kept while later attempts run.
     last_lost: Option<Lost>,
+    /// A connection gave up on its history and no page has read since: the backoff is kept past
+    /// every handshake, whatever other loss comes between, until `history_read`.
+    history_owed: bool,
 }
 
 impl Session {
@@ -173,20 +237,34 @@ impl Session {
         true
     }
 
-    /// An event read during the handshake. `Ok` connects and resets the backoff; `Refused`
-    /// ends the attempts. The caller ends a `Lost` connection with `lost`.
+    /// An event read during the handshake. `Ok` connects and resets the backoff, unless a
+    /// connection gave up on its history and no page has read since (`history_read` resets it
+    /// then); `Refused` ends the attempts. The caller ends a `Lost` connection with `lost`.
     pub fn hello(&mut self, event: &ServerEvent) -> Handshake {
         let outcome = handshake(event);
         match &outcome {
             Handshake::Ok => {
+                if !self.history_owed {
+                    self.failures = 0;
+                }
                 self.phase = Phase::Connected;
-                self.failures = 0;
                 self.last_lost = None;
             }
             Handshake::Refused(sentence) => self.phase = Phase::Refused(sentence.clone()),
             Handshake::Lost(_) | Handshake::Ignore => {}
         }
         outcome
+    }
+
+    /// A page of the history read on this connection. A backoff kept because a connection gave
+    /// up on its history, and kept through every loss since, ends here: the history reads again,
+    /// so the next loss waits from the first delay. On a connection that kept none it changes
+    /// nothing, since its handshake already reset the backoff.
+    pub fn history_read(&mut self) {
+        if self.phase == Phase::Connected {
+            self.failures = 0;
+            self.history_owed = false;
+        }
     }
 
     /// The connection ended or never began; returns how long to wait before `start` again.
@@ -202,6 +280,7 @@ impl Session {
         }
         let wait = delay(self.failures);
         self.failures = self.failures.saturating_add(1);
+        self.history_owed |= why == Lost::History;
         self.last_lost = Some(why);
         self.phase = Phase::Waiting;
         Some(wait)
@@ -214,6 +293,7 @@ impl Session {
             (Phase::Refused(sentence), _) => Shown::Refused(sentence.clone()),
             (_, None) => Shown::Connecting,
             (_, Some(Lost::NoSocket)) => Shown::NoChat,
+            (_, Some(Lost::History)) => Shown::Disconnected(HISTORY_UNREAD.into()),
             (_, Some(Lost::Broken(_))) => Shown::Disconnected(RECONNECTING.into()),
         }
     }

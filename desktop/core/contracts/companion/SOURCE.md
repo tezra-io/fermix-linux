@@ -10,24 +10,20 @@ These four files are the engine's companion chat contract, copied byte for byte:
 | `fixtures/server_events.jsonl` | `apps/fermix_core/priv/companion/fixtures/server_events.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `95ee575b4de961bcc43f138038e06b8c379f4ba8`, the released engine v0.16.0, the tree they
-  were copied from. As of v0.16.0, the last commit to touch `priv/companion` is
-  `83464183af6e998b28f0796f3e418238a1f704f3` (2026-10-18, "fix(voice): a picture or file Fermix
-  sends reaches the Mac chat, from a GPT-Live or Grok call too"), which changed only the prose: a
-  picture or file a call sends is an ordinary media row.
-- Protocol version: 3, daemon window 2..3: phone-side media (`media_fetch`, `media_path`,
-  `media_missing`, `media_release`) and `row_updated`.
-- Engine v0.17.0 (`b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`), which fermix-desktop 0.4.0 carries,
-  serves versions 3..4. Version 4 adds a mandate's proposals (`proposal`, `proposal_resolved`,
-  `proposal_answer`), sent only to version 4 connections, so this app, on version 3, is never sent
-  one and cannot answer one in its chat: the owner's Telegram, Signal, WhatsApp or iMessage chat
-  still can. An engine whose window starts at 4 would refuse this app with its Update the app
-  sentence.
-- `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format. The digests match the
-  macOS app 0.6.0's pin (`Sources/FermixAppCore/Resources/Contracts/CHECKSUMS.txt`, `companion/`
-  rows).
+- Commit: `9389f738a9a02dc12422fc04dc2b4fe3100b3bc9`, the engine v0.18.0 release tag. The last
+  commit to touch `priv/companion` is `35a2c5ed588b1c398029c69358983891d1210076` (2026-11-02, "a
+  reply's text_done carries ts").
+- Protocol version: 7, daemon window 6..7. A client below 6 is refused.
+  - Version 5: a watcher's follow-up, a `proposal` whose card names `follow_up` in place of a
+    mandate's call, and the `always_allow` answer.
+  - Version 6: what a turn is doing (`reasoning`, `tool_event.activity`), the owner's lists
+    (`checklists_pull`, `checklist_pull`, `checklist_edit`, `checklists`, `checklist`) and the
+    Always On notice (`home_status_changed`).
+  - Version 7: files the owner attaches (`attach_file`, `attach_status`, `msg.attach_ids`, and
+    `server_hello.attachments`).
+- `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 
-Never edit these files by hand. To take a new engine contract, copy the four files again, rewrite
-`CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json fixtures/*.jsonl`, update the
-commit above, and run `cargo test --test companion_contract`: the golden fixtures then say whether
-the app still decodes what the daemon sends.
+Never edit these files by hand. To take a new engine contract, copy the four files again from a
+committed engine, rewrite `CHECKSUMS.txt` with `sha256sum PROTOCOL.md protocol.schema.json
+fixtures/*.jsonl`, update the commit above, and run `cargo test --test companion_contract`: the
+golden fixtures then say whether the app still decodes what the daemon sends.

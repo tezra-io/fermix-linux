@@ -6,10 +6,15 @@
 //! `server_seq` behind a cursor, a live row is shown only when it is the next seq, a gap is
 //! closed by a read from the cursor, and at most one read is out at a time. Requests wait in the
 //! outbox until the daemon accepts them, and the outbox is sent again after every handshake.
+//! A mandate's proposals are held by id until they resolve (M60 cues §5.2). An event this build
+//! cannot read costs only itself: what it names still settles, ends or asks (`unreadable`).
 
 use crate::chat_wire::protocol::{
-    Approval, ClientEvent, Cursor, Page, Reply, Row, ServerError, ServerEvent, ToolPhase,
+    Approval, ClientEvent, Cursor, Decision, Page, Proposal, ProposalState, Reply, Resolution, Row,
+    ServerError, ServerEvent, ToolPhase, Unreadable,
 };
+use crate::chat_wire::unshown::{self, Asks, Unshown};
+use crate::phone::unix_seconds;
 use std::collections::BTreeSet;
 
 /// Rows a history read asks for.
@@ -29,12 +34,24 @@ const INTERRUPTED: &str = "The reply was interrupted";
 const TOO_LONG: &str = "The message is too long to send";
 /// No macOS string: its outbox has no cap.
 const OUTBOX_FULL: &str = "Too many messages are waiting to send";
+/// No macOS string: a refusal this build could not read, of a message or a proposal's answer.
+pub const REFUSED_UNREAD: &str = "Fermix refused the request. This app could not read why.";
+/// What the chat says when the turn held failed and its failure could not be read.
+pub const TURN_UNREAD: &str = "The reply did not finish. This app could not read why.";
+/// What a proposal's card says when Fermix settled it and the settlement could not be read.
+pub const SETTLED_UNREAD: &str = "Fermix settled this request. This app could not read how.";
+/// The most history pages in a row that may be unreadable before the connection is given up.
+pub const MAX_UNREAD_PAGES: u32 = 3;
 
-/// One held row. A reply held from its turn's `text_done` names the turn, and has no time.
+/// One held row. A reply held from its turn's `text_done` names the turn, carries the time its
+/// row stores where `text_done` says it, and when it arrived.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldRow {
     pub row: Row,
     pub turn_id: Option<String>,
+    /// When a streamed reply arrived, on the caller's clock: it places the reply among proposal
+    /// cards where the reply's own time is absent or cannot be read.
+    pub arrived: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +94,16 @@ pub struct Outgoing {
     pub text: String,
     /// The card an approval's route answers.
     pub approval_id: Option<String>,
+    /// The proposal this answers.
+    pub proposal_id: Option<String>,
+}
+
+impl Outgoing {
+    /// Whether this is the person's question, drawn as a bubble while it sends. A card's answer
+    /// never is.
+    pub fn is_question(&self) -> bool {
+        self.approval_id.is_none() && self.proposal_id.is_none()
+    }
 }
 
 /// An approval card and the second (on the caller's clock) its own ttl runs out.
@@ -84,6 +111,43 @@ pub struct Outgoing {
 pub struct HeldApproval {
     pub approval: Approval,
     pub expires_at: i64,
+}
+
+/// Where the owner's answer to a proposal stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    /// Nothing sent.
+    Open,
+    /// An answer is on its way or accepted: every button waits for the daemon.
+    Answered(Decision),
+    /// Past its expiry on this computer's clock with no answer sent.
+    Expired,
+    /// The daemon's last word, `proposal_resolved`'s: the card is a record from then on.
+    Resolved {
+        sentence: String,
+        result_text: Option<String>,
+    },
+    /// The daemon refused this app's answer, in its sentence. A refusal can leave the proposal
+    /// waiting, so the card the daemon sends again takes this one's place.
+    Refused { sentence: String },
+}
+
+/// A proposal's card as the chat holds it, with its two times read once. A time that cannot be
+/// read is `None`: such a card never expires on this clock, and is placed last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldProposal {
+    pub proposal: Proposal,
+    pub standing: Standing,
+    pub created: Option<i64>,
+    pub expires: Option<i64>,
+}
+
+impl HeldProposal {
+    /// Whether the card asks the owner now: the daemon says it waits, nothing was sent, and it
+    /// has not expired here. Only such a card draws its buttons and takes an answer.
+    pub fn asks(&self) -> bool {
+        self.proposal.state == ProposalState::Waiting && self.standing == Standing::Open
+    }
 }
 
 /// The one history read out.
@@ -99,7 +163,7 @@ enum Pull {
 pub struct Chat {
     /// Ascending by seq, each seq once.
     pub rows: Vec<HeldRow>,
-    /// The newest seq held, 0 before any.
+    /// The newest seq read past, shown or skipped as unreadable; 0 before any.
     pub cursor: u64,
     /// The newest seq the daemon had when it read the latest page.
     pub head: u64,
@@ -110,9 +174,20 @@ pub struct Chat {
     /// Oldest first.
     pub pending: Vec<Outgoing>,
     pub approvals: Vec<HeldApproval>,
+    /// The proposal cards, each once, by id, in the order they came.
+    pub proposals: Vec<HeldProposal>,
+    /// A request to bring a proposal's card into view, by id, until the page serves it.
+    pub reveal: Option<String>,
+    /// The cards that asked the owner and could not be read, until they resolve or the next
+    /// handshake.
+    pub unshown: BTreeSet<Unshown>,
     /// The latest failure, in a sentence, until the next send.
     pub last_error: Option<String>,
     connected: bool,
+    /// History pages in a row that could not be read; a readable one counts from zero.
+    unread_pages: u32,
+    /// The types of unreadable event warned of on this connection.
+    warned: BTreeSet<String>,
     pull: Option<Pull>,
     older_waiting: Option<u64>,
     rows_to_read: BTreeSet<u64>,
@@ -121,19 +196,42 @@ pub struct Chat {
 }
 
 /// A handshake completed: the catch-up read first, then every request not yet accepted, in
-/// order. Held rows on screen are read again, since notices sent while away are lost.
+/// order. Held rows on screen are read again, since notices sent while away are lost. Every
+/// proposal card is dropped but those the daemon resolved or refused: the daemon sends again
+/// each one still waiting, and a refused one sent again asks again. The placeholders of the
+/// cards that could not be read go too: one still waiting comes again. A history that could not
+/// be read keeps its count of unreadable pages, at most `MAX_UNREAD_PAGES`, so a connection whose
+/// history still cannot be read gives up at its first unreadable page (`history_unreadable`).
 pub fn negotiated(chat: &mut Chat, on_screen: &BTreeSet<u64>) -> Vec<ClientEvent> {
     chat.connected = true;
     chat.approvals.clear();
-    let cursor = if chat.rows.is_empty() {
-        Cursor::BeforeSeq(NEWEST)
-    } else {
-        Cursor::AfterSeq(chat.cursor)
-    };
+    chat.unshown.clear();
+    chat.warned.clear();
+    chat.unread_pages = chat.unread_pages.min(MAX_UNREAD_PAGES);
+    chat.proposals.retain(|held| {
+        matches!(
+            held.standing,
+            Standing::Resolved { .. } | Standing::Refused { .. }
+        )
+    });
     read_again(chat, on_screen);
-    let mut sent = read_page(chat, cursor);
+    let mut sent = catch_up(chat);
     sent.extend(chat.pending.iter().map(|out| out.event.clone()));
     sent
+}
+
+/// Whether more than `MAX_UNREAD_PAGES` history pages in a row could not be read. Such a history
+/// cannot be shown at all, so the caller ends the connection (`Lost::History`), and the page says
+/// Chat cannot read Fermix's history while it tries again, less often each time.
+pub fn history_unreadable(chat: &Chat) -> bool {
+    chat.unread_pages > MAX_UNREAD_PAGES
+}
+
+/// Whether this is the first unreadable event of `kind` on this connection: the first is warned
+/// of and the rest logged quietly, so a type that drifted cannot flood the log while a reply
+/// streams. Only the contract's types are unreadable, so the set stays small.
+pub fn first_unreadable(chat: &mut Chat, kind: &str) -> bool {
+    chat.warned.insert(kind.to_owned())
 }
 
 /// The connection ended. Nothing asked on it will be answered and a turn's end is live-only,
@@ -160,33 +258,34 @@ pub fn send(chat: &mut Chat, text: &str, client_msg_id: String) -> Vec<ClientEve
     }
     chat.last_error = None;
     let event = ClientEvent::msg(&client_msg_id, text);
-    enqueue(chat, client_msg_id, event, text.to_owned(), None)
+    enqueue(
+        chat,
+        Outgoing {
+            client_msg_id,
+            event,
+            text: text.to_owned(),
+            approval_id: None,
+            proposal_id: None,
+        },
+    )
+    .unwrap_or_default()
 }
 
-fn enqueue(
-    chat: &mut Chat,
-    client_msg_id: String,
-    event: ClientEvent,
-    text: String,
-    approval_id: Option<String>,
-) -> Vec<ClientEvent> {
-    // The outbox sends what it holds after every handshake: a line past the daemon's cap
-    // would be refused and resent forever.
-    if event.line().is_err() {
+/// Puts `out` in the outbox, and returns it to send now when connected. `None` when its line
+/// would pass the daemon's cap: the outbox sends what it holds after every handshake, and such
+/// a line would be refused and resent forever.
+fn enqueue(chat: &mut Chat, out: Outgoing) -> Option<Vec<ClientEvent>> {
+    if out.event.line().is_err() {
         chat.last_error = Some(TOO_LONG.into());
-        return Vec::new();
+        return None;
     }
-    chat.pending.push(Outgoing {
-        client_msg_id,
-        event: event.clone(),
-        text,
-        approval_id,
-    });
-    if chat.connected {
+    let event = out.event.clone();
+    chat.pending.push(out);
+    Some(if chat.connected {
         vec![event]
     } else {
         Vec::new()
-    }
+    })
 }
 
 /// Whether the running turn can be stopped: only a turn this connection started names the
@@ -257,16 +356,79 @@ pub fn answer(
     let event = ClientEvent::command(&client_msg_id, &name, args.as_deref());
     enqueue(
         chat,
-        client_msg_id,
-        event,
-        String::new(),
-        Some(approval_id.to_owned()),
+        Outgoing {
+            client_msg_id,
+            event,
+            text: String::new(),
+            approval_id: Some(approval_id.to_owned()),
+            proposal_id: None,
+        },
     )
+    .unwrap_or_default()
 }
 
 /// Drops the cards whose own ttl ran out: a restarted daemon forgets them unresolved.
 pub fn expire_approvals(chat: &mut Chat, now: i64) {
     chat.approvals.retain(|held| held.expires_at > now);
+}
+
+/// Answers a proposal with the owner's word, by its id alone, through the outbox. Only a card
+/// that asks takes an answer, and only a word it offers (`Ask::takes`). Once one is queued every
+/// button waits, so a card is never answered twice.
+pub fn answer_proposal(
+    chat: &mut Chat,
+    proposal_id: &str,
+    decision: Decision,
+    client_msg_id: String,
+) -> Vec<ClientEvent> {
+    let Some(index) = chat.proposals.iter().position(|held| {
+        held.proposal.proposal_id == proposal_id && held.asks() && held.proposal.ask.takes(decision)
+    }) else {
+        return Vec::new();
+    };
+    let event = ClientEvent::proposal_answer(&client_msg_id, proposal_id, decision);
+    let out = Outgoing {
+        client_msg_id,
+        event,
+        text: String::new(),
+        approval_id: None,
+        proposal_id: Some(proposal_id.to_owned()),
+    };
+    let Some(sent) = enqueue(chat, out) else {
+        return Vec::new();
+    };
+    chat.proposals[index].standing = Standing::Answered(decision);
+    sent
+}
+
+/// Takes the buttons from every card that asks and whose expiry this clock has reached. The
+/// card says nothing ran until the daemon's resolution replaces that.
+pub fn expire_proposals(chat: &mut Chat, now: i64) {
+    for held in &mut chat.proposals {
+        if held.asks() && held.expires.is_some_and(|expires| expires <= now) {
+            held.standing = Standing::Expired;
+        }
+    }
+}
+
+/// The soonest expiry of the cards that ask, which the page's one timer waits for.
+pub fn next_expiry(chat: &Chat) -> Option<i64> {
+    chat.proposals
+        .iter()
+        .filter(|held| held.asks())
+        .filter_map(|held| held.expires)
+        .min()
+}
+
+/// Asks the page to bring a proposal's card into view. A later request replaces an earlier one.
+pub fn reveal(chat: &mut Chat, proposal_id: &str) {
+    chat.reveal = Some(proposal_id.to_owned());
+}
+
+/// The page brought `proposal_id`'s card into view: the request is taken back, so a later
+/// return to Chat does not scroll again.
+pub fn revealed(chat: &mut Chat, proposal_id: &str) {
+    chat.reveal.take_if(|asked| asked == proposal_id);
 }
 
 /// The reader reached the top: the page before the oldest held row, now or after the read out.
@@ -290,13 +452,16 @@ pub fn pull_older(chat: &mut Chat) -> Vec<ClientEvent> {
     read_page(chat, cursor)
 }
 
-/// The newest held row is on screen: moves the shared read frontier, once per new row.
+/// The newest held row is on screen: moves the shared read frontier to it, once per new row. Never
+/// to the cursor past it: a skipped row above the newest held one stays unread for the owner's
+/// other devices until a later row is seen here.
 pub fn newest_seen(chat: &mut Chat) -> Vec<ClientEvent> {
-    if !chat.connected || chat.cursor <= chat.read_up_to.max(chat.read_sent) {
+    let newest = chat.rows.last().map_or(0, |held| held.row.server_seq);
+    if !chat.connected || newest <= chat.read_up_to.max(chat.read_sent) {
         return Vec::new();
     }
-    chat.read_sent = chat.cursor;
-    vec![ClientEvent::read_state(chat.cursor)]
+    chat.read_sent = newest;
+    vec![ClientEvent::read_state(newest)]
 }
 
 /// Held rows came on screen: those a disconnect may have changed are read again, once.
@@ -316,7 +481,10 @@ fn read_again(chat: &mut Chat, seqs: &BTreeSet<u64>) {
     chat.rows_to_read.extend(stale);
 }
 
-/// One server event. `now` is the caller's clock in seconds, for approval deadlines.
+/// One server event. `now` is the caller's clock in seconds, for approval deadlines. Some change
+/// nothing here: a search's results, a file's answer (the grants'), what this build shows nothing
+/// of yet: the turn's reasoning, Always On (behind its flag), and files it never hands over; and
+/// the index and a list, which are the lists' (`checklists::routing`) and never come here.
 pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent> {
     match event {
         ServerEvent::Accepted { client_msg_id, .. } => settle(chat, &client_msg_id),
@@ -333,30 +501,128 @@ pub fn receive(chat: &mut Chat, event: ServerEvent, now: i64) -> Vec<ClientEvent
             phase,
             ..
         } => tool_event(held_turn(chat, &turn_id, now), tool, &phase, now),
-        ServerEvent::TextDone(reply) => return text_done(chat, reply),
+        ServerEvent::TextDone(reply) => return text_done(chat, reply, now),
         ServerEvent::TurnError {
             turn_id,
             code,
             message,
         } => turn_failed(chat, &turn_id, &code, &message),
         ServerEvent::TurnDone { turn_id } => end_turn(chat, &turn_id),
-        ServerEvent::Row(row) => return apply_live(chat, HeldRow { row, turn_id: None }),
+        ServerEvent::Row(row) => {
+            let held = HeldRow {
+                row,
+                turn_id: None,
+                arrived: None,
+            };
+            return apply_live(chat, held);
+        }
         ServerEvent::RowUpdated { server_seq } => return updated(chat, server_seq),
         ServerEvent::Approval(approval) => hold_approval(chat, approval, now),
-        ServerEvent::ApprovalResolved { approval_id, .. } => {
-            chat.approvals
-                .retain(|held| held.approval.approval_id != approval_id);
+        ServerEvent::ApprovalResolved { approval_id, .. } => approval_settled(chat, &approval_id),
+        ServerEvent::Proposal { proposal } => hold_proposal(chat, *proposal, now),
+        ServerEvent::ProposalResolved(resolution) => {
+            let Resolution {
+                proposal_id,
+                sentence,
+                result_text,
+                ..
+            } = resolution;
+            proposal_settled(chat, &proposal_id, sentence, result_text);
         }
         ServerEvent::ReadState { read_up_to_seq } => chat.read_up_to = read_up_to_seq,
         ServerEvent::HistoryPage(page) => return merge(chat, page),
         ServerEvent::Error(error) => refused(chat, &error),
+        ServerEvent::Unreadable(unread) => return unreadable(chat, unread),
         ServerEvent::ServerHello { .. }
         | ServerEvent::SearchResults { .. }
         | ServerEvent::MediaPath(_)
         | ServerEvent::MediaMissing { .. }
+        | ServerEvent::Reasoning { .. }
+        | ServerEvent::HomeStatusChanged
+        | ServerEvent::Checklists { .. }
+        | ServerEvent::Checklist { .. }
+        | ServerEvent::AttachStatus { .. }
         | ServerEvent::Unknown(_) => {}
     }
     Vec::new()
+}
+
+/// An event this build could not read, by what it still names. A card that asks the owner leaves
+/// its placeholder, and a resolution settles the card it names. A reply or a row is read again
+/// (`catch_up`), so it is missing only until that page; a reply, a turn's end or its failure ends
+/// the turn it names. A failure says so when its turn reads, held or not, as a readable failure
+/// does, and when it ended the turn held. A page answers its read with nothing
+/// (`page_unread`). An `accepted` settles the request it names; an `error` naming one refuses it
+/// in this app's words, and one naming a file is the grants'. Any other mends itself: a turn's
+/// delta or tool by the next one.
+fn unreadable(chat: &mut Chat, unread: Unreadable) -> Vec<ClientEvent> {
+    let refusal = refuses_unread(&unread);
+    let Unreadable {
+        kind,
+        card_id,
+        turn_id,
+        client_msg_id,
+        r#ref: _,
+    } = unread;
+    let turn = turn_id.as_deref();
+    match kind.as_str() {
+        "proposal" => unshown::keep(&mut chat.unshown, Asks::Proposal, card_id),
+        "approval" => unshown::keep(&mut chat.unshown, Asks::Approval, card_id),
+        "proposal_resolved" => card_id
+            .into_iter()
+            .for_each(|id| proposal_settled(chat, &id, SETTLED_UNREAD.into(), None)),
+        "approval_resolved" => card_id
+            .into_iter()
+            .for_each(|id| approval_settled(chat, &id)),
+        "history_page" => return page_unread(chat),
+        "text_done" => {
+            end_unread(chat, turn);
+            return catch_up(chat);
+        }
+        "row" => return catch_up(chat),
+        "turn_done" => {
+            end_unread(chat, turn);
+        }
+        "turn_error" => {
+            let ended = end_unread(chat, turn);
+            if ended || turn.is_some() {
+                chat.last_error = Some(TURN_UNREAD.into());
+            }
+        }
+        "accepted" => client_msg_id.iter().for_each(|id| settle(chat, id)),
+        "error" if refusal => {
+            let request = client_msg_id.as_deref();
+            refuse(chat, request, REFUSED_UNREAD.into(), REFUSED_UNREAD.into());
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// Ends the turn an unreadable end names. One whose turn id cannot be read ends the turn held:
+/// a connection streams its turns one at a time, so the turn held is the one that ended. Whether
+/// a turn ended.
+fn end_unread(chat: &mut Chat, turn_id: Option<&str>) -> bool {
+    let ended = match turn_id {
+        Some(id) => chat.turn.take_if(|turn| turn.turn_id == id),
+        None => chat.turn.take(),
+    };
+    ended.is_some()
+}
+
+/// A page that could not be read answers its read with nothing. A page is read again by the next
+/// gap or the reader; held rows it was to read again are read the next time they come on screen,
+/// not at once, so a page that never reads is not asked for again and again. Past
+/// `MAX_UNREAD_PAGES` in a row nothing more is asked: the connection is given up.
+fn page_unread(chat: &mut Chat) -> Vec<ClientEvent> {
+    if let Some(Pull::Rows(seqs)) = chat.pull.take() {
+        chat.read_before_disconnect.extend(seqs);
+    }
+    chat.unread_pages = chat.unread_pages.saturating_add(1);
+    if history_unreadable(chat) {
+        return Vec::new();
+    }
+    send_waiting(chat)
 }
 
 fn settle(chat: &mut Chat, client_msg_id: &str) {
@@ -411,11 +677,12 @@ fn tool_event(turn: &mut Turn, tool: String, phase: &ToolPhase, now: i64) {
 }
 
 /// A reply at its row. It ends its own turn only; a turn may send more than one.
-fn text_done(chat: &mut Chat, reply: Reply) -> Vec<ClientEvent> {
+fn text_done(chat: &mut Chat, reply: Reply, now: i64) -> Vec<ClientEvent> {
     let Reply {
         turn_id,
         server_seq,
         text,
+        ts,
         blocks,
         skipped,
     } = reply;
@@ -424,7 +691,7 @@ fn text_done(chat: &mut Chat, reply: Reply) -> Vec<ClientEvent> {
         server_seq,
         role: "assistant".into(),
         text,
-        ts: None,
+        ts,
         client_msg_id: None,
         in_reply_to: ours.and_then(|turn| turn.in_reply_to),
         kind: None,
@@ -439,6 +706,7 @@ fn text_done(chat: &mut Chat, reply: Reply) -> Vec<ClientEvent> {
         HeldRow {
             row,
             turn_id: Some(turn_id),
+            arrived: Some(now),
         },
     )
 }
@@ -473,16 +741,160 @@ fn hold_approval(chat: &mut Chat, approval: Approval, now: i64) {
     }
 }
 
-/// A refusal the connection survives, in the daemon's word. One naming a request ends that
-/// request's delivery. A media failure (`ref`) is the grants', not the timeline's.
+/// A card the daemon sent, a call's or a follow-up's, by its id: one sent again replaces the
+/// card and keeps where its answer stands, except that one sent again after the daemon refused
+/// its answer stands anew: the daemon's word wins. A new one stands where the outbox says, so a
+/// card dropped at a handshake whose answer still waits to be sent comes back answered. One past
+/// its expiry arrives expired.
+fn hold_proposal(chat: &mut Chat, proposal: Proposal, now: i64) {
+    let created = unix_seconds(&proposal.created_at);
+    let expires = unix_seconds(&proposal.expires_at);
+    let id = proposal.proposal_id.clone();
+    let anew = answer_waiting(chat, &id).map_or(Standing::Open, Standing::Answered);
+    match chat
+        .proposals
+        .iter_mut()
+        .find(|held| held.proposal.proposal_id == id)
+    {
+        Some(held) => {
+            held.proposal = proposal;
+            held.created = created;
+            held.expires = expires;
+            if matches!(held.standing, Standing::Refused { .. }) {
+                held.standing = anew;
+            }
+        }
+        None => chat.proposals.push(HeldProposal {
+            proposal,
+            standing: anew,
+            created,
+            expires,
+        }),
+    }
+    expire_proposals(chat, now);
+}
+
+/// The answer to `proposal_id` still in the outbox, if any.
+fn answer_waiting(chat: &Chat, proposal_id: &str) -> Option<Decision> {
+    chat.pending.iter().find_map(|out| match &out.event {
+        ClientEvent::ProposalAnswer {
+            proposal_id: answered,
+            decision,
+            ..
+        } if answered == proposal_id => Some(*decision),
+        _ => None,
+    })
+}
+
+/// Fermix settled the proposal `id`: its placeholder goes, and its card, where one is held, says
+/// so in `sentence`.
+fn proposal_settled(chat: &mut Chat, id: &str, sentence: String, result_text: Option<String>) {
+    unshown::resolved(&mut chat.unshown, Asks::Proposal, id);
+    let held = chat
+        .proposals
+        .iter_mut()
+        .find(|held| held.proposal.proposal_id == id);
+    if let Some(held) = held {
+        held.standing = Standing::Resolved {
+            sentence,
+            result_text,
+        };
+    }
+}
+
+/// Fermix settled the approval `id`: its card goes, and its placeholder.
+fn approval_settled(chat: &mut Chat, id: &str) {
+    chat.approvals
+        .retain(|held| held.approval.approval_id != id);
+    unshown::resolved(&mut chat.unshown, Asks::Approval, id);
+}
+
+/// What a refusal that carries no sentence of its own says: the daemon's reason. The chat and
+/// the lists word it alike.
+pub fn daemon_reported(reason: &str) -> String {
+    format!("The daemon reported: {reason}")
+}
+
+/// A refusal the connection survives, in the daemon's word. A media failure (`ref`) is the
+/// grants', not the timeline's, and a refused file (`attach_id`) answers a file this build never
+/// hands over.
 fn refused(chat: &mut Chat, error: &ServerError) {
-    if error.r#ref.is_some() {
+    if !refuses(error) {
         return;
     }
-    if let Some(id) = &error.client_msg_id {
+    let reported = daemon_reported(&error.reason);
+    let sentence = error.message.clone().unwrap_or_else(|| reported.clone());
+    refuse(chat, error.client_msg_id.as_deref(), reported, sentence);
+}
+
+/// Ends the delivery of the request `client_msg_id` names, if any. One naming a proposal's answer
+/// refuses that card, in `sentence`, until the daemon sends the card again, and is not the chat's
+/// failure; any other is, in `reported`. A card `proposal_resolved` already closed stays the
+/// record it is: the refusal changes nothing on it.
+fn refuse(chat: &mut Chat, client_msg_id: Option<&str>, reported: String, sentence: String) {
+    let answered = client_msg_id.and_then(|id| {
+        chat.pending
+            .iter()
+            .find(|out| out.client_msg_id == id)
+            .and_then(|out| out.proposal_id.clone())
+    });
+    if let Some(id) = client_msg_id {
         settle(chat, id);
     }
-    chat.last_error = Some(format!("The daemon reported: {}", error.reason));
+    let Some(proposal_id) = answered else {
+        chat.last_error = Some(reported);
+        return;
+    };
+    let open = chat.proposals.iter_mut().find(|held| {
+        held.proposal.proposal_id == proposal_id
+            && !matches!(held.standing, Standing::Resolved { .. })
+    });
+    if let Some(held) = open {
+        held.standing = Standing::Refused { sentence };
+    }
+}
+
+/// Whether an `error` is a refusal the timeline reads: one naming a media `ref` or an
+/// `attach_id` is not (`refused`).
+fn refuses(error: &ServerError) -> bool {
+    error.r#ref.is_none() && error.attach_id.is_none()
+}
+
+/// Whether an event this build could not read is a refusal the timeline reads: an `error`
+/// naming no media `ref` (`unreadable`).
+fn refuses_unread(unread: &Unreadable) -> bool {
+    unread.kind == "error" && unread.r#ref.is_none()
+}
+
+/// The card `event` refuses this app's answer to after `proposal_resolved` closed it: the event
+/// is a refusal the timeline reads, in Fermix's words or in words this app cannot read, of a
+/// request still waiting that carries a card's answer, and that card is resolved. The card then
+/// shows nothing of the refusal (`refuse`). Read before `receive` takes the event, which ends the
+/// request's delivery.
+pub fn late_refusal<'a>(chat: &'a Chat, event: &ServerEvent) -> Option<&'a str> {
+    let request = match event {
+        ServerEvent::Error(error) if refuses(error) => error.client_msg_id.as_deref(),
+        ServerEvent::Unreadable(unread) if refuses_unread(unread) => {
+            unread.client_msg_id.as_deref()
+        }
+        _ => None,
+    };
+    resolved_answer(chat, request?)
+}
+
+/// The card whose answer the request `client_msg_id`, still waiting, carries, when
+/// `proposal_resolved` already closed that card.
+fn resolved_answer<'a>(chat: &'a Chat, client_msg_id: &str) -> Option<&'a str> {
+    let out = chat
+        .pending
+        .iter()
+        .find(|out| out.client_msg_id == client_msg_id)?;
+    let card = out.proposal_id.as_deref()?;
+    let held = chat
+        .proposals
+        .iter()
+        .find(|held| held.proposal.proposal_id == card)?;
+    matches!(held.standing, Standing::Resolved { .. }).then_some(card)
 }
 
 /// A notice that a held row changed: it is read again. A row not held is read as it stands
@@ -495,15 +907,15 @@ fn updated(chat: &mut Chat, seq: u64) -> Vec<ClientEvent> {
     send_waiting(chat)
 }
 
-/// A live row is shown when it is the next seq, dropped at or below the cursor, and on a gap
-/// pulled from the cursor instead: the pull brings every row the gap hides.
+/// A live row is shown when it is the next seq, dropped at or below the cursor, and on a gap read
+/// instead (`catch_up`): the read brings every row the gap hides.
 fn apply_live(chat: &mut Chat, held: HeldRow) -> Vec<ClientEvent> {
     let seq = held.row.server_seq;
     if seq <= chat.cursor {
         return Vec::new();
     }
     if seq != chat.cursor + 1 {
-        return read_page(chat, Cursor::AfterSeq(chat.cursor));
+        return catch_up(chat);
     }
     chat.rows.push(held);
     chat.cursor = seq;
@@ -517,13 +929,24 @@ fn apply_live(chat: &mut Chat, held: HeldRow) -> Vec<ClientEvent> {
 }
 
 /// A page answers the read out. Its rows go over the held ones by seq; the cursor moves to its
-/// newest row, and while that is below the head the read goes on, ahead of anything waiting.
+/// newest row, or for a forward page to the last row it names (`next_after_seq`), shown or
+/// skipped, and while that is below the head the read goes on, ahead of anything waiting. A
+/// forward page that leaves the cursor where its read asked from ends the read: asked again, it
+/// would answer the same, forever (PROTOCOL.md "Delivery and the outbox"). One that moved it, by
+/// its rows or by rows shown live while it was out, reads on, so each read asks from a later
+/// cursor. A page that reads counts the unreadable ones from zero.
 fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
+    chat.unread_pages = 0;
     let answered = chat.pull.take();
+    let asked_from = match &answered {
+        Some(Pull::Page(Cursor::AfterSeq(seq))) => Some(*seq),
+        _ => None,
+    };
     let page_seqs: BTreeSet<u64> = page.messages.iter().map(|row| row.server_seq).collect();
     let newest = page_seqs.last().copied();
     put_rows(chat, page.messages);
-    chat.cursor = chat.cursor.max(newest.unwrap_or(0));
+    let named = page.next_after_seq.filter(|_| asked_from.is_some());
+    chat.cursor = chat.cursor.max(newest.unwrap_or(0)).max(named.unwrap_or(0));
     chat.head = page.history_head_seq;
     if let Some(Pull::Page(Cursor::BeforeSeq(_))) = answered {
         chat.has_older = page.next_before_seq.is_some();
@@ -535,7 +958,8 @@ fn merge(chat: &mut Chat, page: Page) -> Vec<ClientEvent> {
         chat.rows_to_read
             .extend(asked.into_iter().filter(|seq| *seq > reached));
     }
-    if chat.cursor < chat.head {
+    let stalled = asked_from == Some(chat.cursor);
+    if chat.cursor < chat.head && !stalled {
         let cursor = Cursor::AfterSeq(chat.cursor);
         return read_page(chat, cursor);
     }
@@ -552,9 +976,27 @@ fn put_rows(chat: &mut Chat, rows: Vec<Row>) {
             .binary_search_by_key(&seq, |held| held.row.server_seq)
         {
             Ok(index) => chat.rows[index].row = row,
-            Err(index) => chat.rows.insert(index, HeldRow { row, turn_id: None }),
+            Err(index) => {
+                let held = HeldRow {
+                    row,
+                    turn_id: None,
+                    arrived: None,
+                };
+                chat.rows.insert(index, held);
+            }
         }
     }
+}
+
+/// Reads what was written past the cursor. With no row held that is the newest page, as at a
+/// cold start, never every row from the first.
+fn catch_up(chat: &mut Chat) -> Vec<ClientEvent> {
+    let cursor = if chat.rows.is_empty() {
+        Cursor::BeforeSeq(NEWEST)
+    } else {
+        Cursor::AfterSeq(chat.cursor)
+    };
+    read_page(chat, cursor)
 }
 
 /// Reads a page from `cursor`, when no read is out.

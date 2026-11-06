@@ -41,8 +41,10 @@ const DSP: &str = "dsp";
 const UPLINK: &str = "uplink";
 const DOWNLINK: &str = "downlink";
 const SPEAKER: &str = "speaker";
-/// The bus message the playback thread posts when the queue runs dry.
+/// The bus message the playback thread posts when the reply's voice has played or the queue
+/// ran dry, and its one field: whether the voice has (`PlaybackQueue`'s `Pull`).
 const DRAINED: &str = "fermix-playback-drained";
+const VOICE: &str = "voice";
 /// The bus message the capture thread posts with each block it sends, and its one field: the
 /// block's linear RMS.
 const MIC_LEVEL: &str = "fermix-mic-level";
@@ -120,13 +122,15 @@ impl AudioCall {
     /// streaming thread with each `speech::CHUNK_BYTES` block, only while `gate.open()`; it must
     /// not wait on the main loop, because `stop` joins that thread. `on_failure`, `on_drained`
     /// and `on_level` (each sent block's linear RMS, for the meter) run on the GTK main loop.
+    /// `on_drained` hears `true` when the reply's voice has played, with or without padding
+    /// queued behind it, and `false` when only the queue ran dry.
     pub fn start(
         endpoints: Endpoints,
         gate: Gate,
         playback: Arc<Mutex<PlaybackQueue>>,
         on_mic: Box<dyn Fn(Vec<u8>) + Send + Sync>,
         on_failure: Box<dyn Fn(AudioFailure)>,
-        on_drained: Box<dyn Fn()>,
+        on_drained: Box<dyn Fn(bool)>,
         on_level: Box<dyn Fn(f32)>,
     ) -> Result<AudioCall, AudioFailure> {
         assert!(!gate.open(), "a call starts with its gate closed");
@@ -436,8 +440,8 @@ fn feed(appsrc: &gst_app::AppSrc, playback: &Mutex<PlaybackQueue>, fed: &mut Fed
         Err(gst::FlowError::Flushing) => glib::g_debug!("fermix", "playback stopping"),
         Err(e) => glib::g_warning!("fermix", "appsrc refused a playback block: {e:?}"),
     }
-    if pull.drained {
-        post_drained(appsrc);
+    if pull.drained || pull.emptied {
+        post_drained(appsrc, pull.drained);
     }
 }
 
@@ -446,8 +450,8 @@ fn feed(appsrc: &gst_app::AppSrc, playback: &Mutex<PlaybackQueue>, fed: &mut Fed
 /// the main loop already, calls `on_drained`. So the non-Send callback never
 /// leaves the main thread, arrives in order with errors, and stops with the
 /// watch.
-fn post_drained(appsrc: &gst_app::AppSrc) {
-    let notice = gst::message::Application::builder(gst::Structure::new_empty(DRAINED))
+fn post_drained(appsrc: &gst_app::AppSrc, voice: bool) {
+    let notice = gst::message::Application::builder(drained_notice(voice))
         .src(appsrc)
         .build();
     if let Err(e) = appsrc.post_message(notice) {
@@ -455,10 +459,14 @@ fn post_drained(appsrc: &gst_app::AppSrc) {
     }
 }
 
+fn drained_notice(voice: bool) -> gst::Structure {
+    gst::Structure::builder(DRAINED).field(VOICE, voice).build()
+}
+
 /// What the bus watch calls, on the main loop.
 struct MainLoopCallbacks {
     on_failure: Box<dyn Fn(AudioFailure)>,
-    on_drained: Box<dyn Fn()>,
+    on_drained: Box<dyn Fn(bool)>,
     on_level: Box<dyn Fn(f32)>,
 }
 
@@ -508,7 +516,10 @@ impl Watcher {
             return;
         };
         if structure.has_name(DRAINED) {
-            (self.callbacks.on_drained)();
+            let voice = structure
+                .get::<bool>(VOICE)
+                .expect("the playback thread posts whether the voice has played");
+            (self.callbacks.on_drained)(voice);
         } else if structure.has_name(MIC_LEVEL) {
             let level = structure
                 .get::<f32>(RMS)
@@ -604,12 +615,14 @@ mod tests {
 
     const PATIENCE: Duration = Duration::from_secs(5);
 
-    /// What the four callbacks saw.
+    /// What the four callbacks saw. `drained` counts the drains of voice, and `emptied` the
+    /// queue running dry with no voice ending.
     #[derive(Default)]
     struct Seen {
         blocks: Arc<Mutex<Vec<Vec<u8>>>>,
         failures: Rc<RefCell<Vec<AudioFailure>>>,
         drained: Rc<Cell<u32>>,
+        emptied: Rc<Cell<u32>>,
         levels: Rc<RefCell<Vec<f32>>>,
     }
 
@@ -636,7 +649,7 @@ mod tests {
         let seen = Seen::default();
         let blocks = seen.blocks.clone();
         let failures = seen.failures.clone();
-        let drained = seen.drained.clone();
+        let (drained, emptied) = (seen.drained.clone(), seen.emptied.clone());
         let levels = seen.levels.clone();
         let call = AudioCall::start(
             Endpoints::Test,
@@ -644,7 +657,10 @@ mod tests {
             playback.clone(),
             Box::new(move |block| blocks.lock().expect("unpoisoned").push(block)),
             Box::new(move |failure| failures.borrow_mut().push(failure)),
-            Box::new(move || drained.set(drained.get() + 1)),
+            Box::new(move |voice| {
+                let count = if voice { &drained } else { &emptied };
+                count.set(count.get() + 1);
+            }),
             Box::new(move |level| levels.borrow_mut().push(level)),
         )
         .expect("the test pipeline starts");
@@ -800,6 +816,41 @@ mod tests {
                 .expect("unpoisoned")
                 .push_pcm16(&[0x20; 960], None);
             assert!(run_until(context, PATIENCE, || seen.drained.get() == 2));
+            assert_eq!(
+                seen.emptied.get(),
+                0,
+                "each drain was voice and the queue's end at once"
+            );
+            assert!(seen.failures.borrow().is_empty());
+            call.stop();
+        });
+    }
+
+    /// Live pads its output with digital silence. The reply has played when its voice has: the
+    /// drain of voice comes with the padding still queued, and the queue running dry later
+    /// says only that, for what has played of each playback id.
+    #[test]
+    fn a_reply_drains_when_its_voice_has_played_with_padding_queued_behind_it() {
+        on_own_loop(|context| {
+            let playback = queue_with(7_200); // 300 ms of voice
+            playback
+                .lock()
+                .expect("unpoisoned")
+                .push_pcm16(&[0; 14_400], None); // 300 ms of padding
+            let (call, seen) = start_test(&Gate::default(), &playback);
+            assert_playing(&call);
+            assert!(run_until(context, PATIENCE, || seen.drained.get() > 0));
+            {
+                let queue = playback.lock().expect("unpoisoned");
+                assert!(!queue.is_empty(), "the padding is still queued");
+                assert!(!queue.voice_queued());
+            }
+            assert_eq!(seen.emptied.get(), 0, "the queue has not run dry yet");
+            assert!(run_until(context, PATIENCE, || seen.emptied.get() > 0));
+            assert!(playback.lock().expect("unpoisoned").is_empty());
+            run_for(context, Duration::from_millis(200));
+            assert_eq!(seen.drained.get(), 1, "the padding drained no voice");
+            assert_eq!(seen.emptied.get(), 1);
             assert!(seen.failures.borrow().is_empty());
             call.stop();
         });
@@ -824,7 +875,7 @@ mod tests {
             bus.set_flushing(false);
             let mic = pipeline.by_name(MICROPHONE).expect("the microphone");
             gst::element_error!(mic, gst::ResourceError::Failed, ("Failed to connect: x"));
-            let drained = gst::message::Application::new(gst::Structure::new_empty(DRAINED));
+            let drained = gst::message::Application::new(drained_notice(true));
             bus.post(drained).expect("the bus takes it");
             playback
                 .lock()

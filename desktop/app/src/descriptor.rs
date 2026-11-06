@@ -5,16 +5,17 @@
 //!
 //! A section's advanced rows come last, under one Advanced row that starts closed and stays as
 //! the person left it across redraws. A pane can put one line of its own under a row, such as
-//! where reach from anywhere stands under its switch.
+//! where reach from anywhere stands under its switch, and rows of its own under a row or in its
+//! place, such as the Cues filter model, whose two keys are written together.
 
 use crate::fields::{
     field_row, let_go, resume, secret_row as secret_row_into, still_active, typing_in, Live, Slot,
 };
 use adw::prelude::*;
 use fermix_client::settings::{
-    awaits_listing, choice_items, list_items, list_with, list_without, number_answer, number_view,
-    placeholder, text_answer, text_value, value_width, ChoiceItem, Kind, Row, SectionRows,
-    FIELD_CHARS, NOT_SET, UNKNOWN_KIND, WIDEST_VALUE_CHARS,
+    awaits_listing, choice_items, list_items, list_prompt, list_with, list_without, number_answer,
+    number_view, placeholder, text_answer, text_value, value_width, ChoiceItem, Kind, Row,
+    SectionRows, FIELD_CHARS, NOT_SET, UNKNOWN_KIND, WIDEST_VALUE_CHARS,
 };
 use gtk::glib::{self, variant::ToVariant};
 use serde_json::Value;
@@ -47,6 +48,42 @@ pub struct Drawn {
 /// Which of a section's rows a view draws; the rest belong to other controls.
 pub type Keep = Box<dyn Fn(&str) -> bool>;
 
+/// Takes a row's key and what was set in it.
+pub type Hold<T> = Box<dyn Fn(&str, T)>;
+
+/// Where a form's rows send what is set in them: each value as it changes, and each secret as it
+/// is typed, which the form holds until it is sent. Nothing leaves as a window action.
+pub struct FormSink {
+    pub value: Hold<Value>,
+    pub secret: Hold<String>,
+    /// The title of the row the advanced rows fold under.
+    pub folded: &'static str,
+}
+
+/// Where a row's writes go: the window's `setting-apply` for a settings section, or a form.
+#[derive(Clone)]
+enum To {
+    Section(String),
+    Form(Rc<FormSink>),
+}
+
+/// Where a pane's own row goes in a section the descriptor draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Right under the row with that key, open or folded with it.
+    Under,
+    /// In that row's place: the descriptor draws no control for it, and says nothing under it.
+    Instead,
+}
+
+/// A row of a pane's own in a section. The same widget is placed again on every redraw, so a
+/// change to it never redraws the section; the pane keeps it current.
+pub struct Extra {
+    pub key: String,
+    pub place: Place,
+    pub row: gtk::Widget,
+}
+
 pub struct SectionView {
     pub id: String,
     pub group: adw::PreferencesGroup,
@@ -60,6 +97,11 @@ pub struct SectionView {
     advanced_open: Cell<bool>,
     advanced: RefCell<Option<adw::ExpanderRow>>,
     note: Option<Note>,
+    extras: Vec<Extra>,
+    to: To,
+    /// A form's secret fields, kept across redraws so what was typed stays in its field and
+    /// nowhere else.
+    held: RefCell<Vec<(String, adw::ActionRow)>>,
     live: RefCell<Live>,
     shown: RefCell<Option<Drawn>>,
 }
@@ -71,16 +113,50 @@ impl SectionView {
 
     /// A view of only the rows `keep` accepts.
     pub fn keeping(id: &str, title: Option<&str>, keep: Keep) -> Rc<SectionView> {
-        SectionView::build(id, title, keep, None)
+        SectionView::build(
+            id,
+            title,
+            keep,
+            None,
+            Vec::new(),
+            To::Section(id.to_owned()),
+        )
     }
 
     /// A view of only the rows `keep` accepts, with a line of the pane's own under row `key`,
     /// hidden until `set_note` gives it words.
     pub fn keeping_with_note(id: &str, keep: Keep, key: &str) -> Rc<SectionView> {
-        SectionView::build(id, None, keep, Some(Note::new(key)))
+        let note = Some(Note::new(key));
+        SectionView::build(id, None, keep, note, Vec::new(), To::Section(id.to_owned()))
     }
 
-    fn build(id: &str, title: Option<&str>, keep: Keep, note: Option<Note>) -> Rc<SectionView> {
+    /// A view of only the rows `keep` accepts, with the pane's own rows under some and in place
+    /// of others. A row drawn instead of the daemon's must still be one `keep` accepts.
+    pub fn keeping_with_extras(id: &str, keep: Keep, extras: Vec<Extra>) -> Rc<SectionView> {
+        SectionView::build(id, None, keep, None, extras, To::Section(id.to_owned()))
+    }
+
+    /// A form drawn from rows the daemon published (M60 cues §7): every change commits as typed
+    /// into `sink`, a secret row's text is held there until the form is sent, and a refusal on a
+    /// folded row opens its fold. The form's own rows go under and in place of some.
+    pub fn form(id: &str, sink: FormSink, extras: Vec<Extra>) -> Rc<SectionView> {
+        let to = To::Form(Rc::new(sink));
+        SectionView::build(id, None, Box::new(|_| true), None, extras, to)
+    }
+
+    /// The next draw opens the fold, as a form whose folded rows already hold something does.
+    pub fn open_folded(&self) {
+        self.advanced_open.set(true);
+    }
+
+    fn build(
+        id: &str,
+        title: Option<&str>,
+        keep: Keep,
+        note: Option<Note>,
+        extras: Vec<Extra>,
+        to: To,
+    ) -> Rc<SectionView> {
         let group = adw::PreferencesGroup::new();
         if let Some(title) = title {
             group.set_title(&glib::markup_escape_text(title));
@@ -94,6 +170,9 @@ impl SectionView {
             advanced_open: Cell::new(false),
             advanced: RefCell::default(),
             note,
+            extras,
+            to,
+            held: RefCell::default(),
             live: RefCell::new(Rc::new(Cell::new(true))),
             shown: RefCell::default(),
         })
@@ -113,6 +192,21 @@ impl SectionView {
         }
         if let Some(advanced) = self.advanced.take() {
             self.advanced_open.set(advanced.is_expanded());
+            // The pane's own rows outlive the expander they sat in, and go into the next one.
+            for extra in self.extras.iter().filter(|e| e.row.is_ancestor(&advanced)) {
+                advanced.remove(&extra.row);
+            }
+            for (_, row) in self
+                .held
+                .borrow()
+                .iter()
+                .filter(|(_, r)| r.is_ancestor(&advanced))
+            {
+                advanced.remove(row);
+            }
+        }
+        if refused_folded(&drawn) {
+            self.advanced_open.set(true);
         }
         for old in self.children.borrow_mut().drain(..) {
             self.group.remove(&old);
@@ -120,7 +214,10 @@ impl SectionView {
         self.widgets.borrow_mut().clear();
         let live: Live = Rc::new(Cell::new(true));
         let fresh = match (&drawn.rows, &drawn.unread) {
-            (Some(section), _) => self.row_widgets(section, &drawn, &live),
+            (Some(section), _) => {
+                self.prune_held(&section.rows);
+                self.row_widgets(section, &drawn, &live)
+            }
             (None, Some(sentence)) => vec![(String::new(), false, unread_row(&self.id, sentence))],
             (None, None) => vec![(String::new(), false, loading_row())],
         };
@@ -138,8 +235,9 @@ impl SectionView {
         *self.shown.borrow_mut() = Some(drawn);
     }
 
-    /// Adds the rows to the group: the ordinary ones in order with the note under its row, then
-    /// the advanced ones under one Advanced row, where there are any.
+    /// Adds the rows to the group: the ordinary ones in order with the note and the pane's rows
+    /// under theirs, then the advanced ones, with theirs, under one Advanced row, where there are
+    /// any.
     fn place(&self, rows: &[(String, bool, gtk::Widget)]) {
         let mut children = Vec::new();
         for (key, _, widget) in rows.iter().filter(|(_, advanced, _)| !advanced) {
@@ -147,19 +245,23 @@ impl SectionView {
             if let Some(note) = self.note.as_ref().filter(|note| note.key == *key) {
                 children.push(note.row.clone().upcast());
             }
+            children.extend(self.under(key));
         }
-        let advanced: Vec<&gtk::Widget> = rows
+        let advanced: Vec<(&String, &gtk::Widget)> = rows
             .iter()
             .filter(|(_, advanced, _)| *advanced)
-            .map(|(_, _, widget)| widget)
+            .map(|(key, _, widget)| (key, widget))
             .collect();
         if !advanced.is_empty() {
             let expander = adw::ExpanderRow::builder()
-                .title(ADVANCED)
+                .title(self.folded_title())
                 .expanded(self.advanced_open.get())
                 .build();
-            for widget in advanced {
+            for (key, widget) in advanced {
                 expander.add_row(widget);
+                for extra in self.under(key) {
+                    expander.add_row(&extra);
+                }
             }
             children.push(expander.clone().upcast());
             self.advanced.replace(Some(expander));
@@ -168,6 +270,51 @@ impl SectionView {
             self.group.add(child);
         }
         *self.children.borrow_mut() = children;
+    }
+
+    /// A form's secret row: the field already holding what was typed, or a new one. Fields of
+    /// rows the form no longer has go with their text.
+    fn held_row(&self, row: &Row) -> Option<adw::ActionRow> {
+        let To::Form(sink) = &self.to else {
+            return None;
+        };
+        if row.kind != Kind::Secret || row.read_only {
+            return None;
+        }
+        let mut held = self.held.borrow_mut();
+        if let Some((_, field)) = held.iter().find(|(key, _)| *key == row.key) {
+            field.remove_css_class("setting-refused");
+            let footer = row.footer.as_deref().unwrap_or("");
+            field.set_subtitle(&glib::markup_escape_text(footer));
+            return Some(field.clone());
+        }
+        let field = held_secret_row(sink, row);
+        held.push((row.key.clone(), field.clone()));
+        Some(field)
+    }
+
+    fn folded_title(&self) -> &'static str {
+        match &self.to {
+            To::Section(_) => ADVANCED,
+            To::Form(sink) => sink.folded,
+        }
+    }
+
+    /// The pane's rows placed under row `key`.
+    fn under(&self, key: &str) -> Vec<gtk::Widget> {
+        self.extras
+            .iter()
+            .filter(|e| e.place == Place::Under && e.key == key)
+            .map(|e| e.row.clone())
+            .collect()
+    }
+
+    /// The pane's row drawn in place of row `key`, if it has one.
+    fn instead(&self, key: &str) -> Option<gtk::Widget> {
+        self.extras
+            .iter()
+            .find(|e| e.place == Place::Instead && e.key == key)
+            .map(|e| e.row.clone())
     }
 
     /// Shows the pane's line under its row, or hides it.
@@ -188,11 +335,16 @@ impl SectionView {
             .iter()
             .filter(|row| (self.keep)(&row.key))
             .map(|row| {
+                if let Some(own) = self.instead(&row.key) {
+                    return (row.key.clone(), row.advanced, own);
+                }
                 let error = drawn.errors.iter().find(|(k, _)| *k == row.key);
                 let widget = if drawn.listing_failed && awaits_listing(row) {
-                    relist_row(&self.id, row, live).upcast()
+                    relist_row(&self.id, &self.to, row, live).upcast()
+                } else if let Some(held) = self.held_row(row) {
+                    held.upcast()
                 } else {
-                    row_widget(&self.id, row, live)
+                    row_widget(&self.to, row, live)
                 };
                 if let Some((_, sentence)) = error {
                     show_refusal(&widget, sentence);
@@ -200,6 +352,13 @@ impl SectionView {
                 (row.key.clone(), row.advanced, widget)
             })
             .collect()
+    }
+
+    /// Lets go of a form's secret fields whose rows are gone.
+    fn prune_held(&self, rows: &[Row]) {
+        self.held
+            .borrow_mut()
+            .retain(|(key, _)| rows.iter().any(|r| r.key == *key && r.kind == Kind::Secret));
     }
 }
 
@@ -294,18 +453,18 @@ fn show_refusal(widget: &gtk::Widget, sentence: &str) {
     row.add_css_class("setting-refused");
 }
 
-fn row_widget(section: &str, row: &Row, live: &Live) -> gtk::Widget {
+fn row_widget(to: &To, row: &Row, live: &Live) -> gtk::Widget {
     if row.read_only {
         return fact_row(row).upcast();
     }
     let widget: gtk::Widget = match row.kind {
-        Kind::Toggle => toggle_row(section, row).upcast(),
-        Kind::Choice if row.suggestions => suggestion_row(section, row, live).upcast(),
-        Kind::Choice => choice_row(section, row).upcast(),
-        Kind::Text => text_row(section, row, live).upcast(),
-        Kind::Number => number_row(section, row).upcast(),
-        Kind::Secret => secret_row(section, row, live).upcast(),
-        Kind::List => list_row(section, row).upcast(),
+        Kind::Toggle => toggle_row(to, row).upcast(),
+        Kind::Choice if row.suggestions => suggestion_row(to, row, live).upcast(),
+        Kind::Choice => choice_row(to, row).upcast(),
+        Kind::Text => text_row(to, row, live).upcast(),
+        Kind::Number => number_row(to, row).upcast(),
+        Kind::Secret => secret_row(to, row, live),
+        Kind::List => list_row(to, row).upcast(),
         Kind::Unknown => unknown_row(row).upcast(),
     };
     if let Some(info) = &row.info {
@@ -314,12 +473,28 @@ fn row_widget(section: &str, row: &Row, live: &Live) -> gtk::Widget {
     widget
 }
 
-/// Sends one value for one row. The window's `setting-apply` action does the write.
-fn apply(widget: &impl IsA<gtk::Widget>, section: &str, key: &str, value: &Value) {
-    let target = (section, key, value.to_string()).to_variant();
+/// Sends one value for one row: to the window's `setting-apply` action, which does the write, or
+/// to the form that holds it.
+fn apply(widget: &impl IsA<gtk::Widget>, to: &To, key: &str, value: &Value) {
+    let section = match to {
+        To::Form(sink) => return (sink.value)(key, value.clone()),
+        To::Section(section) => section,
+    };
+    let target = (section.as_str(), key, value.to_string()).to_variant();
     if let Err(e) = widget.activate_action("win.setting-apply", Some(&target)) {
         glib::g_warning!("fermix", "a setting could not be sent: {e}");
     }
+}
+
+/// Whether a refusal lands on a row folded under Advanced, which then opens.
+fn refused_folded(drawn: &Drawn) -> bool {
+    let Some(section) = &drawn.rows else {
+        return false;
+    };
+    section
+        .rows
+        .iter()
+        .any(|row| row.advanced && drawn.errors.iter().any(|(key, _)| *key == row.key))
 }
 
 fn titled(row: &Row) -> adw::ActionRow {
@@ -332,7 +507,7 @@ fn titled(row: &Row) -> adw::ActionRow {
     action
 }
 
-fn toggle_row(section: &str, row: &Row) -> adw::SwitchRow {
+fn toggle_row(to: &To, row: &Row) -> adw::SwitchRow {
     let switch = adw::SwitchRow::builder()
         .title(glib::markup_escape_text(&row.label))
         .active(row.value.as_bool().unwrap_or(false))
@@ -340,12 +515,12 @@ fn toggle_row(section: &str, row: &Row) -> adw::SwitchRow {
     if let Some(footer) = &row.footer {
         switch.set_subtitle(&glib::markup_escape_text(footer));
     }
-    let (section, key) = (section.to_owned(), row.key.clone());
-    switch.connect_active_notify(move |s| apply(s, &section, &key, &Value::Bool(s.is_active())));
+    let (to, key) = (to.clone(), row.key.clone());
+    switch.connect_active_notify(move |s| apply(s, &to, &key, &Value::Bool(s.is_active())));
     switch
 }
 
-fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
+fn choice_row(to: &To, row: &Row) -> adw::ComboRow {
     let (items, selected) = choice_items(row);
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     let combo = adw::ComboRow::builder()
@@ -359,7 +534,7 @@ fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
     let items = Rc::new(items);
     combo.set_factory(Some(&value_factory()));
     combo.set_list_factory(Some(&option_factory(items.clone())));
-    let (section, key) = (section.to_owned(), row.key.clone());
+    let (to, key) = (to.clone(), row.key.clone());
     let last = Cell::new(combo.selected());
     combo.connect_selected_notify(move |combo| {
         let index = combo.selected();
@@ -375,7 +550,7 @@ fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
             return;
         }
         let value = Value::String(item.value.clone().expect("checked above"));
-        apply(combo, &section, &key, &value);
+        apply(combo, &to, &key, &value);
     });
     combo
 }
@@ -383,7 +558,7 @@ fn choice_row(section: &str, row: &Row) -> adw::ComboRow {
 /// Draws the chosen option in the row. The row's own label stops at 20
 /// characters; this one shows the whole value when the row has room, and
 /// a value too long to be kept whole says the rest in its tooltip.
-fn value_factory() -> gtk::SignalListItemFactory {
+pub fn value_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("a list item");
@@ -425,7 +600,7 @@ fn value_factory() -> gtk::SignalListItemFactory {
 }
 
 /// Draws each option in the open list as its label over its hint.
-fn option_factory(items: Rc<Vec<ChoiceItem>>) -> gtk::SignalListItemFactory {
+pub fn option_factory(items: Rc<Vec<ChoiceItem>>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("a list item");
@@ -465,7 +640,7 @@ fn option_factory(items: Rc<Vec<ChoiceItem>>) -> gtk::SignalListItemFactory {
 /// A field for a text value: commits on Enter or when focus leaves, and only
 /// when the text changed; Escape puts the daemon's value back. It is as wide as
 /// the value it opens with, within `value_width`'s bounds.
-fn text_field(section: &str, row: &Row, live: &Live) -> gtk::Entry {
+fn text_field(to: &To, row: &Row, live: &Live) -> gtk::Entry {
     let (text, empty) = (text_value(row), placeholder(row));
     let width = value_width(if text.is_empty() { &empty } else { &text }, FIELD_CHARS);
     let entry = gtk::Entry::builder()
@@ -476,14 +651,24 @@ fn text_field(section: &str, row: &Row, live: &Live) -> gtk::Entry {
         .max_width_chars(width.natural_chars)
         .build();
     entry.update_property(&[gtk::accessible::Property::Label(&row.label)]);
+    if let To::Form(_) = to {
+        // A form holds what is typed as it is typed; nothing is written until it is sent.
+        let (to, key, live) = (to.clone(), row.key.clone(), live.clone());
+        entry.connect_changed(move |entry| {
+            if live.get() {
+                apply(entry, &to, &key, &Value::from(entry.text().trim()));
+            }
+        });
+        return entry;
+    }
     let commit = {
-        let (section, row, live) = (section.to_owned(), row.clone(), live.clone());
+        let (to, row, live) = (to.clone(), row.clone(), live.clone());
         move |entry: &gtk::Entry| {
             let Some(value) = text_answer(&row, &entry.text()) else {
                 return;
             };
             if live.get() {
-                apply(entry, &section, &row.key, &value);
+                apply(entry, &to, &row.key, &value);
             }
         }
     };
@@ -514,24 +699,24 @@ fn restore_on_escape(entry: &gtk::Entry, daemon_value: String) {
     entry.add_controller(keys);
 }
 
-fn text_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
+fn text_row(to: &To, row: &Row, live: &Live) -> adw::ActionRow {
     let action = titled(row);
-    let entry = text_field(section, row, live);
+    let entry = text_field(to, row, live);
     action.add_suffix(&entry);
     field_row(&action, &entry);
     action
 }
 
 /// A text value with the daemon's suggestions one click away; any value is allowed.
-fn suggestion_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
-    linked_row(section, row, live, |entry| {
-        suggestions_button(section, row, entry).upcast()
+fn suggestion_row(to: &To, row: &Row, live: &Live) -> adw::ActionRow {
+    linked_row(to, row, live, |entry| {
+        suggestions_button(to, row, entry).upcast()
     })
 }
 
 /// A model row whose provider could not list its models: any name can still
 /// be typed, and the button where the suggestions would be lists them again.
-fn relist_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
+fn relist_row(section: &str, to: &To, row: &Row, live: &Live) -> adw::ActionRow {
     let again = gtk::Button::builder()
         .icon_name("view-refresh-symbolic")
         .tooltip_text(LIST_AGAIN)
@@ -539,18 +724,18 @@ fn relist_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
         .action_target(&section.to_variant())
         .build();
     again.update_property(&[gtk::accessible::Property::Label(LIST_AGAIN)]);
-    linked_row(section, row, live, |_| again.upcast())
+    linked_row(to, row, live, |_| again.upcast())
 }
 
 /// A row's text field with one button joined to its end.
 fn linked_row(
-    section: &str,
+    to: &To,
     row: &Row,
     live: &Live,
     button: impl FnOnce(&gtk::Entry) -> gtk::Widget,
 ) -> adw::ActionRow {
     let action = titled(row);
-    let entry = text_field(section, row, live);
+    let entry = text_field(to, row, live);
     let linked = gtk::Box::builder()
         .css_classes(["linked"])
         .valign(gtk::Align::Center)
@@ -562,7 +747,7 @@ fn linked_row(
     action
 }
 
-fn suggestions_button(section: &str, row: &Row, entry: &gtk::Entry) -> gtk::MenuButton {
+fn suggestions_button(to: &To, row: &Row, entry: &gtk::Entry) -> gtk::MenuButton {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
@@ -584,17 +769,12 @@ fn suggestions_button(section: &str, row: &Row, entry: &gtk::Entry) -> gtk::Menu
         .child(&list)
         .build();
     let popover = gtk::Popover::builder().child(&scroller).build();
-    let (section, key, entry, shut) = (
-        section.to_owned(),
-        row.key.clone(),
-        entry.clone(),
-        popover.clone(),
-    );
+    let (to, key, entry, shut) = (to.clone(), row.key.clone(), entry.clone(), popover.clone());
     list.connect_row_activated(move |_, item| {
         let value = item.widget_name().to_string();
         shut.popdown();
         entry.set_text(&value);
-        apply(&entry, &section, &key, &Value::String(value));
+        apply(&entry, &to, &key, &Value::String(value));
     });
     // Nothing to suggest (a model list still on its way, or one that failed):
     // the field still takes any value, and the button opens no empty list.
@@ -606,7 +786,7 @@ fn suggestions_button(section: &str, row: &Row, entry: &gtk::Entry) -> gtk::Menu
         .build()
 }
 
-fn number_row(section: &str, row: &Row) -> adw::SpinRow {
+fn number_row(to: &To, row: &Row) -> adw::SpinRow {
     let view = Rc::new(number_view(row));
     let adjustment = gtk::Adjustment::new(
         view.value,
@@ -632,36 +812,40 @@ fn number_row(section: &str, row: &Row) -> adw::SpinRow {
     });
     let reads = view.clone();
     spin.connect_input(move |spin| Some(reads.parse(&spin.text()).ok_or(())));
-    write_when_still(&spin, section, row);
+    write_when_still(&spin, to, row);
     spin
 }
 
 /// Writes the number once the control has been still for `NUMBER_SETTLE`,
 /// and only when it differs from the daemon's value.
-fn write_when_still(spin: &adw::SpinRow, section: &str, row: &Row) {
-    let (section, row, pending) = (section.to_owned(), row.clone(), Rc::new(Cell::new(0u64)));
+fn write_when_still(spin: &adw::SpinRow, to: &To, row: &Row) {
+    let (to, row, pending) = (to.clone(), row.clone(), Rc::new(Cell::new(0u64)));
     spin.connect_value_notify(move |spin| {
         let ticket = pending.get() + 1;
         pending.set(ticket);
-        let (spin, section, row, pending) =
-            (spin.clone(), section.clone(), row.clone(), pending.clone());
+        let (spin, to, row, pending) = (spin.clone(), to.clone(), row.clone(), pending.clone());
         glib::timeout_add_local_once(NUMBER_SETTLE, move || {
             if pending.get() != ticket {
                 return;
             }
             let value = number_answer(&row, spin.value());
             if value.as_f64() != row.value.as_f64() {
-                apply(&spin, &section, &row.key, &value);
+                apply(&spin, &to, &row.key, &value);
             }
         });
     });
 }
 
 /// A secret row whose store and remove go to the window's `secret-set` and
-/// `secret-remove` actions, carrying the section and the row key.
-fn secret_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
+/// `secret-remove` actions, carrying the section and the row key; in a form, a field whose
+/// text the form holds until it is sent.
+fn secret_row(to: &To, row: &Row, live: &Live) -> gtk::Widget {
+    let section = match to {
+        To::Form(sink) => return held_secret_row(sink, row).upcast(),
+        To::Section(section) => section,
+    };
     let action = titled(row);
-    let target = Rc::new((section.to_owned(), row.key.clone()));
+    let target = Rc::new((section.clone(), row.key.clone()));
     let on_remove = target.clone();
     let slot = Slot {
         label: row.label.clone(),
@@ -682,11 +866,32 @@ fn secret_row(section: &str, row: &Row, live: &Live) -> adw::ActionRow {
         }),
     };
     secret_row_into(&action, slot, live);
+    action.upcast()
+}
+
+/// A form's secret: typed into a password field and handed to the form as typed, never shown
+/// anywhere else and never sent before the form is. The row outlives redraws, so its text is
+/// never set from outside its field.
+fn held_secret_row(sink: &Rc<FormSink>, row: &Row) -> adw::ActionRow {
+    let action = titled(row);
+    let entry = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .valign(gtk::Align::Center)
+        .width_chars(FIELD_CHARS)
+        .build();
+    entry.update_property(&[gtk::accessible::Property::Label(&row.label)]);
+    action.add_suffix(&entry);
+    field_row(&action, &entry);
+    if let Some(info) = &row.info {
+        action.add_suffix(&info_button(info, "More about this setting"));
+    }
+    let (sink, key) = (sink.clone(), row.key.clone());
+    entry.connect_changed(move |entry| (sink.secret)(&key, entry.text().to_string()));
     action
 }
 
 /// A list is written whole: each change sends the full replacement.
-fn list_row(section: &str, row: &Row) -> adw::ExpanderRow {
+fn list_row(to: &To, row: &Row) -> adw::ExpanderRow {
     let items = list_items(row);
     let expander = adw::ExpanderRow::builder()
         .title(glib::markup_escape_text(&row.label))
@@ -705,28 +910,28 @@ fn list_row(section: &str, row: &Row) -> adw::ExpanderRow {
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let (section, key, next) = (
-            section.to_owned(),
-            row.key.clone(),
-            list_without(&items, item),
-        );
-        remove.connect_clicked(move |b| apply(b, &section, &key, &Value::from(next.clone())));
+        let (to, key, next) = (to.clone(), row.key.clone(), list_without(&items, item));
+        remove.connect_clicked(move |b| apply(b, &to, &key, &Value::from(next.clone())));
         line.add_suffix(&remove);
         expander.add_row(&line);
     }
-    expander.add_row(&list_adder(section, &row.key, items));
+    expander.add_row(&list_adder(to, row, items));
     expander
 }
 
-fn list_adder(section: &str, key: &str, items: Vec<String>) -> adw::EntryRow {
+/// The field a new entry is typed in, its title the row's example where it has one.
+fn list_adder(to: &To, row: &Row, items: Vec<String>) -> adw::EntryRow {
     let adder = adw::EntryRow::builder()
-        .title("Add")
+        .title(glib::markup_escape_text(&list_prompt(row)))
         .show_apply_button(true)
         .build();
-    let (section, key) = (section.to_owned(), key.to_owned());
+    adder
+        .upcast_ref::<gtk::Widget>()
+        .update_property(&[gtk::accessible::Property::Label(&row.label)]);
+    let (to, key) = (to.clone(), row.key.clone());
     adder.connect_apply(move |adder| {
         if let Some(next) = list_with(&items, &adder.text()) {
-            apply(adder, &section, &key, &Value::from(next));
+            apply(adder, &to, &key, &Value::from(next));
         }
     });
     adder
@@ -769,6 +974,18 @@ fn unknown_row(row: &Row) -> adw::ActionRow {
 
 /// The longer explanation, kept one click away behind an (i).
 fn add_info(widget: &gtk::Widget, info: &str) {
+    let more = info_button(info, "More about this setting");
+    if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+        row.add_suffix(&more);
+    } else if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
+        row.add_suffix(&more);
+    } else if let Some(row) = widget.downcast_ref::<adw::EntryRow>() {
+        row.add_suffix(&more);
+    }
+}
+
+/// An (i) that opens `info` in a popover; `tooltip` says what it explains.
+pub fn info_button(info: &str, tooltip: &str) -> gtk::MenuButton {
     let text = gtk::Label::builder()
         .label(info)
         .wrap(true)
@@ -780,16 +997,11 @@ fn add_info(widget: &gtk::Widget, info: &str) {
         .margin_end(6)
         .build();
     let popover = gtk::Popover::builder().child(&text).build();
-    let more = gtk::MenuButton::builder()
+    gtk::MenuButton::builder()
         .icon_name("dialog-information-symbolic")
-        .tooltip_text("More about this setting")
+        .tooltip_text(tooltip)
         .valign(gtk::Align::Center)
         .css_classes(["flat"])
         .popover(&popover)
-        .build();
-    if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
-        row.add_suffix(&more);
-    } else if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
-        row.add_suffix(&more);
-    }
+        .build()
 }

@@ -2,7 +2,7 @@
 //! the vendored PROTOCOL.md ("Keeping a client's timeline", "Delivery and the outbox",
 //! "Streaming a turn", "Approvals") and the macOS reducer it ports.
 
-use fermix_client::chat_wire::protocol::{decode_line, ClientEvent, Cursor, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, ClientEvent, Cursor, ServerEvent};
 use fermix_client::chat_wire::timeline::{
     self, route, Chat, ToolState, MAX_HELD, MAX_PENDING, NEWEST, PAGE_LIMIT,
 };
@@ -10,7 +10,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 fn event(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("a test event decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn message(seq: u64, text: &str) -> Value {
@@ -34,6 +39,27 @@ fn live(seq: u64, text: &str) -> ServerEvent {
         json!({"type": "row", "profile_id": "main", "server_seq": seq, "role": "assistant",
         "text": text, "ts": "t", "media_refs": []}),
     )
+}
+
+/// A reply carries the time its row stores (PROTOCOL.md, `text_done`), so it is placed by when it
+/// was written, not by when it arrived here.
+#[test]
+fn a_reply_carries_the_time_its_row_stores() {
+    let mut chat = holding(12);
+    let done = event(
+        json!({"type": "text_done", "turn_id": "t1", "server_seq": 13,
+        "text": "You have one meeting, at 10.", "ts": "2026-09-25T09:00:04Z"}),
+    );
+    receive(&mut chat, done);
+    let held = chat.rows.last().expect("the reply is held");
+    assert_eq!(held.row.server_seq, 13);
+    assert_eq!(held.row.ts.as_deref(), Some("2026-09-25T09:00:04Z"));
+    let older = event(
+        json!({"type": "text_done", "turn_id": "t2", "server_seq": 14,
+        "text": "An older daemon sends no time."}),
+    );
+    receive(&mut chat, older);
+    assert_eq!(chat.rows.last().expect("held").row.ts, None);
 }
 
 fn receive(chat: &mut Chat, event: ServerEvent) -> Vec<ClientEvent> {
@@ -656,4 +682,181 @@ fn a_forgotten_row_leaves_no_read_behind() {
     );
     receive(&mut chat, live(MAX_HELD as u64 + 1, "new"));
     assert!(timeline::rows_on_screen(&mut chat, &BTreeSet::from([1])).is_empty());
+}
+
+/// A message a page holds that this build cannot read: skipped, as `lenient` skips it.
+fn unreadable_message(seq: u64) -> Value {
+    json!({"server_seq": seq, "role": 5, "content": "x"})
+}
+
+/// PROTOCOL.md "Delivery and the outbox": a forward page's `next_after_seq` names the last row
+/// it sent, and a client pulls on from it, whether or not it could show that row.
+#[test]
+fn a_forward_page_whose_rows_were_all_skipped_still_moves_the_read_on() {
+    let mut chat = holding(2);
+    assert_eq!(
+        receive(&mut chat, live(5, "gap")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)]
+    );
+    let skipped = page(vec![unreadable_message(3)], 5, Some(3), None);
+    assert_eq!(
+        receive(&mut chat, skipped),
+        [pull(Cursor::AfterSeq(3), PAGE_LIMIT)]
+    );
+    assert_eq!(chat.cursor, 3);
+    let rest = page(
+        vec![message(4, "four"), message(5, "five")],
+        5,
+        Some(5),
+        None,
+    );
+    assert!(receive(&mut chat, rest).is_empty());
+    assert_eq!(seqs(&chat), [1, 2, 4, 5]);
+}
+
+/// PROTOCOL.md: rows can be announced out of seq order ("Keeping a client's timeline"), and a page
+/// can be cut short ("Delivery and the outbox"). A row shown live while the read was out moved the
+/// cursor, not the page.
+#[test]
+fn a_forward_page_cut_at_a_row_shown_live_while_it_was_out_reads_on() {
+    let mut chat = holding(2);
+    assert_eq!(
+        receive(&mut chat, live(4, "reply")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)]
+    );
+    assert!(receive(&mut chat, live(3, "job")).is_empty());
+    let cut = page(vec![message(3, "job")], 4, Some(3), None);
+    assert_eq!(
+        receive(&mut chat, cut),
+        [pull(Cursor::AfterSeq(3), PAGE_LIMIT)]
+    );
+}
+
+#[test]
+fn only_a_forward_page_moves_the_read_to_the_row_it_names() {
+    let mut cold = Chat::default();
+    timeline::negotiated(&mut cold, &BTreeSet::new());
+    let newest = page(vec![message(70, "x")], 70, Some(90), Some(70));
+    assert!(receive(&mut cold, newest).is_empty());
+    assert_eq!(
+        cold.cursor, 70,
+        "a backward page names no row to read on from"
+    );
+    let mut warm = holding(2);
+    let changed = event(json!({"type": "row_updated", "profile_id": "main", "server_seq": 1}));
+    assert_eq!(receive(&mut warm, changed), [pull(Cursor::AfterSeq(0), 1)]);
+    let reread = page(vec![message(1, "one")], 2, Some(5), None);
+    assert!(receive(&mut warm, reread).is_empty());
+    assert_eq!(warm.cursor, 2, "nor does a read of held rows again");
+}
+
+/// The read frontier names the newest row this app holds, never the cursor past it: a skipped
+/// row above it stays unread on the owner's other devices until a later row is seen here.
+#[test]
+fn the_read_frontier_stops_at_the_newest_held_row_below_a_skipped_one() {
+    let mut chat = holding(2);
+    receive(&mut chat, live(4, "gap"));
+    let skipped = page(
+        vec![message(3, "three"), unreadable_message(4)],
+        4,
+        Some(4),
+        None,
+    );
+    assert!(receive(&mut chat, skipped).is_empty());
+    assert_eq!(chat.cursor, 4);
+    assert_eq!(
+        timeline::newest_seen(&mut chat),
+        [ClientEvent::read_state(3)]
+    );
+    assert!(timeline::newest_seen(&mut chat).is_empty());
+}
+
+#[test]
+fn a_cold_start_whose_newest_row_cannot_be_read_reads_once_more_and_stops() {
+    let mut chat = Chat::default();
+    timeline::negotiated(&mut chat, &BTreeSet::new());
+    let newest = page(
+        vec![message(1, "one"), unreadable_message(2)],
+        2,
+        None,
+        None,
+    );
+    assert_eq!(
+        receive(&mut chat, newest),
+        [pull(Cursor::AfterSeq(1), PAGE_LIMIT)]
+    );
+    let forward = page(vec![unreadable_message(2)], 2, Some(2), None);
+    assert!(
+        receive(&mut chat, forward).is_empty(),
+        "read once, not again"
+    );
+    assert_eq!(chat.cursor, 2);
+}
+
+#[test]
+fn a_forward_page_that_moves_the_read_nowhere_ends_it() {
+    let mut chat = holding(2);
+    receive(&mut chat, live(4, "gap"));
+    let empty = page(Vec::new(), 9, Some(2), None);
+    assert!(
+        receive(&mut chat, empty).is_empty(),
+        "an empty page echoes the cursor: reading on would ask the same page forever"
+    );
+    assert_eq!(chat.cursor, 2);
+    assert_eq!(
+        receive(&mut chat, live(5, "next")),
+        [pull(Cursor::AfterSeq(2), PAGE_LIMIT)],
+        "the next gap reads again"
+    );
+}
+
+/// PROTOCOL.md "Version 6" and "Version 7": what this build shows nothing of yet (the turn's
+/// reasoning and step, Always On behind its flag, lists, a file's status) changes nothing.
+#[test]
+fn the_events_this_build_shows_nothing_of_change_nothing() {
+    let mut chat = holding(2);
+    timeline::send(&mut chat, "Is it done?", "linux-1".into());
+    receive(
+        &mut chat,
+        event(
+            json!({"type": "turn_started", "profile_id": "main", "turn_id": "t1",
+            "in_reply_to": "linux-1"}),
+        ),
+    );
+    let before = chat.clone();
+    let quiet = [
+        json!({"type": "reasoning", "turn_id": "t1", "text": "**Checking**"}),
+        json!({"type": "home_status_changed"}),
+        json!({"type": "checklists", "profile_id": "main", "lists": []}),
+        json!({"type": "checklist", "profile_id": "main",
+            "list": {"list_id": "ck_1", "title": "Groceries", "rev": 1, "rows": []}}),
+        json!({"type": "attach_status", "attach_id": "linux-att-1", "status": "present"}),
+        json!({"type": "error", "reason": "request_failed", "message": "Too large.",
+            "attach_id": "linux-att-1"}),
+    ];
+    for line in quiet {
+        assert!(receive(&mut chat, event(line)).is_empty());
+    }
+    assert_eq!(chat, before);
+}
+
+/// A connection that never asked for the lists has their items written out in a reply, and
+/// one that asked has them left to a card this build does not draw (PROTOCOL.md "Lists"): the
+/// app never asks, and sends no file and no list change.
+#[test]
+fn a_handshake_and_a_send_ask_for_no_list_and_carry_no_file() {
+    let mut chat = Chat::default();
+    timeline::send(&mut chat, "Is it done?", "linux-1".into());
+    let sent = timeline::negotiated(&mut chat, &BTreeSet::new());
+    assert_eq!(
+        sent,
+        [
+            pull(Cursor::BeforeSeq(NEWEST), PAGE_LIMIT),
+            ClientEvent::msg("linux-1", "Is it done?")
+        ]
+    );
+    let ClientEvent::Msg { attach_ids, .. } = &sent[1] else {
+        panic!("the outbox's message");
+    };
+    assert!(attach_ids.is_empty());
 }

@@ -1,5 +1,6 @@
 //! The window: a sidebar of pages over one stack, a toast overlay, and a header
-//! with at most two trailing buttons (design_final §1). Settings is pinned at
+//! with at most two trailing buttons (design_final §1), and on Chat a third, the
+//! Lists toggle, before the main menu (M85 lists §3.2, L3). Settings is pinned at
 //! the sidebar's foot; opening it swaps the sidebar for the pane list, whose
 //! header holds the way back. The window's buttons are the desktop's.
 //!
@@ -10,6 +11,7 @@
 
 use crate::settings::SettingsPage;
 use adw::prelude::*;
+use fermix_client::checklists::words::LISTS;
 use fermix_client::settings::pane;
 use fermix_client::update::view::CHECK_FOR_UPDATES;
 use gtk::gio;
@@ -51,6 +53,8 @@ pub struct Shell {
     pub restart: gtk::Button,
     /// "Continue setup", shown while Fermix says setup is required.
     pub continue_setup: gtk::Button,
+    /// Shows and hides the Lists pane, on Chat once a handshake has served lists.
+    pub lists: gtk::ToggleButton,
     sidebar_page: adw::NavigationPage,
     shape: SidebarShape,
     pinned: gtk::ListBox,
@@ -72,8 +76,10 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
     let (pinned, settings_row) = pinned_list();
     rail.push(settings_row);
     let (restart, continue_setup) = header_buttons();
+    let lists = lists_toggle();
     let content_header = adw::HeaderBar::new();
     content_header.pack_end(&primary_menu());
+    content_header.pack_end(&lists);
     content_header.pack_end(&restart);
     content_header.pack_end(&continue_setup);
     let content = navigation_page("Home", &content_header, &stack);
@@ -106,6 +112,7 @@ pub fn build(app: &adw::Application, pages: &[&gtk::Widget; 5], settings: &Setti
         sidebar,
         restart,
         continue_setup,
+        lists,
         sidebar_page,
         shape,
         pinned,
@@ -170,6 +177,18 @@ fn header_buttons() -> (gtk::Button, gtk::Button) {
         .build();
     continue_setup.set_action_name(Some("win.open-assistant"));
     (restart, continue_setup)
+}
+
+/// The Lists toggle (M85 lists §3.2): `win.lists`'s state is whether the pane shows.
+fn lists_toggle() -> gtk::ToggleButton {
+    let toggle = gtk::ToggleButton::builder()
+        .icon_name("checkbox-checked-symbolic")
+        .tooltip_text(LISTS)
+        .action_name("win.lists")
+        .visible(false)
+        .build();
+    toggle.update_property(&[gtk::accessible::Property::Label(LISTS)]);
+    toggle
 }
 
 /// The window, which folds the sidebar away when narrow.

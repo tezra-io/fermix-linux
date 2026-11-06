@@ -1,16 +1,28 @@
 //! Chat: the conversation, drawn from `chat::view` of the chat wire's timeline,
-//! the cards waiting for the owner's answer, and the composer under them. The
-//! page never talks to Fermix; its buttons fire window actions and
-//! `chat_session.rs` does the work.
+//! the cards waiting for the owner's answer, and the composer under them, with
+//! the Lists pane at their end (`lists_pane`). The page never talks to Fermix;
+//! its buttons fire window actions and `chat_session.rs` does the work. A card's
+//! answer is the one exception: it is never an action, but its button's own
+//! click handing the controller a `Decision` (M60 cues §6 rule 3). Nor is a list
+//! edit: the lists hand theirs to the controller through `Lister`.
 
 mod activity;
 mod approvals;
 mod blocks;
 mod entries;
 mod levels;
+mod list_menu;
+mod list_more;
+mod list_naming;
+mod list_reword;
+mod list_rows;
+mod lists;
+mod lists_pane;
+mod outside_text;
 mod picture;
 mod places;
 mod playback;
+mod proposals;
 mod strip;
 mod table_scroller;
 mod voice_chip;
@@ -24,13 +36,20 @@ use crate::status::{down_view, waiting, DownPage, DownView};
 use activity::{Live, LiveLine};
 use adw::prelude::*;
 use entries::Drawn;
-use fermix_client::chat::{view, Entry, Key, LiveTurn, View};
+use fermix_client::chat::{
+    reveal_key, view, written_time, Entry, Key, LiveTurn, LocalTime, RowsSeen, View,
+};
+use fermix_client::chat_wire::protocol::Decision as Word;
 use fermix_client::chat_wire::session::{Shown, NO_CHAT};
+use fermix_client::chat_wire::timeline::Chat;
+use fermix_client::checklists::library::Library;
 use fermix_client::greeting::{greeting, time_of_day, QUIET_LINE};
 use gtk::gdk;
 use gtk::glib;
+pub use lists::{ListAct, Lister};
+pub use lists_pane::ListsPane;
 use picture::Decoder;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -39,8 +58,44 @@ use voice_note::Player;
 
 /// Past this distance from the bottom, new text no longer pulls the view down.
 const STICK_DISTANCE: f64 = 48.0;
+/// The room above a proposal's card brought into view.
+const REVEAL_ROOM: f64 = 24.0;
+/// How many frames a reveal waits for its card's layout before it leaves it to the next render.
+const REVEAL_FRAMES: u32 = 120;
 /// What Chat cannot do without Fermix, on the down page.
 const NEEDS_FERMIX: &str = "Chat needs Fermix running. Start it to ask anything.";
+
+/// What a card's own button decides. Never a window or application action: a registered
+/// application exports those on the session bus, where any process of the session, one Fermix
+/// started included, could activate them, and this app's connection, placed as the owner, would
+/// send the answer (M60 cues §6 rule 3, §12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Approval {
+        id: String,
+        approve: bool,
+    },
+    /// A proposal's answer: its id and the word, nothing else (§6 rule 2).
+    Proposal {
+        id: String,
+        decision: Word,
+    },
+}
+
+/// Where the cards' buttons send their decisions: the controller, handed over once it exists.
+pub type Decider = Rc<OnceCell<Box<dyn Fn(Decision)>>>;
+
+/// Binds `button` to `decision`: its own click, holding the card's id, hands it to the controller.
+fn decide_on_click(button: &gtk::Button, decider: &Decider, decision: Decision) {
+    let decider = decider.clone();
+    button.connect_clicked(move |_| match decider.get() {
+        Some(decide) => decide(decision.clone()),
+        None => glib::g_warning!(
+            "fermix",
+            "a card was answered before the chat could take it"
+        ),
+    });
+}
 
 /// What the page says while Fermix is out of reach: its problem, or that it is
 /// starting. `None` while it answers, or before the first read.
@@ -75,6 +130,14 @@ pub struct ChatPage {
     down: DownPage,
     banner: adw::Banner,
     approvals: approvals::Cards,
+    /// Where the cards' buttons decide.
+    decider: Decider,
+    /// Where the replies' lists cards and the Lists pane send their edits and pulls.
+    lister: Lister,
+    /// The Lists pane beside the chat's body.
+    pub lists: Rc<ListsPane>,
+    /// The reveal on its way to its card, if any.
+    revealing: Rc<RefCell<Option<Revealing>>>,
     /// The oldest seq drawn, to keep the reader's place when older rows come in above.
     first_seq: Cell<Option<u64>>,
     /// What the rows' strips read their files with.
@@ -98,7 +161,9 @@ impl ChatPage {
         let shown = Rc::default();
         let on_screen = OnScreen::new(&shown, &follow.scroller);
         let (composer, input, send) = composer();
-        let approvals = approvals::Cards::new();
+        let decider = Decider::default();
+        let lister = Lister::default();
+        let approvals = approvals::Cards::new(&decider);
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
@@ -107,11 +172,12 @@ impl ChatPage {
         body.append(&conversation);
         body.append(&approvals.widget);
         body.append(&composer);
+        let lists = ListsPane::new(&lister, &body, &input);
         let down = DownPage::new();
         let root = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
-        root.add_named(&body, Some("chat"));
+        root.add_named(&lists.widget, Some("chat"));
         root.add_named(&down.page, Some("down"));
         let player = Player::new(media, endpoints);
         // Leaving the page, or the window going, stops a voice note.
@@ -137,6 +203,10 @@ impl ChatPage {
             down,
             banner,
             approvals,
+            decider,
+            lister,
+            lists,
+            revealing: Rc::default(),
             first_seq: Cell::default(),
             readers: Readers {
                 media: media.clone(),
@@ -144,6 +214,22 @@ impl ChatPage {
                 player,
             },
         }
+    }
+
+    /// The controller the cards' buttons decide through. Set once, when the controller exists.
+    pub fn decide_with(&self, decide: impl Fn(Decision) + 'static) {
+        let set = self.decider.set(Box::new(decide));
+        assert!(
+            set.is_ok(),
+            "the chat's cards decide through one controller"
+        );
+    }
+
+    /// The session the replies' lists cards and the Lists pane send their edits and pulls to.
+    /// Set once, when the session exists.
+    pub fn list_with(&self, take: impl Fn(ListAct) + 'static) {
+        let set = self.lister.set(Box::new(take));
+        assert!(set.is_ok(), "the lists cards send to one session");
     }
 
     /// `name` is the first name About you holds, for the greeting.
@@ -160,6 +246,17 @@ impl ChatPage {
         self.show_banner(down.as_ref(), &wire.session.shown());
         self.approvals.show(&wire.chat);
         self.render_conversation(&shown, state, name);
+        self.show_lists(&wire.lists);
+        self.lists.show(&wire.lists);
+    }
+
+    /// Draws every reply's lists card as `lists` holds them now: a push, a pull's answer or an
+    /// edit changes the cards with no change to the entries.
+    fn show_lists(&self, lists: &Library) {
+        for placed in self.shown.borrow_mut().iter_mut() {
+            let on_screen = placed.seq.is_some_and(|seq| self.on_screen.shows(seq));
+            placed.drawn.show_lists(lists, on_screen);
+        }
     }
 
     /// With a conversation on screen the page stays, and the banner says why the
@@ -271,6 +368,11 @@ impl ChatPage {
         self.input.grab_focus();
     }
 
+    /// Whether the down page has the chat's place, the conversation and the Lists pane with it.
+    pub fn is_down(&self) -> bool {
+        self.root.visible_child_name().as_deref() == Some("down")
+    }
+
     /// Scrolls to the newest entry and keeps following it, as after sending.
     pub fn follow_latest(&self) {
         self.follow.latest();
@@ -288,7 +390,7 @@ impl ChatPage {
         for ((key, entry), seq) in placed {
             let drawn = match kept.remove(key) {
                 Some(drawn) => self.redrawn(drawn, entry),
-                None => Drawn::new(entry, &self.readers),
+                None => Drawn::new(entry, &self.readers, &self.decider, &self.lister),
             };
             place(&self.list, &drawn.row, previous.as_ref());
             previous = Some(drawn.row.clone().upcast());
@@ -327,7 +429,45 @@ impl ChatPage {
             return drawn;
         }
         self.list.remove(&drawn.row);
-        Drawn::new(entry, &self.readers)
+        Drawn::new(entry, &self.readers, &self.decider, &self.lister)
+    }
+
+    /// Serves a reveal the timeline holds once its card is drawn: the card, or the placeholder of
+    /// a card that could not be read (`reveal_key`), is scrolled into view once a layout has placed
+    /// it, and only then is its id handed to `served`, which takes the request back so a later
+    /// return to Chat does not scroll again. A card not drawn yet keeps the request for the render
+    /// that draws it; one already on its way is left to finish.
+    pub fn serve_reveal(&self, chat: &Chat, served: impl Fn(&str) + 'static) {
+        let Some(id) = chat.reveal.clone() else {
+            return;
+        };
+        let Some(key) = reveal_key(chat, &id) else {
+            return;
+        };
+        let row = self
+            .shown
+            .borrow()
+            .iter()
+            .find(|placed| placed.key == key)
+            .map(|placed| placed.drawn.row.clone());
+        let Some(row) = row else {
+            return;
+        };
+        let pending = self.revealing.take();
+        if let Some(pending) = pending {
+            if pending.id == id && pending.row.upgrade().as_ref() == Some(&row) {
+                self.revealing.replace(Some(pending));
+                return;
+            }
+            pending.tick.remove();
+        }
+        let scroller = &self.follow.scroller;
+        let tick = reveal_when_laid_out(id.clone(), &row, scroller, &self.revealing, served);
+        self.revealing.replace(Some(Revealing {
+            id,
+            row: row.downgrade(),
+            tick,
+        }));
     }
 
     /// Every second while a reply runs, the live line's time moves on. The
@@ -352,6 +492,75 @@ impl ChatPage {
         });
         self.clock.replace(Some(source));
     }
+}
+
+/// A reveal on its way: the card's id and row, and the frame callback that scrolls to it.
+struct Revealing {
+    id: String,
+    row: glib::WeakRef<gtk::Box>,
+    tick: gtk::TickCallbackId,
+}
+
+/// Scrolls `row`, the card of the reveal `id`, into view once layouts have placed it, then hands
+/// `id` to `served`. A frame's callbacks run before its layout, so a place is trusted only when
+/// two frames running read the same one: the first read can predate the render that drew or
+/// moved the card. After REVEAL_FRAMES it gives up, and the timeline keeps the request for the
+/// next render.
+fn reveal_when_laid_out(
+    id: String,
+    row: &gtk::Box,
+    scroller: &gtk::ScrolledWindow,
+    revealing: &Rc<RefCell<Option<Revealing>>>,
+    served: impl Fn(&str) + 'static,
+) -> gtk::TickCallbackId {
+    let (scroller, revealing) = (scroller.clone(), revealing.clone());
+    let (frames, last) = (Cell::new(0_u32), Cell::new(None));
+    row.add_tick_callback(move |row, _| {
+        frames.set(frames.get() + 1);
+        let top = laid_out(row, &scroller);
+        let before = last.replace(top);
+        if let Some(top) = top.filter(|_| before == top) {
+            scroll_into_view(&scroller, top);
+            revealing.take();
+            served(&id);
+            return glib::ControlFlow::Break;
+        }
+        if frames.get() < REVEAL_FRAMES {
+            return glib::ControlFlow::Continue;
+        }
+        glib::g_warning!(
+            "fermix",
+            "a proposal's card was not laid out in {REVEAL_FRAMES} frames; the next render tries again"
+        );
+        revealing.take();
+        glib::ControlFlow::Break
+    })
+}
+
+/// Where `row`'s top stands in what `scroller` scrolls, the viewport's child, whose place is the
+/// adjustment's value whatever the view shows now; `None` until a layout gave the row a size, as
+/// an unallocated row reads as a zero rectangle at the top.
+fn laid_out(row: &gtk::Box, scroller: &gtk::ScrolledWindow) -> Option<f32> {
+    if !row.is_mapped() {
+        return None;
+    }
+    let viewport = scroller.child().and_downcast::<gtk::Viewport>();
+    let Some(content) = viewport.and_then(|viewport| viewport.child()) else {
+        glib::g_warning!("fermix", "the conversation scrolls no viewport's child");
+        return None;
+    };
+    let bounds = row.compute_bounds(&content)?;
+    (bounds.height() > 0.0).then_some(bounds.y())
+}
+
+/// Scrolls `scroller` so the row whose top stands at `top` in its content stands at the top of
+/// the view, a little room above it. Moving the view leaves the reader's place, so new rows no
+/// longer pull it down.
+fn scroll_into_view(scroller: &gtk::ScrolledWindow, top: f32) {
+    let adjustment = scroller.vadjustment();
+    let target = f64::from(top) - REVEAL_ROOM;
+    let bottom = adjustment.upper() - adjustment.page_size();
+    adjustment.set_value(target.clamp(adjustment.lower(), bottom.max(adjustment.lower())));
 }
 
 /// The running turn: when its question was asked, and whether Stop was pressed.
@@ -410,17 +619,36 @@ fn decorate(shown: &[Placed], view: &View, live: Option<&Live>) {
     }
 }
 
-/// "14:05" in the local time zone, from the daemon's RFC 3339 time.
+/// A daemon's RFC 3339 time as Chat writes it beside its rows and on its proposal cards
+/// (`chat::written_time`), on this computer's clock and in its zone. `None` for a time GLib
+/// cannot read: a row then shows none, and a card the daemon's time as it wrote it. Such a time
+/// was logged once as it arrived (`chat_session::time_reads`), so nothing is logged here, at
+/// each draw.
 fn clock(at: &str) -> Option<String> {
-    let parsed = glib::DateTime::from_iso8601(at, None)
-        .and_then(|time| time.to_local())
-        .and_then(|time| time.format("%H:%M"));
-    match parsed {
-        Ok(text) => Some(text.into()),
+    let time = local(at)?;
+    match glib::DateTime::now_local() {
+        Ok(now) => Some(written_time(local_time(&time), local_time(&now))),
         Err(e) => {
-            glib::g_warning!("fermix", "could not show the time {at}: {e}");
+            glib::g_warning!("fermix", "this computer's clock could not be read: {e}");
             None
         }
+    }
+}
+
+/// An RFC 3339 time on this computer's clock and in its zone, where GLib can read it.
+pub fn local(at: &str) -> Option<glib::DateTime> {
+    glib::DateTime::from_iso8601(at, None)
+        .and_then(|time| time.to_local())
+        .ok()
+}
+
+fn local_time(time: &glib::DateTime) -> LocalTime {
+    LocalTime {
+        year: time.year(),
+        month: time.month(),
+        day: time.day_of_month(),
+        hour: time.hour(),
+        minute: time.minute(),
     }
 }
 
@@ -562,12 +790,15 @@ fn newest_seen(widget: &impl IsA<gtk::Widget>) {
 
 /// Which held rows are drawn on screen, told to the window each time that changes, so a row a
 /// reconnect may have changed is read again as the reader comes to it (macOS `rowsOnScreen`).
-/// Each entry on screen also reads the pictures under it, once.
+/// Each entry on screen also reads the pictures under it, once, and a live lists card asks for its
+/// lists as it comes on screen.
 struct OnScreen {
     shown: Rc<RefCell<Vec<Placed>>>,
     scroller: gtk::ScrolledWindow,
     /// What the window was last told; empty while the conversation is off screen.
     told: RefCell<BTreeSet<u64>>,
+    /// The rows on screen at the last look; none while the conversation is off screen.
+    seen: RefCell<RowsSeen>,
     /// A look is due at the next idle, once the layout has settled.
     due: Cell<bool>,
 }
@@ -578,6 +809,7 @@ impl OnScreen {
             shown: shown.clone(),
             scroller: scroller.clone(),
             told: RefCell::default(),
+            seen: RefCell::default(),
             due: Cell::new(false),
         });
         let adjustment = scroller.vadjustment();
@@ -591,6 +823,7 @@ impl OnScreen {
         scroller.connect_unmap(move |_| {
             if let Some(on_screen) = told.upgrade() {
                 on_screen.told.take();
+                on_screen.seen.replace(RowsSeen::default());
             }
         });
         on_screen
@@ -612,12 +845,22 @@ impl OnScreen {
         });
     }
 
-    /// Each entry on screen reads what its strip shows, where it has not yet.
+    /// Each entry on screen reads what its strip shows, where it has not yet, and each that came
+    /// on screen since the last look asks for its lists.
     fn read(&self) {
         let shown = self.shown.borrow();
-        for placed in &shown[self.visible(&shown)] {
-            placed.drawn.on_screen();
+        let visible = &shown[self.visible(&shown)];
+        let seqs = visible.iter().filter_map(|placed| placed.seq).collect();
+        let came = self.seen.borrow_mut().look(seqs);
+        for placed in visible {
+            let arrived = placed.seq.is_some_and(|seq| came.contains(&seq));
+            placed.drawn.on_screen(arrived);
         }
+    }
+
+    /// Whether the row `seq` was on screen at the last look.
+    fn shows(&self, seq: u64) -> bool {
+        self.seen.borrow().shows(seq)
     }
 
     fn tell(&self) {

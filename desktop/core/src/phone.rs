@@ -3,7 +3,7 @@
 //! is always configured, so the generic channel word said Connected with no phone paired. The
 //! sentences are macOS's, word for word.
 
-use crate::mobile::{ListenerStatus, MobileDevices, MobileStatus};
+use crate::mobile::{Hold, ListenerStatus, MobileDevices, MobileStatus};
 use crate::settings::{Section, SectionRows};
 
 /// The channel's name in `setup.state.get`.
@@ -15,6 +15,7 @@ pub const POLL_MS: u64 = 1_000;
 
 pub const STATUS_OFF: &str = "Off";
 pub const STATUS_RESTART: &str = "Restart to turn on";
+pub const STATUS_WAITS_FOR_SETUP: &str = "Starts once setup is finished";
 pub const STATUS_COULD_NOT_START: &str = "Could not start";
 pub const STATUS_NO_PHONE: &str = "No phone paired";
 pub const STATUS_CHECKING: &str = "Checking";
@@ -49,9 +50,10 @@ pub const PAIR_ANOTHER: &str = "Pair another phone";
 pub const SETUP_ROW: &str = "Pair your Android phone";
 
 /// Every fixed string the phone surfaces show, so a test can hold them to where Android is named.
-pub const STRINGS: [&str; 34] = [
+pub const STRINGS: [&str; 35] = [
     STATUS_OFF,
     STATUS_RESTART,
+    STATUS_WAITS_FOR_SETUP,
     STATUS_COULD_NOT_START,
     STATUS_NO_PHONE,
     STATUS_CHECKING,
@@ -117,7 +119,8 @@ impl PhoneRow {
 }
 
 /// The row from the two reads: None where a read has not answered yet, the daemon's sentence
-/// where it refused. The checks run in §3.2's order.
+/// where it refused. The checks run in §3.2's order, with a channel held until setup is finished
+/// ahead of the restart, which would start nothing (macOS 18f648c).
 pub fn row(
     status: Option<&Result<MobileStatus, String>>,
     devices: Option<&Result<MobileDevices, String>>,
@@ -129,6 +132,9 @@ pub fn row(
     };
     if !status.enabled {
         return PhoneRow::pair(STATUS_OFF);
+    }
+    if status.hold == Some(Hold::Setup) {
+        return PhoneRow::pair(STATUS_WAITS_FOR_SETUP);
     }
     if !status.started && !status.refused {
         return PhoneRow::pair(STATUS_RESTART);
@@ -332,14 +338,16 @@ impl Forgetting {
         self.asking = None;
     }
 
-    /// The second press: the phone the row asked about, which is then the one being forgotten.
-    pub fn confirm(&mut self) -> Option<String> {
-        if self.forgetting.is_some() {
-            return None;
+    /// The second press, in `device`'s own row: true where that row is the one asking, and the
+    /// phone is then the one being forgotten. A press for any other phone forgets nothing, so a
+    /// question moved to another phone between the two presses is never answered by them.
+    pub fn confirm(&mut self, device: &str) -> bool {
+        if self.forgetting.is_some() || self.asking.as_deref() != Some(device) {
+            return false;
         }
-        let device = self.asking.take()?;
-        self.forgetting = Some(device.clone());
-        Some(device)
+        self.asking = None;
+        self.forgetting = Some(device.to_owned());
+        true
     }
 
     /// The daemon answered. A refusal stays under the row it refused.

@@ -133,6 +133,68 @@ fn pairing_opens_the_window_on_a_running_channel_and_turn_on_on_one_that_is_not(
     assert_eq!(TurnOn::new(TurnOnAction::SwitchOn).progress, Progress::Idle);
 }
 
+/// 18f648c on macOS: a boot whose setup was not finished holds the channel, and a restart before
+/// setup is finished holds it again, so a held channel is owed no restart. The window is asked
+/// for, and the daemon's refusal says what the channel waits for. A hold this build cannot name
+/// reads as if the field were absent.
+#[test]
+fn a_channel_held_until_setup_is_finished_is_offered_no_restart() {
+    let held = |s: &mut Value| {
+        s["started"] = json!(false);
+        s["hold"] = json!("setup");
+    };
+    let later = |s: &mut Value| {
+        s["started"] = json!(false);
+        s["hold"] = json!("a-later-hold");
+    };
+    for starts_in_place in [true, false] {
+        assert_eq!(
+            opening(starts_in_place, held),
+            waiting(),
+            "a channel held until setup is finished is offered no restart"
+        );
+        assert_eq!(
+            opening(starts_in_place, later),
+            turn_on(TurnOnAction::Restart)
+        );
+    }
+}
+
+/// Pairing before setup is finished, the dialog's whole walk: the window is asked for, the start
+/// ends in the daemon's own sentence, and Pair again reads the channel again. Once setup is
+/// finished the hold is gone and the channel is owed the restart that starts it; after it the
+/// window opens.
+#[test]
+fn pairing_before_setup_is_finished_ends_in_the_daemons_sentence_and_pairs_once_it_is() {
+    const SETUP: &str = "The phone channel starts once setup is finished.";
+    let held = |s: &mut Value| {
+        s["started"] = json!(false);
+        s["hold"] = json!("setup");
+    };
+    let asked = opening(false, held);
+    assert_eq!(asked, waiting(), "the window is asked for");
+    let refused = start("mobile_pair_start_channel_off", |s| {
+        s["failure"]["sentence"] = json!(SETUP);
+    });
+    let transition = reduce(&asked, Answer::Started(refused));
+    assert_eq!(transition.step, ended(SETUP));
+    assert_eq!(transition.abandons, None, "a refused start opened nothing");
+    let Step::Ended(ending) = &transition.step else {
+        panic!("expected Ended, got {:?}", transition.step.kind());
+    };
+    assert_eq!(ending.action_title(), PAIR_AGAIN);
+
+    let finished = |s: &mut Value| s["started"] = json!(false);
+    assert_eq!(opening(false, finished), turn_on(TurnOnAction::Restart));
+    let running = opening(false, |_| {});
+    assert_eq!(running, waiting());
+    let opened = reduce(
+        &running,
+        Answer::Started(start("mobile_pair_start", |_| {})),
+    );
+    assert_eq!(opened.step.kind(), StepKind::Scan);
+}
+
 /// c01722f on macOS: the engine on dev starts the channel the moment its switch is thrown, and
 /// says so on the switch's row, so Turn on restarts Fermix only where the row waits for one.
 #[test]
@@ -593,6 +655,25 @@ fn closing_cancels_the_window_in_scan_and_compare_and_nothing_once_it_has_ended(
     ];
     for step in closed {
         assert_eq!(step.open_session(), None, "{:?}", step.kind());
+    }
+}
+
+/// Approve and Deny hold the window their Compare step shows (M60 cues §6 rule 3), and decide
+/// only while that step still shows it: never another window, and never from another step.
+#[test]
+fn a_decision_is_taken_only_on_the_compare_step_showing_its_window() {
+    assert!(comparing().decides(SESSION));
+    assert!(!comparing().decides(OTHER), "another window");
+    let elsewhere = [
+        scanning(),
+        Step::Waiting {
+            session: Some(SESSION.into()),
+        },
+        ended(ENDED_DENIED),
+        Step::Phones,
+    ];
+    for step in elsewhere {
+        assert!(!step.decides(SESSION), "{:?}", step.kind());
     }
 }
 

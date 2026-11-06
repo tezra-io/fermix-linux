@@ -2,7 +2,13 @@
 //! socket's reader thread fills and GStreamer's streaming thread empties, through
 //! `Arc<Mutex<PlaybackQueue>>`. It also counts what reached the pipeline since the utterance
 //! anchor, which is what `interrupt` reports (spec §1.7), what has played of each playback id
-//! (`PlaybackIds`, a Grok call's `playback_progress`), and holds the level maths.
+//! (`PlaybackIds`, a Grok call's `playback_progress`), and where the reply's voice ends, and holds
+//! the level maths and the one answer to whether a chunk is voice.
+//!
+//! Live never stops its output: between replies `audio_delta` carries digital silence, one chunk
+//! every 100 ms for the whole call (realtime contract, "Live call sequence"). That padding plays,
+//! and counts as played, like any audio, but it is not speech: a reply has finished playing when
+//! its voice has, so a queue holding padding still drains.
 
 use crate::realtime::playback_ids::PlaybackIds;
 use crate::realtime::protocol::PlaybackProgress;
@@ -14,6 +20,10 @@ pub const SAMPLE_RATE: u32 = 24_000;
 pub const MAX_QUEUED_SAMPLES: usize = 30 * 24_000;
 /// How far each new level moves the shown one (macOS `AudioOwner.swift:57`).
 const LEVEL_SMOOTHING: f32 = 0.35;
+/// The int16 RMS from which a chunk carries voice: the engine's line (`@voiced_rms` in
+/// `FermixCore.Realtime.LiveTurn`) and the macOS app's (`PCM16.voicedRMS`). Live's voice measured
+/// 244 to 3,667 per 100 ms chunk and its padding 0 to 49.
+pub const VOICED_RMS: u64 = 100;
 const SAMPLES_PER_MS: u64 = SAMPLE_RATE as u64 / 1_000;
 
 #[derive(Debug, Default)]
@@ -23,6 +33,10 @@ pub struct PlaybackQueue {
     /// The front samples that were already queued when the anchor reset: the tail of the
     /// utterance before it, so they are not counted when they play.
     before_anchor: usize,
+    /// While voice is owed a drain: how many front samples run up to the end of the last voiced
+    /// chunk queued. `Some(0)` is voice the bound dropped, counted as played: the next pull
+    /// reports its drain. `None` once that drain is reported, or after a flush.
+    voice_ahead: Option<usize>,
     ids: PlaybackIds,
 }
 
@@ -31,8 +45,12 @@ pub struct PlaybackQueue {
 pub struct Pull {
     /// Samples that came from the queue; the rest of the buffer is silence.
     pub real: usize,
-    /// The queue went from non-empty to empty in this pull.
+    /// The last voiced sample queued went out in this pull, or the bound had dropped it: the
+    /// reply's voice has played, whatever padding is queued behind it.
     pub drained: bool,
+    /// The queue went from non-empty to empty in this pull: everything queued under each
+    /// playback id has played.
+    pub emptied: bool,
 }
 
 impl PlaybackQueue {
@@ -42,7 +60,8 @@ impl PlaybackQueue {
 
     /// Queues a decoded `audio_delta`, sent under `playback_id` if it carries one, and returns
     /// how many samples were dropped to stay within `MAX_QUEUED_SAMPLES`, oldest first. A
-    /// trailing odd byte is not a sample and is ignored.
+    /// trailing odd byte is not a sample and is ignored. A voiced chunk (`voiced`) moves the
+    /// end of the reply's voice to its own end.
     ///
     /// A dropped sample counts as played: the daemon waits on every sample it sent under an id,
     /// and keeps about ten seconds on the app, so a Grok call never reaches the bound.
@@ -51,9 +70,13 @@ impl PlaybackQueue {
         self.samples
             .extend(pairs.iter().map(|pair| i16::from_le_bytes(*pair)));
         self.ids.queued(playback_id, pairs.len() as u64);
+        if voiced(bytes) {
+            self.voice_ahead = Some(self.samples.len());
+        }
         let dropped = self.samples.len().saturating_sub(MAX_QUEUED_SAMPLES);
         self.samples.drain(..dropped);
         self.before_anchor = self.before_anchor.saturating_sub(dropped);
+        self.voice_ahead = self.voice_ahead.map(|ahead| ahead.saturating_sub(dropped));
         self.ids.played(dropped as u64);
         dropped
     }
@@ -73,15 +96,28 @@ impl PlaybackQueue {
         self.ids.played(real as u64);
         Pull {
             real,
-            drained: had_audio && self.samples.is_empty(),
+            drained: self.voice_pulled(real),
+            emptied: had_audio && self.samples.is_empty(),
         }
     }
 
+    /// Counts `real` samples off the voice still ahead, and says whether its end went out.
+    fn voice_pulled(&mut self, real: usize) -> bool {
+        let Some(ahead) = self.voice_ahead else {
+            return false;
+        };
+        let left = ahead.saturating_sub(real);
+        debug_assert!(left <= self.samples.len(), "voice ahead past the queue");
+        self.voice_ahead = (left > 0).then_some(left);
+        left == 0
+    }
+
     /// Drops everything queued (`playback_stop`, Stop, End) and resets the anchor. A flush is
-    /// not a drain: the next pull reports `drained: false`. What had played of each playback
-    /// id stays played, and the rest is lost.
+    /// not a drain: the next pull reports neither `drained` nor `emptied`. What had played of
+    /// each playback id stays played, and the rest is lost.
     pub fn clear(&mut self) {
         self.samples.clear();
+        self.voice_ahead = None;
         self.ids.flushed();
         self.reset_anchor();
     }
@@ -109,8 +145,15 @@ impl PlaybackQueue {
         self.played
     }
 
+    /// Nothing is queued, padding included.
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
+    }
+
+    /// Voice is still to play: a sample up to the end of the last voiced chunk is still queued,
+    /// padding between voiced chunks included. Padding after the last voiced chunk does not count.
+    pub fn voice_queued(&self) -> bool {
+        self.voice_ahead.is_some_and(|ahead| ahead > 0)
     }
 }
 
@@ -132,6 +175,18 @@ pub fn rms(pcm16: &[u8]) -> f32 {
         .map(|sample| sample * sample)
         .sum();
     ((sum / pairs.len() as f64).sqrt() as f32).min(1.0)
+}
+
+/// Whether a chunk of PCM16 LE audio carries voice: its int16 RMS is at least `VOICED_RMS`.
+/// The one owner of that answer. A chunk with no whole sample is not voice, and a trailing odd
+/// byte is ignored. Exact, as the engine's is: the mean square is compared in integers.
+pub fn voiced(pcm16: &[u8]) -> bool {
+    let (pairs, _odd) = pcm16.as_chunks::<2>();
+    let squares: u64 = pairs
+        .iter()
+        .map(|pair| u64::from(i16::from_le_bytes(*pair).unsigned_abs()).pow(2))
+        .sum();
+    !pairs.is_empty() && squares >= VOICED_RMS * VOICED_RMS * pairs.len() as u64
 }
 
 /// The shown level after a new one arrives: chunk-by-chunk RMS jitters, the pet should swell.

@@ -12,6 +12,12 @@ use super::protocol::{is_media_ref, ClientEvent, Grant, ServerEvent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+/// Why a read failed whose answer the daemon sent and this build could not read.
+pub const UNREADABLE: &str = "the daemon's answer could not be read";
+/// Why a read failed that the daemon refused (`request_failed`). Its own words stay out: they
+/// may carry anything, and a failure goes to the log.
+pub const REFUSED: &str = "the daemon refused the file (request_failed)";
+
 /// What asking for a ref's file came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -128,26 +134,31 @@ impl Grants {
     }
 
     /// The daemon's answer to a fetch, where `event` is one: a grant, checked; a ref it has
-    /// nothing for; or a copy it failed to make. Any other event, an error without a ref among
-    /// them, is not about a file.
+    /// nothing for; a copy it failed to make; or a grant or a failure whose fields could not be
+    /// read, by the ref it names, which fails the reads of that ref. Any other event, an error
+    /// without a ref among them, is not about a file.
     pub fn answered(&mut self, event: &ServerEvent) -> Option<Answered> {
         let (r#ref, outcome) = match event {
             ServerEvent::MediaPath(grant) => (grant.r#ref.clone(), self.granted(grant)),
             ServerEvent::MediaMissing { r#ref } => (r#ref.clone(), Outcome::Missing),
             ServerEvent::Error(error) if error.reason == "request_failed" => {
-                let why = error
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| error.reason.clone());
-                (error.r#ref.clone()?, Outcome::Failed(why))
+                (error.r#ref.clone()?, Outcome::Failed(REFUSED.into()))
+            }
+            ServerEvent::Unreadable(unread) => {
+                (unread.r#ref.clone()?, Outcome::Failed(UNREADABLE.into()))
             }
             _ => return None,
         };
         let asked = self.asked.remove(&r#ref);
         // The daemon holds what it granted for this connection, whether or not this app takes
-        // it (PROTOCOL rules 2 and 3). A grant refused here is never read, so it goes at once;
-        // stored as Failed, its last read releases nothing more.
-        let held = matches!(event, ServerEvent::MediaPath(_));
+        // it (PROTOCOL rules 2 and 3). A grant refused here, or one that could not be read, is
+        // never read, so it goes at once; stored as Failed, its last read releases nothing more.
+        // A failure that could not be read granted nothing.
+        let held = match event {
+            ServerEvent::MediaPath(_) => true,
+            ServerEvent::Unreadable(unread) => unread.kind == "media_path",
+            _ => false,
+        };
         let refused = held && !matches!(outcome, Outcome::Granted(_));
         let Some(uses) = self.uses.get_mut(&r#ref) else {
             // Nothing reads it any more, or nothing ever asked.
@@ -220,9 +231,9 @@ fn released(goes: bool, r#ref: &str) -> Vec<ClientEvent> {
 /// The grant's file, where it is one: a ref whose digest the grant says it is, at an absolute
 /// path straight inside `media_dir`, named by the ref. The daemon is another process: a grant
 /// that is anything else is refused, never followed.
-pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, String> {
+pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, &'static str> {
     if grant.sha256 != grant.r#ref || !is_media_ref(&grant.r#ref) {
-        return Err(format!("{} is not the ref's digest", grant.sha256));
+        return Err("its digest is not its ref");
     }
     let path = Path::new(&grant.path);
     let plain = grant
@@ -235,13 +246,13 @@ pub fn verify(grant: &Grant, media_dir: &Path) -> Result<PathBuf, String> {
         .skip(1)
         .all(|part| matches!(part, Component::Normal(_)));
     if !path.is_absolute() || !plain || !normal {
-        return Err(format!("{} is not a plain absolute path", grant.path));
+        return Err("its path is not a plain absolute one");
     }
     if path.parent() != Some(media_dir) {
-        return Err(format!("{} is not in {}", grant.path, media_dir.display()));
+        return Err("its file is not in the media directory");
     }
     if path.file_stem().and_then(|stem| stem.to_str()) != Some(grant.r#ref.as_str()) {
-        return Err(format!("{} is not named by its ref", grant.path));
+        return Err("its file is not named by its ref");
     }
     Ok(path.to_path_buf())
 }

@@ -43,6 +43,9 @@ pub struct Refusal {
     pub field: Option<String>,
     /// The daemon's reason word (`details.reason`), where the code has several.
     pub reason: Option<String>,
+    /// The protocol version a `method_not_found` names (`details.requires`): the method exists,
+    /// and this session's version is too old for it. None for a method the daemon does not have.
+    pub requires: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -267,16 +270,28 @@ fn refusal(error: &Value) -> Result<Refusal, CallError> {
         ));
     };
     // `message` is generic ("Request parameters are invalid."); the specific
-    // sentence, where the daemon has one, travels in `details.sentence`.
+    // sentence, where the daemon has one, travels in `details.sentence`. A blank
+    // sentence says nothing, so the message stands in for it; a refusal that says
+    // nothing at all breaks the protocol, since a page shows a refusal's words.
     let specific = error.pointer("/details/sentence").and_then(Value::as_str);
+    let Some(sentence) = said(specific).or(said(Some(message))) else {
+        return Err(CallError::Protocol("a refusal must say why".into()));
+    };
     let field = error.pointer("/details/field").and_then(Value::as_str);
     let reason = error.pointer("/details/reason").and_then(Value::as_str);
+    let requires = error.pointer("/details/requires").and_then(Value::as_u64);
     Ok(Refusal {
         code: code.to_owned(),
-        sentence: specific.unwrap_or(message).to_owned(),
+        sentence: sentence.to_owned(),
         field: field.map(str::to_owned),
         reason: reason.map(str::to_owned),
+        requires,
     })
+}
+
+/// `text`, unless it is missing or says nothing.
+fn said(text: Option<&str>) -> Option<&str> {
+    text.filter(|t| !t.trim().is_empty())
 }
 
 fn frame_error(e: FrameError) -> CallError {

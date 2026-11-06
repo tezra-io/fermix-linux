@@ -1,20 +1,28 @@
 //! The chat connection's life: the handshake's four outcomes (PROTOCOL.md "Handshake state
 //! machine", macOS `CompanionSession`), the bounded backoff, and what the page says.
 
-use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, Attachments, ServerEvent};
 use fermix_client::chat_wire::session::{
-    closes, delay, handshake, Handshake, Lost, Phase, Session, Shown, HANDSHAKE_TIMEOUT,
+    closes, delay, handshake, logged, page_read, Handshake, Lost, Phase, Session, Shown,
+    HANDSHAKE_TIMEOUT, HISTORY_UNREAD, RECONNECTING, UPDATE_BOTH,
 };
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events.jsonl");
+const PROTOCOL: &str = include_str!("../contracts/companion/PROTOCOL.md");
 
 fn server(index: usize) -> ServerEvent {
-    decode_line(SERVER.lines().nth(index).unwrap().as_bytes()).unwrap()
+    line(SERVER.lines().nth(index).unwrap())
 }
 
 fn line(text: &str) -> ServerEvent {
-    decode_line(text.as_bytes()).unwrap()
+    let event = read_line(text.as_bytes()).unwrap();
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn handshaking() -> Session {
@@ -35,7 +43,7 @@ fn a_hello_whose_window_holds_this_version_connects() {
 
 #[test]
 fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
-    let newer = line(r#"{"type":"server_hello","min_version":4,"max_version":5}"#);
+    let newer = line(r#"{"type":"server_hello","min_version":8,"max_version":9}"#);
     let older = line(r#"{"type":"server_hello","min_version":1,"max_version":2}"#);
     let Handshake::Refused(app) = handshake(&newer) else {
         panic!("refused");
@@ -47,10 +55,30 @@ fn a_hello_whose_window_excludes_this_version_refuses_by_direction() {
     assert!(fermix.contains("Update the engine"), "{fermix}");
 }
 
+/// PROTOCOL.md "Versioning": the engine serves 6..7, and there is no fallback below 7.
+#[test]
+fn this_build_speaks_7_on_the_6_to_7_window_and_a_window_ending_at_6_is_refused() {
+    let current = line(r#"{"type":"server_hello","min_version":6,"max_version":7}"#);
+    assert_eq!(handshake(&current), Handshake::Ok);
+    let v0_17 = line(r#"{"type":"server_hello","min_version":3,"max_version":4}"#);
+    let at_6 = line(r#"{"type":"server_hello","min_version":5,"max_version":6}"#);
+    let Handshake::Refused(older) = handshake(&v0_17) else {
+        panic!("a daemon whose window ends at 4 is refused");
+    };
+    let Handshake::Refused(sentence) = handshake(&at_6) else {
+        panic!("a daemon whose window ends at 6 is refused");
+    };
+    assert_eq!(older, sentence);
+    assert_eq!(
+        sentence,
+        "The Fermix engine is older than this app. Update the engine to chat."
+    );
+}
+
 #[test]
 fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
     let mut session = handshaking();
-    let Handshake::Refused(sentence) = session.hello(&server(35)) else {
+    let Handshake::Refused(sentence) = session.hello(&server(59)) else {
         panic!("client_too_new refuses");
     };
     assert!(sentence.contains("Update the engine"), "{sentence}");
@@ -67,7 +95,7 @@ fn a_version_refusal_stops_retrying_with_its_directional_sentence() {
 
 #[test]
 fn other_errors_before_hello_are_lost_and_retried() {
-    for index in [34, 39] {
+    for index in [58, 64] {
         let mut session = handshaking();
         assert!(
             matches!(session.hello(&server(index)), Handshake::Lost(_)),
@@ -85,7 +113,7 @@ fn other_errors_before_hello_are_lost_and_retried() {
 #[test]
 fn any_other_event_before_hello_is_ignored() {
     let mut session = handshaking();
-    assert_eq!(session.hello(&server(24)), Handshake::Ignore);
+    assert_eq!(session.hello(&server(29)), Handshake::Ignore);
     assert_eq!(session.phase(), &Phase::Handshaking);
 }
 
@@ -116,6 +144,41 @@ fn a_handshake_resets_the_backoff() {
     );
 }
 
+/// A connection given up because its history could not be read keeps its backoff past every later
+/// handshake, so a history that stays unreadable is tried less and less often, at most every 30 s.
+/// A loss of another kind keeps it too: only a page that reads ends it (`history_read`).
+#[test]
+fn a_history_given_up_keeps_its_backoff_past_the_handshake() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    assert_eq!(session.lost(Lost::History), Some(Duration::from_secs(1)));
+    assert!(matches!(session.shown(), Shown::Disconnected(_)));
+    for seconds in [2, 4, 8, 16, 30, 30] {
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+        assert_eq!(
+            session.lost(Lost::History),
+            Some(Duration::from_secs(seconds))
+        );
+    }
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(30))
+    );
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(30)),
+        "no page has read, so a plain loss keeps the backoff too"
+    );
+}
+
 #[test]
 fn the_page_says_why_it_is_not_connected() {
     let mut session = Session::default();
@@ -131,7 +194,172 @@ fn the_page_says_why_it_is_not_connected() {
         "a retry keeps the last reason"
     );
     session.lost(Lost::Broken("eof".into()));
-    assert!(matches!(session.shown(), Shown::Disconnected(_)));
+    assert_eq!(session.shown(), Shown::Disconnected(RECONNECTING.into()));
+    session.start();
+    session.connected();
+    session.hello(&server(0));
+    session.lost(Lost::History);
+    assert_eq!(
+        session.shown(),
+        Shown::Disconnected(HISTORY_UNREAD.into()),
+        "Fermix answered: only its history could not be read"
+    );
+    assert_ne!(HISTORY_UNREAD, RECONNECTING);
+}
+
+/// The backoff kept for a history that could not be read ends with that episode: the first page
+/// read on the next connection resets it, so a daemon whose history reads again is not waited
+/// for 30 s at its next loss. A page read on a connection that kept no backoff changes nothing.
+#[test]
+fn a_page_read_after_a_history_given_up_ends_its_backoff() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    for seconds in [1, 2, 4, 8, 16, 30] {
+        assert_eq!(
+            session.lost(Lost::History),
+            Some(Duration::from_secs(seconds))
+        );
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+    }
+    session.history_read();
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(1))
+    );
+    session.start();
+    session.connected();
+    session.history_read();
+    assert_eq!(
+        session.lost(Lost::Broken("eof".into())),
+        Some(Duration::from_secs(2)),
+        "a page read only ends a backoff kept on a connection"
+    );
+}
+
+/// A refusal whose direction this build does not know says to update both sides, in this app's
+/// own words: the daemon's word is not shown.
+#[test]
+fn a_refusal_in_a_direction_this_build_does_not_know_says_to_update_both_with_no_daemon_word() {
+    let odd = line(
+        r#"{"type":"error","reason":"unsupported_protocol_version","direction":"sideways now","message":"secret"}"#,
+    );
+    let Handshake::Refused(sentence) = handshake(&odd) else {
+        panic!("a direction refuses");
+    };
+    assert_eq!(sentence, UPDATE_BOTH);
+    let mut session = handshaking();
+    session.hello(&odd);
+    let Shown::Refused(shown) = session.shown() else {
+        panic!("the page shows the refusal");
+    };
+    for word in ["sideways", "secret", "daemon"] {
+        assert!(!shown.contains(word), "{shown}");
+    }
+}
+
+/// A backoff kept for a history that could not be read lasts until a page reads, through any
+/// other loss on the way: a daemon that also drops connections never resets it.
+#[test]
+fn a_backoff_kept_for_the_history_survives_another_loss_before_a_page_reads() {
+    let mut session = handshaking();
+    session.hello(&server(0));
+    assert_eq!(session.lost(Lost::History), Some(Duration::from_secs(1)));
+    let reconnect = |session: &mut Session| {
+        session.start();
+        session.connected();
+        session.hello(&server(0));
+    };
+    reconnect(&mut session);
+    let eof = || Lost::Broken("eof".into());
+    assert_eq!(session.lost(eof()), Some(Duration::from_secs(2)));
+    reconnect(&mut session);
+    assert_eq!(
+        session.lost(eof()),
+        Some(Duration::from_secs(4)),
+        "no page read yet, so the backoff is still kept"
+    );
+    reconnect(&mut session);
+    session.history_read();
+    assert_eq!(session.lost(eof()), Some(Duration::from_secs(1)));
+    reconnect(&mut session);
+    assert_eq!(
+        session.lost(eof()),
+        Some(Duration::from_secs(1)),
+        "a plain loss resets at the next hello again"
+    );
+}
+
+/// Only a history page that reads ends a kept backoff: an unreadable page, a row or a hello is
+/// no page read.
+#[test]
+fn only_a_history_page_that_reads_is_a_page_read() {
+    assert!(page_read(&server(30)));
+    let unread = read_line(br#"{"type":"history_page","profile_id":"main","messages":7}"#)
+        .expect("a framed line");
+    assert!(matches!(unread, ServerEvent::Unreadable(_)));
+    assert!(!page_read(&unread));
+    assert!(!page_read(&server(3)), "a row is no page");
+    assert!(!page_read(&server(0)));
+}
+
+/// The log names a handshake event by its type, and an error by its reason and direction as code
+/// words (`loggable_id`): never the daemon's sentence, nor a word outside the contract's
+/// alphabet. A lost handshake carries the same into the log.
+#[test]
+fn a_handshake_event_is_logged_by_its_codes_alone() {
+    let plain = line(
+        r#"{"type":"error","reason":"unsupported_protocol_version","direction":"client_too_old","message":"Update this app."}"#,
+    );
+    assert_eq!(
+        logged(&plain),
+        "error unsupported_protocol_version, direction client_too_old"
+    );
+    let odd = line(
+        r#"{"type":"error","reason":"a password: hunter2\nforged","direction":"sideways now","message":"secret"}"#,
+    );
+    let text = logged(&odd);
+    for word in ["hunter2", "forged", "sideways", "secret", "\n"] {
+        assert!(!text.contains(word), "{text}");
+    }
+    assert_eq!(logged(&server(0)), "server_hello, versions 6 to 7");
+    let newer = line(r#"{"type":"server_hello","min_version":8,"max_version":9}"#);
+    assert_eq!(
+        logged(&newer),
+        "server_hello, versions 8 to 9",
+        "a version refusal's log says which side is older"
+    );
+    let lost = line(r#"{"type":"error","reason":"a password: hunter2","message":"secret"}"#);
+    let Handshake::Lost(detail) = handshake(&lost) else {
+        panic!("an error with no direction loses the handshake");
+    };
+    assert!(
+        !detail.contains("hunter2") && !detail.contains("secret"),
+        "{detail}"
+    );
+}
+
+/// PROTOCOL.md "Errors": each reason in the table closes the connection exactly when its row says
+/// `closed`, so a contract taken again that adds a closing reason fails here until this build knows
+/// it.
+#[test]
+fn every_reason_in_the_contracts_errors_table_closes_as_its_row_says() {
+    let section = PROTOCOL
+        .split("\n## Errors\n")
+        .nth(1)
+        .expect("PROTOCOL.md has an Errors section");
+    let table = section.trim_start().split("\n\n").next().unwrap();
+    let rows: Vec<&str> = table.lines().skip(2).collect();
+    assert!(rows.len() > 10, "the table was read: {table}");
+    for row in rows {
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        let closed = cells[3].starts_with("closed");
+        assert!(closed || cells[3] == "open", "closed or open: {row}");
+        for reason in cells[1].split(", ") {
+            assert_eq!(closes(reason.trim_matches('`')), closed, "{reason}");
+        }
+    }
 }
 
 #[test]
@@ -143,6 +371,11 @@ fn the_closing_errors_are_the_contracts() {
         "line_too_large",
         "max_clients_reached",
         "unsupported_protocol_version",
+        "stale_primary",
+        "primary_epoch_unavailable",
+        "unattended_client",
+        "primary_unreachable",
+        "desktop_revoked",
     ] {
         assert!(closes(reason), "{reason}");
     }
@@ -184,4 +417,36 @@ fn a_connect_that_lands_after_its_attempt_ended_is_refused() {
     assert_eq!(session.phase(), &Phase::Waiting);
     session.start();
     assert!(session.connected());
+}
+
+/// What a hello offers that this build does not use yet costs only itself: a command that does
+/// not fit is skipped and counted, commands that are no list are all skipped, an attachments
+/// offer that does not fit offers nothing, and the hello connects.
+#[test]
+fn a_hello_whose_offers_do_not_fit_still_connects() {
+    let golden: Value = serde_json::from_str(SERVER.lines().next().unwrap()).unwrap();
+    let offered = golden["commands"].as_array().expect("commands").len();
+    let mut hello = golden.clone();
+    let commands = hello["commands"].as_array_mut().unwrap();
+    commands.push(json!({"name": "broken"}));
+    hello["attachments"] = json!({"dir": 5});
+    let event = line(&hello.to_string());
+    let ServerEvent::ServerHello {
+        commands,
+        attachments,
+        ..
+    } = &event
+    else {
+        panic!("a hello: {event:?}");
+    };
+    assert_eq!((commands.offered.len(), commands.skipped), (offered, 1));
+    assert_eq!(*attachments, Attachments::Unreadable);
+    assert_eq!(handshake(&event), Handshake::Ok);
+    hello["commands"] = json!("none");
+    let event = line(&hello.to_string());
+    let ServerEvent::ServerHello { commands, .. } = &event else {
+        panic!("a hello: {event:?}");
+    };
+    assert_eq!((commands.offered.len(), commands.skipped), (0, 1));
+    assert_eq!(handshake(&event), Handshake::Ok);
 }

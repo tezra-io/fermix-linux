@@ -2,11 +2,11 @@
 //! `mobile.status` and `mobile.devices.list`, never from `configured`, and every sentence the app
 //! adds to the daemon's facts.
 
-use fermix_client::mobile::{MobileDevices, MobileStatus};
+use fermix_client::mobile::{Hold, MobileDevices, MobileStatus};
 use fermix_client::phone::{
     countdown, detail, grouped, heading, offers_phone, paired_line, row, seen, spoken,
     switch_starts_in_place, unix_seconds, Forgetting, Intent, CHANGE, PAIR, SCAN_LINE, SETUP_ROW,
-    STRINGS,
+    STATUS_WAITS_FOR_SETUP, STRINGS,
 };
 use fermix_client::settings::{SectionRows, Sections};
 use serde::de::DeserializeOwned;
@@ -54,6 +54,45 @@ fn the_row_says_off_restart_or_could_not_start_before_it_counts_phones() {
     assert_eq!(status_of(refused, devices()), "Could not start");
     let deaf = status(|s| s["listener"]["status"] = json!("unavailable"));
     assert_eq!(status_of(deaf, devices()), "Could not start");
+}
+
+/// 18f648c on macOS: a channel this boot held until setup is finished waits for setup, not for a
+/// restart, which would start nothing. A hold this build cannot name reads as if the field were
+/// absent.
+#[test]
+fn a_channel_held_until_setup_is_finished_says_it_starts_once_setup_is_finished() {
+    let held = status(|s| {
+        s["started"] = json!(false);
+        s["paired_devices"] = json!(0);
+        s["hold"] = json!("setup");
+    });
+    let row_held = row(held.as_ref(), devices().as_ref());
+    assert_eq!(row_held.status, "Starts once setup is finished");
+    assert_eq!(row_held.opens, Intent::Pair);
+    assert_eq!(STATUS_WAITS_FOR_SETUP, "Starts once setup is finished");
+    let later = status(|s| {
+        s["started"] = json!(false);
+        s["hold"] = json!("a-later-hold");
+    });
+    assert_eq!(status_of(later, devices()), "Restart to turn on");
+}
+
+fn hold_of(change: impl FnOnce(&mut Value)) -> Option<Hold> {
+    golden::<MobileStatus>("mobile_status", change).hold
+}
+
+#[test]
+fn the_hold_decodes_as_published_none_where_absent_and_unknown_where_unnamed() {
+    assert_eq!(hold_of(|s| s["hold"] = json!("setup")), Some(Hold::Setup));
+    assert_eq!(hold_of(|_| {}), None, "the golden publishes null");
+    let older = |s: &mut Value| {
+        s.as_object_mut().expect("an object").remove("hold");
+    };
+    assert_eq!(hold_of(older), None, "an engine older than the field");
+    assert_eq!(
+        hold_of(|s| s["hold"] = json!("a-later-hold")),
+        Some(Hold::Unknown)
+    );
 }
 
 /// The phone section with its switch's row changed by `change`.
@@ -197,7 +236,7 @@ fn a_phones_detail_is_its_model_and_when_it_was_seen() {
 #[test]
 fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     let mut forgetting = Forgetting::default();
-    assert_eq!(forgetting.confirm(), None, "nothing was asked");
+    assert!(!forgetting.confirm("a"), "nothing was asked");
     forgetting.ask("a");
     forgetting.ask("b");
     assert_eq!(
@@ -207,10 +246,10 @@ fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     );
     forgetting.withdraw();
     assert_eq!(forgetting.asking(), None);
-    assert_eq!(forgetting.confirm(), None);
+    assert!(!forgetting.confirm("b"));
 
     forgetting.ask("a");
-    assert_eq!(forgetting.confirm().as_deref(), Some("a"));
+    assert!(forgetting.confirm("a"));
     assert_eq!(forgetting.forgetting(), Some("a"));
     forgetting.ask("b");
     assert_eq!(
@@ -226,6 +265,21 @@ fn forgetting_asks_in_the_row_and_only_the_second_press_forgets() {
     );
     forgetting.ask("a");
     assert_eq!(forgetting.refusal("a"), None, "asking again clears it");
+}
+
+/// The second press holds the phone its own row names (M60 cues §6 rule 3). The first press is
+/// still an action the session bus exports, so a process of the session can move the question to
+/// another phone between the owner's two presses; the owner's press then forgets nothing.
+#[test]
+fn a_second_press_forgets_only_the_phone_whose_row_asks() {
+    let mut forgetting = Forgetting::default();
+    forgetting.ask("a");
+    forgetting.ask("b");
+    assert!(!forgetting.confirm("a"), "a's press does not forget b");
+    assert_eq!(forgetting.forgetting(), None);
+    assert_eq!(forgetting.asking(), Some("b"), "b's row still asks");
+    assert!(forgetting.confirm("b"));
+    assert_eq!(forgetting.forgetting(), Some("b"));
 }
 
 /// Android is named where a person is told to reach for their phone, and nowhere else.

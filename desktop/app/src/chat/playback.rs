@@ -3,7 +3,8 @@
 //! the sound, the watch first, so `ended` never runs after. An end of stream counts only if it
 //! carries the last seek's number: one posted before a seek restarted the note is stale.
 
-use super::levels::{first_error, ogg_opus, why, words};
+use super::entries::error_code;
+use super::levels::{first_error, ogg_opus, why, words, BUS_UNWATCHED, STATE_REFUSED};
 use crate::audio::{self, AudioFailure, Endpoints};
 use gst::prelude::*;
 use gtk::glib;
@@ -44,7 +45,7 @@ impl Playback {
         path: &Path,
         ended: impl FnOnce(Ended) + 'static,
     ) -> Result<Playback, String> {
-        gst::init().map_err(|e| format!("GStreamer did not start: {e}"))?;
+        gst::init().map_err(|e| format!("GStreamer did not start: {}", error_code(&e)))?;
         let pipeline = gst::Pipeline::new();
         let tail = [
             audio::make("audioconvert").map_err(why)?,
@@ -57,8 +58,8 @@ impl Playback {
             seek: Rc::default(),
             watch: None,
         };
-        if let Err(e) = playback.pipeline.set_state(gst::State::Playing) {
-            return Err(first_error(&playback.pipeline).unwrap_or_else(|| e.to_string()));
+        if playback.pipeline.set_state(gst::State::Playing).is_err() {
+            return Err(first_error(&playback.pipeline).unwrap_or_else(|| STATE_REFUSED.to_owned()));
         }
         playback.watch = Some(watch(&playback.pipeline, playback.seek.clone(), ended)?);
         Ok(playback)
@@ -73,7 +74,7 @@ impl Playback {
         self.pipeline
             .set_state(state)
             .map(|_| ())
-            .map_err(|e| first_error(&self.pipeline).unwrap_or_else(|| e.to_string()))
+            .map_err(|_| first_error(&self.pipeline).unwrap_or_else(|| STATE_REFUSED.to_owned()))
     }
 
     /// Where it is, in seconds, once the pipeline knows.
@@ -150,7 +151,7 @@ fn watch(
         }
         glib::ControlFlow::Break
     })
-    .map_err(|e| format!("could not watch the bus: {e}"))
+    .map_err(|_| BUS_UNWATCHED.to_owned())
 }
 
 /// Whether `message` was posted before the last seek, by what played before it. Before any seek

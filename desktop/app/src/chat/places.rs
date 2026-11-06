@@ -2,7 +2,7 @@
 //! which opens the place in this computer's maps app or on the web map, with its website and
 //! address in its menu. The words already link every place; the cards only add to them.
 
-use super::entries::{copy_text, toast};
+use super::entries::{copy_text, error_code, toast};
 use adw::prelude::*;
 use fermix_client::places::{maps_launch, Card};
 use gtk::{gio, glib};
@@ -144,12 +144,14 @@ fn open_in_maps(widget: &impl IsA<gtk::Widget>, card: &Card) {
         if turned_down(&e) {
             return;
         }
-        glib::g_warning!("fermix", "the place did not open: {e}");
+        let code = error_code(&e);
+        glib::g_warning!("fermix", "the place did not open: {code}");
         let Some(fallback) = launch.fallback else {
             return toast(&window, NO_MAP);
         };
         if let Err(e) = launched(&window, &fallback).await {
-            glib::g_warning!("fermix", "the web map did not open: {e}");
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the web map did not open: {code}");
             toast(&window, NO_MAP);
         }
     });
@@ -167,7 +169,8 @@ fn open_website(row: &adw::ActionRow, card: &Card) {
             return;
         };
         if !turned_down(&e) {
-            glib::g_warning!("fermix", "the website did not open: {e}");
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the website did not open: {code}");
             toast(&window, NO_WEBSITE);
         }
     });

@@ -2,7 +2,7 @@
 //! them, without the map: what each card says, where its website is, and what Open in Maps
 //! launches.
 
-use fermix_client::chat_wire::protocol::{decode_line, Block, Place, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, Block, Place, ServerEvent};
 use fermix_client::places::{card, cards, maps_launch, MapsLaunch, MAX_PLACES};
 use serde_json::{json, Value};
 
@@ -11,7 +11,7 @@ const SERVER: &str = include_str!("../contracts/companion/fixtures/server_events
 /// The blocks of the vendored `text_done` for `turn`.
 fn fixture_blocks(turn: &str) -> Vec<Block> {
     for line in SERVER.lines() {
-        match decode_line(line.as_bytes()) {
+        match read_line(line.as_bytes()) {
             Ok(ServerEvent::TextDone(reply)) if reply.turn_id == turn => return reply.blocks,
             _ => {}
         }
@@ -257,7 +257,7 @@ fn a_nul_in_a_place_reaches_its_card_replaced() {
         "blocks": [{"type": "places", "places": [{"name": "Caf\u{0}e",
         "location": {"latitude": 1, "longitude": 2}, "source_url": "https://x.example/",
         "opening_hours": {"current_day": "Mon\u{0}"}}]}]});
-    let Ok(ServerEvent::TextDone(reply)) = decode_line(line.to_string().as_bytes()) else {
+    let Ok(ServerEvent::TextDone(reply)) = read_line(line.to_string().as_bytes()) else {
         panic!("a reply");
     };
     let shown = cards(&reply.blocks);

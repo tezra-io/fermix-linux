@@ -12,12 +12,16 @@ These six files are the engine's management contract, copied byte for byte:
 | `fixtures/compatibility.jsonl` | `apps/fermix_core/priv/management/fixtures/compatibility.jsonl` |
 
 - Repository: fermix (the engine)
-- Commit: `b9dce743b4f31dfcfd27874d9f4baf43d6a096d3`, the engine v0.17.0. The last commit to touch
-  `priv/management` is `fe7fe1c01fa5313a70ee3049470f853f546f6883` (2026-10-26, "feat(cues): every
-  build has cues, off until the owner turns them on, and a release user is told the Tailscale
-  command and the source's settings, never a Mix task only a checkout has"). Since v0.16.0, all
-  within version 2: the `cues.*` methods (sources, watchers, mandates, proposals), and
-  `mobile.status` saying whether the phone channel is held until setup is finished.
+- Commit: `9389f738a9a02dc12422fc04dc2b4fe3100b3bc9`, the engine v0.18.0 release tag. The last
+  commit to touch `priv/management` is `6c85595cc094d5d584ec0b777043c8f503a20c3b` (2026-11-03,
+  "feat(cues): the decision model's providers go OpenRouter, Venice, OpenAI everywhere"). Since
+  v0.17.0, all within version 2, no method's minimum version moved: the `home.*` methods of Always
+  On (a release build of the engine lists none of `home.status`, `home.act` and
+  `home.provision.options` in `hello`, and refuses them), `cues.watchers.always_allow.revoke` and a
+  watcher's `follow_up`, the X accounts feed preset, the source form's `choices` and `requirement`,
+  an add with no name or a GitHub secret Fermix makes, `computer_use.permissions.get`'s `platform`,
+  `display_server` and `rows`, a paired device's `kind` in `mobile.devices.list` (`phone`, or
+  `desktop` for one an Always On move paired), and the plugin status `reinstall_failed`.
 - Protocol version: 2, daemon window 1..2.
 - `CHECKSUMS.txt` holds the SHA-256 of each file, in `sha256sum` format.
 

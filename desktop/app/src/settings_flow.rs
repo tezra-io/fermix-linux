@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use std::rc::Rc;
 
 /// What a row shows when its write never reached a verdict.
-const NOT_SAVED: &str = "Fermix did not answer, so this was not saved.";
+pub const NOT_SAVED: &str = "Fermix did not answer, so this was not saved.";
 const SECTION_WIDTH: i32 = 560;
 const SECTION_HEIGHT: i32 = 560;
 
@@ -89,6 +89,7 @@ impl App {
             "meetings" => self.detect_meetbot().await,
             "computer" => self.probe_computer().await,
             "integrations" => self.integrations.shown(),
+            "cues" => self.cues.shown(),
             "channels" => self.read_phone_row().await,
             _ => {}
         }
@@ -312,8 +313,14 @@ impl App {
         }
     }
 
-    /// Shows a page or pane; a pane reads its sections as it opens.
+    /// Shows a page or pane; a pane reads its sections as it opens. A pane whose feature the
+    /// daemon does not serve now is never shown: the route lands on Providers (M60 cues §4.1).
     pub fn show_page(self: &Rc<Self>, name: &str) {
+        let name = if self.settings.hidden().contains(&name) {
+            "providers"
+        } else {
+            name
+        };
         self.shell.show_page(name);
         if pane(name).is_none() {
             return;
@@ -329,7 +336,7 @@ impl App {
     pub fn search_settings(&self, query: &str) {
         let data = self.settings_data.borrow();
         let sections = data.sections.as_deref().unwrap_or_default();
-        let matches = matching_panes(query, sections, &data.rows);
+        let matches = matching_panes(query, sections, &data.rows, &self.settings.hidden());
         drop(data);
         self.settings.filter(matches);
     }

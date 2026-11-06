@@ -6,6 +6,7 @@
 //! copy of it on the clipboard is taken back when Scan leaves, if it is still Fermix's. Linux has
 //! no way to keep one window out of a screen share, so nothing here claims to.
 
+use crate::clipboard::SecretCopy;
 use crate::descriptor::{NoteKind, SectionView};
 use adw::prelude::*;
 use fermix_client::mobile::{MobileDevice, MobileDevices};
@@ -26,8 +27,18 @@ pub const WIDTH: i32 = 560;
 pub const HEIGHT: i32 = 560;
 const MARGIN: i32 = 24;
 const _: () = assert!(PairingCode::MAX_SIDE as i32 + 2 * MARGIN <= WIDTH);
-/// What a clipboard manager that honours it reads as "do not keep this".
-const SECRET_HINT: (&str, &[u8]) = ("x-kde-passwordManagerHint", b"secret");
+
+/// What the dialog's two decisions call: Approve or Deny on Compare, and Forget this phone, the
+/// second press in a phone's row. Each is bound to its own button's click and to no `win.*` or
+/// `app.*` action, which the session bus exports to every process of the session (M60 cues §6
+/// rule 3).
+#[derive(Clone)]
+pub struct Decisions {
+    /// Decides about the window Compare was drawn for: true approves the phone, false denies it.
+    pub decide: Rc<dyn Fn(String, bool)>,
+    /// Forgets the phone whose row the press was in, by its id.
+    pub forget: Rc<dyn Fn(String)>,
+}
 
 /// Everything a step draws from: the step, and what the app knows beside it.
 pub struct Screen<'a> {
@@ -93,8 +104,7 @@ struct ScanParts {
     /// Whether the last ten seconds have been announced.
     final_announced: Cell<bool>,
     /// This step's copy of the link, while it may still be on the clipboard.
-    copied: Rc<RefCell<Option<gdk::ContentProvider>>>,
-    clipboard: gdk::Clipboard,
+    copied: Rc<SecretCopy>,
 }
 
 struct CompareParts {
@@ -105,6 +115,7 @@ struct CompareParts {
 struct PhonesParts {
     group: adw::PreferencesGroup,
     rows: RefCell<Vec<gtk::Widget>>,
+    forget: Rc<dyn Fn(String)>,
     /// The channel's connection rows, drawn by the one descriptor renderer.
     view: Rc<SectionView>,
 }
@@ -121,10 +132,15 @@ pub struct PhoneView {
     drawn: RefCell<Option<Drawn>>,
     /// The settings views every render draws; the Phones step's own is added and taken back.
     dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>,
+    decisions: Decisions,
 }
 
 impl PhoneView {
-    pub fn new(title: &str, dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>) -> PhoneView {
+    pub fn new(
+        title: &str,
+        dialog_views: Rc<RefCell<Vec<Rc<SectionView>>>>,
+        decisions: Decisions,
+    ) -> PhoneView {
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
         let dialog = adw::Dialog::builder()
@@ -139,6 +155,7 @@ impl PhoneView {
             foot: RefCell::default(),
             drawn: RefCell::default(),
             dialog_views,
+            decisions,
         }
     }
 
@@ -177,7 +194,7 @@ impl PhoneView {
 
     fn retire(&self, parts: Parts) {
         match parts {
-            Parts::Scan(scan) => withdraw(&scan.clipboard, &scan.copied),
+            Parts::Scan(scan) => scan.copied.take_back(),
             Parts::Phones(phones) => self
                 .dialog_views
                 .borrow_mut()
@@ -194,14 +211,16 @@ impl PhoneView {
             Step::Waiting { .. } => Built::bare(waiting()),
             Step::TurnOn(turn_on) => turn_on_step(turn_on, screen.footer),
             Step::Scan(scan) => scan_step(scan, &self.dialog.clipboard()),
-            Step::Compare(compare) => compare_step(compare, screen.deciding),
+            Step::Compare(compare) => {
+                compare_step(compare, screen.deciding, &self.decisions.decide)
+            }
             Step::Paired { name } => {
-                let done = pill(DONE, "win.phone-phones", true);
+                let done = pill(DONE, Some("win.phone-phones"), true);
                 sentence_step(&words::paired_line(name), Vec::new(), done)
             }
             Step::Ended(ending) => {
-                let done = pill(DONE, "win.phone-dismiss", false);
-                let act = pill(ending.action_title(), "win.phone-ending", true);
+                let done = pill(DONE, Some("win.phone-dismiss"), false);
+                let act = pill(ending.action_title(), Some("win.phone-ending"), true);
                 sentence_step(&ending.sentence, vec![done], act)
             }
             Step::Phones => self.phones_step(screen),
@@ -235,11 +254,12 @@ impl PhoneView {
         let phones = PhonesParts {
             group,
             rows: RefCell::default(),
+            forget: self.decisions.forget.clone(),
             view,
         };
         phones.fill(screen);
         phones.show_remote(screen.remote);
-        let done = pill(DONE, "win.phone-dismiss", true);
+        let done = pill(DONE, Some("win.phone-dismiss"), true);
         Built {
             content: page.upcast(),
             foot: Some(foot(std::slice::from_ref(&done))),
@@ -370,12 +390,13 @@ fn focus_when_shown(lead: &gtk::Box) {
     });
 }
 
-fn pill(label: &str, action: &str, primary: bool) -> gtk::Button {
+/// A step's button, with its action where it has one.
+fn pill(label: &str, action: Option<&str>, primary: bool) -> gtk::Button {
     let button = gtk::Button::builder()
         .label(label)
-        .action_name(action)
         .css_classes(["pill"])
         .build();
+    button.set_action_name(action);
     if primary {
         button.add_css_class("suggested-action");
     }
@@ -418,8 +439,8 @@ fn turn_on_step(turn_on: &TurnOn, footer: Option<&str>) -> Built {
     let refusal = note("");
     refusal.set_css_classes(&["error"]);
     body.append(&refusal);
-    let act = pill(turn_on.action_title(), "win.phone-turn-on", true);
-    let foot = foot(&[pill(CANCEL, "win.phone-dismiss", false), act.clone()]);
+    let act = pill(turn_on.action_title(), Some("win.phone-turn-on"), true);
+    let foot = foot(&[pill(CANCEL, Some("win.phone-dismiss"), false), act.clone()]);
     let parts = TurnOnParts {
         lead: lead.clone(),
         lead_label,
@@ -472,12 +493,11 @@ fn scan_step(scan: &Scan, clipboard: &gdk::Clipboard) -> Built {
     body.append(&countdown);
     let copied = Rc::default();
     body.append(&link_reveal(scan.link.text(), clipboard, &copied));
-    let foot = foot(&[pill(CANCEL, "win.phone-dismiss", false)]);
+    let foot = foot(&[pill(CANCEL, Some("win.phone-dismiss"), false)]);
     let parts = ScanParts {
         countdown,
         final_announced: Cell::new(false),
         copied,
-        clipboard: clipboard.clone(),
     };
     // The countdown is spoken as Scan appears and once more at the last ten seconds (§7).
     parts.countdown.connect_map(|label| {
@@ -550,11 +570,7 @@ fn draw_code(cr: &cairo::Context, code: &PairingCode) -> Result<(), cairo::Error
 /// "Can't scan the code?", which shows the link as text with Copy link. The text cannot be
 /// selected: Copy is the one way it leaves the dialog, since only Copy marks it secret and takes
 /// it back when Scan leaves.
-fn link_reveal(
-    link: &str,
-    clipboard: &gdk::Clipboard,
-    copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
-) -> gtk::Box {
+fn link_reveal(link: &str, clipboard: &gdk::Clipboard, copied: &Rc<SecretCopy>) -> gtk::Box {
     let text = gtk::Label::builder()
         .label(link)
         .selectable(false)
@@ -572,7 +588,7 @@ fn link_reveal(
         .valign(gtk::Align::Center)
         .build();
     let (board, mine, value) = (clipboard.clone(), copied.clone(), link.to_owned());
-    copy.connect_clicked(move |_| copy_secret(&board, &mine, &value));
+    copy.connect_clicked(move |_| mine.copy(&board, &value, "the pairing link"));
     let shown = gtk::Box::builder()
         .spacing(12)
         .css_classes(["card"])
@@ -602,44 +618,10 @@ fn link_reveal(
     link_box
 }
 
-/// Offers the link as text with the secret hint beside it, and remembers the offer so Scan can
-/// take it back.
-fn copy_secret(
-    clipboard: &gdk::Clipboard,
-    copied: &Rc<RefCell<Option<gdk::ContentProvider>>>,
-    link: &str,
-) {
-    let (mime, hint) = SECRET_HINT;
-    let provider = gdk::ContentProvider::new_union(&[
-        gdk::ContentProvider::for_value(&link.to_value()),
-        gdk::ContentProvider::for_bytes(mime, &glib::Bytes::from_static(hint)),
-    ]);
-    match clipboard.set_content(Some(&provider)) {
-        Ok(()) => *copied.borrow_mut() = Some(provider),
-        Err(e) => glib::g_warning!("fermix", "the pairing link was not copied: {e}"),
-    }
-}
-
-/// Takes this step's copy off the clipboard, if the clipboard still holds it.
-fn withdraw(clipboard: &gdk::Clipboard, copied: &Rc<RefCell<Option<gdk::ContentProvider>>>) {
-    let Some(mine) = copied.borrow_mut().take() else {
-        return;
-    };
-    if !clipboard.is_local() || clipboard.content().as_ref() != Some(&mine) {
-        return;
-    }
-    if let Err(e) = clipboard.set_content(None::<&gdk::ContentProvider>) {
-        glib::g_warning!(
-            "fermix",
-            "the pairing link was not taken off the clipboard: {e}"
-        );
-    }
-}
-
 /// Compare: the phone, its six digits large and grouped as the phone draws them, and the
 /// decision. Deny and Approve are drawn alike and neither is the default, so Return approves
 /// nothing.
-fn compare_step(compare: &Compare, deciding: bool) -> Built {
+fn compare_step(compare: &Compare, deciding: bool, decide: &Rc<dyn Fn(String, bool)>) -> Built {
     let body = column();
     let (lead, _) = heading(&words::heading(&compare.device_name));
     body.append(&pair_of(&lead, &note(&compare.model)));
@@ -656,10 +638,8 @@ fn compare_step(compare: &Compare, deciding: bool) -> Built {
         .justify(gtk::Justification::Center)
         .build();
     body.append(&pair_of(&line, &note(&compare.hardware)));
-    let deny = pill(words::DENY, "win.phone-decide", false);
-    deny.set_action_target_value(Some(&false.to_variant()));
-    let approve = pill(words::APPROVE, "win.phone-decide", false);
-    approve.set_action_target_value(Some(&true.to_variant()));
+    let deny = decision(words::DENY, decide, &compare.session, false);
+    let approve = decision(words::APPROVE, decide, &compare.session, true);
     deny.set_sensitive(!deciding);
     approve.set_sensitive(!deciding);
     let foot = foot(&[deny.clone(), approve.clone()]);
@@ -670,6 +650,20 @@ fn compare_step(compare: &Compare, deciding: bool) -> Built {
         lead: Some(lead),
         default: None,
     }
+}
+
+/// Deny or Approve, which decides about the window `session` by its own click and through no
+/// action.
+fn decision(
+    label: &str,
+    decide: &Rc<dyn Fn(String, bool)>,
+    session: &str,
+    approved: bool,
+) -> gtk::Button {
+    let button = pill(label, None, false);
+    let (decide, session) = (decide.clone(), session.to_owned());
+    button.connect_clicked(move |_| decide(session.clone(), approved));
+    button
 }
 
 /// A line and the note under it, held closer than the step's parts.
@@ -717,7 +711,7 @@ impl PhonesParts {
         for old in self.rows.borrow_mut().drain(..) {
             self.group.remove(&old);
         }
-        let (mut rows, cancel) = phone_rows(screen);
+        let (mut rows, cancel) = phone_rows(screen, &self.forget);
         let paired_any = matches!(screen.devices, Some(Ok(list)) if !list.devices.is_empty());
         let pair = adw::ButtonRow::builder()
             .title(if paired_any { PAIR_ANOTHER } else { PAIR })
@@ -741,7 +735,10 @@ impl PhonesParts {
 }
 
 /// The phone rows, and the Cancel of the row asking to forget, where one asks.
-fn phone_rows(screen: &Screen<'_>) -> (Vec<gtk::Widget>, Option<gtk::Widget>) {
+fn phone_rows(
+    screen: &Screen<'_>,
+    forget: &Rc<dyn Fn(String)>,
+) -> (Vec<gtk::Widget>, Option<gtk::Widget>) {
     let list = match screen.devices {
         None => return (vec![checking_row()], None),
         Some(Err(sentence)) => return (vec![sentence_row(sentence)], None),
@@ -750,7 +747,7 @@ fn phone_rows(screen: &Screen<'_>) -> (Vec<gtk::Widget>, Option<gtk::Widget>) {
     let mut cancel = None;
     let mut rows = Vec::new();
     for device in &list.devices {
-        let (row, asking) = phone_row(device, screen.forgetting, screen.now);
+        let (row, asking) = phone_row(device, screen.forgetting, screen.now, forget);
         cancel = cancel.or(asking);
         rows.push(row.upcast());
     }
@@ -772,11 +769,13 @@ fn sentence_row(sentence: &str) -> gtk::Widget {
 
 /// One paired phone: its name, its model and when it was seen, and Forget, which asks in the row
 /// before anything is forgotten. A refusal takes the line under the name, in the daemon's words.
-/// While the row asks, its Cancel comes back too.
+/// While the row asks, its Cancel comes back too. Forget this phone forgets its own row's phone
+/// by its own click.
 fn phone_row(
     device: &MobileDevice,
     forgetting: &Forgetting,
     now: i64,
+    forget: &Rc<dyn Fn(String)>,
 ) -> (adw::ActionRow, Option<gtk::Widget>) {
     let refusal = forgetting.refusal(&device.device_id);
     let detail = words::detail(&device.model, device.last_seen.as_deref(), now);
@@ -789,11 +788,14 @@ fn phone_row(
     let idle = forgetting.forgetting().is_none();
     let asking = forgetting.asking() == Some(device.device_id.as_str());
     let buttons = if asking {
-        let confirm = row_button(FORGET_CONFIRM, "win.phone-forget", &device.name);
+        let confirm = row_button(FORGET_CONFIRM, None, &device.name);
         confirm.add_css_class("destructive-action");
-        vec![confirm, row_button(CANCEL, "win.phone-forget-withdraw", "")]
+        let (forget, id) = (forget.clone(), device.device_id.clone());
+        confirm.connect_clicked(move |_| forget(id.clone()));
+        let cancel = row_button(CANCEL, Some("win.phone-forget-withdraw"), "");
+        vec![confirm, cancel]
     } else {
-        let ask = row_button(FORGET, "win.phone-forget-ask", &device.name);
+        let ask = row_button(FORGET, Some("win.phone-forget-ask"), &device.name);
         ask.set_action_target_value(Some(&device.device_id.to_variant()));
         vec![ask]
     };
@@ -805,13 +807,14 @@ fn phone_row(
     (row, cancel)
 }
 
-/// A row's button; where it acts on one phone, its accessible name says which.
-fn row_button(label: &str, action: &str, phone: &str) -> gtk::Button {
+/// A row's button, with its action where it has one; where it acts on one phone, its accessible
+/// name says which.
+fn row_button(label: &str, action: Option<&str>, phone: &str) -> gtk::Button {
     let button = gtk::Button::builder()
         .label(label)
-        .action_name(action)
         .valign(gtk::Align::Center)
         .build();
+    button.set_action_name(action);
     if !phone.is_empty() {
         let name = format!("{label}, {phone}");
         button.update_property(&[gtk::accessible::Property::Label(&name)]);
@@ -833,6 +836,32 @@ mod tests {
             ("assistant.rs", include_str!("assistant.rs")),
         ] {
             assert!(!source.contains(platform), "{file}");
+        }
+    }
+
+    /// Approve and Deny, and Forget this phone, decide by their own buttons' clicks (M60 cues
+    /// §6 rule 3). A registered GtkApplication exports every `win.*` and `app.*` action on the
+    /// session bus, so an action that decided would let any process of the session approve a
+    /// phone, or forget one, with no press. Turn on's action is still registered, which shows
+    /// the scan reads the file that registers them.
+    #[test]
+    fn no_action_approves_a_phone_or_confirms_forgetting_one() {
+        let app = include_str!("app.rs");
+        assert!(app.contains(concat!("\"phone-", "turn-on\"")));
+        let deciding = [
+            concat!("\"phone-", "decide\""),
+            concat!("\"win.phone-", "decide\""),
+            concat!("\"phone-", "forget\""),
+            concat!("\"win.phone-", "forget\""),
+        ];
+        for (file, source) in [
+            ("app.rs", app),
+            ("phone.rs", include_str!("phone.rs")),
+            ("phone_flow.rs", include_str!("phone_flow.rs")),
+        ] {
+            for action in deciding {
+                assert!(!source.contains(action), "{file} names {action}");
+            }
         }
     }
 }

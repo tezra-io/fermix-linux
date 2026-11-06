@@ -4,7 +4,7 @@
 //! loop, and sends through it.
 
 use fermix_client::chat_wire::protocol::{
-    decode_line, line_buffer, ClientEvent, LineTooLong, ServerEvent,
+    line_buffer, read_line, ClientEvent, LineTooLong, ServerEvent,
 };
 use fermix_client::realtime::protocol::LineBuffer;
 use gtk::gio::{self, prelude::*};
@@ -24,7 +24,8 @@ const READ_CHUNK: usize = 16 * 1024;
 pub enum LinkError {
     /// No socket file: an engine without chat.
     NotFound,
-    /// The connection broke or the daemon sent what cannot be read; the detail is for the log.
+    /// The connection broke or the daemon sent a line that is no event; the detail is for the
+    /// log.
     Broken(String),
 }
 
@@ -101,11 +102,12 @@ impl Link {
 
     /// The next event; `None` once the daemon has closed the connection. Each pass reads one
     /// chunk, and the line buffer refuses a line past its cap, so a read cannot grow without
-    /// bound.
+    /// bound. A known event whose fields do not fit comes as `ServerEvent::Unreadable`; only a
+    /// line that is no event at all breaks the connection.
     pub async fn read(&self) -> Result<Option<ServerEvent>, LinkError> {
         loop {
             if let Some(line) = self.lines.borrow_mut().pop_front() {
-                return decode_line(&line)
+                return read_line(&line)
                     .map(Some)
                     .map_err(|e| LinkError::Broken(format!("decode: {e:?}")));
             }
@@ -135,5 +137,60 @@ impl Link {
         if let Err(e) = self.connection.socket().shutdown(true, true) {
             glib::g_debug!("fermix", "chat socket shutdown: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// A directory of the test's own under the system's temp dir, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                eprintln!("scratch {} not removed: {e}", self.0.display());
+            }
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let dir =
+            std::env::temp_dir().join(format!("fermix-chat-link-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        Scratch(dir)
+    }
+
+    fn connected(socket: &Path) -> Result<Rc<Link>, LinkError> {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| context.block_on(connect(socket)))
+            .expect("the test's context")
+    }
+
+    /// A socket file no daemon listens on any more, as a daemon that stopped leaves it, refuses
+    /// the connect. GIO's words for that ("Could not connect: Connection refused") name no path,
+    /// and the connection's end is logged in them, so the log never holds the socket's path,
+    /// which holds the owner's home.
+    #[test]
+    fn a_refused_connect_is_logged_without_the_sockets_path() {
+        let dir = scratch("refused");
+        let socket = dir.0.join("companion.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket file"));
+        let Err(LinkError::Broken(why)) = connected(&socket) else {
+            panic!("a socket no daemon listens on is refused");
+        };
+        assert!(why.starts_with("connect: "), "{why}");
+        assert!(!why.contains("fermix-chat-link"), "{why}");
+    }
+
+    /// No socket file at all is an engine without chat, and says nothing more.
+    #[test]
+    fn a_missing_socket_is_not_found() {
+        let dir = scratch("missing");
+        let found = connected(&dir.0.join("companion.sock"));
+        assert!(matches!(found, Err(LinkError::NotFound)));
     }
 }

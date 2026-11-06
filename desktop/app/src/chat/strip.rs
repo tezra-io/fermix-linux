@@ -4,13 +4,14 @@
 //! thumbnail's decode, the viewer's, an app opening it. The row's voice note is its own chip, in
 //! the bubble (`voice_note`), and the first tile of the lane once it cannot play.
 
-use super::entries::toast;
+use super::entries::{error_code, toast};
 use super::picture::{self, pixels, Decoder, FileRef};
 use super::places::{launched, turned_down, window_of, CARDS_MIN_WIDTH, CARDS_WIDTH};
 use super::voice_note::Player;
 use crate::media_grants::Media;
 use adw::prelude::*;
 use fermix_client::chat_wire::grants::Outcome;
+use fermix_client::chat_wire::protocol::loggable_id;
 use fermix_client::media::{lane, save_name, Fit, LinkCard, Strip, Tile, TileKind};
 use fermix_client::picture::Refused;
 use fermix_client::places::is_web_address;
@@ -244,7 +245,8 @@ async fn thumbnail(readers: &Readers, r#ref: &str, side: u32) -> Thumbnail {
     match decoded {
         Ok(texture) => Thumbnail::Drawn(texture),
         Err(refused) => {
-            glib::g_debug!("fermix", "no thumbnail of {ref}: {refused}");
+            let id = loggable_id(r#ref);
+            glib::g_debug!("fermix", "no thumbnail of {id}: {refused}");
             Thumbnail::Refused(refused)
         }
     }
@@ -433,13 +435,14 @@ fn open(button: &gtk::Button, face: &Face, tile: &Tile, readers: &Readers) {
             Outcome::Granted(path) => path,
             Outcome::Missing => return face.gone(&button),
             Outcome::Failed(why) => {
-                glib::g_warning!("fermix", "{} did not open: {why}", file.r#ref);
+                let id = loggable_id(&file.r#ref);
+                glib::g_warning!("fermix", "{id} did not open: {why}");
                 return toast(&window, NOT_READY);
             }
         };
         match kind {
             TileKind::Picture => view(&window, &readers.decoder, &path, side, &file).await,
-            TileKind::File => open_outside(&window, &path, &file.name).await,
+            TileKind::File => open_outside(&window, &path, &file).await,
         }
         drop(hold);
     });
@@ -450,22 +453,25 @@ async fn view(window: &gtk::Window, decoder: &Rc<Decoder>, path: &Path, side: u3
     match decoder.picture(path.to_owned(), side, Fit::Contain).await {
         Ok(texture) => picture::open_viewer(window, &texture, file, decoder),
         Err(refused) => {
-            glib::g_debug!("fermix", "{} opens outside: {refused}", file.r#ref);
-            open_outside(window, path, &file.name).await;
+            let id = loggable_id(&file.r#ref);
+            glib::g_debug!("fermix", "{id} opens outside: {refused}");
+            open_outside(window, path, file).await;
         }
     }
 }
 
 /// The file in the app the desktop opens its type with: through the OpenURI portal inside a
-/// sandbox, GIO's handler outside one. `name` is the row's, for the person.
-async fn open_outside(window: &gtk::Window, path: &Path, name: &str) {
+/// sandbox, GIO's handler outside one. A failure is logged by the file's ref, and the toast names
+/// the row's file for the person.
+async fn open_outside(window: &gtk::Window, path: &Path, file: &FileRef) {
     let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
     let Err(e) = launcher.launch_future(Some(window)).await else {
         return;
     };
     if !turned_down(&e) {
-        glib::g_warning!("fermix", "{} did not open: {e}", path.display());
-        toast(window, &format!("Could not open {name}"));
+        let (id, code) = (loggable_id(&file.r#ref), error_code(&e));
+        glib::g_warning!("fermix", "{id} did not open: {code}");
+        toast(window, &format!("Could not open {}", file.name));
     }
 }
 
@@ -534,7 +540,7 @@ impl LinkRow {
 fn open_link(row: &adw::ActionRow, opens: &str) {
     // The card was planned with a web address alone; anything else would open in its own app.
     if !is_web_address(opens) {
-        glib::g_warning!("fermix", "a link card held no web address: {opens}");
+        glib::g_warning!("fermix", "a link card held no web address");
         return;
     }
     let Some(window) = window_of(row) else {
@@ -546,7 +552,8 @@ fn open_link(row: &adw::ActionRow, opens: &str) {
             return;
         };
         if !turned_down(&e) {
-            glib::g_warning!("fermix", "the link did not open: {e}");
+            let code = error_code(&e);
+            glib::g_warning!("fermix", "the link did not open: {code}");
             toast(&window, NO_LINK);
         }
     });

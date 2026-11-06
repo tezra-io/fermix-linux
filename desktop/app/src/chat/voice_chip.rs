@@ -11,7 +11,7 @@ use super::strip::{Readers, NOT_AVAILABLE};
 use super::voice_note::Player;
 use crate::media_grants::Media;
 use fermix_client::chat_wire::grants::Outcome;
-use fermix_client::chat_wire::protocol::MediaRef;
+use fermix_client::chat_wire::protocol::{loggable_id, MediaRef};
 use fermix_client::player::{written, Key, Shown};
 use fermix_client::waveform::{self, Levels, Unheard};
 use futures_channel::oneshot;
@@ -189,7 +189,8 @@ impl Chip {
                 self.fall_back(&unheard.to_string());
             }
             Read::Heard(Err(unheard)) => {
-                glib::g_debug!("fermix", "voice note {} rests: {unheard}", self.note.r#ref);
+                let id = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "voice note {id} rests: {unheard}");
                 self.settled.set(true);
             }
             Read::Gone => {
@@ -197,7 +198,8 @@ impl Chip {
                 self.gone();
             }
             Read::Failed(why) => {
-                glib::g_debug!("fermix", "no levels for {} yet: {why}", self.note.r#ref);
+                let id = loggable_id(&self.note.r#ref);
+                glib::g_debug!("fermix", "no levels for {id} yet: {why}");
             }
         }
     }
@@ -241,8 +243,9 @@ impl Chip {
         if drawn.is_ok() && self.waveform.has_visible_focus() {
             drawn = focus_ring(cr, &ink, width, height);
         }
-        if let Err(e) = drawn {
-            glib::g_warning!("fermix", "a voice note's waveform did not draw: {e}");
+        // cairo's error is its status, whose name is a code.
+        if let Err(code) = drawn {
+            glib::g_warning!("fermix", "a voice note's waveform did not draw: {code:?}");
         }
     }
 
@@ -312,16 +315,13 @@ impl Chip {
         if !self.plays.replace(false) {
             return;
         }
-        glib::g_debug!(
-            "fermix",
-            "voice note {} is a file tile: {why}",
-            self.note.r#ref
-        );
+        let id = loggable_id(&self.note.r#ref);
+        glib::g_debug!("fermix", "voice note {id} is a file tile: {why}");
         self.widget.set_visible(false);
         let hook = self.unplayable.take();
         match hook {
             Some(hook) => hook(),
-            None => glib::g_critical!("fermix", "voice note {} has no row", self.note.r#ref),
+            None => glib::g_critical!("fermix", "voice note {id} has no row"),
         }
     }
 

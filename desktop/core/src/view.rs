@@ -518,6 +518,19 @@ fn refusal_problem(refusal: &Refusal) -> DaemonProblem {
     }
 }
 
+/// What a call to an optional feature's method says about the daemon (M60 cues L6). A method the
+/// daemon does not have is no problem at all: the feature has no surface on it, so None. One that
+/// names the version it requires is the daemon-too-old state, and anything else is what
+/// `daemon_problem` makes of it. Only a method every screen needs makes a missing one too old.
+pub fn feature_problem(err: &CallError) -> Option<DaemonProblem> {
+    match err {
+        CallError::Refused(refusal) if refusal.code == "method_not_found" => refusal
+            .requires
+            .map(|_| DaemonProblem::UpdateNeeded(DAEMON_TOO_OLD.into())),
+        other => Some(daemon_problem(other)),
+    }
+}
+
 /// Whether this daemon can serve this app at all, read from `hello` before
 /// anything else is asked of it.
 pub fn hello_problem(hello: &Hello) -> Option<DaemonProblem> {

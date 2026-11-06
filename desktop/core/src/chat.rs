@@ -1,13 +1,19 @@
 //! The Chat page's entries, read off the timeline the chat wire keeps (`chat_wire::timeline`):
-//! the held rows, the questions still sending, the turn answering now with its tools, and why
-//! the last request failed. Nothing here is decided: it only says how the held facts read.
+//! the held rows, the proposal cards placed among them by when each was made, the placeholder of
+//! the cards that could not be read, the questions still sending, the turn answering now with its
+//! tools, and why the last request failed.
+//! Nothing here is decided: it only says how the held facts read.
 
 use crate::activity::ToolKind;
-use crate::chat_wire::protocol::Row;
-use crate::chat_wire::timeline::{self, Chat, ToolState};
+use crate::chat_wire::proposals;
+use crate::chat_wire::protocol::{Block, Row};
+use crate::chat_wire::timeline::{self, Chat, HeldProposal, HeldRow, ToolState};
+use crate::chat_wire::unshown::{self, Asks, Unshown};
+use crate::checklists::{cards as list_cards, ListRef};
 use crate::media::{strip, words, Strip};
+use crate::phone::unix_seconds;
 use crate::places::{cards, Card};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -15,17 +21,69 @@ pub enum Entry {
     User { text: String, media: Strip },
     /// A question the daemon has not accepted yet.
     Sending(String),
-    /// Markdown, growing while it streams, the cards of the places it links, and what its row
-    /// shows under it, which come with its row (none while it streams).
+    /// Markdown, growing while it streams, the cards of the places it links, what its row shows
+    /// under it, and the card of the lists its turn read or changed, which come with its row (none
+    /// while it streams).
     Assistant {
         text: String,
         places: Vec<Card>,
         media: Strip,
+        lists: Option<ListsCard>,
     },
     /// The running turn's tools, drawn as one group.
     Tools(Vec<ToolRun>),
+    /// A mandate's proposal, drawn apart from the messages: it answers none of them.
+    Proposal(proposals::Card),
+    /// One placeholder for every proposal the daemon sent that could not be read
+    /// (`chat_wire::unshown`).
+    Unshown,
     /// Why the last request did not get its reply.
     Failure(String),
+}
+
+/// The card of the lists a reply's turn read or changed (M85 lists §2.1), in the order the turn
+/// first touched them. Live when no newer card draws any list it draws (`cards::live`); every
+/// other card folds to one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListsCard {
+    pub lists: Vec<ListRef>,
+    pub live: bool,
+}
+
+impl ListsCard {
+    /// The lists the card pulls when it comes on screen: a live card the ones it draws
+    /// (`cards::drawn`), a folded one none.
+    pub fn pulls(&self) -> &[ListRef] {
+        if self.live {
+            list_cards::drawn(&self.lists)
+        } else {
+            &[]
+        }
+    }
+}
+
+/// The held rows on screen at the page's last look, by seq. A live lists card asks for its lists
+/// as it comes on screen, once until it leaves (M85 lists §2.1, §5.2): asked at every look, more
+/// than 16 lists on screen would be pulled without end, each answer letting go of a list that
+/// another card on screen then asks for again.
+#[derive(Debug, Default)]
+pub struct RowsSeen {
+    seqs: BTreeSet<u64>,
+}
+
+impl RowsSeen {
+    /// A look at the rows on screen now: the ones that came on screen since the last look, which
+    /// this one then is.
+    pub fn look(&mut self, now: BTreeSet<u64>) -> BTreeSet<u64> {
+        let came = now.difference(&self.seqs).copied().collect();
+        self.seqs = now;
+        came
+    }
+
+    /// Whether the row `seq` was on screen at the last look.
+    pub fn shows(&self, seq: u64) -> bool {
+        self.seqs.contains(&seq)
+    }
 }
 
 /// One tool's run. Times are the caller's clock, in seconds.
@@ -73,11 +131,14 @@ pub enum Key {
     Sending(String),
     /// The running turn's tools, by the turn.
     Tools(String),
+    /// A proposal's card, by its id.
+    Proposal(String),
+    Unshown,
     Failure,
 }
 
 /// The page's entries, each with its key, the daemon's time for it (RFC 3339) where it has
-/// one, and the held row it draws.
+/// one this app can read, and the held row it draws.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
     pub entries: Vec<Entry>,
@@ -108,13 +169,25 @@ pub fn view(chat: &Chat) -> View {
     // A turn's replies are numbered in the order their rows are held; its draft takes the next
     // number, which its row will have.
     let mut replies: HashMap<&str, usize> = HashMap::new();
+    let mut placed = placed_cards(&chat.proposals).into_iter().peekable();
+    let live = live_lists(&chat.rows);
     for held in &chat.rows {
+        if let Some(at) = row_time(held) {
+            while let Some(card) = placed.next_if(|card| card.created.is_some_and(|made| made < at))
+            {
+                push_card(&mut view, card);
+            }
+        }
         let reply = held.turn_id.as_deref().map(|turn| {
             let count = replies.entry(turn).or_default();
             *count += 1;
             Key::Reply(turn.to_owned(), *count - 1)
         });
-        push_row(&mut view, &held.row, reply);
+        push_row(&mut view, &held.row, reply, &live);
+    }
+    placed.for_each(|card| push_card(&mut view, card));
+    if unshown::waiting(&chat.unshown, Asks::Proposal) {
+        view.push(Entry::Unshown, Key::Unshown, None, None);
     }
     let held_ids: Vec<&str> = chat
         .rows
@@ -122,9 +195,8 @@ pub fn view(chat: &Chat) -> View {
         .filter_map(|held| held.row.client_msg_id.as_deref())
         .collect();
     for out in &chat.pending {
-        // An approval's route is a command, not a question: it draws no bubble.
-        let question = out.approval_id.is_none();
-        if question && !held_ids.contains(&out.client_msg_id.as_str()) {
+        // A card's answer is not a question: it draws no bubble.
+        if out.is_question() && !held_ids.contains(&out.client_msg_id.as_str()) {
             let key = Key::Sending(out.client_msg_id.clone());
             view.push(Entry::Sending(out.text.clone()), key, None, None);
         }
@@ -140,10 +212,69 @@ pub fn view(chat: &Chat) -> View {
     view
 }
 
+/// What a request to bring `proposal_id`'s card into view scrolls to: its card where it is held,
+/// or the placeholder where that card could not be read. `None` while neither is drawn: the request
+/// waits for the render that draws one.
+pub fn reveal_key(chat: &Chat, proposal_id: &str) -> Option<Key> {
+    let held = chat
+        .proposals
+        .iter()
+        .any(|held| held.proposal.proposal_id == proposal_id);
+    if held {
+        return Some(Key::Proposal(proposal_id.to_owned()));
+    }
+    let unshown = Unshown {
+        asks: Asks::Proposal,
+        id: Some(proposal_id.to_owned()),
+    };
+    chat.unshown.contains(&unshown).then_some(Key::Unshown)
+}
+
+/// The proposal cards in the order they stand in the conversation: by when each was made, a card
+/// whose time cannot be read last, in the order the cards came.
+fn placed_cards(proposals: &[HeldProposal]) -> Vec<&HeldProposal> {
+    let mut placed: Vec<&HeldProposal> = proposals.iter().collect();
+    placed.sort_by_key(|held| (held.created.is_none(), held.created));
+    placed
+}
+
+/// When a held row was written: the daemon's time, or when a streamed reply arrived here.
+fn row_time(held: &HeldRow) -> Option<i64> {
+    held.row
+        .ts
+        .as_deref()
+        .and_then(unix_seconds)
+        .or(held.arrived)
+}
+
+/// A proposal's card, with no time of its own under it: its facts say when it waits until.
+fn push_card(view: &mut View, held: &HeldProposal) {
+    let card = proposals::card(held);
+    let key = Key::Proposal(card.id.clone());
+    view.push(Entry::Proposal(card), key, None, None);
+}
+
+/// The seqs of the replies whose lists card is live, over the replies held.
+fn live_lists(rows: &[HeldRow]) -> BTreeSet<u64> {
+    let replies = rows.iter().filter(|held| held.row.role != "user");
+    list_cards::live(replies.map(|held| (held.row.server_seq, list_refs(&held.row.blocks))))
+}
+
+/// The lists a reply's `checklists` block names: the first such block's, or none.
+fn list_refs(blocks: &[Block]) -> &[ListRef] {
+    blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Checklists(lists) => Some(lists.as_slice()),
+            Block::Places(_) => None,
+        })
+        .unwrap_or_default()
+}
+
 /// A held row: its words and what it shows under them, as one entry, or none where it has
 /// neither. `reply` is its key as a reply this connection streamed; any other row is keyed by its
-/// seq.
-fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
+/// seq. `live` holds the seqs of the replies whose lists card is live.
+fn push_row(view: &mut View, row: &Row, reply: Option<Key>, live: &BTreeSet<u64>) {
     let media = strip(row);
     let text = words(row, &media);
     if text.trim().is_empty() && media.is_empty() {
@@ -158,10 +289,22 @@ fn push_row(view: &mut View, row: &Row, reply: Option<Key>) {
             text,
             places: cards(&row.blocks),
             media,
+            lists: lists_card(row, live),
         },
     };
     let key = reply.unwrap_or(Key::Row(row.server_seq));
-    view.push(entry, key, row.ts.clone(), Some(row.server_seq));
+    // A time this app cannot read is drawn as none, so the page never tries it at each draw.
+    let time = row.ts.clone().filter(|ts| unix_seconds(ts).is_some());
+    view.push(entry, key, time, Some(row.server_seq));
+}
+
+/// A reply's lists card, where its row names lists.
+fn lists_card(row: &Row, live: &BTreeSet<u64>) -> Option<ListsCard> {
+    let lists = list_refs(&row.blocks);
+    (!lists.is_empty()).then(|| ListsCard {
+        lists: lists.to_vec(),
+        live: live.contains(&row.server_seq),
+    })
 }
 
 /// The running turn: its tools, then its draft, the turn's reply after the `replied` it holds.
@@ -195,8 +338,42 @@ fn push_turn(view: &mut View, chat: &Chat, replied: usize) {
             text: turn.draft.clone(),
             places: Vec::new(),
             media: Strip::default(),
+            lists: None,
         };
         view.push(draft, key, None, None);
     }
     view.thinking = turn.tools.is_empty() && turn.draft.is_empty();
+}
+
+/// A time on the reader's clock, in their zone: the year, the month 1 to 12, the day of the month,
+/// the hour and the minute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: i32,
+    pub month: i32,
+    pub day: i32,
+    pub hour: i32,
+    pub minute: i32,
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A daemon's time as Chat writes it, beside its rows and on its proposal cards alike (the Mac's
+/// `CueTimes`): "14:05" on the reader's day, "Oct 28, 14:05" on another day of their year, and
+/// "Oct 28, 2025, 14:05" in another year. `now` is the reader's clock.
+pub fn written_time(at: LocalTime, now: LocalTime) -> String {
+    let month = usize::try_from(at.month - 1)
+        .ok()
+        .and_then(|index| MONTHS.get(index))
+        .unwrap_or_else(|| panic!("a month is 1 to 12, not {}", at.month));
+    let clock = format!("{:02}:{:02}", at.hour, at.minute);
+    if (at.year, at.month, at.day) == (now.year, now.month, now.day) {
+        return clock;
+    }
+    if at.year == now.year {
+        return format!("{month} {}, {clock}", at.day);
+    }
+    format!("{month} {}, {}, {clock}", at.day, at.year)
 }

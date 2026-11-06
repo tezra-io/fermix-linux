@@ -83,6 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           engine_version="$(desktop/scripts/engine_pin.py --get engine_version)"
+          desktop/scripts/check_contracts.py
           if [ "$REF_TYPE" = tag ]; then
             version="${TAG#v}"
             if [ "$version" = "$TAG" ]; then

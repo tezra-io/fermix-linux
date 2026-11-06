@@ -1,8 +1,8 @@
 //! The Chat page's entries, read off the chat wire's timeline: held rows, questions still
 //! sending, the running turn with its tools, and the last failure.
 
-use fermix_client::chat::{view, Entry, Key, RunState};
-use fermix_client::chat_wire::protocol::{decode_line, ServerEvent};
+use fermix_client::chat::{view, Entry, Key, ListsCard, RunState};
+use fermix_client::chat_wire::protocol::{read_line, ServerEvent};
 use fermix_client::chat_wire::timeline::{self, Chat};
 use fermix_client::media::{Strip, TileKind};
 use fermix_client::places::Card;
@@ -10,7 +10,12 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
 fn event(value: Value) -> ServerEvent {
-    decode_line(value.to_string().as_bytes()).expect("a test event decodes")
+    let event = read_line(value.to_string().as_bytes()).expect("a test event decodes");
+    assert!(
+        !matches!(event, ServerEvent::Unreadable(_)),
+        "a test event reads: {event:?}"
+    );
+    event
 }
 
 fn connected() -> Chat {
@@ -42,6 +47,7 @@ fn reply(text: &str) -> Entry {
         text: text.into(),
         places: Vec::new(),
         media: Strip::default(),
+        lists: None,
     }
 }
 
@@ -94,6 +100,25 @@ fn rows_read_as_the_person_and_fermix_with_their_times() {
     assert_eq!(shown.entries, [said("Hi"), reply("Hello **there**")]);
     assert_eq!(shown.times[0].as_deref(), Some("2026-09-25T09:00:00Z"));
     assert_eq!(shown.first_seq, Some(1));
+}
+
+/// A time this app cannot read is drawn as no time: the page never tries, and logs, the daemon's
+/// text again at each draw. The row itself is drawn.
+#[test]
+fn a_row_whose_time_cannot_be_read_is_drawn_with_none() {
+    let mut chat = connected();
+    row(
+        &mut chat,
+        1,
+        "assistant",
+        "Hello",
+        json!({"ts": "tomorrow-ish"}),
+    );
+    row(&mut chat, 2, "assistant", "Again", json!({}));
+    let shown = view(&chat);
+    assert_eq!(shown.entries, [reply("Hello"), reply("Again")]);
+    assert_eq!(shown.times[0], None);
+    assert_eq!(shown.times[1].as_deref(), Some("2026-09-25T09:00:00Z"));
 }
 
 #[test]
@@ -431,6 +456,97 @@ fn a_streamed_reply_gains_its_places_at_text_done_under_its_key() {
     assert_eq!(
         place_names(&done.entries[1]),
         ["Example Coffee", "Quiet Grounds"]
+    );
+}
+
+/// A `checklists` block naming `lists`, each by id and title, with no rows.
+fn lists_block(lists: &[&str]) -> Value {
+    let lists: Vec<Value> = lists
+        .iter()
+        .map(|id| json!({"list_id": id, "title": format!("List {id}"), "rows": []}))
+        .collect();
+    json!({"blocks": [{"type": "checklists", "lists": lists}]})
+}
+
+/// Each reply's lists card, by its seq: the lists it names, and whether it is live.
+fn lists_cards(chat: &Chat) -> Vec<(Option<u64>, Vec<String>, bool)> {
+    let shown = view(chat);
+    let cards = shown.entries.iter().zip(&shown.seqs);
+    cards
+        .filter_map(|(entry, seq)| match entry {
+            Entry::Assistant {
+                lists: Some(ListsCard { lists, live }),
+                ..
+            } => Some((
+                *seq,
+                lists.iter().map(|l| l.list_id.clone()).collect(),
+                *live,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A reply whose turn read or changed lists carries their card, and only the newest card that
+/// draws a list is live (M85 lists §2.1). A card of several lists counts only its first three, a
+/// person's row never counts, and a reply that names no list has no card. A streamed draft has
+/// none until its row.
+#[test]
+fn only_the_newest_card_drawing_a_list_is_live() {
+    const A: &str = "ck_aaaaaaaaaa";
+    const B: &str = "ck_bbbbbbbbbb";
+    const C: &str = "ck_cccccccccc";
+    const D: &str = "ck_dddddddddd";
+    let mut chat = connected();
+    row(&mut chat, 1, "assistant", "A", lists_block(&[A]));
+    row(&mut chat, 2, "assistant", "B", lists_block(&[B]));
+    row(
+        &mut chat,
+        3,
+        "assistant",
+        "Four",
+        lists_block(&[C, A, B, D]),
+    );
+    row(&mut chat, 4, "assistant", "No lists", json!({}));
+    row(&mut chat, 5, "user", "B, from me", lists_block(&[B]));
+    row(&mut chat, 6, "assistant", "D", lists_block(&[D]));
+    let ids = |lists: &[&str]| lists.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        lists_cards(&chat),
+        [
+            (Some(1), ids(&[A]), false),
+            (Some(2), ids(&[B]), false),
+            (Some(3), ids(&[C, A, B, D]), true),
+            (Some(6), ids(&[D]), true),
+        ],
+        "the card of four draws C, A and B, which no newer reply draws; D is not drawn there"
+    );
+    let shown = view(&chat);
+    assert_eq!(shown.entries[3], reply("No lists"));
+    receive(
+        &mut chat,
+        json!({"type": "text_delta", "turn_id": "t7", "text": "Ticked it"}),
+    );
+    assert_eq!(view(&chat).entries.last(), Some(&reply("Ticked it")));
+    receive(
+        &mut chat,
+        json!({"type": "text_done", "turn_id": "t7", "server_seq": 7, "text": "Ticked it",
+        "blocks": lists_block(&[A])["blocks"]}),
+    );
+    let after: Vec<(Option<u64>, bool)> = lists_cards(&chat)
+        .into_iter()
+        .map(|(seq, _, live)| (seq, live))
+        .collect();
+    assert_eq!(
+        after,
+        [
+            (Some(1), false),
+            (Some(2), false),
+            (Some(3), false),
+            (Some(6), true),
+            (Some(7), true)
+        ],
+        "the card of four folds: the newest card draws A, one of the lists it draws"
     );
 }
 

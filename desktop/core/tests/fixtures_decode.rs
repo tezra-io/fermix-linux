@@ -1,6 +1,7 @@
 //! Every answer the app decodes is decoded from the engine's own published fixtures,
 //! so a shape drift in the engine fails here rather than on a user's screen.
 
+use fermix_client::capabilities::{ComputerPermissions, RowStatus};
 use fermix_client::management::decode_response;
 use fermix_client::model::{
     AuthStart, DetectResult, JobStatus, JobView, RestartOnly, SecretSetResult, SetupState,
@@ -10,11 +11,16 @@ use serde_json::Value;
 
 const SUCCESS: &str = include_str!("../contracts/management/fixtures/success.jsonl");
 const ERRORS: &str = include_str!("../contracts/management/fixtures/errors.jsonl");
+/// The answers the engine says a client owes an older daemon.
+const COMPATIBILITY: &str = include_str!("../contracts/management/fixtures/compatibility.jsonl");
+/// Hand answers in the shape of the engine's Linux probe golden, for sessions it does not show.
+const PROBES: &str = include_str!("fixtures/computer-use/permissions.jsonl");
 
 fn fixture(name: &str) -> Value {
     let found: Vec<Value> = SUCCESS
         .lines()
         .chain(ERRORS.lines())
+        .chain(COMPATIBILITY.lines())
         .map(|line| serde_json::from_str::<Value>(line).expect("fixture line is JSON"))
         .filter(|v| v["name"] == name)
         .collect();
@@ -112,4 +118,66 @@ fn detect_reports_claude_code_presence() {
         .find(|r| r.target == "claude_code")
         .unwrap();
     assert!(claude.present);
+}
+
+fn probe(name: &str) -> ComputerPermissions {
+    let found = PROBES
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("probe line is JSON"))
+        .find(|v| v["name"] == name)
+        .unwrap_or_else(|| panic!("no probe named {name}"));
+    serde_json::from_value(found["result"].clone()).expect("probe decodes into the app's model")
+}
+
+#[test]
+fn a_linux_probe_carries_its_platform_display_server_and_rows() {
+    let linux: ComputerPermissions = decode("computer_use_permissions_get_linux");
+    assert!(linux.installed && !linux.screen_capture && linux.input_control);
+    assert_eq!(linux.platform.as_deref(), Some("linux"));
+    assert_eq!(linux.display_server.as_deref(), Some("wayland"));
+    let rows = linux.rows.unwrap();
+    assert_eq!(rows.len(), 9);
+    assert_eq!(rows[1].name, "accessibility bus");
+    assert_eq!(rows[1].status, RowStatus::Ok);
+    // The route the helper took leads the pixel rows.
+    let route = rows.iter().position(|r| r.name == "pixel route").unwrap();
+    assert_eq!(rows[route].status, RowStatus::Ok);
+    assert_eq!(rows[route + 1].name, "x11 pixels");
+    let stored = rows.iter().find(|r| r.name == "portal screenshot").unwrap();
+    assert_eq!(stored.status, RowStatus::Warn);
+}
+
+#[test]
+fn an_older_helpers_rows_carry_no_pixel_route() {
+    let older = probe("linux_older_engine");
+    assert_eq!(older.display_server.as_deref(), Some("x11"));
+    let rows = older.rows.unwrap();
+    assert!(rows.iter().all(|r| r.name != "pixel route"));
+    assert!(rows.iter().any(|r| r.name == "x11 pixels"));
+}
+
+#[test]
+fn a_macos_probe_carries_only_its_platform() {
+    let macos = probe("macos_platform_only");
+    assert_eq!(macos.platform.as_deref(), Some("macos"));
+    assert_eq!(macos.display_server, None);
+    assert_eq!(macos.rows, None);
+}
+
+#[test]
+fn an_older_daemons_probe_has_no_platform_or_rows() {
+    let older: ComputerPermissions = decode("computer_use_permissions_without_platform");
+    assert!(older.installed && older.screen_capture && !older.input_control);
+    assert_eq!(older.platform, None);
+    assert_eq!(older.display_server, None);
+    assert_eq!(older.rows, None);
+}
+
+#[test]
+fn a_status_word_never_seen_decodes_rather_than_failing_the_answer() {
+    let rows = probe("linux_unknown_rows").rows.unwrap();
+    let status = |name: &str| rows.iter().find(|r| r.name == name).unwrap().status;
+    assert_eq!(status("input method"), RowStatus::Unknown);
+    assert_eq!(status("x11 pixels"), RowStatus::Fail);
+    assert_eq!(status("window list"), RowStatus::NotApplicable);
 }

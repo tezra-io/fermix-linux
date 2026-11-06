@@ -61,6 +61,16 @@ pub enum ListenerStatus {
     Unknown,
 }
 
+/// `hold`: `setup` while this boot held the channel for setup that is still not finished, which a
+/// restart before then would hold again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hold {
+    Setup,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Listener {
     pub status: ListenerStatus,
@@ -75,6 +85,10 @@ pub struct MobileStatus {
     pub started: bool,
     /// True when the channel could not start this boot.
     pub refused: bool,
+    /// What the channel waits for while it is on and not running, where a restart alone would
+    /// not start it. None otherwise, and from an engine older than the field.
+    #[serde(default)]
+    pub hold: Option<Hold>,
     pub listener: Listener,
     pub paired_devices: i64,
     /// Reach from anywhere (M62); None from an engine older than the rail.

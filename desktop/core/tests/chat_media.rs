@@ -2,7 +2,7 @@
 //! previews, and its text less the lines that only name what the strip shows (macOS
 //! `ChatStrip`); and the bounds on reading the pictures.
 
-use fermix_client::chat_wire::protocol::{decode_line, Block, LinkPreview, Row, ServerEvent};
+use fermix_client::chat_wire::protocol::{read_line, Block, LinkPreview, Row, ServerEvent};
 use fermix_client::media::{
     decode_size, format_size, lane, link_cards, save_name, strip, tile, within_ceiling,
     without_shown_lines, words, Admission, Fit, TileKind, MAX_DECODING, MAX_WAITING,
@@ -18,7 +18,7 @@ const NOTE: &str = "9879f6d3c9efefe8c4f4aabe9d3269762264be52794e96f62ab8ffa53b7f
 /// The vendored row `seq`.
 fn fixture_row(seq: u64) -> Row {
     for line in SERVER.lines() {
-        match decode_line(line.as_bytes()) {
+        match read_line(line.as_bytes()) {
             Ok(ServerEvent::Row(row)) if row.server_seq == seq => return row,
             _ => {}
         }
@@ -33,7 +33,7 @@ fn row(extra: Value) -> Row {
     for (key, field) in extra.as_object().expect("an object") {
         value[key] = field.clone();
     }
-    let ServerEvent::Row(row) = decode_line(value.to_string().as_bytes()).expect("a row") else {
+    let ServerEvent::Row(row) = read_line(value.to_string().as_bytes()).expect("a row") else {
         panic!("a row");
     };
     row
@@ -56,7 +56,7 @@ fn places(canonical: &str, source: &str) -> Vec<Block> {
         "canonical_url": canonical, "source_url": source});
     let reply = json!({"type": "text_done", "turn_id": "t", "server_seq": 1, "text": "",
         "blocks": [{"type": "places", "places": [place]}]});
-    let ServerEvent::TextDone(reply) = decode_line(reply.to_string().as_bytes()).expect("a reply")
+    let ServerEvent::TextDone(reply) = read_line(reply.to_string().as_bytes()).expect("a reply")
     else {
         panic!("a reply");
     };

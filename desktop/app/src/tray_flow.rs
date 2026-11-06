@@ -77,6 +77,7 @@ impl App {
             background: &background,
             update: tray_label(&state.updates),
             restart_pending: state.updates.restart_pending,
+            proposals_waiting: self.cue_proposals_waiting(),
         })
     }
 
@@ -107,6 +108,7 @@ impl App {
             Command::Restart => self.window_action("restart", None),
             Command::RestartService => self.window_action("restart-service", None),
             Command::StartService => self.window_action("start-service", None),
+            Command::ShowWaiting => self.show_waiting(),
             Command::TogglePet => self.show_companion(!self.companion.window.is_visible()),
             Command::ToggleBackground => {
                 let on = self.background().on;
